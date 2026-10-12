@@ -2174,8 +2174,7 @@ function ctrlMode() { return view === "flat" ? "abs" : "rel"; }
 function ctrlTarget() {
   if (ctrlMode() === "rel") return { ok: true };
   const p = deskPanel();
-  if (!desk.loaded) return { why: "Finding the headset's panels…" };
-  if (!p) return { why: noPanelWhy() };
+  if (!p) return { why: desk.loaded || desk.error ? noPanelWhy() : "Finding the headset's panels…" };
   if (!desk.focus) return { why: "Nobody's using a panel in the headset yet. Taps work once one is in use." };
   if (panelKey(p) !== desk.focus) return { why: "Only the panel in use takes taps. Pick “Panel in use” to control it." };
   if (desk.shown !== desk.focus) return { why: live ? "Waiting for the picture of the panel in use…"

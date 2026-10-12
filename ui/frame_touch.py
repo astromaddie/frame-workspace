@@ -104,24 +104,46 @@ def displays():
     return [f":{n}" for n in sorted(found)]
 
 
-_ROOT = []  # the display found to carry gamescope's properties, once found
+_ROOT = []  # [display, when found or None]: the display that carries gamescope's properties
+ROOT_DEADLINE = 6.0  # seconds for the whole search: well inside the server's 20 s for /api/panels
+ROOT_PROBE_TIMEOUT = 2.0  # seconds for any one display, so one stalled display can't use it all
+ROOT_RETRY = 30.0  # seconds before a search that found nothing is tried again (the input helper lives on)
 
 
-def gamescope_root():
+def has_gamescope(display, timeout):
+    """Whether this display's root has gamescope's properties: one xprop call, bounded."""
+    try:
+        out = subprocess.run(["xprop", "-root", "GAMESCOPE_FOCUSABLE_WINDOWS", "GAMESCOPE_FOCUSED_WINDOW"],
+                             env=dict(os.environ, DISPLAY=display), capture_output=True, text=True,
+                             timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return any(line.startswith("GAMESCOPE_") and "=" in line for line in out.splitlines())
+
+
+def gamescope_root(clock=time.monotonic):
     """The X display whose root window carries gamescope's panel properties
     (GAMESCOPE_FOCUSABLE_WINDOWS and friends).
 
     That's :0 on every build seen so far (SteamOS 0.3.0 to 0.4.1), so :0 is asked first
     and is the answer when nothing publishes them. If a SteamOS update numbers its
-    displays differently, the others are probed rather than reporting no panels.
+    displays differently, the others are probed rather than reporting no panels. The
+    search shares one deadline and is remembered: found for good, not found for ROOT_RETRY.
     """
-    if _ROOT:
+    now = clock()
+    if _ROOT and (_ROOT[1] is None or now - _ROOT[1] < ROOT_RETRY):
         return _ROOT[0]
+    deadline = now + ROOT_DEADLINE
+    found = None
     for display in [":0"] + [d for d in displays() if d != ":0"]:
-        if xprop_root(display, "GAMESCOPE_FOCUSABLE_WINDOWS") or xprop_root(display, "GAMESCOPE_FOCUSED_WINDOW"):
-            _ROOT.append(display)
-            return display
-    return ":0"
+        left = deadline - clock()
+        if left <= 0:
+            break
+        if has_gamescope(display, min(ROOT_PROBE_TIMEOUT, left)):
+            found = display
+            break
+    _ROOT[:] = [found, None] if found else [":0", clock()]
+    return _ROOT[0]
 
 
 def window_pid(display, window):

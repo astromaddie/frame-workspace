@@ -270,10 +270,11 @@ class FindingPanels(unittest.TestCase):
 
     def setUp(self):
         t = self.t
-        names = ("xprop_root", "window_info", "window_pid", "displays", "desktop_running")
+        names = ("xprop_root", "window_info", "window_pid", "displays", "desktop_running", "has_gamescope")
         saved = {n: getattr(t, n) for n in names}
         saved_which = t.shutil.which
         self.real_displays = saved["displays"]
+        self.real_has = saved["has_gamescope"]
 
         def restore():
             for n, v in saved.items():
@@ -285,6 +286,8 @@ class FindingPanels(unittest.TestCase):
         self.props = {}  # (display, property) -> values
         self.windows = {}  # (display, window) -> info
         t.xprop_root = lambda d, n: list(self.props.get((d, n), []))
+        t.has_gamescope = lambda d, timeout: any((d, n) in self.props for n in
+                                                 ("GAMESCOPE_FOCUSABLE_WINDOWS", "GAMESCOPE_FOCUSED_WINDOW"))
         t.window_info = lambda d, w: self.windows.get((d, w))
         t.window_pid = lambda d, w: None
         t.displays = lambda: [":0", ":1", ":2"]
@@ -310,6 +313,53 @@ class FindingPanels(unittest.TestCase):
         self.plasma_on(":1")
         self.assertEqual(self.t.gamescope_root(), ":1")
         self.assertEqual(len(self.t.panels()["panels"]), 1)
+
+    def test_root_search_shares_one_deadline(self):
+        # Every display stalls: the search gives up within ROOT_DEADLINE, each probe within
+        # ROOT_PROBE_TIMEOUT, and the answer (:0) is remembered rather than searched for again.
+        t, now, probes = self.t, [0.0], []
+        t.displays = lambda: [":0", ":1", ":2", ":3", ":4", ":5"]
+
+        def stalled(display, timeout):
+            probes.append((display, timeout))
+            now[0] += timeout
+            return False
+        t.has_gamescope = stalled
+        self.assertEqual(t.gamescope_root(clock=lambda: now[0]), ":0")
+        self.assertLessEqual(now[0], t.ROOT_DEADLINE)
+        self.assertTrue(all(0 < timeout <= t.ROOT_PROBE_TIMEOUT for _, timeout in probes))
+        self.assertLess(len(probes), 6)
+        count = len(probes)
+        now[0] += 1
+        self.assertEqual(t.gamescope_root(clock=lambda: now[0]), ":0")
+        self.assertEqual(len(probes), count)  # remembered
+        now[0] += t.ROOT_RETRY
+        t.gamescope_root(clock=lambda: now[0])
+        self.assertGreater(len(probes), count)  # tried again later
+
+    def test_root_found_is_remembered(self):
+        self.plasma_on(":1")
+        calls = []
+        has = self.t.has_gamescope
+        self.t.has_gamescope = lambda d, timeout: calls.append(d) or has(d, timeout)
+        self.assertEqual(self.t.gamescope_root(), ":1")
+        self.t.panels()
+        self.assertEqual(calls, [":0", ":1"])  # one search for the whole request
+
+    def test_has_gamescope_reads_xprop_output(self):
+        t = self.t
+        saved = t.subprocess.run
+        self.addCleanup(setattr, t.subprocess, "run", saved)
+        for out, want in (("GAMESCOPE_FOCUSABLE_WINDOWS(CARDINAL) = 1, 0, 2\nGAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 1\n", True),
+                          ("GAMESCOPE_FOCUSABLE_WINDOWS:  not found.\nGAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 0\n", True),
+                          ("GAMESCOPE_FOCUSABLE_WINDOWS:  not found.\nGAMESCOPE_FOCUSED_WINDOW:  not found.\n", False)):
+            t.subprocess.run = lambda *a, o=out, **k: subprocess.CompletedProcess(a, 0, o, "")
+            self.assertEqual(self.real_has(":0", 1), want, out)
+
+        def hang(*a, **k):
+            raise subprocess.TimeoutExpired(a[0], k.get("timeout"))
+        t.subprocess.run = hang
+        self.assertFalse(self.real_has(":0", 1))
 
     def test_listed_window_that_isnt_x11_explains_itself(self):
         self.plasma_on(":0")
@@ -366,6 +416,12 @@ class PageGestures(unittest.TestCase):
 
     def test_gestures(self):
         r = subprocess.run(["node", str(ROOT / "tests" / "page" / "ctrl_gestures.mjs")], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_desktop_panel_list(self):
+        # #73: the headset's reason for no panels, and a failed listing, reach Capture and Control.
+        r = subprocess.run(["node", str(ROOT / "tests" / "page" / "desk_panels.mjs")], capture_output=True, text=True,
                            timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
