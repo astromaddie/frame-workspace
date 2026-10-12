@@ -408,14 +408,17 @@ class LinkFailureProvenance(Base):
         c.close()
         return result
 
-    def test_routes_that_rewrap_a_link_failure_keep_its_mark(self):
-        # Review round 4: /api/android and /api/titles re-raise frame_android's FrameError as a
-        # Failure; after the status poll's first connection failure, theirs are held back too,
-        # also past the 10-minute window.
+    def serve(self):
         self.httpd = self.server.ThreadingHTTPServer(("127.0.0.1", 0), self.server.Handler)
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
+
+    def test_routes_that_rewrap_a_link_failure_keep_its_mark(self):
+        # Review round 4: /api/android and /api/titles re-raise frame_android's FrameError as a
+        # Failure; after the first connection failure, theirs are held back too, also past the
+        # 10-minute window.
+        self.serve()
         down = subprocess.CompletedProcess(["ssh"], 255, "", "ssh: connect to host 10.0.0.5 port 22: Connection timed out\r\n")
         meta = {"label": "Test App", "game_id": 5, "shortcut": None}
         with mock.patch.object(frame_host, "run_ssh", return_value=down), \
@@ -431,7 +434,34 @@ class LinkFailureProvenance(Base):
                 self.assertEqual(self.request("/api/android", {"action": "launch", "package": "org.test"})[0], 502)
         sent = [(e["properties"]["where"], e["properties"]["error_category"]) for e in self.queued()
                 if e["event"] == "$exception"]
-        self.assertEqual(sent, [("POST /api/comfort status", "frame_unreachable"), ("POST /api/android launch", "other")])
+        # The comfort poll's own failure isn't one (see the next test).
+        self.assertEqual(sent, [("POST /api/android launch", "frame_unreachable"), ("POST /api/android launch", "other")])
+
+    def test_the_comfort_poll_meeting_an_unreachable_frame_is_not_sent(self):
+        # 0.4.2: most reports were this poll (every 5 s) finding the headset asleep, away or
+        # refusing ssh. Like GET /api/status, it isn't reported; a session started or cancelled
+        # by hand still is, once, and a real failure of the poll is too.
+        self.serve()
+        for stderr in ("ssh: connect to host 10.0.0.5 port 22: Connection timed out\r\n",
+                       "banner exchange: Connection to UNKNOWN port -1: Connection refused\r\n",
+                       "ssh: Could not resolve hostname frame: nodename nor servname provided\r\n",
+                       "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\r\nHost key verification failed.\r\n",
+                       "No ED25519 host key is known for frame-control-f7b4e9ac and you have requested strict "
+                       "checking.\r\nHost key verification failed.\r\n",
+                       "steamos@192.168.1.9: Permission denied (publickey,password).\r\n"):
+            down = subprocess.CompletedProcess(["ssh"], 255, "", stderr)
+            with mock.patch.object(frame_host, "run_ssh", return_value=down):
+                self.assertGreaterEqual(self.request("/api/comfort", {"action": "status"})[0], 500, stderr)
+        self.assertEqual(self.queued(), [])
+        down = subprocess.CompletedProcess(["ssh"], 255, "", "ssh: connect to host 10.0.0.5 port 22: Host is down\r\n")
+        with mock.patch.object(frame_host, "run_ssh", return_value=down):
+            self.request("/api/comfort", {"action": "cancel"})
+        broken = subprocess.CompletedProcess(["ssh"], 1, "", "Traceback (most recent call last):\nOSError: boom\n")
+        with mock.patch.object(frame_host, "run_ssh", return_value=broken):
+            self.assertEqual(self.request("/api/comfort", {"action": "status"})[0], 502)
+        sent = [(e["properties"]["where"], e["properties"]["error_category"]) for e in self.queued()
+                if e["event"] == "$exception"]
+        self.assertEqual(sent, [("POST /api/comfort cancel", "frame_unreachable"), ("POST /api/comfort status", "other")])
 
     def test_download_failures_after_a_poll_failure_are_still_sent(self):
         # Review round 3: these file names, in the real checksum message through the web-link worker,
