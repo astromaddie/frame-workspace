@@ -1177,6 +1177,26 @@ class FailureLog(unittest.TestCase):
                          "Timed out talking to <host>")
         self.assertEqual(fl.hide_hosts("<user>@<host>: <ip>", ["user", "host", "ip"]), "<user>@<host>: <ip>")
 
+    def test_a_whole_name_can_cross_a_scrubber_token(self):  # #81, first case
+        self.assertEqual(fl.scrub_failure("<host> Jane Doe headset stopped answering", ["<host> Jane Doe headset"]),
+                         "<host> stopped answering")
+        self.assertEqual(fl.hide_hosts("seen <ip> Jane Doe headset and <ip>", ["<ip> Jane Doe headset", "ip"]),
+                         "seen <host> and <ip>")  # the standalone token stays
+        self.assertEqual(fl.hide_hosts("<ip> frame", ["ip> frame"]), "<host>")  # never half a token left
+
+    def test_a_name_cant_swallow_sshs_operand_marker(self):  # #81, second case
+        said = "ssh: connect to host bastion-jane port 22: Connection refused"
+        out = fl.scrub_failure(said, ["to host"])
+        self.assertNotIn("bastion-jane", out)
+        self.assertEqual(out, "ssh: connect <host> <host> port 22: Connection refused")
+        err = quiet_log(self)
+        fl.log_failure("ssh", "ssh stopped", said, hosts=["to host", "host bastion"])
+        self.assertNotIn("bastion", err.getvalue())
+        self.assertNotIn("jane", err.getvalue())
+        # a name overlapping the operand merges with it into one <host>
+        self.assertEqual(fl.scrub_failure("Could not resolve hostname jane-office now", ["jane-office now"]),
+                         "Could not resolve hostname <host>")
+
     def test_windows_user_names_with_spaces_go_whole(self):
         err = quiet_log(self)
         with mock.patch.object(fl.frame_telemetry, "_user_names", return_value=set()):
