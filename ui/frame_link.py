@@ -239,13 +239,14 @@ def _host_spans(text, hosts, keep=()):
 
 
 def _hide_spans(text, spans):
-    """text with each span replaced by <host>, overlapping ones merged into one, in one pass."""
+    """text with each span replaced by <host> (or a span's own (start, end, label) label),
+    overlapping ones merged into the first, in one pass."""
     out, last = [], 0
-    for s, e in sorted(spans):
-        if s < last:  # overlaps the one before: that <host> covers this too
+    for s, e, *label in sorted(spans, key=lambda sp: (sp[0], -sp[1])):  # the longest of a start first
+        if s < last:  # overlaps the one before: that one covers this too
             last = max(last, e)
             continue
-        out += [text[last:s], "<host>"]
+        out += [text[last:s], label[0] if label else "<host>"]
         last = e
     return "".join(out) + text[last:]
 
@@ -278,6 +279,20 @@ def _operand_spans(text):
     return spans
 
 
+# frame_telemetry.scrub's two user@host rules, found in the text as it came: a name hidden
+# first could take the "@" they need ("Jane Smith@<host>" with a name "Smith@<host>").
+USER_FIELD = re.compile(r'''(?m)(?:^|(?<=: )|(?<=\| ))[^@\n:|"<]{1,64}@[\w.\[\]%:<>-]+?(?=:(?:\s|$)|'s\s)''')
+USER_WORD = re.compile(r'(?<![\w.+\\<-])[\w.+\\-]+@(?=[A-Za-z\[<])')
+USER_HOST = re.compile(r'[^\s,;\'"()|]*?(?=:?(?:\s|$|[,;\'"()|]))')
+
+
+def _user_spans(text):
+    return ([(*m.span(), "<user>@<host>") for m in USER_FIELD.finditer(text)]
+            # word@ and the host after it, as a whole: the email rule needs both
+            + [(m.start(), m.end() + len(USER_HOST.match(text, m.end()).group()), "<user>@<host>")
+               for m in USER_WORD.finditer(text)])
+
+
 def hide_operands(text):
     return _hide_spans(text, _operand_spans(text))
 
@@ -286,10 +301,11 @@ def scrub_failure(text, hosts=()):
     """Free text about a failed attempt, for the log: the attempt's own names, whole and
     longest first (case-insensitively, never ssh's own words), and anything ssh names as a
     host, both found in the text as it came so neither can hide the other, then the shared
-    scrubber (addresses, paths, user names). The shared scrubber runs first too, so a name
-    can't take the "@" that marks the user name before it ("Jane@<host>" -> "<user>@<host>")."""
-    text = frame_telemetry.scrub(str(text or ""), 600)
-    return frame_telemetry.scrub(_hide_spans(text, _host_spans(text, hosts) + _operand_spans(text)), 600)
+    scrubber (addresses, paths, user names). User names before an "@" are found the same way,
+    so a name can't take the "@" that marks one."""
+    text = str(text or "")
+    spans = _user_spans(text) + _host_spans(text, hosts) + _operand_spans(text)
+    return frame_telemetry.scrub(_hide_spans(text, spans), 600)
 
 
 def failure_detail(error):

@@ -1209,6 +1209,28 @@ class FailureLog(unittest.TestCase):
         self.assertNotIn("Smith", out)
         self.assertIn("<user>@<host>", out)
 
+    def test_a_name_partly_like_an_address_is_still_hidden_whole(self):  # review of #81, round 2
+        out = fl.scrub_failure("frame.local Jane Doe headset stopped answering",
+                               ["frame.local Jane Doe headset"])
+        self.assertEqual(out, "<host> stopped answering")
+
+    def test_a_name_at_the_length_limit_is_hidden_before_the_cut(self):  # review of #81, round 2
+        out = fl.scrub_failure("x " * 294 + "Jane Doe work headset stopped answering",
+                               ["Jane Doe work headset"])
+        self.assertNotIn("Jane", out)
+
+    def test_user_patterns_match_the_shared_scrubber(self):
+        src = (Path(fl.__file__).parent / "frame_telemetry.py").read_text()
+        self.assertIn(fl.USER_FIELD.pattern, src)
+        self.assertIn(fl.USER_WORD.pattern, src)
+        self.assertEqual(fl.scrub_failure("jane@bastion-jane: Permission denied (publickey).", ["bastion-jane"]),
+                         "<user>@<host>: Permission denied (publickey).")
+
+    def test_an_email_is_hidden_whole(self):  # found by comparing with the scrubber before #81
+        out = fl.scrub_failure("<ip>bastion-jane@workpc192.168.1.20: ", ["connect to"])
+        self.assertNotIn("workpc", out)
+        self.assertNotIn("bastion", out)
+
     def test_a_name_cant_swallow_sshs_operand_marker(self):  # #81, second case
         said = "ssh: connect to host bastion-jane port 22: Connection refused"
         out = fl.scrub_failure(said, ["to host"])
