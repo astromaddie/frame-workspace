@@ -267,9 +267,23 @@ CATEGORIES = [
     ('layer_missing', re.compile(r'OpenXR compatibility layer')),
     ('apk_repack_failed', re.compile(r'could not prepare the APK for the Frame')),
     ('tool_missing', re.compile(r"\[WinError 2\]|No such file or directory: '(?:ssh|scp|rsync|adb)")),
-    ('apk_unreadable', re.compile(r'(?i)not a zip|bad apk|AndroidManifest|ApkError|unexpected package name')),
+    ('apk_unreadable', re.compile(r'(?i)not a zip|bad apk|AndroidManifest|ApkError|unexpected package name|'
+                                  r'not a readable APK|not an APK|APK manifest|in the APK (?:uses a compression|is )')),
     ('cant_run_on_frame', re.compile(r"can't run on the Frame")),
     ('steam_shortcut', re.compile(r'(?i)steam did not return a shortcut|shortcut list|no Steam shortcut')),
+    # The Frame-side scripts that talk to the Steam client's UI (frame/android/steam_shortcuts.py), which
+    # fail with their own words or a Python traceback, its last lines kept. Before frame_unreachable:
+    # "Connection refused" and "timed out" here are Steam's debug port on the Frame, not ssh.
+    ('steam_not_running', re.compile(r'SharedJSContext not found|'
+                                     r'URLError: <urlopen error \[Errno 111\] Connection refused>|'
+                                     r'ConnectionRefusedError: \[Errno 111\]')),
+    ('steam_not_responding', re.compile(r'websocket handshake failed|(?:socket\.timeout|TimeoutError): timed out|'
+                                        r'(?:\A|\n)EOFError\Z')),
+    ('steam_js_error', re.compile(r'JS error: ')),
+    ('artwork_failed', re.compile(r'incomplete artwork render|artwork renderer did not produce|'
+                                  r'render is \d+ bytes of|could not prepare artwork|all five Steam artwork slots')),
+    # Copying the APK (or its launcher) to the Frame: rsync or scp ran out of time.
+    ('copy_timeout', re.compile(r'to the Frame timed out\Z')),
     ('frame_not_set_up', re.compile(r'(?i)Could not resolve hostname|no "?frame"? (?:SSH )?alias')),
     ('frame_auth', re.compile(r'(?i)Permission denied|Host key verification failed|'
                               r'REMOTE HOST IDENTIFICATION HAS CHANGED|host key is known for')),
@@ -281,6 +295,8 @@ CATEGORIES = [
                                      r'Network is unreachable|Host is down|asleep|kex_exchange|banner exchange|'
                                      r'ssh: connect to host |mux_client_|client_loop: ')),
     ('frame_disk_full', re.compile(r'(?i)No space left|disk full|ENOSPC')),
+    # rsync or scp failed for another reason ("connection unexpectedly closed", or no words at all).
+    ('copy_failed', re.compile(r'\Acopying .+ to the Frame failed: ')),
     ('download_failed', re.compile(r'(?i)HTTP (?:Error )?\d{3}|URLError|download|certificate verify failed')),
     ('flatpak', re.compile(r'(?i)flatpak|flathub')),
     ('cancelled', re.compile(r'(?i)cancel')),
@@ -288,8 +304,16 @@ CATEGORIES = [
 ]
 
 
+# Python's own errors for a mistake in Frame Control's code, whatever their message says.
+BUG_ERRORS = (KeyError, IndexError, TypeError, AttributeError, NameError, AssertionError,
+              ZeroDivisionError, RecursionError, UnicodeError, json.JSONDecodeError)
+
+
 def categorize(message):
-    """(category, detail): a fixed category name, plus an Android installer code when there is one."""
+    """(category, detail): a fixed category name, plus an Android installer code when there is one.
+    message may be the exception itself: one of BUG_ERRORS is internal_error."""
+    if isinstance(message, BUG_ERRORS):
+        return 'internal_error', None
     text = str(message or '')
     for name, pattern in CATEGORIES:
         m = pattern.search(text)

@@ -57,12 +57,15 @@ error becomes one category from this fixed list, plus Android's own
 `INSTALL_FAILED_…` code (`installer_code`) when there is one:
 `android_installer`, `apk_needs_newer_android`, `apk_wrong_abi`,
 `layer_missing`, `apk_repack_failed`, `tool_missing`, `apk_unreadable`,
-`cant_run_on_frame`, `steam_shortcut`, `frame_not_set_up`, `frame_auth`,
-`frame_unreachable`, `frame_disk_full`, `download_failed`, `flatpak`,
-`cancelled`, `lepton` or `other`. A VR APK that installed without Frame
-Control's OpenXR compatibility layer, because this copy of the app is missing
-it, carries `xr_layer_missing: true`; otherwise that field is left out. It
-names what was installed only when that's already public:
+`cant_run_on_frame`, `steam_shortcut`, `steam_not_running`,
+`steam_not_responding`, `steam_js_error`, `artwork_failed`, `copy_timeout`,
+`frame_not_set_up`, `frame_auth`, `frame_unreachable`, `frame_disk_full`,
+`copy_failed`, `download_failed`, `flatpak`, `cancelled`, `lepton`,
+`internal_error` (a mistake in Frame Control's own code) or `other`. A VR
+APK that installed without Frame Control's OpenXR compatibility layer,
+because this copy of the app is missing it, carries `xr_layer_missing: true`;
+otherwise that field is left out. It names what was installed only when
+that's already public:
 
 - F-Droid catalogue apps: `package`. Never the version, since a local build can reuse a
   catalogue app's package name
