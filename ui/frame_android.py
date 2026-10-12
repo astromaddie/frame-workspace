@@ -61,13 +61,18 @@ def ssh(cmd, input=None, timeout=120):
     try:
         # No inherited stdin (see server.ssh): Windows' ssh.exe would wait on it.
         feed = {'input': input} if input is not None else {'stdin': subprocess.DEVNULL}
+        # errors='replace': a message in another encoding (a Windows code page, a file name) mustn't
+        # turn a failed command, or one that worked, into a UnicodeDecodeError.
+        text = {'text': True, 'errors': 'replace'} if isinstance(input, str) or input is None else {}
         p = frame_host.run_ssh(['ssh', *SSH_OPTS, FRAME, cmd], capture_output=True, **feed,
-                               timeout=timeout, text=isinstance(input, str) or input is None)
+                               timeout=timeout, **text)
     except subprocess.TimeoutExpired:
         raise frame_host.link_failure(FrameError(f'timed out talking to {FRAME}'))
     if p.returncode != 0:
-        error = FrameError((p.stderr or p.stdout or f'ssh exited {p.returncode}').strip()[-600:])
-        stderr = p.stderr if isinstance(p.stderr, str) else (p.stderr or b'').decode(errors='replace')
+        # Bytes input gives bytes output: decode it, so the message isn't "b'...'".
+        stderr, stdout = (v if isinstance(v, str) else (v or b'').decode(errors='replace')
+                          for v in (p.stderr, p.stdout))
+        error = FrameError((stderr or stdout or f'ssh exited {p.returncode}').strip()[-600:])
         raise frame_host.link_failure(error) if frame_host.ssh_link_failed(p.returncode, stderr) else error
     return p.stdout
 
@@ -136,11 +141,19 @@ def check_installable(info):
 
 
 _install_lock = threading.Lock()  # installs are rare; one at a time avoids every race
+# The slowest transfer a copy is allowed before it times out, in bytes a second (about 4 Mbit/s,
+# a slow or busy Wi-Fi link). A fixed 10 minutes failed any APK over about 300 MB at that rate.
+COPY_MIN_RATE = 512 * 1024
 
 
 def _copy(src, dest, executable=False, timeout=600):
-    """Copy a local file to the Frame: rsync where installed (not on Windows), else scp."""
+    """Copy a local file to the Frame: rsync where installed (not on Windows), else scp.
+    timeout is the least time allowed; a large file gets longer (COPY_MIN_RATE)."""
     name = os.path.basename(src)
+    try:
+        timeout = max(timeout, os.path.getsize(src) / COPY_MIN_RATE)
+    except OSError:
+        pass  # rsync or scp says what's wrong with the file
     rsync = None if frame_host.WINDOWS else shutil.which('rsync')  # see server.push_file
     if rsync:
         cmd = ['rsync', '-a', *(['--chmod=u+x'] if executable else []),
@@ -148,7 +161,8 @@ def _copy(src, dest, executable=False, timeout=600):
     else:
         cmd = ['scp', *SSH_OPTS, src, f'{FRAME}:{dest}']
     try:
-        frame_host.run_ssh(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=timeout)
+        frame_host.run_ssh(cmd, check=True, capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                           errors='replace', timeout=timeout)
     except subprocess.TimeoutExpired:
         raise FrameError(f'copying {name} to the Frame timed out')
     except subprocess.CalledProcessError as e:
@@ -277,6 +291,13 @@ def _install(apk_path, info, pkg, flatscreen, name, source, artwork=None):
             # A first install that failed part-way: don't leave an orphan folder behind.
             try:
                 ssh(f'rm -rf {d}', timeout=30)
+            except FrameError:
+                pass
+        elif not ok:
+            # An update that failed: the app still works, but a partial copy of the new APK
+            # (scp leaves one; it can be gigabytes) mustn't stay beside it.
+            try:
+                ssh(f'rm -f {d}/app.apk.part', timeout=30)
             except FrameError:
                 pass
 
