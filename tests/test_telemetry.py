@@ -138,7 +138,7 @@ class Gates(Base):
         tm.diagnostic("POST /api/android install", RuntimeError("boom"))
         tm.diagnostic("POST /api/comfort status", RuntimeError("ssh exited 255"))  # the command's own exit code?
         self.assertEqual([e["properties"]["error_category"] for e in self.queued()],
-                         ["frame_unreachable", "other", "other", "other"])
+                         ["frame_unreachable", "internal_error", "other", "other"])
 
     def test_page_events_are_checked(self):
         self.assertTrue(tm.page_event({"event": "tab_viewed", "properties": {"tab": "android", "extra": "x"}})["queued"])
@@ -294,6 +294,72 @@ class Scrub(unittest.TestCase):
                          "apk_repack_failed")
         self.assertEqual(tm.categorize(FileNotFoundError(2, "No such file or directory", "ssh"))[0], "tool_missing")
         self.assertEqual(tm.categorize("[WinError 2] The system cannot find the file specified")[0], "tool_missing")
+
+    def test_apk_install_failures_that_were_other(self):
+        """What frame_android.install can raise, worded as it is, that 0.4.x sent as 'other'
+        (or as frame_unreachable, when it was the Steam client or a slow copy)."""
+        tail = 'Traceback (most recent call last):\n  File "<stdin>", line 19, in target_ws\n'
+        cases = {
+            "steam_not_running": [
+                "SharedJSContext not found: is the Steam client running?",
+                tail + "urllib.error.URLError: <urlopen error [Errno 111] Connection refused>",
+                tail + "ConnectionRefusedError: [Errno 111] Connection refused",
+            ],
+            "steam_not_responding": [
+                "websocket handshake failed",
+                tail + "TimeoutError: timed out",
+                tail + "socket.timeout: timed out",
+                tail + '  File "<stdin>", line 45, in _read\nEOFError',
+            ],
+            "steam_js_error": ['JS error: {"exceptionId": 1, "text": "Uncaught", "exception": '
+                               '{"description": "Error: Steam artwork API unavailable; installation is incomplete"}}'],
+            "artwork_failed": [
+                "Steam artwork renderer did not produce every slot",
+                tail + "ValueError: incomplete artwork render",
+                tail + "ValueError: hero render is 0 bytes of png",
+                "could not prepare artwork: unknown artwork slot",
+                tail + "ValueError: all five Steam artwork slots are required",
+            ],
+            "copy_timeout": ["copying Big Game (timed out).apk to the Frame timed out",
+                             "copying launch.sh to the Frame timed out"],
+            "copy_failed": [
+                "copying game.apk to the Frame failed: rsync: connection unexpectedly closed (0 bytes received "
+                "so far) [sender]\nrsync error: error in rsync protocol data stream (code 12) at io.c(231)",
+                "copying game.apk to the Frame failed: ",
+            ],
+            "apk_unreadable": [
+                "x.apk: not a readable APK: [Errno 2] No such file or directory: 'x.apk'",
+                "x.apk: could not read the APK manifest: Error -3 while decompressing data: invalid block type",
+                "x.apk: the APK manifest has no package name",
+                "x.apk: lib/arm64-v8a/libx.so in the APK uses a compression Android does not",
+                "x.apk: AndroidManifest.xml in the APK is 40 MB, more than a real one (16 MB)",
+            ],
+        }
+        for category, messages in cases.items():
+            for message in messages:
+                self.assertEqual(tm.categorize(message)[0], category, message)
+        # Still where they were: ssh's own failures, and a full disk during a copy.
+        self.assertEqual(tm.categorize("timed out talking to frame")[0], "frame_unreachable")
+        self.assertEqual(tm.categorize("copying a.apk to the Frame failed: ssh: connect to host 10.0.0.2 "
+                                       "port 22: Connection refused")[0], "frame_unreachable")
+        self.assertEqual(tm.categorize("copying a.apk to the Frame failed: rsync: write failed on "
+                                       "\"app.apk.part\": No space left on device (28)")[0], "frame_disk_full")
+        self.assertEqual(tm.categorize("download failed: timed out")[0], "download_failed")
+
+    def test_python_errors_are_internal_whatever_they_say(self):
+        import json as _json
+        for error in (KeyError("paths"), TypeError("'NoneType' object is not subscriptable"),
+                      AttributeError("x"), _json.JSONDecodeError("Expecting value", "", 0),
+                      UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"),
+                      KeyError("timed out")):
+            self.assertEqual(tm.categorize(error)[0], "internal_error", repr(error))
+        self.assertEqual(tm.categorize("KeyError: 'paths'")[0], "other")  # only the exception itself
+        self.assertEqual(tm.categorize(OSError(28, "No space left on device"))[0], "frame_disk_full")
+
+    def test_privacy_doc_lists_every_category(self):
+        doc = (ROOT / "docs" / "privacy.md").read_text()
+        for name in {n for n, _ in tm.CATEGORIES} | {"internal_error", "other"}:
+            self.assertIn(f"`{name}`", doc)
 
 
 class Compat(Base):

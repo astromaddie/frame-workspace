@@ -7,6 +7,7 @@ the resource table in resources.arsc.
 """
 import struct
 import zipfile
+import zlib
 
 # android: attribute resource ids; names can be stripped by shrinkers, ids can't.
 ATTR = {0x01010001: 'label', 0x01010002: 'icon', 0x01010003: 'name',
@@ -221,7 +222,9 @@ def apk_info(path):
             res = Resources(_read(z, 'resources.arsc', MAX_ARSC) if 'resources.arsc' in names else b'')
             from frame_apk_vr import detection
             vr_info = detection(manifest_data, names)
-        except (struct.error, IndexError, zipfile.BadZipFile) as e:
+        # A damaged download: corrupt deflate data (zlib.error), a member cut short (EOFError),
+        # undecodable text (UnicodeDecodeError) or an encrypted entry (RuntimeError).
+        except (struct.error, IndexError, zipfile.BadZipFile, zlib.error, EOFError, ValueError, RuntimeError) as e:
             raise ApkError(f'could not read the APK manifest: {e}')
         tags = {}
         for tag, attrs in elements:
