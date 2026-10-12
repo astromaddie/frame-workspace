@@ -128,8 +128,12 @@ identity here, every ssh command gets `StrictHostKeyChecking=accept-new` (the
 first contact saves it, whichever command makes it), and from then on
 `StrictHostKeyChecking=yes`. `accept-new` never replaces a saved key, so it
 can't hide a change. The saved key's fingerprint is also recorded in
-`devices.json` (`identity`). A headset counts as having had an identity if one is
-recorded, if its pin file exists at all, or if a connection to it ever worked; then
+`devices.json` (`identity`), along with a flag that never clears
+(`identity_established`), as soon as ssh saves the key: even if the login is then
+refused. A headset counts as having had an identity if the flag is set, a
+fingerprint is recorded, its pin file exists at all, or a connection to it ever
+worked (older files get the flag from that when loaded, so editing or removing
+the address that worked doesn't undo it); then
 a pin file that's deleted, empty, unreadable or not parseable **fails closed**
 (*Checking the headset's identity* fails, "missing or can't be read") rather than
 trusting whatever answers, and only **Check its key…** saves a key again. It
@@ -145,8 +149,13 @@ file during the key exchange, before any login, and is stopped as soon as it
 has. Every other kind of contact is ruled out on the command line, ahead of
 anything `~/.ssh/config` says: no authentication of any kind, no agent
 (`IdentityAgent=none`, `ForwardAgent=no`), no X11 or port forwarding, no local
-or remote command (`-N`), no terminal, and `-F none` unless the alias goes
-through a jump host. It shows the key's SHA256 fingerprint next to
+or remote command (`-N`), no terminal, and `-F none`. Through a ProxyJump host
+it builds that hop itself, as a ProxyCommand whose ssh forwards nothing and runs
+no local command (ProxyJump's own ssh would take `ForwardAgent` and
+`LocalCommand` from `~/.ssh/config`); it still logs in to the jump host as
+configured. Through a ProxyCommand from `~/.ssh/config`, or several jump hosts,
+it refuses, since those can't be made safe from here: add an address it can
+reach directly, or compare the key by hand. It shows the key's SHA256 fingerprint next to
 the saved one, with the command that prints it on the headset
 (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, in Konsole on its desktop).
 **This is my headset: trust its new key** then saves exactly that key, replacing
@@ -200,7 +209,7 @@ share the format later (it still connects to one host; see
 ```json
 {"version": 1, "active": "f67f8b7e",
  "devices": [{"id": "f67f8b7e", "name": "Steam Frame", "alias": "frame", "user": "steamos", "port": 22,
-              "identity_files": ["~/.ssh/id_ed25519_frame"], "identity": ["SHA256:…"],
+              "identity_files": ["~/.ssh/id_ed25519_frame"], "identity": ["SHA256:…"], "identity_established": true,
               "addresses": [{"host": "frame.local", "kind": "mdns", "label": "",
                              "networks": ["n-e0998baa61"], "last_ok": 1790593550.4, "last_rtt_ms": 0.9}]}],
  "networks": {"n-e0998baa61": {"name": "Home Wi-Fi", "ssid": null, "gateway": "192.168.1.1",

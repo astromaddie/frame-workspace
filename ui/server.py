@@ -211,7 +211,7 @@ UNREACHABLE = [
     (re.compile(r"port \d+: Connection refused"),
      "The Frame refused the connection. Check Developer Mode is still on."),
     (re.compile(r"Permission denied \(publickey"),
-     "The Frame didn't accept this computer's SSH key. Run Set Up Connection to pair this computer with it "
+     "The Frame didn't accept this computer's SSH key. Set Up Connection pairs this computer with it "
      "again (Developer Mode must be on)."),
     # Before "Host key verification failed", which ssh prints after each of these.
     (re.compile(r"No \S+ host key is known for "),

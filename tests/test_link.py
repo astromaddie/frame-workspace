@@ -372,16 +372,28 @@ class Connecting(unittest.TestCase):
                                                    "permitlocalcommand": "yes", "requesttty": "force"})
         self.addCleanup(os.environ.pop, "FAKESSH_CONFIG", None)
         for proxied in (False, True):
-            with self.subTest(proxied=proxied), \
-                    mock.patch.object(fl, "ssh_g", return_value=("localhost", self.port, "tester", proxied)):
+            route = ("jump", "me@jumpy:2222") if proxied else (None, None)
+            with self.subTest(proxied=proxied), mock.patch.object(fl, "proxy_route", return_value=route):
                 t0 = time.monotonic()
                 scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
                 self.assertLess(time.monotonic() - t0, 10)  # stopped once it had the key, not left open
                 self.assertTrue(scan["fingerprint"].startswith("SHA256:"))
                 self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith("evil-")], [])
                 call = [c for c in self.calls() if "PreferredAuthentications=none" in c][-1]
-                self.assertEqual("-F" in call and call[call.index("-F") + 1] == "none", not proxied)
+                self.assertEqual(call[call.index("-F") + 1], "none")  # never ~/.ssh/config for the device
                 self.assertIn("-N", call)
+                hop = [c for c in call if c.startswith("ProxyCommand=")]
+                if proxied:
+                    # Review pr85-review-r2: ProxyJump's own ssh inherits the config (ForwardAgent,
+                    # LocalCommand); the scan builds the jump host's ssh itself, hardened.
+                    self.assertEqual(len(hop), 1)
+                    words = hop[0][len("ProxyCommand="):].split()
+                    self.assertEqual(words[-7:], ["-l", "me", "-p", "2222", "-W", "%h:%p", "jumpy"])
+                    for o in fl.Link.HOP_OPTS:
+                        self.assertIn(o, words)
+                    self.assertLess(call.index(hop[0]), call.index("HostKeyAlias=frame-control-" + d["id"]))
+                else:
+                    self.assertEqual(hop, [])
                 for o in ("ForwardAgent=no", "IdentityAgent=none", "ClearAllForwardings=yes", "RemoteCommand=none",
                           "PermitLocalCommand=no", "RequestTTY=no", "PubkeyAuthentication=no"):
                     self.assertIn(o, call)
@@ -389,6 +401,19 @@ class Connecting(unittest.TestCase):
                                                                                           + d["id"]))
         self.assertFalse(fd.pinned(d["id"]))
         self.assertEqual(sorted(p.name for p in fd.known_hosts(d["id"]).parent.iterdir()), [])  # no scan files
+
+    def test_a_key_check_refuses_routes_it_cant_harden(self):
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        before = len(self.calls())
+        for route in (("command", "nc %h %p"), ("jump", "a,b"), ("jump", "-oProxyCommand=x"), ("jump", "ssh://a"),
+                      ("jump", "a b"), ("jump", "a%h"), ("jump", "jumpy:99999")):
+            with self.subTest(route=route), mock.patch.object(fl, "proxy_route", return_value=route):
+                with self.assertRaises(fd.DeviceError) as caught:
+                    fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)
+                self.assertIn("can't make safe", str(caught.exception))
+        self.assertFalse(any("PreferredAuthentications=none" in c for c in self.calls()[before:]))
 
     def test_a_key_read_before_the_address_or_port_changed_isnt_trusted(self):
         self.pins()
@@ -406,6 +431,111 @@ class Connecting(unittest.TestCase):
                 self.reg.update_device(d["id"], port=self.port)
                 if not self.reg.get(d["id"])["addresses"]:
                     self.reg.add_address(d["id"], "localhost", kind="lan")
+
+    def test_terminals_judge_identity_by_the_registry_not_a_frozen_route(self):
+        # Review pr85-review-r2: named_route used the device as routed (before its first key was
+        # recorded), so a Terminal window fell back to accept-new once the pin was deleted.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        self.link.connect(["start"])
+        self.assertEqual(self.link.snapshot()["phase"], "connected")
+        self.assertFalse(self.link.routed_device.get("identity"))  # the frozen copy knows nothing of it
+        fd.known_hosts(d["id"]).unlink()
+        alias, opts = self.link.named_route()
+        self.assertIn("StrictHostKeyChecking=yes", opts)
+        self.assertNotIn("StrictHostKeyChecking=accept-new", opts)
+        self.hosts({"localhost": "wrong"})
+        r = subprocess.run(["ssh", *opts, alias, "true"], capture_output=True, text=True, timeout=20)
+        self.assertEqual(r.returncode, 255, r.stderr)
+        self.assertFalse(fd.pinned(d["id"]))
+
+    def test_a_key_saved_before_a_refused_login_is_kept_and_checked(self):
+        # Review pr85-review-r2: ssh saves the key during the key exchange; if the login is then
+        # refused, it was neither recorded nor protected, and the route stayed accept-new.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "denied"})
+        self.link.connect(["start"])
+        s = self.link.snapshot()
+        self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "login"))
+        got = self.reg.get(d["id"])
+        self.assertEqual(got["identity"], [f for _, f in fd.pinned_keys(d["id"])])
+        self.assertTrue(got["identity_established"])
+        if os.name == "posix":
+            self.assertEqual(fd.known_hosts(d["id"]).stat().st_mode & 0o777, 0o600)
+        self.assertIn("StrictHostKeyChecking=yes", self.routes[-1][1])
+        fd.known_hosts(d["id"]).unlink()
+        self.hosts({"localhost": "wrong"})
+        r = self.command(self.reg.get(d["id"]))
+        self.assertEqual(r.returncode, 255)
+        self.assertNotIn("Permanently added", r.stderr)
+
+    def test_a_key_a_command_saved_tightens_the_route(self):
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "denied"})
+        with self.link.route_lock:
+            self.link.routed_device = d
+            self.link.apply(d["alias"], self.link.host_opts(d, "127.0.0.1"))
+        opts = self.routes[-1][1]
+        self.assertIn("StrictHostKeyChecking=accept-new", opts)
+        r = subprocess.run(["ssh", *opts, d["alias"], "true"], capture_output=True, text=True, timeout=20)
+        self.assertIn("Permanently added", r.stderr)
+        self.assertEqual(r.returncode, 255)  # saved the key, then refused the login
+        self.link.settle_pin()  # what the connector's loop does every tick while accept-new is applied
+        self.assertIn("StrictHostKeyChecking=yes", self.routes[-1][1])
+        self.assertNotIn("StrictHostKeyChecking=accept-new", self.routes[-1][1])
+        self.assertTrue(self.reg.get(d["id"])["identity"])
+
+    def test_editing_the_address_that_worked_keeps_the_identity_history(self):
+        # Review pr85-review-r2: last_ok lives on the address, so editing or removing it made a
+        # headset whose pin was gone (and had no fingerprint recorded) new again.
+        path = self.dir / "legacy.json"
+        path.write_text(json.dumps({"version": 1, "active": "abcd1234", "networks": {}, "devices": [
+            {"id": "abcd1234", "name": "Old", "alias": "frame-old", "user": "steamos", "port": 22,
+             "identity_files": [], "addresses": [{"host": "10.0.0.5", "kind": "lan", "label": "",
+                                                  "networks": [], "last_ok": 1790000000.0, "last_rtt_ms": 3}]}]}))
+        reg = fd.Registry(path)
+        self.assertTrue(reg.get("abcd1234")["identity_established"])  # migrated from last_ok
+        reg.update_address("abcd1234", "10.0.0.5", new_host="10.0.0.6")
+        reg.remove_address("abcd1234", "10.0.0.6")
+        reg.add_address("abcd1234", "10.0.0.7")
+        d = fd.Registry(path).get("abcd1234")  # saved, too
+        self.assertFalse(any(a.get("last_ok") for a in d["addresses"]))
+        self.assertTrue(fd.identity_established(d))
+        self.assertEqual(self.link.strictness(d), "yes")
+        # A connection that works sets it as well, for a headset added since.
+        n = self.reg.add_device("frame-new", hosts=["10.0.0.8"])
+        self.reg.record_success(n["id"], "10.0.0.8", None, 1)
+        self.reg.remove_address(n["id"], "10.0.0.8")
+        self.assertTrue(self.reg.get(n["id"])["identity_established"])
+
+    def test_ssh_last_words_arrive_even_when_the_reader_lags(self):
+        # Review pr85-review-r2: ssh's exit with nothing queued yet was taken as the end, and a
+        # late reader lost "Permission denied" ("ssh stopped").
+        self.pins()
+        link = fl.Link(self.reg, env_alias=None, mux_base=["ssh", "-o", "BatchMode=yes"], control=None,
+                       apply=lambda *a: None, explain=explain)
+        self.addCleanup(link.stop)
+        real = threading.Thread
+
+        class Late(real):
+            def __init__(self, *a, target=None, **kw):
+                if target is not None and getattr(target, "__name__", "") == "tail":
+                    inner = target
+
+                    def target():
+                        time.sleep(1)
+                        inner()
+                super().__init__(*a, target=target, **kw)
+        self.device("localhost")
+        self.hosts({"localhost": "denied"})
+        with mock.patch.object(fl.threading, "Thread", Late):
+            link.connect(["start"])
+        s = link.snapshot()
+        self.assertEqual((s["error"]["stage"], s["error"].get("auth")), ("login", "denied"), s["error"])
+        self.assertIn("SSH key", s["error"]["message"])
 
     def test_forgetting_an_identity_is_refused(self):
         self.pins()

@@ -494,11 +494,13 @@ def scan_file(device_id):
 
 
 def identity_established(device):
-    """Whether this headset ever had an SSH identity here: one recorded in devices.json, a
-    pin file at all (even empty, unreadable or not parseable), or a connection that worked
-    (which saved one). Then a missing or unusable pin fails closed, needing Check its key;
-    only a headset with none of these may save the first key it meets (accept-new)."""
-    if device.get("identity"):
+    """Whether this headset ever had an SSH identity here: the device's own flag (set once it
+    had a key or a connection that worked, and never cleared, whatever happens to its
+    addresses), a fingerprint recorded in devices.json, a pin file at all (even empty,
+    unreadable or not parseable), or an address that worked. Then a missing or unusable pin
+    fails closed, needing Check its key; only a headset with none of these may save the
+    first key it meets (accept-new)."""
+    if device.get("identity_established") or device.get("identity"):
         return True
     try:
         if os.path.lexists(known_hosts(device["id"])):
@@ -591,6 +593,10 @@ class Registry:
             for a in d["addresses"]:
                 a.setdefault("networks", [])
                 a.setdefault("label", "")
+            if d.get("identity") or any(a.get("last_ok") for a in d["addresses"]):
+                # Files from before the flag existed: it had an identity (or a connection that
+                # worked, which saved one). Kept from now on, whatever happens to its addresses.
+                d["identity_established"] = True
             return NAME_RE.fullmatch(d.get("id", "")) is not None
         except (KeyError, TypeError, DeviceError):
             return False
@@ -793,6 +799,7 @@ class Registry:
                 a["networks"] = (a["networks"] + [network_id])[-16:]
             a["last_ok"] = time.time()
             a["last_rtt_ms"] = rtt_ms
+            self._find(device_id)["identity_established"] = True  # survives editing the address away
             self.save()
 
     def record_identity(self, device_id, fingerprints):
@@ -806,8 +813,9 @@ class Registry:
                 d = self._find(device_id)
             except DeviceError:
                 return
-            if d.get("identity") != fingerprints:
+            if d.get("identity") != fingerprints or not d.get("identity_established"):
                 d["identity"] = fingerprints
+                d["identity_established"] = True
                 self.save()
 
     def undismiss(self, alias):
@@ -895,6 +903,7 @@ class Registry:
                     changed = True
                     if seed and host and seed_pin(d["id"], [host], b["port"]):
                         d["identity"] = [f for _, f in pinned_keys(d["id"])][:8] or d.get("identity")
+                        d["identity_established"] = True
                 elif host and host != d.get("config_host"):
                     # Set Up Connection ran again and found the headset somewhere new.
                     d["config_host"] = host
@@ -902,6 +911,7 @@ class Registry:
                         d["addresses"].insert(0, dict(new_address(host), label="From Set Up Connection"))
                     if seed and seed_pin(d["id"], [host], b["port"]) and not d.get("identity"):
                         d["identity"] = [f for _, f in pinned_keys(d["id"])][:8] or None
+                        d["identity_established"] = True
                     changed = True
                 if d.get("config_login") != [user, b["port"]]:
                     # Set Up Connection (or an edit) changed who to log in as, or the port.
