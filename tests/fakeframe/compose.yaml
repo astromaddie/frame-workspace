@@ -43,6 +43,7 @@ services:
       FAKEFRAME_CTL: http://fakeframe:9999
       FAKEFRAME_HOST: fakeframe
       FRAME_E2E: "1"
+      FRAME_E2E_CONTAINER: "1"  # tests/e2e/harness.py refuses to run anywhere else
     healthcheck:
       test: ["CMD", "test", "-f", "/home/tester/.ready"]
       interval: 1s

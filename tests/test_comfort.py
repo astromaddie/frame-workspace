@@ -1,4 +1,5 @@
 """Fake-Frame session clock/actions plus real helper serialization and sensor probes."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import os
 import shutil
 import json

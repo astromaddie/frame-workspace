@@ -1,4 +1,5 @@
 """MCP protocol, exact-action approvals and explicit assistant data sharing."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import io
 import json
 import os

@@ -1,4 +1,5 @@
 """Offline authenticated repository fixtures; no tests contact a server."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import io
 import json
 import os

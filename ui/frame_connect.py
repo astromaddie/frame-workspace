@@ -31,7 +31,8 @@ import frame_host  # noqa: E402
 FRAME_USER = os.environ.get("FRAME_USER", "steamos")
 USER_FROM_ENV = "FRAME_USER" in os.environ
 FRAME_ALIAS = os.environ.get("FRAME_ALIAS", "frame")
-SSH_DIR = Path.home() / ".ssh"
+# $FRAME_CONTROL_SSH_DIR in tests, as frame_devices.ssh_dir(), so they never touch the real one.
+SSH_DIR = Path(os.environ.get("FRAME_CONTROL_SSH_DIR") or Path.home() / ".ssh")
 KEY = SSH_DIR / "id_ed25519_frame"
 # The devkit service only accepts ssh-rsa keys (write_key in Valve's
 # steamos-devkit-service), so pairing uses a second key next to the ed25519 one.

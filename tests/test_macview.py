@@ -7,6 +7,7 @@ input reaching the source, and closing.
 
 Run: python3 -m unittest discover -s tests
 """
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import base64
 import http.client
 import json

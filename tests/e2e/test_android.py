@@ -5,7 +5,7 @@ import unittest
 
 import harness
 from harness import HOME, exists, ok, state, upload, wait_for
-from test_frame_apk import apk, manifest, resources
+from apk_fixtures import apk, manifest, resources
 
 harness.require()
 

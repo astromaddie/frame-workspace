@@ -1,4 +1,5 @@
 """Offline artwork, Steam API and launcher supervision regressions."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import importlib.util
 import json
 import os
