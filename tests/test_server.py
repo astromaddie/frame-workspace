@@ -551,6 +551,47 @@ class UnreachableMessages(unittest.TestCase):
             self.assertEqual(self.server.error_body(raw), ({"error": raw}, None), raw)
 
 
+class ClipboardDesktopClosed(unittest.TestCase):
+    """The headset's desktop being closed is the person's to fix: a 409, not a 5xx fault for telemetry."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(ROOT / "ui"))
+        import server
+        cls.server = server
+
+    def paste_failing_with(self, message):
+        s = self.server
+        saved = s.ssh
+
+        def fake_ssh(remote, **kw):
+            raise s.Failure(message)
+        s.ssh = fake_ssh
+        try:
+            s.clipboard({"text": "hello"})
+        finally:
+            s.ssh = saved
+
+    def test_desktop_closed_is_a_409(self):
+        with self.assertRaises(self.server.Failure) as cm:
+            self.paste_failing_with("The headset's desktop isn't open (plasmashell is not running). "
+                                    "Open the desktop in the headset, then try again.")
+        self.assertEqual(cm.exception.status, 409)
+        self.assertIn("Open the desktop", str(cm.exception))
+        # Older wording (scripts/paste-to-frame.sh) is recognised too.
+        with self.assertRaises(self.server.Failure) as cm:
+            self.paste_failing_with("plasmashell is not running: open the desktop in the headset first.")
+        self.assertEqual(cm.exception.status, 409)
+
+    def test_other_failures_stay_faults(self):
+        with self.assertRaises(self.server.Failure) as cm:
+            self.paste_failing_with("Klipper call failed (bus: none)")
+        self.assertEqual(cm.exception.status, 502)
+
+    def test_paste_script_says_it(self):
+        self.assertIn(self.server.DESKTOP_CLOSED, self.server.PASTE)
+
+
 class StatusProbe(unittest.TestCase):
     # frame_status.py only ever runs on the Frame (Linux); it needs os.statvfs.
     @unittest.skipIf(os.name == "nt", "Frame-side script; POSIX only")

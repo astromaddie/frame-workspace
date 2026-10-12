@@ -2,9 +2,14 @@
 
 Run: python3 -m unittest discover -s tests
 """
+import io
+import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -51,12 +56,9 @@ class Mapping(unittest.TestCase):
         self.assertEqual(t.locate(5, None)["display"], ":0")
 
     def test_focus_display_is_decoded(self):
-        t = self.t
-        saved = t.xprop_root
-        self.addCleanup(lambda: setattr(t, "xprop_root", saved))
         for values, want in (([12602, 0, 58], ":1"), ([12346], ":0"), ([], None), ([0x41], None)):
-            t.xprop_root = lambda d, n, v=values: v
-            self.assertEqual(t.focus_display(), want)
+            self.assertEqual(self.t.focus_display({"GAMESCOPE_FOCUS_DISPLAY": values}), want)
+        self.assertIsNone(self.t.focus_display({}))
 
     def test_ascii_table_covers_printable_characters(self):
         for code in range(0x20, 0x7F):
@@ -259,12 +261,248 @@ class ServerChecks(unittest.TestCase):
             self.s.remote_touch({"events": [{"dx": 1}] * (self.s.INPUT_BATCH_LIMIT + 1)})
 
 
+class FindingPanels(unittest.TestCase):
+    """panels() with faked headset probes: where gamescope's properties are, and why nothing was found (#73)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import frame_touch
+        cls.t = frame_touch
+
+    def setUp(self):
+        t = self.t
+        names = ("read_props", "window_info", "window_pid", "displays", "desktop_running")
+        saved = {n: getattr(t, n) for n in names}
+        saved_which = t.shutil.which
+        self.real_displays = saved["displays"]
+        self.real_read_props = saved["read_props"]
+
+        def restore():
+            for n, v in saved.items():
+                setattr(t, n, v)
+            t.shutil.which = saved_which
+            t._ROOT.clear()
+        self.addCleanup(restore)
+        t._ROOT.clear()
+        self.props = {}  # (display, property) -> values
+        self.windows = {}  # (display, window) -> info
+        self.reads = []  # displays whose gamescope properties were read
+        t.read_props = lambda d, limit=5.0: self.reads.append(d) or {n: list(v) for (dd, n), v in self.props.items() if dd == d}
+        t.window_info = lambda d, w: self.windows.get((d, w))
+        t.window_pid = lambda d, w: None
+        t.displays = lambda: [":0", ":1", ":2"]
+        t.desktop_running = lambda: False
+        t.shutil.which = lambda tool: "/usr/bin/" + tool
+
+    def plasma_on(self, display):
+        # SteamOS 0.4.1: the nested Plasma desktop (kwin_wayland, app id 0) is a window on :0.
+        self.props[(display, "GAMESCOPE_FOCUSABLE_WINDOWS")] = [4194307, 0, 2222]
+        self.props[(display, "GAMESCOPE_FOCUSED_WINDOW")] = [4194307]
+        self.props[(display, "GAMESCOPE_FOCUS_DISPLAY")] = [0x303A]  # ":0"
+        self.windows[(":0", 4194307)] = {"name": "KDE Wayland Compositor", "x": 0, "y": 0, "width": 1280, "height": 800}
+        self.windows[(":0", "root")] = {"width": 1280, "height": 720}
+
+    def test_desktop_panel_on_display_0(self):
+        self.plasma_on(":0")
+        out = self.t.panels()
+        self.assertEqual([(p["window"], p["display"], p["focused"]) for p in out["panels"]], [(4194307, ":0", True)])
+        self.assertNotIn("why", out)
+
+    def test_display_0_costs_one_read(self):
+        # The layout of every build seen so far: one read of :0's properties for the whole run.
+        self.plasma_on(":0")
+        self.t.panels()
+        self.assertEqual(self.reads, [":0"])
+
+    def test_gamescope_properties_on_another_display_are_found(self):
+        # A build that numbers its displays differently: :0 has no gamescope properties.
+        self.plasma_on(":1")
+        self.assertEqual(self.t.gamescope()[0], ":1")
+        self.reads.clear()
+        self.t._ROOT.clear()
+        self.assertEqual(len(self.t.panels()["panels"]), 1)
+        self.assertEqual(self.reads, [":0", ":1"])  # read once, then reused by focus() and focusable()
+
+    def test_other_displays_are_probed_briefly(self):
+        limits = []
+        self.t.read_props = lambda d, limit=5.0: limits.append((d, limit)) or {}
+        self.assertEqual(self.t.gamescope(), (":0", {}))
+        self.assertEqual(limits, [(":0", 5.0), (":1", self.t.ROOT_PROBE_TIMEOUT), (":2", self.t.ROOT_PROBE_TIMEOUT)])
+
+    def test_input_helper_remembers_the_display(self):
+        # The input helper lives for a session: a found display is kept, a failed search retried later.
+        t = self.t
+        self.plasma_on(":1")
+        t.gamescope(); t.gamescope()
+        self.assertEqual(self.reads, [":0", ":1", ":1"])
+        self.props.clear()
+        self.reads.clear()
+        t._ROOT.clear()
+        t.gamescope(); t.gamescope()
+        self.assertEqual(self.reads, [":0", ":1", ":2", ":0"])  # given up: :0 for ROOT_RETRY
+        t._ROOT[1] -= t.ROOT_RETRY
+        self.reads.clear()
+        t.gamescope()
+        self.assertEqual(self.reads, [":0", ":1", ":2"])
+
+    def test_read_props_parses_xprop(self):
+        t = self.t
+        saved = t.subprocess.run
+        self.addCleanup(setattr, t.subprocess, "run", saved)
+        out = ("GAMESCOPE_FOCUSABLE_WINDOWS(CARDINAL) = 1, 0, 2, 3, 769, 4\n"
+               "GAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 0\nGAMESCOPE_FOCUS_DISPLAY:  not found.\n")
+        t.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, out, "")
+        self.assertEqual(self.real_read_props(":0"), {"GAMESCOPE_FOCUSABLE_WINDOWS": [1, 0, 2, 3, 769, 4],
+                                                      "GAMESCOPE_FOCUSED_WINDOW": [0]})
+        t.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, "GAMESCOPE_FOCUSED_WINDOW:  not found.\n", "")
+        self.assertEqual(self.real_read_props(":0"), {})
+
+        def hang(*a, **k):
+            raise subprocess.TimeoutExpired(a[0], k.get("timeout"))
+        t.subprocess.run = hang
+        self.assertEqual(self.real_read_props(":0"), {})
+
+    def test_deadline_returns_what_was_found(self):
+        t, clock = self.t, [0.0]
+        self.plasma_on(":0")
+        self.props[(":0", "GAMESCOPE_FOCUSABLE_WINDOWS")] = [4194307, 0, 2222, 5, 0, 1, 6, 0, 1]
+        saved = t.time.monotonic
+        self.addCleanup(setattr, t.time, "monotonic", saved)
+        t.time.monotonic = lambda: clock[0]
+        info = self.windows.get
+
+        def slow(d, w):  # every xwininfo takes 1 s: the run is out of time after a few
+            t.budget()
+            clock[0] += 1
+            return info((d, w))
+        t.window_info = slow
+        out = t.panels(limit=7)  # focus: 2 reads; the first panel: 3 displays and its root
+        self.assertEqual([p["window"] for p in out["panels"]], [4194307])
+        self.assertIn("took too long", out["why"])
+        self.assertIn("Some may be missing", out["why"])
+        self.assertIsNone(t.DEADLINE[0])  # the next run (or the input helper) has no deadline left over
+
+    def test_listed_window_that_isnt_x11_explains_itself(self):
+        self.plasma_on(":0")
+        del self.windows[(":0", 4194307)]  # say, a desktop drawn as a Wayland window
+        out = self.t.panels()
+        self.assertEqual(out["panels"], [])
+        self.assertIn("can't find its window", out["why"])
+        self.assertIn("Headset view", out["why"])
+
+    def test_desktop_running_but_not_listed(self):
+        self.t.desktop_running = lambda: True
+        out = self.t.panels()
+        self.assertEqual(out["panels"], [])
+        self.assertIn("desktop is running", out["why"])
+
+    def test_nothing_open(self):
+        out = self.t.panels()
+        self.assertEqual(out, {"focus": None, "focus_display": None, "panels": [],
+                               "why": "No app panel is open in the headset. Open the desktop or an app in "
+                                      "the headset, then try again."})
+
+    def test_missing_x_tools_are_named(self):
+        self.plasma_on(":0")
+        self.t.shutil.which = lambda tool: None if tool == "xwininfo" else "/usr/bin/" + tool
+        self.windows.clear()  # xwininfo can't run, so nothing resolves
+        self.assertIn("no xwininfo", self.t.panels()["why"])
+
+    def test_displays_include_abstract_sockets(self):
+        # /tmp/.X11-unix not visible to the SSH session: the abstract sockets still name the displays.
+        import builtins
+        t = self.t
+        real_open, real_listdir = builtins.open, t.os.listdir
+
+        def fake_open(path, *a, **k):
+            if path == "/proc/net/unix":
+                return io.StringIO("0000: 00000002 0 ... @/tmp/.X11-unix/X1\n0000: ... @/tmp/.X11-unix/X0\n"
+                                   "0000: ... /run/user/1000/wayland-0\n")
+            return real_open(path, *a, **k)
+
+        def fake_listdir(path):
+            if path == "/tmp/.X11-unix":
+                raise FileNotFoundError(path)
+            return real_listdir(path)
+        builtins.open, t.os.listdir = fake_open, fake_listdir
+        try:
+            self.assertEqual(self.real_displays(), [":0", ":1"])
+        finally:
+            builtins.open, t.os.listdir = real_open, real_listdir
+
+
+FAKE_XPROP = """#!/bin/sh
+sleep "${FAKE_X_DELAY:-0}"
+if [ "$1" = "-root" ] && [ "$DISPLAY" = ":0" ]; then
+  echo "GAMESCOPE_FOCUSABLE_WINDOWS(CARDINAL) = 11, 0, 101, 12, 769, 102"
+  echo "GAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 11"
+  echo "GAMESCOPE_FOCUS_DISPLAY(CARDINAL) = 12346"
+fi
+"""
+FAKE_XWININFO = """#!/bin/sh
+sleep "${FAKE_X_DELAY:-0}"
+[ "$DISPLAY" = ":0" ] || exit 1
+echo 'xwininfo: Window id: 0xb "Desktop"'
+echo '  Absolute upper-left X:  0'
+echo '  Absolute upper-left Y:  0'
+echo '  Width: 1280'
+echo '  Height: 800'
+echo '  Map State: IsViewable'
+"""
+
+
+@unittest.skipIf(sys.platform == "win32", "fake X tools are shell scripts; frame_touch.py runs on the Frame")
+class PanelsAsAFreshProcess(unittest.TestCase):
+    """`frame_touch.py panels` the way the server runs it: a new process each request, with
+    fake xprop and xwininfo first on PATH (two displays, :0 and :1)."""
+
+    def run_panels(self, delay):
+        with tempfile.TemporaryDirectory() as bin_dir:
+            for name, body in (("xprop", FAKE_XPROP), ("xwininfo", FAKE_XWININFO)):
+                path = Path(bin_dir) / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), FAKE_X_DELAY=str(delay),
+                       PYTHONDONTWRITEBYTECODE="1")
+            code = ("import sys; sys.path.insert(0, sys.argv[1]); import frame_touch as t; "
+                    "t.displays = lambda: [':0', ':1']; t.desktop_running = lambda: False; "
+                    "sys.argv = ['frame_touch.py', 'panels']; sys.exit(t.main())")
+            start = time.monotonic()
+            r = subprocess.run([sys.executable, "-c", code, str(ROOT / "ui")], env=env, capture_output=True,
+                               text=True, timeout=60)
+            took = time.monotonic() - start
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout), took
+
+    def test_lists_panels(self):
+        out, _ = self.run_panels(0)
+        self.assertEqual(out["focus"], 11)
+        self.assertEqual(out["focus_display"], ":0")
+        self.assertEqual([(p["window"], p["display"], p["focused"]) for p in out["panels"]],
+                         [(11, ":0", True), (12, ":0", False)])
+        self.assertNotIn("why", out)
+
+    def test_slow_x_tools_stay_inside_the_servers_timeout(self):
+        # Review of #83: X tools answering in 4.6 s each would take well over the server's
+        # 20 s; one deadline for the run (PANELS_DEADLINE, 12 s) returns in time, saying why.
+        out, took = self.run_panels(4.6)
+        self.assertLess(took, 15, out)
+        self.assertEqual(out["panels"], [])
+        self.assertIn("took too long", out["why"])
+
+
 @unittest.skipUnless(shutil.which("node"), "needs node")
 class PageGestures(unittest.TestCase):
     """Control's gestures and queue (tests/page/ctrl_gestures.mjs runs the real functions from index.html)."""
 
     def test_gestures(self):
         r = subprocess.run(["node", str(ROOT / "tests" / "page" / "ctrl_gestures.mjs")], capture_output=True, text=True,
+                           timeout=60)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_desktop_panel_list(self):
+        # #73: the headset's reason for no panels, and a failed listing, reach Capture and Control.
+        r = subprocess.run(["node", str(ROOT / "tests" / "page" / "desk_panels.mjs")], capture_output=True, text=True,
                            timeout=60)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
