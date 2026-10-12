@@ -203,17 +203,58 @@ def probes_summary(probes):
 PLACEHOLDER = re.compile(r"(<(?:host|user|email|ip|mac|steamid|hex|token|ssh-key|pem|url|redacted)>)")
 
 
+def _host_spans(text, hosts, keep=()):
+    """Where each of `hosts` is in text, longest first and whatever the case: (start, end) pairs.
+
+    A name may cross a scrubber's <token> (the whole token then goes with it), but one wholly
+    inside a token is the token's own word and is left. A name next to one already found sees
+    it as <host>, as if that one had been replaced first."""
+    keep = {k.lower() for k in keep if k} | KEYWORDS  # a headset called "host" mustn't eat ssh's wording
+    names = sorted({h for h in hosts if h and h.lower() not in keep}, key=len, reverse=True)
+    tokens = [m.span() for m in PLACEHOLDER.finditer(text)]
+    spans = []
+
+    def at(i, inside):  # the character at i, with names already found standing in as <host>
+        if not 0 <= i < len(text):
+            return ""
+        return inside if any(a <= i < b for a, b in spans) else text[i]
+
+    for h in names:
+        pat = re.compile(re.escape(h), re.I)
+        m = pat.search(text)
+        while m:
+            s, e = m.span()
+            before, after, then = at(s - 1, ">"), at(e, "<"), at(e + 1, "<")
+            ok = (not re.match(r"[\w.:-]", before) and not re.match(r"[\w-]", after)
+                  and not (after in (":", ".", "%") and re.match(r"\w", then)))
+            if ok and any(a <= s and e <= b for a, b in tokens):
+                ok = False  # "ip" in "<ip>": a token already there stays as it is
+            if ok:
+                for a, b in tokens:  # never cut a token in half: the whole of it goes
+                    if a < e and s < b:
+                        s, e = min(s, a), max(e, b)
+                spans.append((s, e))
+            m = pat.search(text, m.end() if ok else m.start() + 1)
+    return spans
+
+
+def _hide_spans(text, spans):
+    """text with each span replaced by <host>, overlapping ones merged into one, in one pass."""
+    out, last = [], 0
+    for s, e in sorted(spans):
+        if s < last:  # overlaps the one before: that <host> covers this too
+            last = max(last, e)
+            continue
+        out += [text[last:s], "<host>"]
+        last = e
+    return "".join(out) + text[last:]
+
+
 def hide_hosts(text, hosts, keep=()):
     """text with each of `hosts` (the headset's own addresses and names) replaced by <host>,
     longest first and whatever the case, so a bare name like "steamdeck" that the scrubber
     can't recognise goes too."""
-    keep = {k.lower() for k in keep if k} | KEYWORDS  # a headset called "host" mustn't eat ssh's wording
-    names = sorted({h for h in hosts if h and h.lower() not in keep}, key=len, reverse=True)
-    parts = PLACEHOLDER.split(text)  # never inside a scrubber's own <token> already there
-    for i in range(0, len(parts), 2):
-        for h in names:
-            parts[i] = re.sub(r"(?<![\w.:-])%s(?![\w-]|[:.%%]\w)" % re.escape(h), "<host>", parts[i], flags=re.I)
-    return "".join(parts)
+    return _hide_spans(text, _host_spans(text, hosts, keep))
 
 
 # ssh names the host it was going to after these words ("Could not resolve hostname X",
@@ -223,19 +264,27 @@ PLAIN_WORDS = {"answer", "the", "a", "an", "this", "it", "its", "be", "connect",
 KEYWORDS = {"host", "hostname", "to", "port"} | PLAIN_WORDS
 
 
-def hide_operands(text):
-    def one(m):
+def _operand_spans(text):
+    """Where the hosts ssh names are in text, ssh's own words and any trailing dots left out."""
+    spans = []
+    for m in OPERAND.finditer(text):
         word = m.group(2).rstrip(".")
-        dots = m.group(2)[len(word):]
-        return m.group(0) if word.lower() in PLAIN_WORDS else f"{m.group(1)} <host>{dots}"
-    return OPERAND.sub(one, text)
+        if word.lower() not in PLAIN_WORDS:
+            spans.append((m.start(2), m.start(2) + len(word)))
+    return spans
+
+
+def hide_operands(text):
+    return _hide_spans(text, _operand_spans(text))
 
 
 def scrub_failure(text, hosts=()):
     """Free text about a failed attempt, for the log: the attempt's own names, whole and
-    longest first (case-insensitively, never ssh's own words), then anything ssh names as a
-    host, then the shared scrubber (addresses, paths, user names)."""
-    return frame_telemetry.scrub(hide_operands(hide_hosts(str(text or ""), hosts)), 600)
+    longest first (case-insensitively, never ssh's own words), and anything ssh names as a
+    host, both found in the text as it came so neither can hide the other, then the shared
+    scrubber (addresses, paths, user names)."""
+    text = str(text or "")
+    return frame_telemetry.scrub(_hide_spans(text, _host_spans(text, hosts) + _operand_spans(text)), 600)
 
 
 def failure_category(message, raw=""):
