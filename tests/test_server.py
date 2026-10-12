@@ -411,6 +411,40 @@ class ArtworkSettings(unittest.TestCase):
         self.assertLess(page.index("async function api("), page.index('<script src="/artwork-settings.js">'))
 
 
+class PageScripts(unittest.TestCase):
+    """The page's inline scripts share one global scope, where a later function
+    declaration silently replaces an earlier one of the same name. Issue #68: the
+    Devices page's renderDetail replaced the Android store's, so every app opened
+    as an empty dialog (a bare horizontal line)."""
+
+    @staticmethod
+    def top_level_names(text):
+        import re
+        return re.findall(r"^(?:(?:async )?function\*? ?|const |let |var |class )([\w$]+)", text, re.M)
+
+    def test_no_top_level_name_is_declared_twice(self):
+        import re
+        for name in ("index.html", "assistant.html", "mac-view.html"):
+            page = (ROOT / "ui" / name).read_text(encoding="utf-8")
+            scripts = "\n".join(re.findall(r"<script>([\s\S]*?)</script>", page))
+            for src in re.findall(r'<script src="/([\w.-]+\.js)">', page):
+                scripts += "\n" + (ROOT / "ui" / src).read_text(encoding="utf-8")
+            names = self.top_level_names(scripts)
+            self.assertTrue(names, name)
+            self.assertEqual(sorted({n for n in names if names.count(n) > 1}), [], f"declared twice in {name}")
+
+    def test_store_and_devices_keep_their_own_detail_renderers(self):
+        names = self.top_level_names((ROOT / "ui" / "index.html").read_text(encoding="utf-8"))
+        for name in ("renderAppDetail", "renderDetail", "loadPanels", "loadPanelSwitcher"):
+            self.assertEqual(names.count(name), 1, name)
+
+    @unittest.skipUnless(shutil.which("node"), "needs node")
+    def test_store_app_page_renders(self):
+        """tests/page/store_detail.mjs runs the real store functions from index.html."""
+        r = subprocess.run(["node", str(ROOT / "tests" / "page" / "store_detail.mjs")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 @unittest.skipIf(os.name == "nt", "runs on the Frame (Linux); local-bin/ssh is a POSIX shell script")
 class LocalMode(unittest.TestCase):
     """FRAME_LOCAL=1, as the iPhone app starts the server on the Frame: its own key
