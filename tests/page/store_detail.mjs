@@ -1,6 +1,7 @@
 // The Android store's app page, run in node against the real functions from ui/index.html.
 // Issue #68: clicking an app opened an empty dialog (a bare horizontal line), because the
 // Devices page's renderDetail replaced the store's. The store's is renderAppDetail now.
+// (tests/test_server.py PageScripts checks no top-level name is declared twice.)
 import { readFileSync } from "fs";
 const src = readFileSync(new URL("../../ui/index.html", import.meta.url), "utf8");
 const lines = src.split("\n");
@@ -19,17 +20,23 @@ function grab(name) {
 }
 const names = ["esc", "storeName", "storeHue", "storeInitial", "storeText", "storeOpenSource", "sourcePage", "storeImage",
                "storeArt", "storeIcon", "sourceMark", "currentOffer", "detailBadges", "renderAppDetail", "renderAppDetailBody",
-               "updateInstall"];
+               "updateInstall", "openStoreApp", "loadOfferDetails"];
 const code = names.map(grab).join("");
 
-function page() {
-  const els = {};
-  const $ = id => id === "detailInstall" ? null : (els[id] ||= { innerHTML: "", textContent: "" });
-  const sourceState = { detail: null, jobs: new Map() };
+// A fake page: elements by id. The install panel's elements exist only while
+// #detailBody holds the real app page, as in the browser.
+function page(api = async () => ({})) {
+  const els = { appDetail: { open: false, scrollTop: 0, showModal() { this.open = true; } } };
+  const inPage = id => ["detailInstall", "detailInstallNote", "detailProgress", "detailOffers"].includes(id);
+  const $ = id => inPage(id) && !(els.detailBody?.innerHTML || "").includes(`id="${id}"`) ? null
+    : (els[id] ||= { innerHTML: "", textContent: "", hidden: false, value: 0, removeAttribute() {}, querySelectorAll: () => [] });
+  const sourceState = { apps: [], detail: null, detailRequest: 0, jobs: new Map() };
   const document = { activeElement: null, querySelector: () => null };
   const console = { error() {} };
-  const fns = new Function("$", "sourceState", "document", "console", code + "; return { renderAppDetail };")($, sourceState, document, console);
-  return { els, sourceState, ...fns };
+  const calls = [];
+  const fns = new Function("$", "sourceState", "document", "console", "api", code + "; return { renderAppDetail, openStoreApp };")(
+    $, sourceState, document, console, (...a) => { calls.push(a); return api(...a); });
+  return { els, sourceState, calls, ...fns };
 }
 
 const offer = { source: "fdroid", id: "org.example.brush", source_name: "F-Droid", name: "Open Brush", summary: "Paint in VR",
@@ -40,7 +47,7 @@ const offer = { source: "fdroid", id: "org.example.brush", source_name: "F-Droid
 {
   const p = page();
   p.sourceState.detail = { app: { name: "Open Brush", offers: [{ ...offer }] }, choice: 0 };
-  p.renderAppDetail();
+  if (p.renderAppDetail() !== true) fail("a good listing reported a render failure");
   const html = p.els.detailBody.innerHTML;
   if (!html.includes('id="detailTitle">Open Brush<')) fail("app page has no title: " + html.slice(0, 200));
   if (!html.includes('id="detailInstall"') || !html.includes("Get it from")) fail("app page has no install panel");
@@ -51,19 +58,36 @@ const offer = { source: "fdroid", id: "org.example.brush", source_name: "F-Droid
 {
   const p = page();
   p.sourceState.detail = { app: { name: "Broken <App>", offers: [] }, choice: 0 };
-  p.renderAppDetail();
+  if (p.renderAppDetail() !== false) fail("a broken listing reported success");
   const html = p.els.detailBody.innerHTML;
   if (!html.includes('role="alert"') || !html.includes("We couldn't show Broken &lt;App&gt;")) fail("no error state: " + html);
   if (!html.includes('data-close="appDetail"')) fail("error state has no way to close");
 }
 
-// No other top-level function in the page's scripts may take a store function's name:
-// a later function declaration silently replaces an earlier one.
+// Opening a listing that can't render: the error stays up, no details request, nothing thrown.
 {
-  const scripts = [...src.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]).join("\n");
-  const seen = new Map();
-  for (const m of scripts.matchAll(/^(?:async )?function\*? ?([\w$]+)\s*\(/gm)) seen.set(m[1], (seen.get(m[1]) || 0) + 1);
-  const twice = [...seen].filter(([, n]) => n > 1).map(([k]) => k);
-  if (twice.length) fail("functions declared twice in index.html: " + twice.join(", "));
+  const p = page(async () => { throw new Error("offline"); });
+  p.sourceState.apps = [{ name: "Broken", offers: [] }];
+  await p.openStoreApp(0);
+  if (!p.els.appDetail.open || !p.els.detailBody.innerHTML.includes('role="alert"')) fail("broken listing didn't open with the error");
+  if (p.calls.length) fail("asked for details of a listing that couldn't render");
+}
+
+// Opening a good listing: the dialog opens with its page, and fresher details fill it in.
+{
+  const p = page(async () => ({ description: "Fresh description." }));
+  p.sourceState.apps = [{ name: "Open Brush", offers: [{ ...offer }] }];
+  await p.openStoreApp(0);
+  if (!p.els.appDetail.open || !p.els.detailBody.innerHTML.includes("Fresh description.")) fail("details didn't fill in the page");
+  if (!String(p.calls[0]?.[0]).startsWith("/api/sources/details?")) fail("no details request: " + JSON.stringify(p.calls));
+}
+
+// A good listing whose details request fails keeps its page, with a note.
+{
+  const p = page(async () => { throw new Error("offline"); });
+  p.sourceState.apps = [{ name: "Open Brush", offers: [{ ...offer }] }];
+  await p.openStoreApp(0);
+  if (!p.els.detailBody.innerHTML.includes('id="detailTitle">Open Brush<')) fail("page lost after a failed details request");
+  if (!p.els.detailInstallNote.textContent.includes("couldn't be refreshed")) fail("no note after a failed details request");
 }
 console.log("ok");

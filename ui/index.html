@@ -2120,7 +2120,8 @@ async function loadPanels() {
     if (view === "flat" && live && now !== before) { toggleLive(false); toggleLive(true); }
     ctrlShow();
   } catch (e) {
-    log("Couldn't list the headset's panels: " + e.message, "e");
+    // Polled every few seconds: waiting for the Frame, or an answer about the previous headset, isn't news.
+    if (!e.offline && !e.stale) log("Couldn't list the headset's panels: " + e.message, "e");
   }
 }
 function watchPanels() {
@@ -3174,12 +3175,14 @@ function currentOffer() { return sourceState.detail?.app.offers[sourceState.deta
 function detailBadges(o) { return `<span class="store-badge">${o.vr ? "VR experience" : o.vr===false ? "Flat-screen app" : "Android app"}</span>${o.verdict?.tone==='works' ? '<span class="store-badge works">✓ Works on Frame</span>' : ''}<span class="store-badge">Free</span>${storeOpenSource(o) ? '<span class="store-badge">Open source</span>' : ''}`; }
 // The store's app page. (Not renderDetail: the Devices page declares that further down,
 // and a later function declaration silently replaces an earlier one; issue #68.)
+// True when the page rendered; false when it shows the error instead.
 function renderAppDetail() {
-  try { renderAppDetailBody(); }
+  try { renderAppDetailBody(); return true; }
   catch(e) {
     console.error("App details failed to render", e);
     const name=sourceState.detail?.app?.name;
     $("detailBody").innerHTML=`<div class="store-empty detail-error" role="alert"><h2 id="detailTitle">${name ? `We couldn't show ${esc(name)}` : "We couldn't show this app"}</h2><p>Something went wrong opening its page. Close this and try again, or pick another app.</p><button class="action" data-close="appDetail">Close</button></div>`;
+    return false;
   }
 }
 function renderAppDetailBody() {
@@ -3202,8 +3205,8 @@ function updateInstall() {
 async function openStoreApp(index) {
   const app=sourceState.apps[index];if(!app)return;
   sourceState.detail={app:{...app,offers:app.offers.map(o=>({...o}))},choice:0};
-  renderAppDetail();if(!$("appDetail").open)$("appDetail").showModal();$("appDetail").scrollTop=0;
-  await loadOfferDetails();
+  const shown=renderAppDetail();if(!$("appDetail").open)$("appDetail").showModal();$("appDetail").scrollTop=0;
+  if(shown)await loadOfferDetails();
 }
 async function loadOfferDetails() {
   const d=sourceState.detail,o=currentOffer(), request=++sourceState.detailRequest;
@@ -3212,7 +3215,7 @@ async function loadOfferDetails() {
     if(request!==sourceState.detailRequest || d!==sourceState.detail)return;
     const artwork={icon:detail.artwork?.icon||o.artwork?.icon,banner:detail.artwork?.banner||o.artwork?.banner,screenshots:detail.artwork?.screenshots?.length?detail.artwork.screenshots:o.artwork?.screenshots||[]};
     d.app.offers[d.choice]={...o,...detail,artwork};renderAppDetail();
-  } catch(e) { if(d===sourceState.detail)$("detailInstallNote").textContent="Some app details couldn't be refreshed. You can still view this listing."; }
+  } catch(e) { const note=$("detailInstallNote");if(d===sourceState.detail && note)note.textContent="Some app details couldn't be refreshed. You can still view this listing."; }
 }
 async function installStoreApp() {
   const o=currentOffer(), key=`${o.source}:${o.id}`, existing=sourceState.jobs.get(key);
