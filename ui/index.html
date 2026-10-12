@@ -1587,7 +1587,7 @@ $("vrUtilities").onclick = async e => {
   await loadUtilities();
 };
 
-// The Frame owns the clock. Poll independently of status and the selected tab.
+// The Frame owns the clock. Poll independently of the selected tab, from the first status check on.
 let comfortBusy = false, comfortSeen = new Set(), comfortSession = null, comfortHydrated = false;
 async function localNotification(message, request = false) {
   try {
@@ -1646,7 +1646,12 @@ function renderComfort(s) {
   if ($("comfortEvents").textContent !== history) $("comfortEvents").textContent = history;
 }
 async function pollComfort() {
-  if (!comfortBusy) {
+  // Not while the Frame can't be reached: each poll would be another ssh attempt waiting to
+  // time out, and the banner already says why. Status checks bring it back (setOnline).
+  if (online === false) {
+    const message = "Session status appears when the Frame is connected.";
+    if ($("comfortStatus").textContent !== message) $("comfortStatus").textContent = message;
+  } else if (!comfortBusy) {
     comfortBusy = true;
     try { renderComfort(await api("/api/comfort", {action: "status"})); }
     catch (e) {
@@ -1680,7 +1685,6 @@ $("castBtn").onclick = () => {
   // Fullscreen is a direct user gesture; iPhone falls back to its inline viewer.
   $("viewer").requestFullscreen?.().catch(() => {});
 };
-pollComfort();
 
 // ---- battery ----
 function battery(b, power) {
@@ -4495,7 +4499,7 @@ if (window.frameApp && window.frameApp.onInstallLink) {
 }
 
 setView("headset");
-refresh().then(() => loadShots());  // after status, so app names resolve
+refresh().then(() => { loadShots(); pollComfort(); });  // after status, so app names resolve and comfort knows if the Frame answers
 document.addEventListener("visibilitychange", () => { if (!document.hidden && online === false) refresh(); });
 </script>
 <script>

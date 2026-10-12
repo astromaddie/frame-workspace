@@ -2282,6 +2282,10 @@ def connection_state():
 
 # ---- HTTP ------------------------------------------------------------------
 
+# POST reads the page repeats on a timer, as (path, action).
+POLLS = {("/api/comfort", "status")}
+
+
 def action_of(body):
     """The action a request asked for, for diagnostics: a short word, never user data."""
     a = body.get("action") if isinstance(body, dict) else None
@@ -2535,7 +2539,10 @@ class Handler(BaseHTTPRequestHandler):
         except ClientGone:
             raise
         except Failure as e:
-            if e.status >= 500:
+            # A poll that couldn't reach the headset is the headset asleep or away, which the page
+            # already shows; like GET /api/status, not an error to report.
+            polled = (path, action_of(body)) in POLLS and frame_telemetry.link_failed(e)
+            if e.status >= 500 and not polled:
                 frame_telemetry.diagnostic(f"POST {path} {action_of(body)}", e)
             self.send_error_json(str(e), e.status, e.apk)
         except (ValueError, TypeError) as e:
