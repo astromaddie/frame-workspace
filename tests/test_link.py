@@ -46,6 +46,17 @@ def explain(msg):
     return None
 
 
+class FailureDetail(unittest.TestCase):
+    def test_an_address_that_failed_says_why_in_a_few_words(self):
+        # #87: the banner put each address's detail after the headline, and with the whole
+        # message as the detail it said everything twice ("...may be answering here..").
+        self.assertEqual(fl.failure_detail({"message": "A long sentence.", "short": "SSH identity changed"}),
+                         "SSH identity changed")
+        self.assertEqual(fl.failure_detail({"message": "The connection to the Frame dropped. Try again."}),
+                         "The connection to the Frame dropped. Try again.")
+        self.assertEqual(fl.failure_detail(None), "SSH failed")
+
+
 class Probe(unittest.TestCase):
     def test_answers_refusals_and_unknown_names(self):
         with socket.socket() as srv:
@@ -200,7 +211,8 @@ class Connecting(unittest.TestCase):
         rows = {p["host"]: p for p in s["probes"]}
         self.assertEqual(rows["nothing.invalid"]["state"], "unresolved")
         self.assertEqual(rows["::1"]["state"], "sshfailed")
-        self.assertIn("different SSH identity", rows["::1"]["detail"])
+        # Its row says why in a few words: the banner's headline already has the whole sentence (#87).
+        self.assertEqual(rows["::1"]["detail"], "SSH identity changed")
         # Every ssh command was pointed at the winner, with the host key pinned per device.
         alias, opts = self.routes[-1]
         self.assertEqual(alias, "frame-t")
@@ -260,6 +272,8 @@ class Connecting(unittest.TestCase):
         self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "login"))
         self.assertIn("SSH key", s["error"]["message"])
         self.assertEqual(s["error"]["auth"], "denied")  # the page offers Set Up Connection
+        self.assertEqual(s["error"]["short"], "This computer's key refused")  # the header pill's words (#87)
+        self.assertEqual(s["probes"][0]["detail"], "This computer's key refused")
 
     def test_pinned_identity_is_checked_strictly(self):
         d = self.device("localhost")
@@ -349,6 +363,7 @@ class Connecting(unittest.TestCase):
                 self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "identity"))
                 self.assertEqual(s["error"]["hostkey"]["state"], "missing")
                 self.assertIn("missing or can't be read", s["error"]["message"])
+                self.assertEqual(s["error"]["short"], "Saved SSH identity missing")
                 view = next(x for x in fl.devices_view(self.link)["devices"] if x["id"] == d["id"])
                 self.assertTrue(view["identity_lost"])
                 scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
@@ -634,6 +649,7 @@ class Connecting(unittest.TestCase):
         self.assertEqual((shown["state"], shown["type"], shown["host"]), ("changed", "ssh-ed25519", "localhost"))
         self.assertTrue(shown["fingerprint"].startswith("SHA256:"))
         self.assertIn("Devices tab", s["error"]["message"])
+        self.assertEqual(s["error"]["short"], "SSH identity changed")
         self.assertEqual(fd.known_hosts(d["id"]).read_text(), saved)  # never accepted on its own
         r = self.command(d)
         self.assertEqual(r.returncode, 255)

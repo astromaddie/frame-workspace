@@ -287,6 +287,13 @@ def scrub_failure(text, hosts=()):
     return frame_telemetry.scrub(_hide_spans(text, _host_spans(text, hosts) + _operand_spans(text)), 600)
 
 
+def failure_detail(error):
+    """What an address that answered but failed SSH shows: the short reason when there is one
+    (the whole message is the banner's headline already), else the message."""
+    error = error or {}
+    return error.get("short") or error.get("message") or "SSH failed"
+
+
 def failure_category(message, raw=""):
     """The telemetry error category (frame_unreachable, frame_auth, ...) for a failure: a fixed
     word, never its text."""
@@ -859,7 +866,9 @@ class Link:
         return "Connecting"
 
     def fail(self, sid, message, raw="", **more):
-        """A stage failed. `more`: what the page can offer to fix it (hostkey, auth)."""
+        """A stage failed. `more`: what the page can offer to fix it (hostkey, auth), and `short`:
+        the reason in a few words, for the places a whole sentence doesn't fit (the header pill,
+        the address that failed)."""
         self.stage(sid, "failed", message)
         with self.cond:
             self.state["error"] = dict({"stage": sid, "message": message, "raw": raw}, **more)
@@ -945,7 +954,7 @@ class Link:
                         self.learn(device, a["host"], net, None)
                         return True
                     with self.cond:
-                        why_not = (self.state["error"] or {}).get("message") or "SSH failed"
+                        why_not = failure_detail(self.state["error"])
                     self.probe_update(i, state="sshfailed", detail=why_not)
                     if outcome != "next":
                         return False
@@ -995,7 +1004,7 @@ class Link:
                 self.learn(device, a["host"], net, results[pick]["rtt_ms"])
                 return True
             with self.cond:
-                why_not = (self.state["error"] or {}).get("message") or "SSH failed"
+                why_not = failure_detail(self.state["error"])
             self.probe_update(pick, state="sshfailed", detail=why_not)
             if outcome != "next":
                 return False
@@ -1318,6 +1327,7 @@ class Link:
                            "If SteamOS was reinstalled or reset, or this is a new headset, check its new key and trust "
                            "it on the Devices tab. If not, a different device may be answering here.")
             self.fail("identity", message, text,
+                      short="Saved SSH identity missing" if lost else "SSH identity changed",
                       hostkey={"state": "missing" if lost else "changed", "type": shown[0] if shown else None,
                                "fingerprint": shown[1] if shown else None, "host": host})
             return "next"
@@ -1328,7 +1338,8 @@ class Link:
         if re.search(r"Permission denied", text) and not forward:
             # Not something a retry fixes: the headset needs this computer's key (Set Up Connection).
             self.fail("login", self.explain(text) or "The headset didn't accept this computer's key. Run Set Up "
-                      "Connection: it pairs this computer with the headset again.", text, auth="denied")
+                      "Connection: it pairs this computer with the headset again.", text, auth="denied",
+                      short="This computer's key refused")
             return "stop"
         if step == "connected":
             self.fail("login", "Logged in, but the shared SSH connection didn't start.", text)
