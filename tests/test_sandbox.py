@@ -66,6 +66,27 @@ class Sandbox(unittest.TestCase):
         for f in [*(here / "e2e").glob("*.py"), *(here / "smoke").glob("*.py"), here / "apk_fixtures.py"]:
             self.assertIsNone(pattern.search(f.read_text(encoding="utf-8")), f)
 
+    def test_end_to_end_tests_start_no_server_outside_their_container(self):
+        """Plain discovery over tests/e2e, with or without FRAME_E2E=1, must skip everything
+        and never start ui/server.py: outside scripts/e2e.sh's container it would run on
+        this computer's real app data, ~/.ssh and cache."""
+        e2e = str(Path(__file__).resolve().parent / "e2e")
+        code = ("import io, sys, unittest; sys.path.insert(0, sys.argv[1]); import harness; calls = []\n"
+                "harness.Server.start = classmethod(lambda cls: calls.append(cls))\n"
+                "suite = unittest.defaultTestLoader.discover(sys.argv[1], top_level_dir=sys.argv[1])\n"
+                "r = unittest.TextTestRunner(stream=io.StringIO()).run(suite)\n"
+                "print(len(calls), r.testsRun, len(r.skipped), len(r.errors) + len(r.failures))")
+        for extra in ({}, {"FRAME_E2E": "1"}):
+            env = {k: v for k, v in os.environ.items() if not k.startswith("FRAME_E2E")}
+            env.update(extra, PYTHONDONTWRITEBYTECODE="1")
+            out = subprocess.run([sys.executable, "-c", code, e2e], env=env, capture_output=True, text=True,
+                                 timeout=120)
+            self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+            started, ran, skipped, broken = map(int, out.stdout.split())
+            self.assertEqual((started, broken), (0, 0), (extra, out.stdout))
+            self.assertEqual(ran, skipped, (extra, out.stdout))
+            self.assertGreater(skipped, 0, extra)
+
     def test_child_processes_inherit_it(self):
         out = subprocess.run(
             [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import frame_devices, frame_connect;"

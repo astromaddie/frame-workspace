@@ -23,7 +23,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / 'ui'), str(ROOT / 'tests'), str(ROOT / 'tests' / 'smoke')]
 
-ENABLED = os.environ.get('FRAME_E2E') == '1'
+# Only inside the compose `host` container (FRAME_E2E_CONTAINER from compose.yaml, plus
+# the container runtime's marker file): these tests drive ui/server.py with the real
+# home, ~/.ssh and cache, which is only safe in a throwaway container.
+REQUESTED = os.environ.get('FRAME_E2E') == '1'
+IN_CONTAINER = os.environ.get('FRAME_E2E_CONTAINER') == '1' and (
+    os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv'))
+ENABLED = REQUESTED and IN_CONTAINER
 if ENABLED:
     # What tests/sandbox.py does, minus moving HOME: the container's real ~/.ssh is what
     # points `ssh frame` at the fake Frame, and OpenSSH reads ~/.ssh from the password
@@ -40,9 +46,14 @@ SERVER_LOG = os.path.join(tempfile.gettempdir(), 'fakeframe-e2e-server.log')
 
 
 def require():
-    """Call at module level: skips the module unless the fake Frame is up."""
-    if not ENABLED:
-        raise unittest.SkipTest('needs the fake Frame: run scripts/e2e.sh (sets FRAME_E2E=1)')
+    """Skips (the module, at module level; the class, in setUpClass) unless this is
+    scripts/e2e.sh's container with the fake Frame up."""
+    if ENABLED:
+        return
+    if REQUESTED:
+        raise unittest.SkipTest('FRAME_E2E=1 outside the e2e container: these tests use the real home, ~/.ssh '
+                                'and app cache, so they only run in scripts/e2e.sh\'s throwaway container')
+    raise unittest.SkipTest('needs the fake Frame: run scripts/e2e.sh (sets FRAME_E2E=1)')
 
 
 # ---- the fake Frame's control port --------------------------------------------
@@ -107,6 +118,7 @@ class Server:
 
     @classmethod
     def start(cls):
+        require()  # never a server on this computer's real data
         if cls.proc and cls.proc.poll() is None:
             return
         with socket.socket() as s:
@@ -203,6 +215,7 @@ class FrameTestCase(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        require()
         Server.start()
 
     def setUp(self):

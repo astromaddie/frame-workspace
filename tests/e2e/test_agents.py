@@ -6,6 +6,8 @@ import sys
 import harness
 from harness import api, ok, finished, ssh
 
+harness.require()
+
 sys.path.insert(0, str(harness.ROOT / 'ui'))
 import frame_mcp
 
