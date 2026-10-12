@@ -2127,7 +2127,9 @@ async function loadPanels() {
     if (view === "flat" && live && now !== before) { toggleLive(false); toggleLive(true); }
     ctrlShow();
   } catch (e) {
-    if (e.message !== desk.error) log("Couldn't list the headset's panels: " + e.message, "e");
+    if (e.stale) return;  // an answer about the previous headset says nothing about this one
+    // Polled every few seconds: waiting for the Frame, or the same failure again, isn't news.
+    if (!e.offline && e.message !== desk.error) log("Couldn't list the headset's panels: " + e.message, "e");
     desk.error = e.message;
     ctrlShow();
   }
@@ -3180,7 +3182,19 @@ async function searchSources(quiet) {
 }
 function currentOffer() { return sourceState.detail?.app.offers[sourceState.detail.choice]; }
 function detailBadges(o) { return `<span class="store-badge">${o.vr ? "VR experience" : o.vr===false ? "Flat-screen app" : "Android app"}</span>${o.verdict?.tone==='works' ? '<span class="store-badge works">✓ Works on Frame</span>' : ''}<span class="store-badge">Free</span>${storeOpenSource(o) ? '<span class="store-badge">Open source</span>' : ''}`; }
-function renderDetail() {
+// The store's app page. (Not renderDetail: the Devices page declares that further down,
+// and a later function declaration silently replaces an earlier one; issue #68.)
+// True when the page rendered; false when it shows the error instead.
+function renderAppDetail() {
+  try { renderAppDetailBody(); return true; }
+  catch(e) {
+    console.error("App details failed to render", e);
+    const name=sourceState.detail?.app?.name;
+    $("detailBody").innerHTML=`<div class="store-empty detail-error" role="alert"><h2 id="detailTitle">${name ? `We couldn't show ${esc(name)}` : "We couldn't show this app"}</h2><p>Something went wrong opening its page. Close this and try again, or pick another app.</p><button class="action" data-close="appDetail">Close</button></div>`;
+    return false;
+  }
+}
+function renderAppDetailBody() {
   const restoreOfferFocus=document.activeElement?.name==='storeOffer';
   const d=sourceState.detail;if(!d)return;const o=currentOffer(), images=o.artwork?.screenshots||[], page=sourcePage(o.page);
   $("detailBody").innerHTML=storeArt(o,"detail-banner",true)+`<div class="detail-content"><div class="detail-heading">${storeIcon(o)}<div><h1 id="detailTitle">${esc(o.name)}</h1><p>${esc(o.developer || o.author || 'From '+storeName(o.source_name))}</p></div></div><div class="store-badges">${detailBadges(o)}</div><div class="detail-layout"><div><div class="detail-gallery" id="detailGallery" aria-label="App screenshots" tabindex="0">${images.map((p,i)=>storeArt(o,"",false,p,`${o.name} screenshot ${i+1}`)).join("")}</div>${images.length ? `<div class="gallery-controls"><span>${images.length} screenshots · scroll to explore</span><div><button data-gallery="-1" aria-label="Previous screenshot">←</button> <button data-gallery="1" aria-label="Next screenshot">→</button></div></div>` : ''}<h2>About this app</h2><div class="detail-description">${esc(storeText(o.description || o.summary || "Discover this app on its developer's page."))}</div>${page ? `<p><a href="${esc(page)}" target="_blank" rel="noopener noreferrer">Meet the creators ↗</a></p>` : ''}<details class="detail-technical"><summary>Technical details</summary><dl><dt>Package</dt><dd>${esc(o.package||"Unknown")}</dd><dt>Version</dt><dd>${esc(o.version||"Unknown")} (${esc(o.version_code??"unknown")})</dd><dt>Android API</dt><dd>${esc(o.min_sdk??"Unknown")}</dd><dt>Architecture</dt><dd>${esc(o.abis?.join(', ')||"Unknown / no native code")}</dd><dt>Updated</dt><dd>${esc(o.updated||"Unknown")}</dd><dt>Compatibility</dt><dd>${(o.fit?.reasons||[]).map(esc).join(' · ')||'No known installation blockers'}</dd></dl></details></div><aside class="detail-buy"><div class="detail-price">Free</div><p class="detail-small">No purchase needed.</p><p class="detail-verdict ${esc(o.verdict?.tone||'unknown')}">${esc(o.verdict?.label||'Not yet checked on the Frame')}</p><button id="detailInstall" class="action store-primary">Install</button><progress id="detailProgress" max="100" hidden aria-label="Installation progress"></progress><p id="detailInstallNote" class="detail-small" role="status" aria-live="polite"></p><h2>Get it from</h2><div id="detailOffers">${d.app.offers.map((v,j)=>`<label class="offer-choice"><input type="radio" name="storeOffer" value="${j}" ${j===d.choice?'checked':''}><span>${sourceMark(v.source_name)}</span><span><strong>${esc(storeName(v.source_name))}${j===0?' · Recommended':''}</strong><small>${v.verified===true?'✓ Verified download':'Verification not provided'}</small><small>${esc(v.version ? 'v'+v.version : 'Latest release')}${v.size!=null?' · '+(v.size/1048576).toFixed(0)+' MB':''}</small></span></label>`).join('')}</div></aside></div></div>`;
@@ -3200,8 +3214,8 @@ function updateInstall() {
 async function openStoreApp(index) {
   const app=sourceState.apps[index];if(!app)return;
   sourceState.detail={app:{...app,offers:app.offers.map(o=>({...o}))},choice:0};
-  renderDetail();if(!$("appDetail").open)$("appDetail").showModal();$("appDetail").scrollTop=0;
-  await loadOfferDetails();
+  const shown=renderAppDetail();if(!$("appDetail").open)$("appDetail").showModal();$("appDetail").scrollTop=0;
+  if(shown)await loadOfferDetails();
 }
 async function loadOfferDetails() {
   const d=sourceState.detail,o=currentOffer(), request=++sourceState.detailRequest;
@@ -3209,8 +3223,8 @@ async function loadOfferDetails() {
     const detail=await api('/api/sources/details?'+new URLSearchParams({source:o.source,id:o.id}));
     if(request!==sourceState.detailRequest || d!==sourceState.detail)return;
     const artwork={icon:detail.artwork?.icon||o.artwork?.icon,banner:detail.artwork?.banner||o.artwork?.banner,screenshots:detail.artwork?.screenshots?.length?detail.artwork.screenshots:o.artwork?.screenshots||[]};
-    d.app.offers[d.choice]={...o,...detail,artwork};renderDetail();
-  } catch(e) { if(d===sourceState.detail)$("detailInstallNote").textContent="Some app details couldn't be refreshed. You can still view this listing."; }
+    d.app.offers[d.choice]={...o,...detail,artwork};renderAppDetail();
+  } catch(e) { const note=$("detailInstallNote");if(d===sourceState.detail && note)note.textContent="Some app details couldn't be refreshed. You can still view this listing."; }
 }
 async function installStoreApp() {
   const o=currentOffer(), key=`${o.source}:${o.id}`, existing=sourceState.jobs.get(key);
@@ -3240,8 +3254,8 @@ $("sourceSearch").onsubmit=e=>{e.preventDefault();clearTimeout(storeSearchTimer)
 $("sourceFilter").onchange=e=>{sourceState.source=e.target.value;searchSources();};
 $("searchFilters").onclick=e=>{const b=e.target.closest('[data-filter]');if(!b)return;const f=b.dataset.filter;if(f==='all'){sourceState.vr=null;sourceState.installable=false;}else if(f==='installable')sourceState.installable=!sourceState.installable;else sourceState.vr=sourceState.vr===(f==='vr')?null:f==='vr';storeChips();searchSources();};
 $("searchGrid").onclick=e=>{const b=e.target.closest('[data-app]');if(b)openStoreApp(+b.dataset.app);if(e.target.closest('#storeReset')){$('sourceQ').value='';sourceState.vr=null;sourceState.installable=false;sourceState.source='';storeChips();searchSources();}};
-$("detailBody").onclick=e=>{if(e.target.closest('#detailInstall'))installStoreApp();const b=e.target.closest('[data-gallery]');if(b)$('detailGallery').scrollBy({left:+b.dataset.gallery*$('detailGallery').clientWidth*.86,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});};
-$("detailBody").onchange=e=>{if(e.target.name==='storeOffer'){sourceState.detail.choice=+e.target.value;renderDetail();loadOfferDetails();}};
+$("detailBody").onclick=e=>{if(e.target.closest('[data-close]'))return $("appDetail").close();if(e.target.closest('#detailInstall'))installStoreApp();const b=e.target.closest('[data-gallery]');if(b)$('detailGallery').scrollBy({left:+b.dataset.gallery*$('detailGallery').clientWidth*.86,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});};
+$("detailBody").onchange=e=>{if(e.target.name==='storeOffer'){sourceState.detail.choice=+e.target.value;renderAppDetail();loadOfferDetails();}};
 $("sourcesOpen").onclick=()=>{loadSources();$('sourcesDialog').showModal();};
 $("sourcesList").onchange=e=>{if(e.target.matches('[data-enable]'))changeSource({action:'enable',source:e.target.dataset.enable,enabled:e.target.checked});};
 $("sourcesList").onclick=e=>{const b=e.target.closest('[data-remove]');if(b)changeSource({action:'remove',source:b.dataset.remove});};
@@ -3793,7 +3807,7 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && on
 
 // ---- Panel switcher: our UI over SteamVR's panel API ----
 let panelSeq = 0;
-async function loadPanels() {
+async function loadPanelSwitcher() {
   const seq = ++panelSeq;
   try {
     const s = await api("/api/panels", {action: "list"});
@@ -3804,7 +3818,7 @@ async function loadPanels() {
       : '<div class="sub">No open panels.</div>';
   } catch (e) { if (seq === panelSeq) failed($("panelList"), e); }
 }
-$("panelsRefresh").onclick = loadPanels;
+$("panelsRefresh").onclick = loadPanelSwitcher;
 $("panelsOpen").onclick = e => act("Open panel switcher in headset",
   () => api("/api/panels", {action: "open"}), e.currentTarget);
 $("panelList").onclick = e => {
@@ -3902,7 +3916,7 @@ function showPage() {
   document.title = page === "home" ? "Frame Control" : `${page[0].toUpperCase() + page.slice(1)} · Frame Control`;
   const section = !PAGES.includes(id) && id && $(id);
   if (section) section.scrollIntoView(); else window.scrollTo(0, 0);
-  if (page === "tools") { loadMacView(); loadPanels(); }
+  if (page === "tools") { loadMacView(); loadPanelSwitcher(); }
 }
 window.addEventListener("hashchange", showPage);
 // While a text field has focus, phones hide the bottom tab bar (see body.typing in the CSS).

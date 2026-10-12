@@ -411,6 +411,59 @@ class ArtworkSettings(unittest.TestCase):
         self.assertLess(page.index("async function api("), page.index('<script src="/artwork-settings.js">'))
 
 
+@unittest.skipUnless(shutil.which("node"), "needs node")
+class PageScripts(unittest.TestCase):
+    """A page's scripts share one global scope, where a later function declaration
+    silently replaces an earlier one of the same name. Issue #68: the Devices page's
+    renderDetail replaced the Android store's, so every app opened as an empty
+    dialog (a bare horizontal line). Compiled together as one module, any top-level
+    name declared twice is a SyntaxError; node's parser handles nested scopes,
+    comments and strings."""
+
+    PAGES = ("index.html", "assistant.html", "mac-view.html")
+
+    @staticmethod
+    def page_scripts(html):
+        """A page's inline scripts, then its /*.js scripts, in one source."""
+        import re
+        parts = re.findall(r"<script>([\s\S]*?)</script>", html)
+        parts += [(ROOT / "ui" / src).read_text(encoding="utf-8") for src in re.findall(r'<script src="/([\w.-]+\.js)">', html)]
+        return "\n;\n".join(parts)
+
+    @staticmethod
+    def module_check(source):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "page.mjs"
+            path.write_text(source, encoding="utf-8")
+            r = subprocess.run(["node", "--check", str(path)], capture_output=True, text=True)
+        return r.returncode, r.stderr
+
+    def test_the_check_catches_top_level_duplicates_only(self):
+        dup = "<script>function a() {}\nfunction a() {}</script>"
+        across = "<script>function a() {}</script><p>x</p><script>  async function a() {}</script>"
+        same_line = "<script>function a() {} function a() {}</script>"
+        const_and_function = "<script>const a = 1, b = 2;\nfunction b() {}</script>"
+        for html in (dup, across, same_line, const_and_function):
+            rc, err = self.module_check(self.page_scripts(html))
+            self.assertNotEqual(rc, 0, html)
+            self.assertIn("has already been declared", err, html)
+        nested = ("<script>function a() {}\nfunction f() { function a() {} if (1) { const a = 2; } }\n"
+                  "// function a() {}\nconst s = `function a() {}`;</script>")
+        self.assertEqual(self.module_check(self.page_scripts(nested)), (0, ""))
+
+    def test_no_top_level_name_is_declared_twice(self):
+        for name in self.PAGES:
+            source = self.page_scripts((ROOT / "ui" / name).read_text(encoding="utf-8"))
+            self.assertIn("function", source, name)
+            rc, err = self.module_check(source)
+            self.assertEqual(rc, 0, f"{name}: {err}")
+
+    def test_store_app_page_renders(self):
+        """tests/page/store_detail.mjs runs the real store functions from index.html."""
+        r = subprocess.run(["node", str(ROOT / "tests" / "page" / "store_detail.mjs")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+
 @unittest.skipIf(os.name == "nt", "runs on the Frame (Linux); local-bin/ssh is a POSIX shell script")
 class LocalMode(unittest.TestCase):
     """FRAME_LOCAL=1, as the iPhone app starts the server on the Frame: its own key

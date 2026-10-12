@@ -8,6 +8,12 @@ const grab = name => {
   if (!m) throw new Error("not found: " + name);
   return m[0];
 };
+// The page's scripts share one global scope, so a second loadPanels would silently replace
+// the Desktop view's (what broke #73 until #84): the one grabbed here must be the only one.
+for (const name of ["loadPanels", "noPanelWhy", "deskPanel", "ctrlTarget"]) {
+  const count = (src.match(new RegExp(`\\n(?:async )?function ${name}\\(`, "g")) || []).length;
+  if (count !== 1) { console.log(`FAIL ${name} is defined ${count} times`); process.exit(1); }
+}
 const code = ["desk", "panelKey", "noPanelWhy", "deskPanel", "loadPanels", "ctrlTarget"].map(grab).join("");
 const fail = msg => { console.log("FAIL " + msg); process.exit(1); };
 
@@ -58,5 +64,19 @@ function page(answer) {
   const t = p.ctrlTarget();
   if (!t.why || t.why.includes("Couldn't list")) fail("after recovery: " + JSON.stringify(t));
   if (p.desk.panels.length !== 1) fail("panels after recovery");
+}
+// Waiting for the Frame: shown in Control, not logged every poll. An answer about the
+// previous headset (stale) is ignored.
+{
+  let err;
+  const p = page(() => { throw err; });
+  err = Object.assign(new Error("Can't reach the Frame"), { offline: true });
+  await p.loadPanels(); await p.loadPanels();
+  if (p.logged.length) fail("offline logged: " + p.logged);
+  if (p.ctrlTarget().why !== "Couldn't list the headset's panels: Can't reach the Frame") fail("offline: " + p.ctrlTarget().why);
+  const q = page(() => { throw Object.assign(new Error("old headset"), { offline: true, stale: true }); });
+  await q.loadPanels();
+  if (q.logged.length || q.desk.error) fail("stale answer used: " + q.desk.error);
+  if (q.ctrlTarget().why !== "Finding the headset's panels…") fail("stale: " + q.ctrlTarget().why);
 }
 console.log("ok");
