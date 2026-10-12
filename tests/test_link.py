@@ -1200,6 +1200,15 @@ class FailureLog(unittest.TestCase):
                          "seen <host> and <ip>")  # the standalone token stays
         self.assertEqual(fl.hide_hosts("<ip> frame", ["ip> frame"]), "<host>")  # never half a token left
 
+    def test_an_operand_that_is_sshs_own_word_still_hides_the_next(self):  # review of #81
+        out = fl.scrub_failure("Could not connect to hostname bastion-jane", ["connect to"])
+        self.assertNotIn("bastion-jane", out)
+
+    def test_a_name_cant_take_the_at_sign_from_a_user_name(self):  # review of #81
+        out = fl.scrub_failure("Jane Smith@<host>: Permission denied (publickey).", ["Smith@<host>"])
+        self.assertNotIn("Smith", out)
+        self.assertIn("<user>@<host>", out)
+
     def test_a_name_cant_swallow_sshs_operand_marker(self):  # #81, second case
         said = "ssh: connect to host bastion-jane port 22: Connection refused"
         out = fl.scrub_failure(said, ["to host"])

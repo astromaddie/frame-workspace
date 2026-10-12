@@ -267,10 +267,14 @@ KEYWORDS = {"host", "hostname", "to", "port"} | PLAIN_WORDS
 def _operand_spans(text):
     """Where the hosts ssh names are in text, ssh's own words and any trailing dots left out."""
     spans = []
-    for m in OPERAND.finditer(text):
+    m = OPERAND.search(text)
+    while m:
         word = m.group(2).rstrip(".")
         if word.lower() not in PLAIN_WORDS:
             spans.append((m.start(2), m.start(2) + len(word)))
+        # From the operand on, not past it: in "to hostname X" the operand "hostname" is
+        # ssh's own word for the next one, and X must be found too.
+        m = OPERAND.search(text, m.start(2))
     return spans
 
 
@@ -282,8 +286,9 @@ def scrub_failure(text, hosts=()):
     """Free text about a failed attempt, for the log: the attempt's own names, whole and
     longest first (case-insensitively, never ssh's own words), and anything ssh names as a
     host, both found in the text as it came so neither can hide the other, then the shared
-    scrubber (addresses, paths, user names)."""
-    text = str(text or "")
+    scrubber (addresses, paths, user names). The shared scrubber runs first too, so a name
+    can't take the "@" that marks the user name before it ("Jane@<host>" -> "<user>@<host>")."""
+    text = frame_telemetry.scrub(str(text or ""), 600)
     return frame_telemetry.scrub(_hide_spans(text, _host_spans(text, hosts) + _operand_spans(text)), 600)
 
 
