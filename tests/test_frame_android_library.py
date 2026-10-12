@@ -263,11 +263,14 @@ class ArtworkTests(unittest.TestCase):
     def test_steamgriddb_uses_the_bounded_fetch_without_redirects(self):
         import frame_steamgriddb as sgdb
         from apk_sources import _images
+        deadline = time.monotonic() + 5
         with patch.object(_images, 'get', return_value=b'{"success": true, "data": [1]}') as get:
-            self.assertEqual(sgdb._get('/search/x', 'secret', time.monotonic() + 5), [1])
+            self.assertEqual(sgdb._get('/search/x', 'secret', deadline), [1])
         self.assertEqual(get.call_args.kwargs['redirects'], 0)
         self.assertEqual(get.call_args.args[1]['Authorization'], 'Bearer secret')
-        self.assertLessEqual(get.call_args.kwargs['deadline'] - time.monotonic(), 5)
+        # The caller's deadline is passed on, never extended. (Comparing against a fresh
+        # time.monotonic() flaked on Windows, whose clock ticks coarsely.)
+        self.assertLessEqual(get.call_args.kwargs['deadline'], deadline)
 
     def test_supplied_jpeg(self):
         data = (FIXTURES / 'icon.jpg').read_bytes()
