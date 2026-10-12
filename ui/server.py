@@ -410,6 +410,31 @@ def status(_body):
     return s
 
 
+COMFORT_FILES = ("frame_comfort.py", "frame_status.py", "frame_steam.py")
+COMFORT_MISSING = {"comfort": "missing"}  # what COMFORT_RUN prints when the cached copy isn't complete
+# Runs frame_comfort.py from ~/.cache/frame-control/comfort/<version>, first writing any of
+# `files` that aren't there (none: just check they all are). Private, and each file written
+# whole or not at all, so a copy cut short is finished by the next call.
+COMFORT_RUN = """import json, os, pathlib, subprocess, sys
+os.umask(0o077)
+files = %r
+root = pathlib.Path.home() / '.cache/frame-control/comfort' / %r
+if files:
+    root.mkdir(parents=True, exist_ok=True)
+for name, source in files.items():
+    path = root / name
+    if not path.exists():
+        tmp = root / (name + '.' + str(os.getpid()))
+        tmp.write_text(source)
+        tmp.replace(path)
+if not all((root / name).is_file() for name in %r):
+    print('{"comfort": "missing"}')
+    sys.exit()
+r = subprocess.run([sys.executable, str(root / 'frame_comfort.py'), %r], capture_output=True, text=True)
+print(r.stdout, end='')
+"""
+
+
 def comfort(body):
     try:
         frame_comfort.validate(body)
@@ -417,25 +442,14 @@ def comfort(body):
         raise Failure(str(e), 400)
     # Content-addressed, user-only helper bundle. Desktop and phone use the same
     # on-headset state/lock; no listener, service registration or third-party app.
-    import hashlib
-    files = {name: (HERE / name).read_text() for name in
-             ("frame_comfort.py", "frame_status.py", "frame_steam.py")}
+    # The page polls this every few seconds, so run the copy already on the headset and
+    # send the sources only when that version isn't there yet.
+    files = {name: (HERE / name).read_text() for name in COMFORT_FILES}
     version = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
-    script = """import json, os, pathlib, subprocess, sys
-os.umask(0o077)
-files = %r
-root = pathlib.Path.home() / '.cache/frame-control/comfort' / %r
-root.mkdir(parents=True, exist_ok=True)
-for name, source in files.items():
-    path = root / name
-    if not path.exists():
-        tmp = root / (name + '.' + str(os.getpid()))
-        tmp.write_text(source)
-        tmp.replace(path)
-r = subprocess.run([sys.executable, str(root / 'frame_comfort.py'), %r], capture_output=True, text=True)
-print(r.stdout, end='')
-""" % (files, version, json.dumps(body))
-    out = json.loads(ssh("python3 -", stdin=script, timeout=65))
+    out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % ({}, version, COMFORT_FILES, json.dumps(body)), timeout=65))
+    if out == COMFORT_MISSING:
+        out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % (files, version, COMFORT_FILES, json.dumps(body)),
+                             timeout=65))
     if out.get("error") and "active" not in out:
         raise Failure(out["error"], 409)
     return out
