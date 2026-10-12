@@ -1889,7 +1889,7 @@ async function capture() {
     var shotPanel = null;
     if (view === "flat") {
       shotPanel = deskPanel() || (await loadPanels(), deskPanel());
-      if (!shotPanel) throw new Error("no app panel is open in the headset");
+      if (!shotPanel) throw new Error(noPanelWhy());
       url_ = `/api/screenshot?view=panel&window=${shotPanel.window}&display=${encodeURIComponent(shotPanel.display)}`;
     }
     const r = await fetch(url_, { headers: {"X-Frame-UI": UI_KEY} });
@@ -2101,8 +2101,14 @@ document.querySelectorAll("[data-eye]").forEach(b => b.onclick = () => setEye(b.
 // Control reaches, so the view follows it unless you pick another to watch.
 // Panels are "display/window": window ids are per X display, and the Frame has two.
 // desk.shown is the panel whose picture is on screen now; Control only acts on that one.
-const desk = { panels: [], focus: null, pick: "", timer: null, loaded: false, shown: null };
+// desk.why is the headset's own reason when it lists no panels; desk.error, why listing them failed.
+const desk = { panels: [], focus: null, pick: "", timer: null, loaded: false, shown: null, why: "", error: "" };
 const panelKey = p => p ? `${p.display}/${p.window}` : null;
+// Why the Desktop view has no panel to show: the headset's own reason when it gave one.
+function noPanelWhy() {
+  if (desk.error) return "Couldn't list the headset's panels: " + desk.error;
+  return desk.why || "No app panel is open in the headset. Open the desktop or an app in the headset, then try again.";
+}
 function deskPanel() {
   const want = desk.pick || desk.focus;
   // Nothing in use and nothing picked: show the first panel rather than nothing.
@@ -2112,7 +2118,8 @@ async function loadPanels() {
   try {
     const before = panelKey(deskPanel());
     const r = await api("/api/panels");
-    desk.panels = r.panels || []; desk.loaded = true;
+    desk.panels = r.panels || []; desk.loaded = true; desk.error = "";
+    desk.why = r.why || "";
     desk.focus = r.focus ? `${r.focus_display}/${r.focus}` : null;
     if (desk.pick && !desk.panels.some(p => panelKey(p) === desk.pick)) desk.pick = "";
     renderPanelPick();
@@ -2120,7 +2127,9 @@ async function loadPanels() {
     if (view === "flat" && live && now !== before) { toggleLive(false); toggleLive(true); }
     ctrlShow();
   } catch (e) {
-    log("Couldn't list the headset's panels: " + e.message, "e");
+    if (e.message !== desk.error) log("Couldn't list the headset's panels: " + e.message, "e");
+    desk.error = e.message;
+    ctrlShow();
   }
 }
 function watchPanels() {
@@ -2166,7 +2175,7 @@ function ctrlTarget() {
   if (ctrlMode() === "rel") return { ok: true };
   const p = deskPanel();
   if (!desk.loaded) return { why: "Finding the headset's panels…" };
-  if (!p) return { why: "No app panel is open in the headset." };
+  if (!p) return { why: noPanelWhy() };
   if (!desk.focus) return { why: "Nobody's using a panel in the headset yet. Taps work once one is in use." };
   if (panelKey(p) !== desk.focus) return { why: "Only the panel in use takes taps. Pick “Panel in use” to control it." };
   if (desk.shown !== desk.focus) return { why: live ? "Waiting for the picture of the panel in use…"

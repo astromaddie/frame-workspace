@@ -2,6 +2,7 @@
 
 Run: python3 -m unittest discover -s tests
 """
+import io
 import shutil
 import subprocess
 import sys
@@ -257,6 +258,106 @@ class ServerChecks(unittest.TestCase):
     def test_batch_limit(self):
         with self.assertRaises(self.s.Failure):
             self.s.remote_touch({"events": [{"dx": 1}] * (self.s.INPUT_BATCH_LIMIT + 1)})
+
+
+class FindingPanels(unittest.TestCase):
+    """panels() with faked headset probes: where gamescope's properties are, and why nothing was found (#73)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import frame_touch
+        cls.t = frame_touch
+
+    def setUp(self):
+        t = self.t
+        names = ("xprop_root", "window_info", "window_pid", "displays", "desktop_running")
+        saved = {n: getattr(t, n) for n in names}
+        saved_which = t.shutil.which
+        self.real_displays = saved["displays"]
+
+        def restore():
+            for n, v in saved.items():
+                setattr(t, n, v)
+            t.shutil.which = saved_which
+            t._ROOT.clear()
+        self.addCleanup(restore)
+        t._ROOT.clear()
+        self.props = {}  # (display, property) -> values
+        self.windows = {}  # (display, window) -> info
+        t.xprop_root = lambda d, n: list(self.props.get((d, n), []))
+        t.window_info = lambda d, w: self.windows.get((d, w))
+        t.window_pid = lambda d, w: None
+        t.displays = lambda: [":0", ":1", ":2"]
+        t.desktop_running = lambda: False
+        t.shutil.which = lambda tool: "/usr/bin/" + tool
+
+    def plasma_on(self, display):
+        # SteamOS 0.4.1: the nested Plasma desktop (kwin_wayland, app id 0) is a window on :0.
+        self.props[(display, "GAMESCOPE_FOCUSABLE_WINDOWS")] = [4194307, 0, 2222]
+        self.props[(display, "GAMESCOPE_FOCUSED_WINDOW")] = [4194307]
+        self.props[(display, "GAMESCOPE_FOCUS_DISPLAY")] = [0x303A]  # ":0"
+        self.windows[(":0", 4194307)] = {"name": "KDE Wayland Compositor", "x": 0, "y": 0, "width": 1280, "height": 800}
+        self.windows[(":0", "root")] = {"width": 1280, "height": 720}
+
+    def test_desktop_panel_on_display_0(self):
+        self.plasma_on(":0")
+        out = self.t.panels()
+        self.assertEqual([(p["window"], p["display"], p["focused"]) for p in out["panels"]], [(4194307, ":0", True)])
+        self.assertNotIn("why", out)
+
+    def test_gamescope_properties_on_another_display_are_found(self):
+        # A build that numbers its displays differently: :0 has no gamescope properties.
+        self.plasma_on(":1")
+        self.assertEqual(self.t.gamescope_root(), ":1")
+        self.assertEqual(len(self.t.panels()["panels"]), 1)
+
+    def test_listed_window_that_isnt_x11_explains_itself(self):
+        self.plasma_on(":0")
+        del self.windows[(":0", 4194307)]  # say, a desktop drawn as a Wayland window
+        out = self.t.panels()
+        self.assertEqual(out["panels"], [])
+        self.assertIn("can't find its window", out["why"])
+        self.assertIn("Headset view", out["why"])
+
+    def test_desktop_running_but_not_listed(self):
+        self.t.desktop_running = lambda: True
+        out = self.t.panels()
+        self.assertEqual(out["panels"], [])
+        self.assertIn("desktop is running", out["why"])
+
+    def test_nothing_open(self):
+        out = self.t.panels()
+        self.assertEqual(out, {"focus": None, "focus_display": None, "panels": [],
+                               "why": "No app panel is open in the headset. Open the desktop or an app in "
+                                      "the headset, then try again."})
+
+    def test_missing_x_tools_are_named(self):
+        self.plasma_on(":0")
+        self.t.shutil.which = lambda tool: None if tool == "xwininfo" else "/usr/bin/" + tool
+        self.windows.clear()  # xwininfo can't run, so nothing resolves
+        self.assertIn("no xwininfo", self.t.panels()["why"])
+
+    def test_displays_include_abstract_sockets(self):
+        # /tmp/.X11-unix not visible to the SSH session: the abstract sockets still name the displays.
+        import builtins
+        t = self.t
+        real_open, real_listdir = builtins.open, t.os.listdir
+
+        def fake_open(path, *a, **k):
+            if path == "/proc/net/unix":
+                return io.StringIO("0000: 00000002 0 ... @/tmp/.X11-unix/X1\n0000: ... @/tmp/.X11-unix/X0\n"
+                                   "0000: ... /run/user/1000/wayland-0\n")
+            return real_open(path, *a, **k)
+
+        def fake_listdir(path):
+            if path == "/tmp/.X11-unix":
+                raise FileNotFoundError(path)
+            return real_listdir(path)
+        builtins.open, t.os.listdir = fake_open, fake_listdir
+        try:
+            self.assertEqual(self.real_displays(), [":0", ":1"])
+        finally:
+            builtins.open, t.os.listdir = real_open, real_listdir
 
 
 @unittest.skipUnless(shutil.which("node"), "needs node")

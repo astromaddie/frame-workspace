@@ -25,7 +25,9 @@ Standard library only (ctypes for libei), like the rest of what runs on the Fram
 import ctypes
 import json
 import os
+import re
 import select
+import shutil
 import subprocess
 import sys
 import time
@@ -86,7 +88,40 @@ def window_info(display, window):
 
 
 def displays():
-    return sorted(f":{n[1:]}" for n in os.listdir("/tmp/.X11-unix") if n[1:].isdigit())
+    """Every X display on the Frame: the sockets in /tmp/.X11-unix, and the abstract ones
+    X servers on Linux usually listen on as well (in /proc/net/unix), in case a SteamOS
+    build stops sharing /tmp/.X11-unix with SSH sessions."""
+    found = set()
+    try:
+        found.update(int(n[1:]) for n in os.listdir("/tmp/.X11-unix") if n[:1] == "X" and n[1:].isdigit())
+    except OSError:
+        pass
+    try:
+        with open("/proc/net/unix") as f:
+            found.update(int(n) for n in re.findall(r"@/tmp/\.X11-unix/X(\d+)", f.read()))
+    except OSError:
+        pass
+    return [f":{n}" for n in sorted(found)]
+
+
+_ROOT = []  # the display found to carry gamescope's properties, once found
+
+
+def gamescope_root():
+    """The X display whose root window carries gamescope's panel properties
+    (GAMESCOPE_FOCUSABLE_WINDOWS and friends).
+
+    That's :0 on every build seen so far (SteamOS 0.3.0 to 0.4.1), so :0 is asked first
+    and is the answer when nothing publishes them. If a SteamOS update numbers its
+    displays differently, the others are probed rather than reporting no panels.
+    """
+    if _ROOT:
+        return _ROOT[0]
+    for display in [":0"] + [d for d in displays() if d != ":0"]:
+        if xprop_root(display, "GAMESCOPE_FOCUSABLE_WINDOWS") or xprop_root(display, "GAMESCOPE_FOCUSED_WINDOW"):
+            _ROOT.append(display)
+            return display
+    return ":0"
 
 
 def window_pid(display, window):
@@ -122,7 +157,7 @@ def locate(window, pid):
 
 def focusable():
     """gamescope's focusable windows as (window, app id, pid)."""
-    t = xprop_root(":0", "GAMESCOPE_FOCUSABLE_WINDOWS")
+    t = xprop_root(gamescope_root(), "GAMESCOPE_FOCUSABLE_WINDOWS")
     return [tuple(t[i:i + 3]) for i in range(0, len(t) - 2, 3)]
 
 
@@ -133,7 +168,7 @@ def focus_display():
     little-endian, in the first value: 12602 is 0x313A, ":1" (steamcompmgr.cpp;
     seen 2026-09-29).
     """
-    values = xprop_root(":0", "GAMESCOPE_FOCUS_DISPLAY")
+    values = xprop_root(gamescope_root(), "GAMESCOPE_FOCUS_DISPLAY")
     if not values:
         return None
     name = (values[0] & 0xFFFFFFFF).to_bytes(4, "little").split(b"\0", 1)[0].decode("ascii", "replace")
@@ -142,14 +177,14 @@ def focus_display():
 
 def focus_now():
     """Just which window and display have focus: two property reads, for checking a press."""
-    window = (xprop_root(":0", "GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
+    window = (xprop_root(gamescope_root(), "GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
     return (window or None, focus_display() if window else None)
 
 
 def focus():
     """The panel that has focus in the headset: window, display, name and sizes (gamescope
-    publishes the window and its display on :0's root)."""
-    window = (xprop_root(":0", "GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
+    publishes the window and its display on its root display, :0 so far)."""
+    window = (xprop_root(gamescope_root(), "GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
     if not window:
         return {"window": None}
     app, pid = next(((a, p) for w, a, p in focusable() if w == window), (None, None))
@@ -167,15 +202,59 @@ def focus():
 def panels():
     """Every app panel (gamescope's focusable windows), for watching one that hasn't focus."""
     now = focus()
-    found = []
+    found, unfound = [], 0
     for window, app, pid in focusable():
         panel = locate(window, pid)
+        unfound += panel is None
         if panel and panel["width"] > 1 and panel["height"] > 1 and \
                 not any(f["window"] == window and f["display"] == panel["display"] for f in found):
             panel.pop("root", None)
             found.append({**panel, "app": app, "focused": (window, panel["display"]) ==
                           (now.get("window"), now.get("display"))})
-    return {"focus": now.get("window"), "focus_display": now.get("display"), "panels": found}
+    out = {"focus": now.get("window"), "focus_display": now.get("display"), "panels": found}
+    if not found:
+        out["why"] = why_none(unfound)
+    return out
+
+
+# The headset's Linux desktop, by process name (docs/how-the-frame-works.md).
+DESKTOP = ("plasmashell", "kwin_wayland", "kwin_wayland_wrapper", "steamos-nested-desktop", "startplasma-wayland")
+
+
+def desktop_running():
+    """Whether the headset's Linux desktop (the nested Plasma session) is running."""
+    try:
+        pids = [p for p in os.listdir("/proc") if p.isdigit()]
+    except OSError:
+        return False
+    for pid in pids:
+        try:
+            with open(f"/proc/{pid}/comm") as f:
+                if f.read().strip() in DESKTOP:
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def why_none(listed):
+    """Why panels() found nothing, in words the person at the computer can act on.
+    listed: how many of the windows gamescope lists aren't X11 windows on any display."""
+    missing = [tool for tool in ("xprop", "xwininfo") if not shutil.which(tool)]
+    if missing:
+        return (f"This SteamOS build has no {' or '.join(missing)}, which Frame Control uses to find the "
+                "headset's panels. Use the Headset view instead, and please report your SteamOS version.")
+    if listed:
+        # gamescope lists windows, but none is an X11 window on any display: a Wayland
+        # window (a desktop drawn straight to gamescope, say) can't be found or captured this way.
+        return (f"The headset has {listed} panel{'s' if listed > 1 else ''} open, but Frame Control can't "
+                f"find {'its' if listed == 1 else 'their'} window. This SteamOS build may draw "
+                f"{'it' if listed == 1 else 'them'} in a way the Desktop view can't capture yet. "
+                "Use the Headset view instead, and please report your SteamOS version.")
+    if desktop_running():
+        return ("The headset's desktop is running, but SteamOS isn't listing it as a panel. Look at it in "
+                "the headset (or close and reopen it), then try again, or use the Headset view.")
+    return "No app panel is open in the headset. Open the desktop or an app in the headset, then try again."
 
 
 def to_root(panel, fx, fy):

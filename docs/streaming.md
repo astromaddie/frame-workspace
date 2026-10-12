@@ -261,6 +261,13 @@ How (**verified 2026-09-29**, SteamOS 0.4.1, build 20260925.6191901):
   -window_id <window> -i :<display>` works on gamescope's redirected windows,
   while grabbing the root gives black. It streams as H.264 like the headset view
   (about 30 fps at 720p).
+- **When no panel is found**, `frame_touch.py panels` says why (`"why"`), and the
+  Desktop view shows that instead of a bare "no app panel": X tools missing,
+  gamescope listing windows that aren't X11 windows on any display, the desktop
+  running but not listed, or nothing open. It reads gamescope's properties from
+  `:0` first and probes the other displays if `:0` has none. Added for
+  [#73](https://github.com/saphid/frame-control/issues/73) (SteamOS 0.4.5, desktop
+  open but not found); the cause on that build isn't confirmed yet.
 - Tested from the iPhone app (Simulator): a tap on the Desktop view focused a
   text box in the panel and the text field typed into it; a trackpad move went
   exactly (+40, +25).

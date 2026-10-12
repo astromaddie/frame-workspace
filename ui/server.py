@@ -697,7 +697,7 @@ PASTE = r"""set -u
 text=$(cat; printf x); text=${text%x}
 pid=$(pgrep -u "$(id -u)" -x plasmashell | head -n 1)
 if [ -z "$pid" ]; then
-  echo "plasmashell is not running: open the desktop in the headset first." >&2
+  echo "The headset's desktop isn't open (plasmashell is not running). Open the desktop in the headset, then try again." >&2
   exit 2
 fi
 bus=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^DBUS_SESSION_BUS_ADDRESS=//p')
@@ -709,6 +709,7 @@ else
   exit 2
 fi
 """
+DESKTOP_CLOSED = "plasmashell is not running"  # what PASTE says when the headset's desktop isn't open
 # base64 keeps the script intact through every local shell's quoting rules.
 PASTE_CMD = 'bash -c "$(echo %s | base64 -d)"' % base64.b64encode(PASTE.encode()).decode()
 
@@ -725,7 +726,13 @@ def clipboard(body):
         text = body.get("text")
         if not isinstance(text, str) or not text:
             raise Failure("nothing to send", 400)
-    return {"message": ssh(PASTE_CMD, stdin=text, timeout=30).strip()}
+    try:
+        return {"message": ssh(PASTE_CMD, stdin=text, timeout=30).strip()}
+    except Failure as e:
+        if DESKTOP_CLOSED in str(e):
+            # The headset's state, for the person to change, not a fault: a 409 isn't reported as one.
+            raise Failure(str(e), 409) from None
+        raise
 
 
 # ---- keyboard and pointer (KDE Connect on the Frame, see frame_input_agent.py) ----
