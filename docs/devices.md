@@ -104,7 +104,9 @@ connection is an SSH ControlMaster that every command shares; when it dies (the
 headset slept or left the network) the connector notices and starts again. On
 Windows, where OpenSSH can't share a connection, the same handshake runs once
 and each command then connects on its own; a command that can't reach the
-headset makes the connector start again.
+headset makes the connector start again. There ssh's stderr goes to a file that
+the connector reads as it grows, not a pipe: Windows' OpenSSH can block writing
+to a redirected pipe.
 
 Once connected, every `ssh`, `scp` and `rsync` the app runs gets
 `-o HostName=<address> -o HostKeyAlias=frame-control-<id>
@@ -121,25 +123,38 @@ lease that moved) would look like a new host there. The app keeps one known_host
 file per headset instead, so saving or forgetting one headset's key never touches
 another's: a different device answering at one of its
 addresses is refused, and the pill says so. A headset's first connection trusts
-the key it shows, as Set Up Connection does: until a key is saved, every ssh
-command gets `StrictHostKeyChecking=accept-new` (the first contact saves it,
-whichever command makes it), and from then on `StrictHostKeyChecking=yes`.
-`accept-new` never replaces a saved key, so it can't hide a change.
+the key it shows, as Set Up Connection does: while a headset has never had an
+identity here, every ssh command gets `StrictHostKeyChecking=accept-new` (the
+first contact saves it, whichever command makes it), and from then on
+`StrictHostKeyChecking=yes`. `accept-new` never replaces a saved key, so it
+can't hide a change. The saved key's fingerprint is also recorded in
+`devices.json` (`identity`). A headset counts as having had an identity if one is
+recorded, if its pin file exists at all, or if a connection to it ever worked; then
+a pin file that's deleted, empty, unreadable or not parseable **fails closed**
+(*Checking the headset's identity* fails, "missing or can't be read") rather than
+trusting whatever answers, and only **Check its key…** saves a key again. It
+says when the key it reads matches the recorded fingerprint.
 
 **When the key changes** (SteamOS reinstalled or reset, a new headset at the
 same address, or a different device answering there), nothing is accepted by
 itself. The connection fails at *Checking the headset's identity*; the banner
 and the headset on the Devices tab say so, with **Check the new key…** (also
 **Check its key…** on the Devices tab at any time). That reads the key the
-headset shows now, with ssh, a throwaway known_hosts file and no login
-(`PreferredAuthentications=none`, so nothing of this computer's is offered to a
-device that may not be the headset), and shows its SHA256 fingerprint next to
+headset shows now, and nothing more: ssh writes it to a throwaway known_hosts
+file during the key exchange, before any login, and is stopped as soon as it
+has. Every other kind of contact is ruled out on the command line, ahead of
+anything `~/.ssh/config` says: no authentication of any kind, no agent
+(`IdentityAgent=none`, `ForwardAgent=no`), no X11 or port forwarding, no local
+or remote command (`-N`), no terminal, and `-F none` unless the alias goes
+through a jump host. It shows the key's SHA256 fingerprint next to
 the saved one, with the command that prints it on the headset
 (`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, in Konsole on its desktop).
 **This is my headset: trust its new key** then saves exactly that key, replacing
 the old one, and reconnects. The server keeps the key it showed for 10 minutes
-and saves it only if the page sends back the same fingerprint; it never saves
-whatever answers next. Set Up Connection can't fix a changed key: it checks your
+and saves it only if the page sends back the same fingerprint, and only while
+the headset's port, user and that address are unchanged; it never saves whatever
+answers next. The API's old `forget-identity`, which deleted the pin so that the
+next contact saved any key unseen, is refused. Set Up Connection can't fix a changed key: it checks your
 own `known_hosts`, not the headset's file.
 
 **When the headset refuses this computer's key** (`Permission denied
@@ -168,7 +183,7 @@ All under the usual `/api/` guards (loopback `Host`, `X-Frame-UI` header).
 | `GET /api/devices` | Headsets, the current network, known networks, the next free alias |
 | `GET /api/devices/tailscale?id=` | Tailscale peers, likely headsets first |
 | `GET /api/devices/mdns?id=` | Headsets found on this network |
-| `POST /api/devices` | `{"action": ...}`: `use`, `update` (name, user, port), `remove`, `address-add`, `address-update`, `address-remove`, `address-move`, `test`, `forget-identity`, `identity-scan` (read the key the headset shows: `scan` with `type`, `fingerprint`, `host`, `saved`, `matches`), `identity-trust` (`fingerprint`: save the key `identity-scan` showed), `name-network`, `setup` (alias, optional host), `retry` |
+| `POST /api/devices` | `{"action": ...}`: `use`, `update` (name, user, port), `remove`, `address-add`, `address-update`, `address-remove`, `address-move`, `test`, `identity-scan` (read the key the headset shows: `scan` with `type`, `fingerprint`, `host`, `saved`, `recorded`, `matches`, `recorded_match`), `identity-trust` (`fingerprint`: save the key `identity-scan` showed), `forget-identity` (refused: use the two before), `name-network`, `setup` (alias, optional host), `retry` |
 
 Every host, alias and user is checked against strict patterns before it's
 stored, because they end up in ssh arguments and `~/.ssh/config`; nothing goes
@@ -185,7 +200,7 @@ share the format later (it still connects to one host; see
 ```json
 {"version": 1, "active": "f67f8b7e",
  "devices": [{"id": "f67f8b7e", "name": "Steam Frame", "alias": "frame", "user": "steamos", "port": 22,
-              "identity_files": ["~/.ssh/id_ed25519_frame"],
+              "identity_files": ["~/.ssh/id_ed25519_frame"], "identity": ["SHA256:…"],
               "addresses": [{"host": "frame.local", "kind": "mdns", "label": "",
                              "networks": ["n-e0998baa61"], "last_ok": 1790593550.4, "last_rtt_ms": 0.9}]}],
  "networks": {"n-e0998baa61": {"name": "Home Wi-Fi", "ssid": null, "gateway": "192.168.1.1",

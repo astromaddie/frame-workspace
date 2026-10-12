@@ -4800,7 +4800,8 @@ function renderDetail() {
       <button class="small" data-mv="1" title="Try later"${i < d.addresses.length - 1 ? "" : " disabled"}>↓</button>
       <button class="small" data-ed>Edit</button><button class="small danger" data-rm>Remove</button></div>`).join("");
   const err = d.active && link.s && link.s.phase === "failed" ? link.s.error : null;
-  const problem = err && err.hostkey ? `<div class="item" role="alert"><div class="grow"><div class="t">Its SSH identity has changed</div>
+  const problem = err && err.hostkey ? `<div class="item" role="alert"><div class="grow"><div class="t">${err.hostkey.state === "missing"
+        ? "Its saved SSH identity is missing" : "Its SSH identity has changed"}</div>
         <div class="s">${esc(err.message)}</div></div><button class="small action" id="dvTrustNow">Check the new key…</button></div>`
     : err && err.auth === "denied" ? `<div class="item" role="alert"><div class="grow"><div class="t">The headset didn't accept this computer's key</div>
         <div class="s">Set Up Connection pairs this computer with it again. On the headset, Developer Mode must be on.</div></div>
@@ -4832,6 +4833,7 @@ function renderDetail() {
     <div class="found" id="dvFound"></div>
     <div class="hint">Identity: ${d.pinned ? `saved${(d.keys || []).length ? ` (${esc(d.keys.map(k => k.fingerprint).join(", "))})` : ""}.
       A different device answering at one of these addresses is refused.`
+      : d.identity_lost ? "the saved key is missing or can't be read, so nothing is trusted until you check its key."
       : "not saved yet; the next connection saves it."} Kind "auto" is picked from the address:
       <code>.local</code> names are mDNS, <code>100.x</code> and <code>.ts.net</code> are Tailscale.</div>`;
   $("adKind").insertAdjacentHTML("afterbegin", `<option value="" selected>Kind: auto</option>`);
@@ -4937,14 +4939,17 @@ async function openTrust(id) {
   try { res = await api("/api/devices", { action: "identity-scan", id }); }
   catch (e) { $("trustText").textContent = e.message; return; }
   const scan = res.scan;
-  const saved = (scan.saved || []).map(k => `${k.type} ${k.fingerprint}`).join("\n") || "None";
+  const saved = (scan.saved || []).map(k => `${k.type} ${k.fingerprint}`).join("\n")
+    || ((scan.recorded || []).length ? `${scan.recorded.join("\n")}\n(recorded; the saved file is missing or unreadable)` : "None");
   $("trustKeys").innerHTML = [["Saved key", saved], ["It shows now", `${scan.type} ${scan.fingerprint}`], ["At", scan.host]]
     .map(([k, v]) => `<dt>${esc(k)}</dt><dd style="white-space:pre-wrap; word-break:break-all"><code>${esc(v)}</code></dd>`).join("");
   if (scan.matches) {
     $("trustText").textContent = `${name} shows the key already saved for it, so there's nothing to change. If it still won't connect, try Test now.`;
     return;
   }
-  $("trustText").textContent = (scan.saved || []).length
+  $("trustText").textContent = scan.recorded_match
+    ? `${name} shows the key recorded for it before, but the saved copy is missing or can't be read. Trust it to save it again.`
+    : (scan.saved || []).length || (scan.recorded || []).length
     ? `${name} now shows a different SSH key from the one saved. That's expected after SteamOS was reinstalled or reset, or if this is a new headset at the same address. If none of that happened, don't trust it: another device may be answering in its place.`
     : `No key is saved for ${name} yet. Trust this one if it's your headset.`;
   $("trustCmd").textContent = `ssh-keygen -lf /etc/ssh/ssh_host_${HOST_KEY_FILE[scan.type] || "ecdsa"}_key.pub`;

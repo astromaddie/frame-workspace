@@ -8,7 +8,9 @@ every call is appended to $FAKESSH_LOG as a JSON line. POSIX only.
 With $FAKESSH_PINS set, host keys are checked as OpenSSH does against UserKnownHostsFile under
 HostKeyAlias: "wrong" is then just a different key from the others' (a reinstalled headset),
 StrictHostKeyChecking=yes refuses a key not saved, accept-new saves a first one, and a saved key
-that differs is refused. Like ssh, the first value of an option counts."""
+that differs is refused. "evil" is a device with its own key that lets anyone in without
+authentication ("none") and asks for the agent: it records in $FAKESSH_DIR what it got
+(agent-forwarded, command-ran). Like ssh, the first value of an option counts."""
 import base64
 import hashlib
 import json
@@ -24,7 +26,7 @@ hosts = json.loads(os.environ.get("FAKESSH_HOSTS", "{}"))
 opts = {}
 i = 0
 while i < len(args) and args[i].startswith("-"):
-    if args[i] in ("-o", "-O", "-p", "-l"):
+    if args[i] in ("-o", "-O", "-p", "-l", "-F"):
         key = args[i]
         val = args[i + 1]
         if key == "-o":
@@ -37,6 +39,12 @@ while i < len(args) and args[i].startswith("-"):
         opts[args[i]] = True
         i += 1
 alias = args[i] if i < len(args) else ""
+command = args[i + 1:]
+if opts.get("-F") != "none":
+    # $FAKESSH_CONFIG: what ~/.ssh/config says (JSON, lower-case option -> value), below the
+    # command line's options, as ssh has it; `-F none` reads no config.
+    for k, v in json.loads(os.environ.get("FAKESSH_CONFIG", "{}")).items():
+        opts.setdefault(k, v)
 host = opts.get("hostname", alias).replace("%%", "%")
 marker = os.path.join(os.environ["FAKESSH_DIR"], "master-" + host.replace("/", "_"))
 say = lambda s: (sys.stderr.write(s + "\n"), sys.stderr.flush())
@@ -62,11 +70,11 @@ if what == "slow":
 say(f"debug1: Authenticating to {host}:22 as '{opts.get('user', 'tester')}'")
 if os.environ.get("FAKESSH_PINS") and "hostkeyalias" in opts and "userknownhostsfile" in opts:
     name, path = opts["hostkeyalias"], os.path.expanduser(opts["userknownhostsfile"])
-    blob = base64.b64encode(b"fake-" + (b"other" if what == "wrong" else b"headset") + b"-key").decode()
+    blob = base64.b64encode(b"fake-" + {"wrong": b"other", "evil": b"evil"}.get(what, b"headset") + b"-key").decode()
     fp = base64.b64encode(hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
     say(f"debug1: Server host key: ssh-ed25519 SHA256:{fp}")
     try:
-        saved = [ln.split() for ln in open(path).read().splitlines() if ln.strip()]
+        saved = [ln.split() for ln in open(path, errors="replace").read().splitlines() if ln.strip()]
     except OSError:
         saved = []
     saved = [f[2] for f in saved if len(f) >= 3 and name in f[0].split(",")]
@@ -90,6 +98,16 @@ if os.environ.get("FAKESSH_PINS") and "hostkeyalias" in opts and "userknownhosts
     else:
         say(f"debug1: Host '{name}' is known and matches the ED25519 host key.")
     say("debug1: Next authentication method: publickey")
+    if what == "evil":
+        say(f'Authenticated to {host} ([127.0.0.1]:22) using "none".')
+        got = os.path.join(os.environ["FAKESSH_DIR"], "evil-")
+        if opts.get("forwardagent", "no") != "no" and opts.get("identityagent", "") != "none":
+            open(got + "agent-forwarded", "w").close()
+        if "-N" not in opts and (command or opts.get("remotecommand", "none") != "none"):
+            open(got + "command-ran", "w").close()
+            sys.exit(0)
+        time.sleep(30)  # -N: holds the session open
+        sys.exit(0)
     if opts.get("preferredauthentications") == "none":
         say(f"tester@{host}: Permission denied (publickey,password).")
         sys.exit(255)

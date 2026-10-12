@@ -437,6 +437,7 @@ def _write_pin(device_id, lines):
     fd_, tmp = tempfile.mkstemp(prefix=".seed-", dir=str(pin_dir()))
     with os.fdopen(fd_, "w", encoding="utf-8") as fh:
         fh.write("\n".join(dict.fromkeys(lines)) + "\n")
+    frame_host.make_private(tmp)  # Windows: this user only, not the folder's inherited ACL
     os.replace(tmp, target)  # whole file at once: ssh never sees half of it
 
 
@@ -487,7 +488,24 @@ def scan_file(device_id):
     headset's key to, without touching the saved one. `~` as in known_hosts_opt."""
     name = f".scan-{device_id}-{secrets.token_hex(4)}"
     path = pin_dir() / name
+    path.touch(**({} if frame_host.WINDOWS else {"mode": 0o600}))
+    frame_host.make_private(path)
     return path, (str(path) if os.environ.get("FRAME_CONTROL_SSH_DIR") else f"~/.ssh/{PIN_DIR}/{name}")
+
+
+def identity_established(device):
+    """Whether this headset ever had an SSH identity here: one recorded in devices.json, a
+    pin file at all (even empty, unreadable or not parseable), or a connection that worked
+    (which saved one). Then a missing or unusable pin fails closed, needing Check its key;
+    only a headset with none of these may save the first key it meets (accept-new)."""
+    if device.get("identity"):
+        return True
+    try:
+        if os.path.lexists(known_hosts(device["id"])):
+            return True
+    except OSError:
+        return True
+    return any(a.get("last_ok") for a in device.get("addresses") or ())
 
 
 def forget_pin(device_id):
@@ -777,6 +795,21 @@ class Registry:
             a["last_rtt_ms"] = rtt_ms
             self.save()
 
+    def record_identity(self, device_id, fingerprints):
+        """Remember the fingerprints of the key saved for a headset, so that losing the pin
+        file later can't turn into trusting whatever answers (identity_established)."""
+        fingerprints = [f for f in fingerprints if isinstance(f, str) and f.startswith("SHA256:")][:8]
+        if not fingerprints:
+            return
+        with self._changing():
+            try:
+                d = self._find(device_id)
+            except DeviceError:
+                return
+            if d.get("identity") != fingerprints:
+                d["identity"] = fingerprints
+                self.save()
+
     def undismiss(self, alias):
         """Set Up Connection is about to run for this alias: import its block again."""
         with self._changing():
@@ -860,15 +893,15 @@ class Registry:
                         d["addresses"].append(dict(new_address(host), label="From Set Up Connection"))
                     d["config_host"] = host
                     changed = True
-                    if seed and host:
-                        seed_pin(d["id"], [host], b["port"])
+                    if seed and host and seed_pin(d["id"], [host], b["port"]):
+                        d["identity"] = [f for _, f in pinned_keys(d["id"])][:8] or d.get("identity")
                 elif host and host != d.get("config_host"):
                     # Set Up Connection ran again and found the headset somewhere new.
                     d["config_host"] = host
                     if not any(a["host"] == host for a in d["addresses"]):
                         d["addresses"].insert(0, dict(new_address(host), label="From Set Up Connection"))
-                    if seed:
-                        seed_pin(d["id"], [host], b["port"])
+                    if seed and seed_pin(d["id"], [host], b["port"]) and not d.get("identity"):
+                        d["identity"] = [f for _, f in pinned_keys(d["id"])][:8] or None
                     changed = True
                 if d.get("config_login") != [user, b["port"]]:
                     # Set Up Connection (or an edit) changed who to log in as, or the port.
