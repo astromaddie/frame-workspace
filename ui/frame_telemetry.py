@@ -50,6 +50,7 @@ SETTINGS = STATE / 'settings.json'
 OUTBOX = STATE / 'outbox.jsonl'
 SENT = STATE / 'sent.jsonl'
 SENT_KEEP = 200
+FRAMES_SEEN_KEEP = 100  # build/headset pairs already reported, enough for several headsets' updates
 OUTBOX_MAX = 2000  # events kept while offline; the oldest go first
 FLUSH_EVERY = 60
 REPEAT_WINDOW = 600  # the same diagnostic error is sent at most once in this many seconds
@@ -366,16 +367,24 @@ def app_started():
         _save(s)
 
 
-def frame_seen(build, version):
-    """The Frame's SteamOS build, once per build (public build numbers)."""
-    key = f'{build}/{version}'
+def frame_seen(build, version, headset=None, saved=None):
+    """The Frame's SteamOS build (public build numbers), once per build for each headset.
+    headset: the anonymous hash from frame_status.headset_id; saved: how many headsets
+    this copy of the app has set up."""
+    headset = headset if isinstance(headset, str) and re.fullmatch(r'[0-9a-f]{16}', headset) else None
+    key = f'{build}/{version}' + (f'/{headset}' if headset else '')
     with _lock:
         s = settings()
         if not build or key in s['frames_seen']:
             return
-        s['frames_seen'] = (s['frames_seen'] + [key])[-20:]
+        s['frames_seen'] = (s['frames_seen'] + [key])[-FRAMES_SEEN_KEEP:]
         _save(s)
-    capture('frame_connected', {'steamos_build': str(build)[:40], 'steamos_version': str(version or '')[:40]})
+    p = {'steamos_build': str(build)[:40], 'steamos_version': str(version or '')[:40]}
+    if headset:
+        p['headset_id'] = headset
+    if isinstance(saved, int) and saved >= 0:
+        p['headsets_saved'] = saved
+    capture('frame_connected', p)
 
 
 def install_finished(kind, ok, seconds=None, error=None, diagnose=True, **props):

@@ -33,6 +33,12 @@ computer, exactly as they were sent.
   yours.
 - Every event includes the app version, OS name (macOS, Windows or Linux),
   CPU architecture and Python version.
+- `frame_connected` carries `headset_id`: the first 16 hex digits of a
+  SHA-256 hash of the headset's `/etc/machine-id`, worked out on the headset,
+  so the machine-id itself never leaves it. It is the same for one headset on
+  every computer, which lets us count headsets rather than installs; it can't
+  be turned back into the machine-id or a serial number. `headsets_saved` is how
+  many headsets this copy of Frame Control has set up.
 
 ## Usage events
 
@@ -41,7 +47,7 @@ computer, exactly as they were sent.
 | `app_installed` | First run | |
 | `app_updated` | First run of a new version | `from_version` |
 | `app_opened` | At most once a day | |
-| `frame_connected` | The first time a SteamOS build is seen | `steamos_build`, `steamos_version` |
+| `frame_connected` | The first time a SteamOS build is seen on each headset | `steamos_build`, `steamos_version`, `headset_id`, `headsets_saved` |
 | `tab_viewed` | The first click on each tab in a session | `tab` |
 | `install_finished` | Any install finishes, working or not | `kind` (apk, flatpak, steam, title, web), `ok`, `seconds`, `error_category` (only when `ok` is false), `installer_code`, `xr_layer_missing`, and see below |
 | `update_offered`, `update_started`, `update_failed` | The update banner | `to_version`, `error_category` |

@@ -164,6 +164,38 @@ class Lifecycle(Base):
         tm.frame_seen("20260922.1", "3.8")
         self.assertEqual(len(self.queued()), 1)
 
+    def test_frame_once_per_headset_with_saved_count(self):
+        tm.frame_seen("20260922.1", "3.8", "0123456789abcdef", 2)
+        tm.frame_seen("20260922.1", "3.8", "0123456789abcdef", 2)
+        tm.frame_seen("20260922.1", "3.8", "fedcba9876543210", 2)
+        props = [e["properties"] for e in self.queued()]
+        self.assertEqual([(p["headset_id"], p["headsets_saved"]) for p in props],
+                         [("0123456789abcdef", 2), ("fedcba9876543210", 2)])
+
+    def test_frame_many_headsets_are_not_sent_twice(self):
+        ids = ["%016x" % n for n in range(25)]
+        for _ in range(2):
+            for h in ids:
+                tm.frame_seen("20260922.1", "3.8", h, 25)
+        self.assertEqual(len(self.queued()), 25)
+
+    def test_frame_headset_id_must_be_the_hash(self):
+        tm.frame_seen("20260922.1", "3.8", "/etc/machine-id contents", None)
+        p = self.queued()[0]["properties"]
+        self.assertNotIn("headset_id", p)
+        self.assertNotIn("headsets_saved", p)
+
+
+class HeadsetId(unittest.TestCase):
+    def test_hash_of_machine_id_and_none_without_one(self):
+        import hashlib
+        import frame_status
+        with mock.patch.object(frame_status, "read", return_value="abc123"):
+            self.assertEqual(frame_status.headset_id(),
+                             hashlib.sha256(b"frame-control-headset:abc123").hexdigest()[:16])
+        with mock.patch.object(frame_status, "read", return_value=None):
+            self.assertIsNone(frame_status.headset_id())
+
 
 class Sending(Base):
     def serve(self, status=200):

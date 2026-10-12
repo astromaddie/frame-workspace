@@ -6,6 +6,7 @@ error. Sensor paths verified on SteamOS 0.3.0; OpenVR timing on 0.4.1
 """
 import ctypes as C
 import glob
+import hashlib
 import math
 import json
 import os
@@ -121,7 +122,16 @@ def os_release():
         k, _, v = line.partition("=")
         out[k] = v.strip('"')
     return {"version": out.get("VERSION_ID"), "build": out.get("BUILD_ID"),
-            "variant": out.get("VARIANT_ID")}
+            "variant": out.get("VARIANT_ID"), "headset": headset_id()}
+
+
+def headset_id():
+    """A one-way hash of the headset's /etc/machine-id: the same for this headset on every
+    computer, and the machine-id itself never leaves the headset. None without one."""
+    mid = read("/etc/machine-id")
+    if not mid:
+        return None
+    return hashlib.sha256(("frame-control-headset:" + mid).encode()).hexdigest()[:16]
 
 
 def volume():

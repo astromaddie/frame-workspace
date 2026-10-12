@@ -403,7 +403,9 @@ def status(_body):
     s = json.loads(ssh("python3 -", stdin=(HERE / "frame_status.py").read_text(), timeout=20))
     osr = s.get("os") if isinstance(s, dict) else None
     if isinstance(osr, dict):
-        frame_telemetry.frame_seen(osr.get("build"), osr.get("version"))
+        # The headset's hash is for usage statistics only; the page and MCP clients don't get it.
+        frame_telemetry.frame_seen(osr.get("build"), osr.get("version"), osr.pop("headset", None),
+                                   len(LINK.reg.devices()) if LINK else None)
         frame_report.frame.update(build=osr.get("build"), version=osr.get("version"))
     return s
 
