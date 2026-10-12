@@ -28,8 +28,10 @@ remembered IP is caught.
 
 Python stdlib only.
 """
+import base64
 import contextlib
 import copy
+import hashlib
 import json
 import os
 import re
@@ -418,19 +420,80 @@ def seed_pin(device_id, hosts, port=22, sources=None):
                 if len(f) >= 3 and not line.startswith("#") and not f[0].startswith("@"):
                     keys.append(f"{name} {f[1]} {f[2]}")
         if keys:
-            target = known_hosts(device_id)
-            target.parent.mkdir(**({} if frame_host.WINDOWS else {"mode": 0o700}), parents=True, exist_ok=True)
-            fd_, tmp = tempfile.mkstemp(prefix=".seed-", dir=str(target.parent))
-            with os.fdopen(fd_, "w", encoding="utf-8") as fh:
-                fh.write("\n".join(dict.fromkeys(keys)) + "\n")
-            os.replace(tmp, target)  # whole file at once: ssh never sees half of it
+            _write_pin(device_id, keys)
             return True
     return False
 
 
+def pin_dir():
+    """Where the per-headset files go, created private: ssh won't create it itself."""
+    d = ssh_dir() / PIN_DIR
+    d.mkdir(**({} if frame_host.WINDOWS else {"mode": 0o700}), parents=True, exist_ok=True)
+    return d
+
+
+def _write_pin(device_id, lines):
+    target = known_hosts(device_id)
+    fd_, tmp = tempfile.mkstemp(prefix=".seed-", dir=str(pin_dir()))
+    with os.fdopen(fd_, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(dict.fromkeys(lines)) + "\n")
+    os.replace(tmp, target)  # whole file at once: ssh never sees half of it
+
+
+# The host key types OpenSSH writes to known_hosts.
+KEY_TYPE_RE = re.compile(r"ssh-ed25519|ssh-rsa|ssh-dss|ecdsa-sha2-nistp(?:256|384|521)|"
+                         r"sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com")
+
+
+def fingerprint(blob):
+    """OpenSSH's SHA256 fingerprint of a base64 key blob (what `ssh-keygen -l` and ssh -v print),
+    or None if it isn't base64."""
+    try:
+        raw = base64.b64decode(blob, validate=True)
+    except (ValueError, TypeError):
+        return None
+    return "SHA256:" + base64.b64encode(hashlib.sha256(raw).digest()).decode().rstrip("=")
+
+
+def key_entry(line, name):
+    """(type, blob, fingerprint) from a known_hosts line for `name`, or None."""
+    f = (line or "").split()
+    if len(f) < 3 or line.startswith("#") or name not in f[0].split(",") or not KEY_TYPE_RE.fullmatch(f[1]):
+        return None
+    fp = fingerprint(f[2])
+    return (f[1], f[2], fp) if fp else None
+
+
+def pinned_keys(device_id):
+    """[(type, fingerprint)] of the keys saved for a headset (plain entries only)."""
+    try:
+        lines = known_hosts(device_id).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+    name = host_key_alias(device_id)
+    return [(e[0], e[2]) for e in (key_entry(line, name) for line in lines) if e]
+
+
+def pin_key(device_id, key_type, blob):
+    """Save one key as the headset's whole identity, replacing whatever was saved: what the
+    person confirmed after seeing its fingerprint (see frame_link.Link.trust_identity)."""
+    if not KEY_TYPE_RE.fullmatch(key_type or "") or not fingerprint(blob):
+        raise DeviceError("That isn't an SSH host key")
+    _write_pin(device_id, [f"{host_key_alias(device_id)} {key_type} {blob}"])
+
+
+def scan_file(device_id):
+    """(path, how ssh is told) for a throwaway known_hosts file that a key check writes the
+    headset's key to, without touching the saved one. `~` as in known_hosts_opt."""
+    name = f".scan-{device_id}-{secrets.token_hex(4)}"
+    path = pin_dir() / name
+    return path, (str(path) if os.environ.get("FRAME_CONTROL_SSH_DIR") else f"~/.ssh/{PIN_DIR}/{name}")
+
+
 def forget_pin(device_id):
-    """Drop a headset's saved key, e.g. after SteamOS was reinstalled. The next connection
-    trusts whatever key the headset shows, as a first connection does."""
+    """Drop a headset's saved key (the headset was removed, or the API's forget-identity).
+    The next connection trusts whatever key the headset shows, as a first connection does;
+    the page's Trust a new key flow (frame_link) shows the key first instead."""
     try:
         known_hosts(device_id).unlink()
         return True

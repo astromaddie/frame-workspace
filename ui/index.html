@@ -700,6 +700,7 @@
     <div class="grow"><div class="t" id="offMsg">Can't reach the Frame</div>
       <div class="s" id="offDetail">Retrying every few seconds. Everything fills in when it answers.</div></div>
     <button class="small desk-only" id="offDetails" hidden>Details</button>
+    <button class="small desk-only" id="offTrust" hidden>Check the new key…</button>
     <button class="small" id="offSetup" hidden>Set Up Connection…</button>
     <button class="action small" id="offRetry">Retry now</button>
   </div>
@@ -1356,6 +1357,18 @@
     <div class="row rep-actions"><span class="sub" id="rmMsg"></span><span class="spacer"></span>
       <button type="button" class="small" id="rmCancel">Cancel</button>
       <button type="submit" class="small danger" id="rmGo">Remove</button></div>
+  </form>
+</dialog>
+<dialog id="trustDlg" class="dlg" aria-labelledby="trustTitle">
+  <form method="dialog" id="trustForm">
+    <h2 id="trustTitle">Check the headset's new key</h2>
+    <div class="sub" id="trustText"></div>
+    <dl class="facts" id="trustKeys"></dl>
+    <div class="sub" id="trustHow" hidden>To check it, on the headset open the desktop from the SteamVR dashboard, start
+      Konsole and run <code id="trustCmd"></code>. The <code>SHA256:</code> value it prints must match the key above.</div>
+    <div class="row rep-actions"><span class="sub" id="trustMsg" role="status"></span><span class="spacer"></span>
+      <button type="button" class="small" id="trustCancel">Cancel</button>
+      <button type="submit" class="small action" id="trustGo" disabled>This is my headset: trust its new key</button></div>
   </form>
 </dialog>
 <div class="toast" id="toast"></div>
@@ -4520,6 +4533,10 @@ function renderBanner() {
   const s = link.s;
   if (!link.live || !s) return;
   $("offDetails").hidden = false;
+  // A changed host key: never accepted by itself. The person checks the new key and decides.
+  const hk = s.phase === "failed" && s.error && s.error.hostkey && s.device ? s.device.id : null;
+  $("offTrust").hidden = !hk;
+  if (hk) $("offTrust").onclick = () => openTrust(hk);
   if (s.phase === "failed" && s.error) {
     $("offline").hidden = false;
     $("offMsg").textContent = s.error.message;
@@ -4620,6 +4637,9 @@ function onConnection(s) {
     loadDevices();
   }
   link.phase = s.phase; link.device = devId;
+  // What the Devices tab offers for the failure (check a new key, pair again) follows it.
+  const problem = s.phase === "failed" && s.error ? (s.error.hostkey ? "hostkey" : s.error.auth || "") : "";
+  if (problem !== link.problem) { link.problem = problem; renderDevices(); }
   if (page === "devices") renderTests();
 }
 
@@ -4779,8 +4799,14 @@ function renderDetail() {
       <button class="small" data-mv="-1" title="Try earlier"${i ? "" : " disabled"}>↑</button>
       <button class="small" data-mv="1" title="Try later"${i < d.addresses.length - 1 ? "" : " disabled"}>↓</button>
       <button class="small" data-ed>Edit</button><button class="small danger" data-rm>Remove</button></div>`).join("");
+  const err = d.active && link.s && link.s.phase === "failed" ? link.s.error : null;
+  const problem = err && err.hostkey ? `<div class="item" role="alert"><div class="grow"><div class="t">Its SSH identity has changed</div>
+        <div class="s">${esc(err.message)}</div></div><button class="small action" id="dvTrustNow">Check the new key…</button></div>`
+    : err && err.auth === "denied" ? `<div class="item" role="alert"><div class="grow"><div class="t">The headset didn't accept this computer's key</div>
+        <div class="s">Set Up Connection pairs this computer with it again. On the headset, Developer Mode must be on.</div></div>
+        <button class="small action" id="dvPair">Set Up Connection…</button></div>` : "";
   el.innerHTML = `<div class="shelf-head"><h2>${esc(d.name)}</h2>${d.active ? '<span class="count">In use</span>' : ""}<span class="spacer"></span>
-      ${d.active ? "" : `<button class="small action" id="dvUse">Use this headset</button>`}</div>
+      ${d.active ? "" : `<button class="small action" id="dvUse">Use this headset</button>`}</div>${problem}
     <form class="dev-form" id="dvForm">
       <label>Name<input type="text" id="dvName" value="${esc(d.name)}" maxlength="60"></label>
       <label>SSH alias<input type="text" value="${esc(d.alias)}" readonly title="Terminal: ssh ${esc(d.alias)}"></label>
@@ -4801,10 +4827,11 @@ function renderDetail() {
       <button class="small" id="dvTs">Find on Tailscale</button>
       <button class="small" id="dvMdns">Find on this network</button>
       <span class="spacer"></span>
-      <button class="small" id="dvForget" title="After reinstalling SteamOS the headset shows a new identity">Forget identity</button>
+      <button class="small" id="dvTrust" title="After SteamOS is reinstalled or reset the headset shows a new identity">Check its key…</button>
       <button class="small danger" id="dvRemove">Remove…</button></div>
     <div class="found" id="dvFound"></div>
-    <div class="hint">Identity: ${d.pinned ? "saved. A different device answering at one of these addresses is refused."
+    <div class="hint">Identity: ${d.pinned ? `saved${(d.keys || []).length ? ` (${esc(d.keys.map(k => k.fingerprint).join(", "))})` : ""}.
+      A different device answering at one of these addresses is refused.`
       : "not saved yet; the next connection saves it."} Kind "auto" is picked from the address:
       <code>.local</code> names are mDNS, <code>100.x</code> and <code>.ts.net</code> are Tailscale.</div>`;
   $("adKind").insertAdjacentHTML("afterbegin", `<option value="" selected>Kind: auto</option>`);
@@ -4837,7 +4864,9 @@ function renderDetail() {
   $("dvTest").onclick = e => devAction(`Test ${d.name}'s addresses`, { action: "test", id: d.id }, e.currentTarget);
   $("dvTs").onclick = e => findOn("tailscale", d, e.currentTarget);
   $("dvMdns").onclick = e => findOn("mdns", d, e.currentTarget);
-  $("dvForget").onclick = e => devAction(`Forget ${d.name}'s identity`, { action: "forget-identity", id: d.id }, e.currentTarget);
+  $("dvTrust").onclick = () => openTrust(d.id);
+  if ($("dvTrustNow")) $("dvTrustNow").onclick = () => openTrust(d.id);
+  if ($("dvPair")) $("dvPair").onclick = () => setUpHeadset(d.alias);
   $("dvRemove").onclick = () => askRemove(d);
   renderFound(d);
   renderTests();
@@ -4888,6 +4917,45 @@ function renderFound(d) {
                                                           kind: b.dataset.kind, label: b.dataset.label }, b);
     if (res) { b.replaceWith(Object.assign(document.createElement("span"), { className: "sub", textContent: "Added" })); }
   });
+}
+
+// Trust a new key: read the key the headset shows now (nothing is saved), show it next to the
+// saved one, and save it only when the person says it's their headset. The server pins exactly
+// the key it showed here (frame_link.Link.trust_identity), never whatever answers next.
+const HOST_KEY_FILE = { "ssh-ed25519": "ed25519", "ssh-rsa": "rsa", "ssh-dss": "dsa" };
+async function openTrust(id) {
+  const d = dv.list.find(x => x.id === id);
+  const name = d ? d.name : "the headset";
+  $("trustTitle").textContent = `Check ${name}'s key`;
+  $("trustText").textContent = "Asking the headset for its key…";
+  $("trustKeys").innerHTML = ""; $("trustMsg").textContent = "";
+  $("trustHow").hidden = true; $("trustGo").disabled = true;
+  $("trustCancel").onclick = () => $("trustDlg").close();
+  $("trustForm").onsubmit = e => e.preventDefault();
+  if (!$("trustDlg").open) $("trustDlg").showModal();
+  let res;
+  try { res = await api("/api/devices", { action: "identity-scan", id }); }
+  catch (e) { $("trustText").textContent = e.message; return; }
+  const scan = res.scan;
+  const saved = (scan.saved || []).map(k => `${k.type} ${k.fingerprint}`).join("\n") || "None";
+  $("trustKeys").innerHTML = [["Saved key", saved], ["It shows now", `${scan.type} ${scan.fingerprint}`], ["At", scan.host]]
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd style="white-space:pre-wrap; word-break:break-all"><code>${esc(v)}</code></dd>`).join("");
+  if (scan.matches) {
+    $("trustText").textContent = `${name} shows the key already saved for it, so there's nothing to change. If it still won't connect, try Test now.`;
+    return;
+  }
+  $("trustText").textContent = (scan.saved || []).length
+    ? `${name} now shows a different SSH key from the one saved. That's expected after SteamOS was reinstalled or reset, or if this is a new headset at the same address. If none of that happened, don't trust it: another device may be answering in its place.`
+    : `No key is saved for ${name} yet. Trust this one if it's your headset.`;
+  $("trustCmd").textContent = `ssh-keygen -lf /etc/ssh/ssh_host_${HOST_KEY_FILE[scan.type] || "ecdsa"}_key.pub`;
+  $("trustHow").hidden = false;
+  $("trustGo").disabled = false;
+  $("trustForm").onsubmit = async e => {
+    e.preventDefault();
+    const ok = await devAction(`Trust ${name}'s new key`, { action: "identity-trust", id, fingerprint: scan.fingerprint }, $("trustGo"));
+    if (ok) $("trustDlg").close();
+    else $("trustMsg").textContent = "Not saved. Close this and check the key again.";
+  };
 }
 
 function askRemove(d) {

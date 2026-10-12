@@ -121,9 +121,33 @@ lease that moved) would look like a new host there. The app keeps one known_host
 file per headset instead, so saving or forgetting one headset's key never touches
 another's: a different device answering at one of its
 addresses is refused, and the pill says so. A headset's first connection trusts
-the key it shows, as Set Up Connection does. After reinstalling SteamOS the
-headset has a new key; **Forget identity** on the Devices tab lets the next
-connection save the new one.
+the key it shows, as Set Up Connection does: until a key is saved, every ssh
+command gets `StrictHostKeyChecking=accept-new` (the first contact saves it,
+whichever command makes it), and from then on `StrictHostKeyChecking=yes`.
+`accept-new` never replaces a saved key, so it can't hide a change.
+
+**When the key changes** (SteamOS reinstalled or reset, a new headset at the
+same address, or a different device answering there), nothing is accepted by
+itself. The connection fails at *Checking the headset's identity*; the banner
+and the headset on the Devices tab say so, with **Check the new key…** (also
+**Check its key…** on the Devices tab at any time). That reads the key the
+headset shows now, with ssh, a throwaway known_hosts file and no login
+(`PreferredAuthentications=none`, so nothing of this computer's is offered to a
+device that may not be the headset), and shows its SHA256 fingerprint next to
+the saved one, with the command that prints it on the headset
+(`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`, in Konsole on its desktop).
+**This is my headset: trust its new key** then saves exactly that key, replacing
+the old one, and reconnects. The server keeps the key it showed for 10 minutes
+and saves it only if the page sends back the same fingerprint; it never saves
+whatever answers next. Set Up Connection can't fix a changed key: it checks your
+own `known_hosts`, not the headset's file.
+
+**When the headset refuses this computer's key** (`Permission denied
+(publickey,…)`), the connection stops at *Logging in*, and the banner and the
+Devices tab offer **Set Up Connection…**, which pairs this computer again.
+
+Neither is reported as a fault: the diagnostics report each kind at most once
+a session ([privacy.md](privacy.md)).
 
 ## One server at a time
 
@@ -144,7 +168,7 @@ All under the usual `/api/` guards (loopback `Host`, `X-Frame-UI` header).
 | `GET /api/devices` | Headsets, the current network, known networks, the next free alias |
 | `GET /api/devices/tailscale?id=` | Tailscale peers, likely headsets first |
 | `GET /api/devices/mdns?id=` | Headsets found on this network |
-| `POST /api/devices` | `{"action": ...}`: `use`, `update` (name, user, port), `remove`, `address-add`, `address-update`, `address-remove`, `address-move`, `test`, `forget-identity`, `name-network`, `setup` (alias, optional host), `retry` |
+| `POST /api/devices` | `{"action": ...}`: `use`, `update` (name, user, port), `remove`, `address-add`, `address-update`, `address-remove`, `address-move`, `test`, `forget-identity`, `identity-scan` (read the key the headset shows: `scan` with `type`, `fingerprint`, `host`, `saved`, `matches`), `identity-trust` (`fingerprint`: save the key `identity-scan` showed), `name-network`, `setup` (alias, optional host), `retry` |
 
 Every host, alias and user is checked against strict patterns before it's
 stored, because they end up in ssh arguments and `~/.ssh/config`; nothing goes

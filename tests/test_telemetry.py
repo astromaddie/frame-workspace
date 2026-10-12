@@ -335,6 +335,26 @@ class LinkFailureProvenance(Base):
         tm.diagnostic("job steam", e)
         self.assertEqual([p["properties"]["error_category"] for p in self.queued()], ["frame_unreachable"])
 
+    def test_host_key_and_login_refusals_are_sent_once(self):
+        # 0.4.2: each of these came in as a $exception from the status poll, again every 10 minutes.
+        for _ in range(3):
+            for stderr in ("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r\n"
+                           "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\r\n"
+                           "IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\r\nHost key verification failed.\r\n",
+                           "No ED25519 host key is known for frame-control-f7b4e9ac and you have requested strict "
+                           "checking.\r\nHost key verification failed.\r\n",
+                           "jane doe@frame-control-f7b4e9ac: Permission denied (publickey,password).\r\n",
+                           "steamos@192.168.1.9: Permission denied (publickey,password).\n"):
+                e = self.ssh_fails(self.server, 255, stderr)
+                self.assertTrue(getattr(e, "frame_link_failed", False), stderr)
+                tm.diagnostic("POST /api/comfort status", e)
+        self.assertEqual([p["properties"]["error_category"] for p in self.queued()], ["frame_auth"])
+        # A command on the Frame that was refused something isn't ssh refusing the headset.
+        for code, stderr in ((1, "steamos@frame: Permission denied (publickey).\n"),
+                             (255, "cat: /root/x: Permission denied\n"),
+                             (255, "scp: /home/steamos/x: Permission denied\n")):
+            self.assertFalse(getattr(self.ssh_fails(self.server, code, stderr), "frame_link_failed", False), stderr)
+
     def test_a_command_that_fails_on_the_frame_is_not_marked(self):
         self.poll_fails()
         for module in (self.server, self.android):

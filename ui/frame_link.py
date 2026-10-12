@@ -50,6 +50,7 @@ NETWORK_EVERY = 5      # how often the network fingerprint is read
 TAILSCALE_EVERY = 30
 RETRY = (5, 10, 20, 30)  # seconds before automatic retries after a failure
 REQUEST_GAP = 5        # a request may start a new attempt this long after the last one
+SCAN_TTL = 600         # a key shown for "Trust a new key" may be trusted this long after it was read
 
 STAGES = [("network", "Checking this computer's network"), ("find", "Finding the headset"),
           ("ssh", "Opening SSH"), ("identity", "Checking the headset's identity"),
@@ -301,6 +302,7 @@ class Link:
         self.routed_device = None
         self.last_failure = None        # {"stage", "category", "at"}: for report diagnostics, no free text
         self.attempt_device = None      # the headset the current attempt is for
+        self.scans = {}                 # device id -> the host key it showed for "Trust a new key"
 
     # ---- publishing ----
     def publish(self, **fields):
@@ -505,9 +507,19 @@ class Link:
             return [*mux, *(device.get("frozen") or [])]  # what ~/.ssh/config said when it was routed
         if not host:  # a headset with no addresses: reach nothing, not whatever ~/.ssh/config says
             return ["-o", "HostName=no-address.invalid"]
-        # StrictHostKeyChecking=yes: whatever ~/.ssh/config says for Host *, every command
-        # checks the headset's pinned key (only the connector's first handshake may save one).
-        return [*mux, "-o", "StrictHostKeyChecking=yes", "-o", f"HostName={frame_devices.ssh_host(host)}",
+        # Whatever ~/.ssh/config says for Host *, every command checks the headset's pinned key:
+        # StrictHostKeyChecking=yes. Until a key is saved (a headset just added, or one whose
+        # file is gone), accept-new: the first contact saves it, as Set Up Connection and the
+        # connector's first handshake do, rather than every command failing with "No host key
+        # is known" until the connector gets there. accept-new still refuses a key that differs
+        # from a saved one, so it never replaces a pin; only Trust a new key does that.
+        strict = "yes" if frame_devices.pinned(device["id"]) else "accept-new"
+        if strict == "accept-new":
+            try:
+                frame_devices.pin_dir()  # ssh won't create the folder its known_hosts file goes in
+            except OSError:
+                pass  # ssh then says it couldn't save the key, and goes on
+        return [*mux, "-o", f"StrictHostKeyChecking={strict}", "-o", f"HostName={frame_devices.ssh_host(host)}",
                 "-o", f"HostKeyAlias={frame_devices.host_key_alias(device['id'])}",
                 "-o", f"UserKnownHostsFile={frame_devices.known_hosts_opt(device['id'])}", "-o", "HashKnownHosts=no",
                 "-o", f"User={device['user']}", "-o", f"Port={device['port']}"]
@@ -675,10 +687,11 @@ class Link:
             return "Starting up"
         return "Connecting"
 
-    def fail(self, sid, message, raw=""):
+    def fail(self, sid, message, raw="", **more):
+        """A stage failed. `more`: what the page can offer to fix it (hostkey, auth)."""
         self.stage(sid, "failed", message)
         with self.cond:
-            self.state["error"] = {"stage": sid, "message": message, "raw": raw}
+            self.state["error"] = dict({"stage": sid, "message": message, "raw": raw}, **more)
             probes = copy.deepcopy(self.state["probes"])
         self.note_failure(sid, message, raw, probes)
 
@@ -976,6 +989,7 @@ class Link:
         step, said, authed = "ssh", [], False
         deadline = time.monotonic() + HANDSHAKE_TIMEOUT
         mismatch = False
+        shown = None  # (type, fingerprint) of the key the headset showed
         while True:
             left = deadline - time.monotonic()
             if self.stopped:
@@ -1002,7 +1016,7 @@ class Link:
                     break
                 if authed and self.control and self.check(opts, alias):
                     break
-                return self.failed(step, said, mismatch, alias)
+                return self.failed(step, said, mismatch, alias, shown, a["host"], device)
             if not line.startswith("debug"):
                 said.append(line)
             m = CONNECTING.search(line)
@@ -1015,6 +1029,7 @@ class Link:
                 self.stage("identity", "active", "Waiting for the headset's host key")
             elif HOSTKEY.search(line):
                 m = HOSTKEY.search(line)
+                shown = (m.group(1), m.group(2))
                 self.stage("identity", "active", f"It shows {m.group(1)} key {m.group(2)[:20]}…")
             elif KNOWN.search(line):
                 self.stage("identity", "done", "Matches the identity saved for this headset")
@@ -1048,6 +1063,12 @@ class Link:
                 self.stage(sid, "done")
         if self.control:
             self.master = proc
+        if "StrictHostKeyChecking=accept-new" in extra and frame_devices.pinned(device["id"]):
+            # The first connection saved the key: from now on every command checks it strictly.
+            with self.route_lock:
+                if self.attempt_gen == self.gen:
+                    self.opts = self.host_opts(device, ssh_target(a["host"], found.get("ip")))
+                    self.apply(alias, self.opts)
         return "ok"
 
     @staticmethod
@@ -1059,18 +1080,27 @@ class Link:
         # OpenSSH lower-cases host names (FRAME.LOCAL logs as frame.local).
         return not m or m.group(1).lower() in (host.lower(), alias.lower()) or "Authentication succeeded" in line
 
-    def failed(self, step, said, mismatch, alias):
+    def failed(self, step, said, mismatch, alias, shown=None, host=None, device=None):
         text = "\n".join(said).strip()
         if mismatch:
-            self.fail("identity", "This address answered as a different headset (its SSH identity doesn't match). "
-                      "If SteamOS was reinstalled, use Forget Identity on the Devices tab.", text)
+            # A key that differs from the saved one, or (strict, pinned) none of the saved key's
+            # type any more: either way not the identity saved. Never accepted here: the page
+            # shows the new key's fingerprint and the person decides (Trust a new key).
+            name = (device or {}).get("name") or alias
+            self.fail("identity", f"This address answered with a different SSH identity from the one saved for {name}. "
+                      "If SteamOS was reinstalled or reset, or this is a new headset, check its new key and trust it "
+                      "on the Devices tab. If not, a different device may be answering here.", text,
+                      hostkey={"state": "changed", "type": shown[0] if shown else None,
+                               "fingerprint": shown[1] if shown else None, "host": host})
             return "next"
         # A refused key is the same at every address: stop. (Judged by ssh's own words, not
         # the step: a jump host's progress lines look like the headset's.) A forward that
         # a jump host couldn't open is about this address only: try the next.
         forward = re.search(r"open failed|forwarding failed|Connection refused|Connection closed|timed out", text)
         if re.search(r"Permission denied", text) and not forward:
-            self.fail("login", self.explain(text) or "The headset didn't accept this computer's key.", text)
+            # Not something a retry fixes: the headset needs this computer's key (Set Up Connection).
+            self.fail("login", self.explain(text) or "The headset didn't accept this computer's key. Run Set Up "
+                      "Connection to pair this computer with it again.", text, auth="denied")
             return "stop"
         if step == "connected":
             self.fail("login", "Logged in, but the shared SSH connection didn't start.", text)
@@ -1110,9 +1140,11 @@ class Link:
             lead = f"Answered in {res['rtt_ms']:g} ms" if res.get("rtt_ms") is not None else "Through the jump host"
             rows[i]["ssh"] = "checking"
             put()
+            # "yes" before host_opts (ssh takes an option's first value): a test only looks, so
+            # it reports a key not saved yet rather than saving it as host_opts' accept-new would.
             argv = [*self.mux_base[:3], "-o", "ControlPath=none", "-o", "ConnectTimeout=8",
-                    *self.host_opts(device, ssh_target(a["host"], res.get("ip"))),
-                    "-o", "StrictHostKeyChecking=yes", device["alias"], "true"]
+                    "-o", "StrictHostKeyChecking=yes",
+                    *self.host_opts(device, ssh_target(a["host"], res.get("ip"))), device["alias"], "true"]
             try:
                 r = frame_host.run_ssh(argv, capture_output=True, stdin=subprocess.DEVNULL, text=True,
                                        errors="replace", timeout=20)
@@ -1140,6 +1172,77 @@ class Link:
         put(done=True, finished=now())
         self.devices_changed()
 
+    # ---- Trust a new key ----
+    def scan_identity(self, device_id):
+        """Ask the headset for its host key without trusting it: ssh with a throwaway
+        known_hosts file and no login (PreferredAuthentications=none, so nothing of ours is
+        offered to a device that may not be the headset). The address that showed a changed
+        key goes first, then the rest in order. -> {"type", "fingerprint", "host", "saved",
+        "matches"}; the key is kept (SCAN_TTL) for trust_identity, which pins exactly it."""
+        device = self.reg.get(device_id)
+        if not device["addresses"]:
+            raise frame_devices.DeviceError("This headset has no addresses to ask")
+        hosts = [a["host"] for a in device["addresses"]]
+        with self.cond:
+            err = self.state.get("error") or {}
+            mine = (self.state.get("device") or {}).get("id") == device_id
+        first = (err.get("hostkey") or {}).get("host") if mine else None
+        if first in hosts:
+            hosts.remove(first)
+            hosts.insert(0, first)
+        name = frame_devices.host_key_alias(device_id)
+        reasons = []
+        for host in hosts:
+            path, opt = frame_devices.scan_file(device_id)
+            # Ours first: ssh takes an option's first value, and host_opts says yes and the saved file.
+            argv = [*self.mux_base[:3], "-o", "ControlPath=none", "-o", "ConnectTimeout=8",
+                    "-o", "StrictHostKeyChecking=accept-new", "-o", f"UserKnownHostsFile={opt}",
+                    "-o", "UpdateHostKeys=no",
+                    "-o", "PreferredAuthentications=none",
+                    *self.host_opts(device, host), device["alias"], "true"]
+            try:
+                r = frame_host.run_ssh(argv, capture_output=True, stdin=subprocess.DEVNULL, text=True,
+                                       errors="replace", timeout=25)
+                err_text = r.stderr or ""
+                try:
+                    lines = path.read_text(encoding="utf-8").splitlines()
+                except (OSError, UnicodeDecodeError):
+                    lines = []
+            except (OSError, subprocess.TimeoutExpired):
+                err_text, lines = f"Timed out talking to {device['alias']}", []
+            finally:
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            key = next((e for e in (frame_devices.key_entry(line, name) for line in lines) if e), None)
+            if key:
+                saved = frame_devices.pinned_keys(device_id)
+                scan = {"type": key[0], "blob": key[1], "fingerprint": key[2], "host": host, "at": now()}
+                with self.cond:
+                    self.scans[device_id] = scan
+                return {"type": key[0], "fingerprint": key[2], "host": host,
+                        "saved": [{"type": t, "fingerprint": f} for t, f in saved],
+                        "matches": any(f == key[2] for _, f in saved)}
+            text = err_text.strip()
+            reasons.append(f"{host}: " + (self.explain(text) or (text.splitlines() or ["no answer"])[-1]))
+        raise frame_devices.DeviceError("Couldn't read the headset's key. " + "; ".join(reasons))
+
+    def trust_identity(self, device_id, fingerprint):
+        """Pin the key scan_identity read, and only if `fingerprint` is the one it showed (what
+        the person saw and confirmed), replacing whatever was saved. -> the scan."""
+        with self.cond:
+            scan = self.scans.get(device_id)
+            if not scan or now() - scan["at"] > SCAN_TTL:
+                self.scans.pop(device_id, None)
+                raise frame_devices.DeviceError("Check the headset's key again first: the one shown has expired")
+            if not isinstance(fingerprint, str) or fingerprint != scan["fingerprint"]:
+                raise frame_devices.DeviceError("That isn't the key the headset showed. Check its key again")
+            self.scans.pop(device_id)
+        self.reg.get(device_id)  # still a headset here
+        frame_devices.pin_key(device_id, scan["type"], scan["blob"])
+        return scan
+
 
 # ---- the page's API: /api/devices -------------------------------------------------
 
@@ -1158,6 +1261,7 @@ def devices_view(link):
         view = {k: v for k, v in d.items() if k not in ("config_host", "addresses")}
         view["active"] = d["id"] == active["id"]
         view["pinned"] = frame_devices.pinned(d["id"])
+        view["keys"] = [{"type": t, "fingerprint": f} for t, f in frame_devices.pinned_keys(d["id"])]
         view["addresses"] = [dict(a, network_names=[names.get(n, "an unnamed network") for n in a["networks"]])
                              for a in d["addresses"]]
         devices.append(view)
@@ -1190,7 +1294,7 @@ def devices_action(link, body, open_setup, busy=lambda: 0):
     is_active = did == active["id"]
     moves = action == "use" or (action == "retry" and link.alive()) or (is_active and (
         # (a retry while connected would cut the install's connection)
-        action in ("remove", "address-remove", "forget-identity")
+        action in ("remove", "address-remove", "forget-identity", "identity-trust")
         or (action == "update" and login_change(reg, did, body))
         or (action == "address-update" and body.get("newHost") not in (None, body.get("host")))))
     if moves and busy():
@@ -1275,6 +1379,19 @@ def devices_action(link, body, open_setup, busy=lambda: 0):
         if is_active:
             link.kick("switch")
         msg = f"Forgot {d['name']}'s SSH identity; the next connection saves the one it shows"
+    elif action == "identity-scan":
+        d = reg.get(did)
+        scan = link.scan_identity(did)
+        msg = (f"{d['name']} shows the key already saved for it" if scan["matches"]
+               else f"{d['name']} shows a {scan['type']} key, {scan['fingerprint']}")
+        link.devices_changed()
+        return dict(devices_view(link), message=msg, scan=scan)
+    elif action == "identity-trust":
+        d = reg.get(did)
+        link.trust_identity(did, body.get("fingerprint"))
+        if is_active:
+            link.kick("switch")  # reconnect with the key now saved
+        msg = f"Saved {d['name']}'s new SSH identity; reconnecting"
     elif action == "name-network":
         reg.name_network(body.get("network"), body.get("name"))
         if link.state["network"]:
