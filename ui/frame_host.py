@@ -38,9 +38,13 @@ class HostError(RuntimeError):
 
 
 # The start of a line in which ssh itself says the link to the headset failed (not the command it ran).
+# That includes ssh refusing the headset's host key, and the headset refusing this computer's
+# key ("user@host: Permission denied (publickey,...)."): either way no command ran.
 SSH_LINK_FAILED = re.compile(r"^(?:ssh: connect to host |ssh: Could not resolve hostname |banner exchange: |"
                              r"kex_exchange_identification: |mux_client_\w+: |client_loop: |"
-                             r"Connection (?:closed|reset) by \S+ port \d+|Connection timed out during banner exchange)",
+                             r"Connection (?:closed|reset) by \S+ port \d+|Connection timed out during banner exchange|"
+                             r"Host key verification failed\.|No \S+ host key is known for |"
+                             r"[^\n@:]{1,64}@\S+: Permission denied \()",  # a Windows user name may have spaces
                              re.M)
 
 

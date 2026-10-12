@@ -264,6 +264,30 @@ class Pins(Base):
         self.assertFalse(fd.pinned("d1"))
         self.assertFalse(fd.forget_pin("d1"))
 
+    def test_a_trusted_key_replaces_the_saved_one_and_fingerprints_match_ssh_keygen(self):
+        key = self.dir / "hostkey"
+        frame_host.run_ssh(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], capture_output=True,
+                           stdin=subprocess.DEVNULL, check=True, timeout=20)
+        kind, blob = key.with_suffix(".pub").read_text().split()[:2]
+        want = frame_host.run_ssh(["ssh-keygen", "-l", "-E", "sha256", "-f", str(key.with_suffix(".pub"))],
+                                  capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10).stdout.split()[1]
+        self.assertEqual(fd.fingerprint(blob), want)
+        self.assertIsNone(fd.fingerprint("not base64!"))
+        (self.ssh / "known_hosts").write_text(f"frame.local {KEY}\n")
+        fd.seed_pin("d1", ["frame.local"])
+        old = fd.pinned_keys("d1")
+        fd.pin_key("d1", kind, blob)
+        self.assertEqual(fd.known_hosts("d1").read_text(), f"frame-control-d1 {kind} {blob}\n")  # old key gone
+        self.assertEqual(fd.pinned_keys("d1"), [(kind, want)])
+        self.assertNotEqual(old, fd.pinned_keys("d1"))
+        self.assertTrue(fd.pinned("d1"))
+        for bad in (("ssh-ed25519\nHost *", blob), ("ssh-ed25519", "AAAA AAAA"), ("evil", blob)):
+            with self.assertRaises(fd.DeviceError):
+                fd.pin_key("d1", *bad)
+        # Only plain entries for this headset's alias count.
+        self.assertIsNone(fd.key_entry(f"frame-control-d2 {kind} {blob}", "frame-control-d1"))
+        self.assertIsNone(fd.key_entry(f"# frame-control-d1 {kind} {blob}", "frame-control-d1"))
+
     def test_each_headset_has_its_own_file(self):
         (self.ssh / "known_hosts").write_text(f"a.local {KEY}\nb.local {KEY}\n")
         fd.seed_pin("da", ["a.local"])

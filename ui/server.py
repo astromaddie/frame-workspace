@@ -211,9 +211,14 @@ UNREACHABLE = [
     (re.compile(r"port \d+: Connection refused"),
      "The Frame refused the connection. Check Developer Mode is still on."),
     (re.compile(r"Permission denied \(publickey"),
-     "The Frame didn't accept this computer's SSH key. Run Set Up Connection again."),
-    (re.compile(r"Host key verification failed"),
-     "The Frame's SSH identity changed (after a reinstall, or a different device). Run Set Up Connection again."),
+     "The Frame didn't accept this computer's SSH key. Set Up Connection pairs this computer with it "
+     "again (Developer Mode must be on)."),
+    # Before "Host key verification failed", which ssh prints after each of these.
+    (re.compile(r"No \S+ host key is known for "),
+     "The Frame's SSH identity isn't saved yet. Reconnecting saves it; or check and trust it on the Devices tab."),
+    (re.compile(r"REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed"),
+     "The Frame's SSH identity has changed: after SteamOS was reinstalled or reset, or a different device "
+     "answering at its address. Check the new key on the Devices tab before trusting it."),
     (re.compile(r"kex_exchange_identification|Connection closed by .* port \d+|Connection reset by .* port \d+"),
      "The connection to the Frame dropped. Try again."),
 ]

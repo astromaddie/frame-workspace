@@ -3,10 +3,20 @@
 each step of a connection, and plays a ControlMaster. What each HostName does comes
 from $FAKESSH_HOSTS (JSON: host -> "ok", "wrong" (a different host key), "denied" or
 "slow" (hangs after connecting);
-every call is appended to $FAKESSH_LOG as a JSON line. POSIX only."""
+every call is appended to $FAKESSH_LOG as a JSON line. POSIX only.
+
+With $FAKESSH_PINS set, host keys are checked as OpenSSH does against UserKnownHostsFile under
+HostKeyAlias: "wrong" is then just a different key from the others' (a reinstalled headset),
+StrictHostKeyChecking=yes refuses a key not saved, accept-new saves a first one, and a saved key
+that differs is refused. "evil" is a device with its own key that lets anyone in without
+authentication ("none") and asks for the agent: it records in $FAKESSH_DIR what it got
+(agent-forwarded, command-ran). Like ssh, the first value of an option counts."""
+import base64
+import hashlib
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -17,12 +27,12 @@ hosts = json.loads(os.environ.get("FAKESSH_HOSTS", "{}"))
 opts = {}
 i = 0
 while i < len(args) and args[i].startswith("-"):
-    if args[i] in ("-o", "-O", "-p", "-l"):
+    if args[i] in ("-o", "-O", "-p", "-l", "-F", "-W"):
         key = args[i]
         val = args[i + 1]
         if key == "-o":
             k, _, v = val.partition("=")
-            opts[k.lower()] = v
+            opts.setdefault(k.lower(), v)
         else:
             opts[key] = val
         i += 2
@@ -30,6 +40,12 @@ while i < len(args) and args[i].startswith("-"):
         opts[args[i]] = True
         i += 1
 alias = args[i] if i < len(args) else ""
+command = args[i + 1:]
+if opts.get("-F") != "none":
+    # $FAKESSH_CONFIG: what ~/.ssh/config says (JSON, lower-case option -> value), below the
+    # command line's options, as ssh has it; `-F none` reads no config.
+    for k, v in json.loads(os.environ.get("FAKESSH_CONFIG", "{}")).items():
+        opts.setdefault(k, v)
 host = opts.get("hostname", alias).replace("%%", "%")
 marker = os.path.join(os.environ["FAKESSH_DIR"], "master-" + host.replace("/", "_"))
 say = lambda s: (sys.stderr.write(s + "\n"), sys.stderr.flush())
@@ -44,6 +60,23 @@ if opts.get("-O") == "exit":
         os.unlink(marker)
     sys.exit(0)
 
+if "-W" in opts:  # a jump host's ssh, forwarding to the headset: the call is logged, that's all
+    sys.exit(0)
+if opts.get("proxycommand", "none") != "none":
+    # As OpenSSH: expand %-tokens, then `$SHELL -c "exec <line>"` (here /bin/sh).
+    line, out, n = opts["proxycommand"], "", 0
+    while n < len(line):
+        if line[n] == "%" and n + 1 < len(line):
+            out += {"%": "%", "h": host, "p": opts.get("port", "22"), "r": opts.get("user", "")}.get(
+                line[n + 1], line[n:n + 2])
+            n += 2
+        else:
+            out += line[n]
+            n += 1
+    if subprocess.run(["/bin/sh", "-c", "exec " + out], stdin=subprocess.DEVNULL,
+                      stdout=subprocess.DEVNULL).returncode:
+        say("kex_exchange_identification: Connection closed by remote host")
+        sys.exit(255)
 what = hosts.get(host)
 if what is None:
     say(f"ssh: Could not resolve hostname {host}: nodename nor servname provided, or not known")
@@ -53,6 +86,66 @@ say("debug1: Connection established.")
 if what == "slow":
     time.sleep(30)
 say(f"debug1: Authenticating to {host}:22 as '{opts.get('user', 'tester')}'")
+if os.environ.get("FAKESSH_PINS") and "hostkeyalias" in opts and "userknownhostsfile" in opts:
+    name, path = opts["hostkeyalias"], os.path.expanduser(opts["userknownhostsfile"])
+    blob = base64.b64encode(b"fake-" + {"wrong": b"other", "evil": b"evil"}.get(what, b"headset") + b"-key").decode()
+    fp = base64.b64encode(hashlib.sha256(base64.b64decode(blob)).digest()).decode().rstrip("=")
+    say(f"debug1: Server host key: ssh-ed25519 SHA256:{fp}")
+    try:
+        saved = [ln.split() for ln in open(path, errors="replace").read().splitlines() if ln.strip()]
+    except OSError:
+        saved = []
+    saved = [f[2] for f in saved if len(f) >= 3 and name in f[0].split(",")]
+    strict = opts.get("stricthostkeychecking", "ask")
+    if saved and blob not in saved:
+        say("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+        say("@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @")
+        say("Host key verification failed.")
+        sys.exit(255)
+    if not saved and strict != "accept-new":
+        say(f"No ED25519 host key is known for {name} and you have requested strict checking.")
+        say("Host key verification failed.")
+        sys.exit(255)
+    if not saved:
+        try:
+            with open(path, "a") as f:
+                f.write(f"{name} ssh-ed25519 {blob}\n")
+            say(f"Warning: Permanently added '{name}' (ED25519) to the list of known hosts.")
+        except OSError:  # ssh doesn't create the folder: it goes on, saving nothing
+            say(f"Failed to add the host to the list of known hosts ({path}).")
+    else:
+        say(f"debug1: Host '{name}' is known and matches the ED25519 host key.")
+    say("debug1: Next authentication method: publickey")
+    if what == "evil":
+        say(f'Authenticated to {host} ([127.0.0.1]:22) using "none".')
+        got = os.path.join(os.environ["FAKESSH_DIR"], "evil-")
+        if opts.get("forwardagent", "no") != "no" and opts.get("identityagent", "") != "none":
+            open(got + "agent-forwarded", "w").close()
+        if "-N" not in opts and (command or opts.get("remotecommand", "none") != "none"):
+            open(got + "command-ran", "w").close()
+            sys.exit(0)
+        time.sleep(30)  # -N: holds the session open
+        sys.exit(0)
+    if opts.get("preferredauthentications") == "none":
+        say(f"tester@{host}: Permission denied (publickey,password).")
+        sys.exit(255)
+    if what == "denied":
+        say(f"tester@{host}: Permission denied (publickey).")
+        sys.exit(255)
+    what = "ok"
+    say(f'Authenticated to {host} ([127.0.0.1]:22) using "publickey".')
+    if opts.get("controlmaster") != "yes":
+        sys.exit(0)
+    open(marker, "w").close()
+    def bye(*_):
+        if os.path.exists(marker):
+            os.unlink(marker)
+        sys.exit(0)
+    signal.signal(signal.SIGTERM, bye)
+    while True:
+        time.sleep(0.2)
+        if not os.path.exists(marker):
+            sys.exit(0)
 say("debug1: Server host key: ssh-ed25519 SHA256:fakefakefakefakefakefakefakefakefakefakefak")
 if what == "wrong":
     say("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")

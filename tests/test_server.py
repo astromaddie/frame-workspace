@@ -535,7 +535,11 @@ class UnreachableMessages(unittest.TestCase):
             "ssh: connect to host 192.168.1.9 port 22: No route to host": "isn't answering",
             "ssh: connect to host 192.168.1.9 port 22: Connection refused": "refused",
             "steamos@192.168.1.9: Permission denied (publickey,password).": "SSH key",
-            "Host key verification failed.": "identity changed",
+            "Host key verification failed.": "identity has changed",
+            "@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.":
+                "Check the new key on the Devices tab",
+            "No ED25519 host key is known for frame-control-f7b4e9ac and you have requested strict checking.\n"
+            "Host key verification failed.": "isn't saved yet",
             "kex_exchange_identification: read: Connection reset by peer": "dropped",
             "Timed out talking to frame": "too long",
         }

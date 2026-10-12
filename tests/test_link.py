@@ -9,6 +9,7 @@ import http.client
 import io
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -199,7 +200,7 @@ class Connecting(unittest.TestCase):
         rows = {p["host"]: p for p in s["probes"]}
         self.assertEqual(rows["nothing.invalid"]["state"], "unresolved")
         self.assertEqual(rows["::1"]["state"], "sshfailed")
-        self.assertIn("different headset", rows["::1"]["detail"])
+        self.assertIn("different SSH identity", rows["::1"]["detail"])
         # Every ssh command was pointed at the winner, with the host key pinned per device.
         alias, opts = self.routes[-1]
         self.assertEqual(alias, "frame-t")
@@ -208,9 +209,10 @@ class Connecting(unittest.TestCase):
         self.assertIn(f"Port={self.port}", opts)
         master = [c for c in self.calls() if "ControlMaster=yes" in c][-1]
         self.assertIn("StrictHostKeyChecking=accept-new", master)  # first connection: nothing pinned yet
-        # ssh takes an option's first value: accept-new must come before the commands' own "yes".
-        self.assertLess(master.index("StrictHostKeyChecking=accept-new"), master.index("StrictHostKeyChecking=yes"))
-        self.assertIn("StrictHostKeyChecking=yes", opts)  # every other command checks the pinned key
+        self.assertNotIn("StrictHostKeyChecking=yes", master)
+        # This stand-in ssh saved no key, so commands may still save the first one (accept-new);
+        # test_a_first_connection_pins_and_then_checks_strictly has real pins.
+        self.assertIn("StrictHostKeyChecking=accept-new", opts)
         self.assertTrue(fd.known_hosts(d["id"]).parent.is_dir())  # where ssh saves the key it accepts
         # It learned: 127.0.0.1 works on this network.
         learned = {a["host"]: a for a in self.reg.get(d["id"])["addresses"]}
@@ -257,6 +259,7 @@ class Connecting(unittest.TestCase):
         s = self.link.snapshot()
         self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "login"))
         self.assertIn("SSH key", s["error"]["message"])
+        self.assertEqual(s["error"]["auth"], "denied")  # the page offers Set Up Connection
 
     def test_pinned_identity_is_checked_strictly(self):
         d = self.device("localhost")
@@ -265,6 +268,426 @@ class Connecting(unittest.TestCase):
         self.link.connect(["start"])
         master = [c for c in self.calls() if "ControlMaster=yes" in c][-1]
         self.assertIn("StrictHostKeyChecking=yes", master)
+
+    def pins(self):
+        """The stand-in ssh checks host keys as OpenSSH does (tests/fakessh/ssh)."""
+        p = mock.patch.dict(os.environ, {"FAKESSH_PINS": "1"})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def command(self, device, host="127.0.0.1"):
+        """One ssh command as the server runs it, with the route the connector applied."""
+        return subprocess.run(["ssh", *self.link.host_opts(device, host), device["alias"], "true"],
+                              capture_output=True, text=True, timeout=20)
+
+    def test_a_first_connection_pins_and_then_checks_strictly(self):
+        # 0.4.2 on Windows: "No ED25519 host key is known for frame-control-<id> and you have
+        # requested strict checking." Every command said "yes" before anything was saved, so one
+        # that ran before the connector's handshake saved the key (or without it) failed.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        r = self.command(d)
+        self.assertEqual(r.returncode, 0, r.stderr)  # the first contact saves the key...
+        self.assertIn("Permanently added", r.stderr)
+        self.assertTrue(fd.pinned(d["id"]))
+        self.assertIn("StrictHostKeyChecking=yes", self.link.host_opts(d, "127.0.0.1"))  # ...then it's checked
+        self.assertEqual(self.reg.get(d["id"])["identity"], [k[1] for k in fd.pinned_keys(d["id"])])  # and recorded
+        # The connector's first handshake, for another new headset.
+        self.reg.remove_device(d["id"])
+        d = self.device("localhost")
+        self.link.connect(["start"])
+        s = self.link.snapshot()
+        self.assertEqual(s["phase"], "connected", s["error"])
+        self.assertTrue(fd.pinned(d["id"]))
+        self.assertTrue(self.reg.get(d["id"])["identity"])
+        alias, opts = self.routes[-1]
+        self.assertIn("StrictHostKeyChecking=yes", opts)  # every command after it checks strictly
+        self.assertNotIn("StrictHostKeyChecking=accept-new", opts)
+
+    def lose_pin(self, device_id, how):
+        f = fd.known_hosts(device_id)
+        if how == "deleted":
+            f.unlink()
+        elif how == "empty":
+            f.write_text("")
+        elif how == "unreadable":
+            f.chmod(0)
+            self.addCleanup(lambda: f.exists() and f.chmod(0o600))
+        elif how == "another alias":
+            f.write_text(f.read_text().replace(f"frame-control-{device_id}", "frame-control-someone-else"))
+        elif how == "not utf-8":
+            f.write_bytes(b"\xff\xfe" + f.read_bytes())
+
+    def test_a_lost_or_unusable_pin_fails_closed(self):
+        # Review pr85-review-r1: accept-new can't tell a new headset from one whose saved key
+        # went missing; real OpenSSH then trusted a replacement key. Once a headset had an
+        # identity, nothing is trusted again until the person checks it.
+        self.pins()
+        cases = ["deleted", "empty", "another alias", "not utf-8"]
+        if os.name == "posix" and os.geteuid() != 0:
+            cases.append("unreadable")  # root reads anything
+        for n, how in enumerate(cases):
+            with self.subTest(how=how):
+                self.hosts({"localhost": "ok"})
+                d = self.reg.add_device(f"frame-l{n}", port=self.port, hosts=[])
+                self.reg.add_address(d["id"], "localhost", kind="lan")
+                self.link.override = None
+                self.reg.set_active(d["id"])
+                self.link.connect(["switch"])
+                self.assertEqual(self.link.snapshot()["phase"], "connected")
+                self.link.close_master()
+                d = self.reg.get(d["id"])
+                self.lose_pin(d["id"], how)
+                self.hosts({"localhost": "wrong"})  # another device, or a reinstalled headset
+                r = self.command(d)
+                self.assertEqual(r.returncode, 255, r.stderr)
+                self.assertIn("Host key verification failed", r.stderr)
+                self.assertNotIn("Permanently added", r.stderr)
+                self.link.connect(["dropped"])
+                s = self.link.snapshot()
+                self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "identity"))
+                self.assertEqual(s["error"]["hostkey"]["state"], "missing")
+                self.assertIn("missing or can't be read", s["error"]["message"])
+                view = next(x for x in fl.devices_view(self.link)["devices"] if x["id"] == d["id"])
+                self.assertTrue(view["identity_lost"])
+                scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
+                self.assertFalse(scan["matches"] or scan["recorded_match"])  # not the key it had
+                self.hosts({"localhost": "ok"})
+                scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
+                self.assertTrue(scan["recorded_match"])  # its own key, as recorded
+                self.assertFalse(scan["matches"])  # but not usable from the file: trusting restores it
+                fl.devices_action(self.link, {"action": "identity-trust", "id": d["id"],
+                                              "fingerprint": scan["fingerprint"]}, None)
+                self.link.connect(["switch"])
+                self.assertEqual(self.link.snapshot()["phase"], "connected", self.link.snapshot()["error"])
+                self.link.close_master()
+
+    def test_a_key_check_only_reads_the_key(self):
+        # Review pr85-review-r1: with ForwardAgent yes in ~/.ssh/config, a device that accepts
+        # "none" got the agent and ran a command before anyone trusted it.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "evil"})
+        os.environ["FAKESSH_CONFIG"] = json.dumps({"forwardagent": "yes", "remotecommand": "touch /tmp/x",
+                                                   "permitlocalcommand": "yes", "requesttty": "force"})
+        self.addCleanup(os.environ.pop, "FAKESSH_CONFIG", None)
+        for proxied in (False, True):
+            route = ("jump", "me@jumpy:2222") if proxied else (None, None)
+            with self.subTest(proxied=proxied), mock.patch.object(fl, "proxy_route", return_value=route):
+                t0 = time.monotonic()
+                scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
+                self.assertLess(time.monotonic() - t0, 10)  # stopped once it had the key, not left open
+                self.assertTrue(scan["fingerprint"].startswith("SHA256:"))
+                self.assertEqual([p.name for p in self.dir.iterdir() if p.name.startswith("evil-")], [])
+                call = [c for c in self.calls() if "PreferredAuthentications=none" in c][-1]
+                self.assertEqual(call[call.index("-F") + 1], "none")  # never ~/.ssh/config for the device
+                self.assertIn("-N", call)
+                hop = [c for c in call if c.startswith("ProxyCommand=")]
+                if proxied:
+                    # Review pr85-review-r2: ProxyJump's own ssh inherits the config (ForwardAgent,
+                    # LocalCommand); the scan builds the jump host's ssh itself, hardened.
+                    self.assertEqual(len(hop), 1)
+                    words = shlex.split(hop[0][len("ProxyCommand="):])
+                    self.assertEqual(words[-7:], ["-l", "me", "-p", "2222", "-W", "[%h]:%p", "jumpy"])
+                    for o in fl.Link.HOP_OPTS:
+                        self.assertIn(o, words)
+                    self.assertLess(call.index(hop[0]), call.index("HostKeyAlias=frame-control-" + d["id"]))
+                else:
+                    self.assertEqual(hop, [])
+                for o in ("ForwardAgent=no", "IdentityAgent=none", "ClearAllForwardings=yes", "RemoteCommand=none",
+                          "PermitLocalCommand=no", "RequestTTY=no", "PubkeyAuthentication=no"):
+                    self.assertIn(o, call)
+                self.assertLess(call.index("StrictHostKeyChecking=accept-new"), call.index("HostKeyAlias=frame-control-"
+                                                                                          + d["id"]))
+        self.assertFalse(fd.pinned(d["id"]))
+        self.assertEqual(sorted(p.name for p in fd.known_hosts(d["id"]).parent.iterdir()), [])  # no scan files
+
+    @unittest.skipIf(os.name != "posix", "the stand-in ssh runs ProxyCommand with /bin/sh")
+    def test_the_jump_hosts_command_line_is_quoted_whatever_the_names(self):
+        # Review pr85-review-r3: the hop's words went into the ProxyCommand line unquoted, so an
+        # ssh at /tmp/x/bin$(:>INJECTED)/ssh ran shell code; and an IPv6 jump host broke.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        for n, name in enumerate(["with space", "bin$(touch INJECTED-0)", "back`touch INJECTED-1`tick",
+                                  "quote'it\"s", "per%cent %h %%", "semi;touch INJECTED-2"]):
+            with self.subTest(name=name):
+                bindir = self.dir / f"b{n}" / name
+                bindir.mkdir(parents=True)
+                (bindir / "ssh").symlink_to(FAKESSH / "ssh")
+                for spec, at in (("me@jumpy:2222", "jumpy"), ("[::1]:2200", "::1")):
+                    before = len(self.calls())
+                    with mock.patch.dict(os.environ, {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}), \
+                            mock.patch.object(fl, "proxy_route", return_value=("jump", spec)):
+                        scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
+                    self.assertTrue(scan["fingerprint"].startswith("SHA256:"))
+                    hops = [c for c in self.calls()[before:] if "-W" in c]
+                    self.assertEqual(len(hops), 1, self.calls()[before:])
+                    self.assertEqual(hops[0][-1], at)  # the jump host, bare
+                    self.assertEqual(hops[0][hops[0].index("-W") + 1], "[localhost]:%d" % self.port)
+                    outer = [c for c in self.calls()[before:] if "PreferredAuthentications=none" in c][-1]
+                    line = next(c for c in outer if c.startswith("ProxyCommand="))
+                    self.assertTrue(line[len("ProxyCommand="):].startswith(shlex.quote(str(bindir / "ssh")
+                                                                                       .replace("%", "%%"))))
+                self.assertEqual([p.name for p in self.dir.rglob("INJECTED*")], [])
+                self.assertFalse(list(Path.cwd().glob("INJECTED*")))
+
+    def test_a_key_check_refuses_routes_it_cant_harden(self):
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        before = len(self.calls())
+        for route in (("command", "nc %h %p"), ("jump", "a,b"), ("jump", "-oProxyCommand=x"), ("jump", "ssh://a"),
+                      ("jump", "a b"), ("jump", "a%h"), ("jump", "jumpy:99999")):
+            with self.subTest(route=route), mock.patch.object(fl, "proxy_route", return_value=route):
+                with self.assertRaises(fd.DeviceError) as caught:
+                    fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)
+                self.assertIn("can't make safe", str(caught.exception))
+        self.assertFalse(any("PreferredAuthentications=none" in c for c in self.calls()[before:]))
+
+    def test_a_key_read_before_the_address_or_port_changed_isnt_trusted(self):
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        for change in ({"action": "update", "id": d["id"], "port": self.port + 1},
+                       {"action": "address-remove", "id": d["id"], "host": "localhost"}):
+            with self.subTest(change=change["action"]):
+                scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
+                fl.devices_action(self.link, change, None)
+                with self.assertRaises(fd.DeviceError):
+                    fl.devices_action(self.link, {"action": "identity-trust", "id": d["id"],
+                                                  "fingerprint": scan["fingerprint"]}, None)
+                self.assertFalse(fd.pinned(d["id"]))
+                self.reg.update_device(d["id"], port=self.port)
+                if not self.reg.get(d["id"])["addresses"]:
+                    self.reg.add_address(d["id"], "localhost", kind="lan")
+
+    def test_terminals_judge_identity_by_the_registry_not_a_frozen_route(self):
+        # Review pr85-review-r2: named_route used the device as routed (before its first key was
+        # recorded), so a Terminal window fell back to accept-new once the pin was deleted.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        self.link.connect(["start"])
+        self.assertEqual(self.link.snapshot()["phase"], "connected")
+        self.assertFalse(self.link.routed_device.get("identity"))  # the frozen copy knows nothing of it
+        fd.known_hosts(d["id"]).unlink()
+        alias, opts = self.link.named_route()
+        self.assertIn("StrictHostKeyChecking=yes", opts)
+        self.assertNotIn("StrictHostKeyChecking=accept-new", opts)
+        self.hosts({"localhost": "wrong"})
+        r = subprocess.run(["ssh", *opts, alias, "true"], capture_output=True, text=True, timeout=20)
+        self.assertEqual(r.returncode, 255, r.stderr)
+        self.assertFalse(fd.pinned(d["id"]))
+
+    def test_a_key_saved_before_a_refused_login_is_kept_and_checked(self):
+        # Review pr85-review-r2: ssh saves the key during the key exchange; if the login is then
+        # refused, it was neither recorded nor protected, and the route stayed accept-new.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "denied"})
+        self.link.connect(["start"])
+        s = self.link.snapshot()
+        self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "login"))
+        got = self.reg.get(d["id"])
+        self.assertEqual(got["identity"], [f for _, f in fd.pinned_keys(d["id"])])
+        self.assertTrue(got["identity_established"])
+        if os.name == "posix":
+            self.assertEqual(fd.known_hosts(d["id"]).stat().st_mode & 0o777, 0o600)
+        self.assertIn("StrictHostKeyChecking=yes", self.routes[-1][1])
+        fd.known_hosts(d["id"]).unlink()
+        self.hosts({"localhost": "wrong"})
+        r = self.command(self.reg.get(d["id"]))
+        self.assertEqual(r.returncode, 255)
+        self.assertNotIn("Permanently added", r.stderr)
+
+    def test_a_key_a_command_saved_tightens_the_route(self):
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "denied"})
+        with self.link.route_lock:
+            self.link.routed_device = d
+            self.link.apply(d["alias"], self.link.host_opts(d, "127.0.0.1"))
+        opts = self.routes[-1][1]
+        self.assertIn("StrictHostKeyChecking=accept-new", opts)
+        r = subprocess.run(["ssh", *opts, d["alias"], "true"], capture_output=True, text=True, timeout=20)
+        self.assertIn("Permanently added", r.stderr)
+        self.assertEqual(r.returncode, 255)  # saved the key, then refused the login
+        self.link.settle_pin()  # what the connector's loop does every tick while accept-new is applied
+        self.assertIn("StrictHostKeyChecking=yes", self.routes[-1][1])
+        self.assertNotIn("StrictHostKeyChecking=accept-new", self.routes[-1][1])
+        self.assertTrue(self.reg.get(d["id"])["identity"])
+
+    def test_editing_the_address_that_worked_keeps_the_identity_history(self):
+        # Review pr85-review-r2: last_ok lives on the address, so editing or removing it made a
+        # headset whose pin was gone (and had no fingerprint recorded) new again.
+        path = self.dir / "legacy.json"
+        path.write_text(json.dumps({"version": 1, "active": "abcd1234", "networks": {}, "devices": [
+            {"id": "abcd1234", "name": "Old", "alias": "frame-old", "user": "steamos", "port": 22,
+             "identity_files": [], "addresses": [{"host": "10.0.0.5", "kind": "lan", "label": "",
+                                                  "networks": [], "last_ok": 1790000000.0, "last_rtt_ms": 3}]}]}))
+        reg = fd.Registry(path)
+        self.assertTrue(reg.get("abcd1234")["identity_established"])  # migrated from last_ok
+        reg.update_address("abcd1234", "10.0.0.5", new_host="10.0.0.6")
+        reg.remove_address("abcd1234", "10.0.0.6")
+        reg.add_address("abcd1234", "10.0.0.7")
+        d = fd.Registry(path).get("abcd1234")  # saved, too
+        self.assertFalse(any(a.get("last_ok") for a in d["addresses"]))
+        self.assertTrue(fd.identity_established(d))
+        self.assertEqual(self.link.strictness(d), "yes")
+        # A connection that works sets it as well, for a headset added since.
+        n = self.reg.add_device("frame-new", hosts=["10.0.0.8"])
+        self.reg.record_success(n["id"], "10.0.0.8", None, 1)
+        self.reg.remove_address(n["id"], "10.0.0.8")
+        self.assertTrue(self.reg.get(n["id"])["identity_established"])
+
+    def test_ssh_last_words_arrive_even_when_the_reader_lags(self):
+        # Review pr85-review-r2: ssh's exit with nothing queued yet was taken as the end, and a
+        # late reader lost "Permission denied" ("ssh stopped").
+        self.pins()
+        link = fl.Link(self.reg, env_alias=None, mux_base=["ssh", "-o", "BatchMode=yes"], control=None,
+                       apply=lambda *a: None, explain=explain)
+        self.addCleanup(link.stop)
+        real = threading.Thread
+
+        class Late(real):
+            def __init__(self, *a, target=None, **kw):
+                if target is not None and getattr(target, "__name__", "") == "tail":
+                    inner = target
+
+                    def target():
+                        time.sleep(1)
+                        inner()
+                super().__init__(*a, target=target, **kw)
+        self.device("localhost")
+        self.hosts({"localhost": "denied"})
+        with mock.patch.object(fl.threading, "Thread", Late):
+            link.connect(["start"])
+        s = link.snapshot()
+        self.assertEqual((s["error"]["stage"], s["error"].get("auth")), ("login", "denied"), s["error"])
+        self.assertIn("SSH key", s["error"]["message"])
+
+    def test_forgetting_an_identity_is_refused(self):
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        self.link.connect(["start"])
+        saved = fd.known_hosts(d["id"]).read_text()
+        with self.assertRaises(fd.DeviceError) as caught:
+            fl.devices_action(self.link, {"action": "forget-identity", "id": d["id"]}, None)
+        self.assertIn("identity-scan", str(caught.exception))
+        self.assertEqual(fd.known_hosts(d["id"]).read_text(), saved)
+
+    def test_without_a_shared_connection_ssh_writes_to_a_file_not_a_pipe(self):
+        # Windows: no ControlMaster, and its OpenSSH can block writing to a stderr pipe.
+        self.pins()
+        tmp = self.dir / "tmp"
+        tmp.mkdir()
+        link = fl.Link(self.reg, env_alias=None, mux_base=["ssh", "-o", "BatchMode=yes"], control=None,
+                       apply=lambda *a: None, explain=explain)
+        self.addCleanup(link.stop)
+        real = subprocess.Popen
+        seen = []
+
+        def popen(argv, **kw):
+            if "-v" in argv:  # the handshake (run_ssh calls go through Popen too)
+                seen.append(kw.get("stderr"))
+            return real(argv, **kw)
+        with mock.patch.object(tempfile, "tempdir", str(tmp)), mock.patch.object(fl.subprocess, "Popen", popen):
+            d = self.device("localhost")
+            self.hosts({"localhost": "ok"})
+            link.connect(["start"])
+            s = link.snapshot()
+            self.assertEqual(s["phase"], "connected", s["error"])
+            self.assertEqual([st["state"] for st in s["stages"]], ["done"] * 5)
+            self.assertIn("saved this headset's identity", next(st for st in s["stages"] if st["id"] == "identity")["detail"])
+            self.reg.update_device(d["id"], user="nobody")
+            self.hosts({"localhost": "denied"})
+            link.connect(["switch"])
+            s = link.snapshot()
+            self.assertEqual((s["phase"], s["error"]["stage"], s["error"].get("auth")), ("failed", "login", "denied"))
+        self.assertTrue(seen and all(isinstance(x, int) for x in seen))  # a file descriptor, never PIPE
+        self.assertNotIn(subprocess.PIPE, seen)
+        for _ in range(50):  # the reader removes its file once ssh has exited
+            if not list(tmp.iterdir()):
+                break
+            time.sleep(0.05)
+        self.assertEqual(list(tmp.iterdir()), [])
+
+    def test_a_changed_key_is_shown_never_accepted_and_trusted_on_request(self):
+        # 0.4.2 on Linux and Windows: "WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!", with
+        # "Run Set Up Connection again" as the advice, which can't replace the saved key.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        self.link.connect(["start"])
+        self.assertEqual(self.link.snapshot()["phase"], "connected")
+        saved = fd.known_hosts(d["id"]).read_text()
+        old = fd.pinned_keys(d["id"])
+        self.link.close_master()
+        self.hosts({"localhost": "wrong"})  # SteamOS reinstalled: a new host key
+        self.link.connect(["dropped"])
+        s = self.link.snapshot()
+        self.assertEqual((s["phase"], s["error"]["stage"]), ("failed", "identity"))
+        shown = s["error"]["hostkey"]
+        self.assertEqual((shown["state"], shown["type"], shown["host"]), ("changed", "ssh-ed25519", "localhost"))
+        self.assertTrue(shown["fingerprint"].startswith("SHA256:"))
+        self.assertIn("Devices tab", s["error"]["message"])
+        self.assertEqual(fd.known_hosts(d["id"]).read_text(), saved)  # never accepted on its own
+        r = self.command(d)
+        self.assertEqual(r.returncode, 255)
+        self.assertIn("REMOTE HOST IDENTIFICATION HAS CHANGED", r.stderr)  # nor by any command
+        # Trusting needs the key read first, and exactly the fingerprint shown.
+        with self.assertRaises(fd.DeviceError):
+            fl.devices_action(self.link, {"action": "identity-trust", "id": d["id"],
+                                          "fingerprint": shown["fingerprint"]}, None)
+        out = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)
+        scan = out["scan"]
+        self.assertEqual(scan["fingerprint"], shown["fingerprint"])
+        self.assertFalse(scan["matches"])
+        self.assertEqual(scan["saved"], [{"type": t, "fingerprint": f} for t, f in old])
+        self.assertEqual(fd.known_hosts(d["id"]).read_text(), saved)  # reading it saves nothing
+        self.assertEqual(sorted(p.name for p in fd.known_hosts(d["id"]).parent.iterdir()), [d["id"]])  # no scan files
+        call = [c for c in self.calls() if "PreferredAuthentications=none" in c][-1]  # no login offered
+        self.assertLess(call.index("StrictHostKeyChecking=accept-new"), call.index("StrictHostKeyChecking=yes"))
+        self.assertNotIn(f"UserKnownHostsFile={fd.known_hosts_opt(d['id'])}",
+                         call[:call.index("StrictHostKeyChecking=yes")])  # a throwaway file, first
+        with self.assertRaises(fd.DeviceError):
+            fl.devices_action(self.link, {"action": "identity-trust", "id": d["id"], "fingerprint": "SHA256:other"}, None)
+        self.link.scans[d["id"]]["at"] -= fl.SCAN_TTL + 1
+        with self.assertRaises(fd.DeviceError):  # shown too long ago
+            fl.devices_action(self.link, {"action": "identity-trust", "id": d["id"],
+                                          "fingerprint": shown["fingerprint"]}, None)
+        fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)
+        with mock.patch.object(self.link, "kick") as kick:
+            out = fl.devices_action(self.link, {"action": "identity-trust", "id": d["id"],
+                                                "fingerprint": shown["fingerprint"]}, None)
+        kick.assert_called_with("switch")
+        self.assertEqual(fd.pinned_keys(d["id"]), [("ssh-ed25519", shown["fingerprint"])])  # the old key is gone
+        self.assertEqual(next(x for x in out["devices"] if x["id"] == d["id"])["keys"],
+                         [{"type": "ssh-ed25519", "fingerprint": shown["fingerprint"]}])
+        self.link.connect(["switch"])
+        self.assertEqual(self.link.snapshot()["phase"], "connected", self.link.snapshot()["error"])
+        out = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)
+        self.assertTrue(out["scan"]["matches"])
+
+    def test_test_now_never_saves_a_key(self):
+        self.pins()
+        d = self.device("127.0.0.1")
+        self.hosts({"127.0.0.1": "ok"})
+        self.link.test(d["id"])
+        rows = self.link.snapshot()["tests"][d["id"]]["rows"]
+        self.assertEqual(rows[0]["ssh"], "unpinned")
+        self.assertFalse(fd.pinned(d["id"]))
+
+    def test_reading_a_key_from_a_headset_that_doesnt_answer_says_why(self):
+        self.pins()
+        d = self.device("nothing.invalid")
+        with self.assertRaises(fd.DeviceError) as caught:
+            fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)
+        self.assertIn("Can't find the Frame", str(caught.exception))
+        self.assertEqual([p.name for p in fd.known_hosts(d["id"]).parent.iterdir()], [])
 
     def test_ssh_goes_to_the_ipv4_address_that_answered(self):
         self.device("localhost")
@@ -501,7 +924,7 @@ class Connecting(unittest.TestCase):
                      {"action": "update", "id": d["id"], "port": 2222},
                      {"action": "address-remove", "id": d["id"], "host": "localhost"},
                      {"action": "address-update", "id": d["id"], "host": "localhost", "newHost": "127.0.0.1"},
-                     {"action": "forget-identity", "id": d["id"]}):
+                     {"action": "identity-trust", "id": d["id"], "fingerprint": "SHA256:x"}):
             with self.assertRaises(fd.DeviceError, msg=body):
                 fl.devices_action(self.link, body, open_setup=None, busy=lambda: 1)
         # Renaming, or changing another headset, is fine.

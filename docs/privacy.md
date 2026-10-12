@@ -101,8 +101,10 @@ scrubbed:
 - `token=`, `key=`, `password=` and similar values are replaced
 
 The same error is sent at most once every 10 minutes. When ssh reports that
-it couldn't reach the Frame (asleep, away, or not set up yet), that is sent
-at most once per kind each time Frame Control runs.
+it couldn't reach the Frame (asleep, away, or not set up yet), or that ssh and
+the Frame refused each other's keys (a changed host key, or this computer's
+key not accepted), that is sent at most once per kind each time Frame Control
+runs.
 
 ## Report a problem
 

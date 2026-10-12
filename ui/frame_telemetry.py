@@ -53,12 +53,14 @@ SENT_KEEP = 200
 OUTBOX_MAX = 2000  # events kept while offline; the oldest go first
 FLUSH_EVERY = 60
 REPEAT_WINDOW = 600  # the same diagnostic error is sent at most once in this many seconds
-# Not faults in Frame Control: the headset asleep, away or not set up yet. The status poll
+# Not faults in Frame Control: the headset asleep, away or not set up yet, or ssh and the headset
+# not trusting each other (a host key that changed, a key not authorised): the page says what to do
+# about each (Devices tab, Set Up Connection). The status poll
 # meets these every few seconds, so each is sent at most once per session, whatever the wording,
 # but only for an error marked where ssh ran as ssh failing to reach the headset
 # (frame_host.link_failure). The message alone isn't evidence: a download's "Connection reset by
 # peer", or a file name with ssh's words in it, keeps the usual window.
-EXPECTED_CATEGORIES = ('frame_unreachable', 'frame_not_set_up')
+EXPECTED_CATEGORIES = ('frame_unreachable', 'frame_not_set_up', 'frame_auth')
 DEFAULT_HOST = 'https://us.i.posthog.com'
 
 LEVELS = ('usage', 'compat', 'diagnostics')
@@ -268,7 +270,8 @@ CATEGORIES = [
     ('cant_run_on_frame', re.compile(r"can't run on the Frame")),
     ('steam_shortcut', re.compile(r'(?i)steam did not return a shortcut|shortcut list|no Steam shortcut')),
     ('frame_not_set_up', re.compile(r'(?i)Could not resolve hostname|no "?frame"? (?:SSH )?alias')),
-    ('frame_auth', re.compile(r'(?i)Permission denied|Host key verification failed')),
+    ('frame_auth', re.compile(r'(?i)Permission denied|Host key verification failed|'
+                              r'REMOTE HOST IDENTIFICATION HAS CHANGED|host key is known for')),
     # Anything ssh says about its own connection: "ssh: connect to host … port 22: <reason>" (Windows
     # says "Unknown error"), a dropped shared connection (mux_client_…, client_loop), and Windows'
     # "banner exchange: Connection to UNKNOWN port -1" (its ssh can't name a peer whose connect
