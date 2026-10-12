@@ -31,6 +31,7 @@ import ipaddress
 import os
 import queue
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -307,6 +308,20 @@ def _scanned_key(path, name):
             if entry:
                 return entry
     return None
+
+
+def proxy_command(literal):
+    """A ProxyCommand that runs `literal` (argv, ending with the jump host) with `-W` to the
+    headset, each word exactly as given. ssh first expands its %-tokens in the line, so every
+    % of ours is doubled; then it hands the line to a shell (`$SHELL -c` on macOS and Linux)
+    or, on Windows, starts it as a command line, so every word is quoted for that: a path
+    with spaces, $(...), backticks or quotes stays one plain word. The forward is
+    [%h]:%p, so an IPv6 address (with a zone) reads as one host."""
+    words = [w.replace("%", "%%") for w in literal]
+    target = "[%h]:%p"
+    if frame_host.WINDOWS:
+        return subprocess.list2cmdline([*words[:-1], "-W", target, words[-1]])
+    return " ".join(shlex.quote(w) for w in [*words[:-1], "-W", target, words[-1]])
 
 
 def probe_raw(host, port, result):
@@ -1414,12 +1429,13 @@ class Link:
                 "the key by hand (on the headset, in Konsole: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)")
         user, host, port = m.groups()
         # The ssh this server runs, by its full path: the shell that runs a ProxyCommand may set
-        # up another PATH. (Its name if the path has a space, which the command line would split.)
-        ssh = frame_host.which(self.mux_base[0]) or self.mux_base[0]
-        ssh = ssh if not re.search(r"\s|%", ssh) else self.mux_base[0]
-        hop = [ssh, *(a for o in self.HOP_OPTS for a in ("-o", o)),
-               *(["-l", user] if user else []), *(["-p", port] if port else []), "-W", "%h:%p", host]
-        return ["-F", "none", "-o", "ProxyCommand=" + " ".join(hop)]
+        # up another PATH.
+        ssh = frame_host.which(self.mux_base[0])
+        if not ssh:
+            raise frame_devices.DeviceError(f"Couldn't find {self.mux_base[0]} to reach the jump host with")
+        hop = [ssh, *(a for o in self.HOP_OPTS for a in ("-o", o)), *(["-l", user] if user else []),
+               *(["-p", port] if port else []), host.strip("[]")]  # ssh takes a bare IPv6 address here
+        return ["-F", "none", "-o", "ProxyCommand=" + proxy_command(hop)]
 
     def _scan_one(self, device, host, route):
         """-> ((type, blob, fingerprint) or None, what ssh said)."""

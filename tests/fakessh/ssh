@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import signal
+import subprocess
 import sys
 import time
 
@@ -26,7 +27,7 @@ hosts = json.loads(os.environ.get("FAKESSH_HOSTS", "{}"))
 opts = {}
 i = 0
 while i < len(args) and args[i].startswith("-"):
-    if args[i] in ("-o", "-O", "-p", "-l", "-F"):
+    if args[i] in ("-o", "-O", "-p", "-l", "-F", "-W"):
         key = args[i]
         val = args[i + 1]
         if key == "-o":
@@ -59,6 +60,23 @@ if opts.get("-O") == "exit":
         os.unlink(marker)
     sys.exit(0)
 
+if "-W" in opts:  # a jump host's ssh, forwarding to the headset: the call is logged, that's all
+    sys.exit(0)
+if opts.get("proxycommand", "none") != "none":
+    # As OpenSSH: expand %-tokens, then `$SHELL -c "exec <line>"` (here /bin/sh).
+    line, out, n = opts["proxycommand"], "", 0
+    while n < len(line):
+        if line[n] == "%" and n + 1 < len(line):
+            out += {"%": "%", "h": host, "p": opts.get("port", "22"), "r": opts.get("user", "")}.get(
+                line[n + 1], line[n:n + 2])
+            n += 2
+        else:
+            out += line[n]
+            n += 1
+    if subprocess.run(["/bin/sh", "-c", "exec " + out], stdin=subprocess.DEVNULL,
+                      stdout=subprocess.DEVNULL).returncode:
+        say("kex_exchange_identification: Connection closed by remote host")
+        sys.exit(255)
 what = hosts.get(host)
 if what is None:
     say(f"ssh: Could not resolve hostname {host}: nodename nor servname provided, or not known")

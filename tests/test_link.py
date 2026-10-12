@@ -9,6 +9,7 @@ import http.client
 import io
 import json
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -387,8 +388,8 @@ class Connecting(unittest.TestCase):
                     # Review pr85-review-r2: ProxyJump's own ssh inherits the config (ForwardAgent,
                     # LocalCommand); the scan builds the jump host's ssh itself, hardened.
                     self.assertEqual(len(hop), 1)
-                    words = hop[0][len("ProxyCommand="):].split()
-                    self.assertEqual(words[-7:], ["-l", "me", "-p", "2222", "-W", "%h:%p", "jumpy"])
+                    words = shlex.split(hop[0][len("ProxyCommand="):])
+                    self.assertEqual(words[-7:], ["-l", "me", "-p", "2222", "-W", "[%h]:%p", "jumpy"])
                     for o in fl.Link.HOP_OPTS:
                         self.assertIn(o, words)
                     self.assertLess(call.index(hop[0]), call.index("HostKeyAlias=frame-control-" + d["id"]))
@@ -401,6 +402,36 @@ class Connecting(unittest.TestCase):
                                                                                           + d["id"]))
         self.assertFalse(fd.pinned(d["id"]))
         self.assertEqual(sorted(p.name for p in fd.known_hosts(d["id"]).parent.iterdir()), [])  # no scan files
+
+    @unittest.skipIf(os.name != "posix", "the stand-in ssh runs ProxyCommand with /bin/sh")
+    def test_the_jump_hosts_command_line_is_quoted_whatever_the_names(self):
+        # Review pr85-review-r3: the hop's words went into the ProxyCommand line unquoted, so an
+        # ssh at /tmp/x/bin$(:>INJECTED)/ssh ran shell code; and an IPv6 jump host broke.
+        self.pins()
+        d = self.device("localhost")
+        self.hosts({"localhost": "ok"})
+        for n, name in enumerate(["with space", "bin$(touch INJECTED-0)", "back`touch INJECTED-1`tick",
+                                  "quote'it\"s", "per%cent %h %%", "semi;touch INJECTED-2"]):
+            with self.subTest(name=name):
+                bindir = self.dir / f"b{n}" / name
+                bindir.mkdir(parents=True)
+                (bindir / "ssh").symlink_to(FAKESSH / "ssh")
+                for spec, at in (("me@jumpy:2222", "jumpy"), ("[::1]:2200", "::1")):
+                    before = len(self.calls())
+                    with mock.patch.dict(os.environ, {"PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}), \
+                            mock.patch.object(fl, "proxy_route", return_value=("jump", spec)):
+                        scan = fl.devices_action(self.link, {"action": "identity-scan", "id": d["id"]}, None)["scan"]
+                    self.assertTrue(scan["fingerprint"].startswith("SHA256:"))
+                    hops = [c for c in self.calls()[before:] if "-W" in c]
+                    self.assertEqual(len(hops), 1, self.calls()[before:])
+                    self.assertEqual(hops[0][-1], at)  # the jump host, bare
+                    self.assertEqual(hops[0][hops[0].index("-W") + 1], "[localhost]:%d" % self.port)
+                    outer = [c for c in self.calls()[before:] if "PreferredAuthentications=none" in c][-1]
+                    line = next(c for c in outer if c.startswith("ProxyCommand="))
+                    self.assertTrue(line[len("ProxyCommand="):].startswith(shlex.quote(str(bindir / "ssh")
+                                                                                       .replace("%", "%%"))))
+                self.assertEqual([p.name for p in self.dir.rglob("INJECTED*")], [])
+                self.assertFalse(list(Path.cwd().glob("INJECTED*")))
 
     def test_a_key_check_refuses_routes_it_cant_harden(self):
         self.pins()
