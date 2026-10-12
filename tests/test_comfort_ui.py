@@ -1,4 +1,5 @@
 """Run the actual shared page's comfort renderer against a minimal DOM/bridge."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import pathlib
 import shutil
 import subprocess

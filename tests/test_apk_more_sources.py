@@ -1,3 +1,4 @@
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import hashlib, io, json, os, sys, tempfile, time, unittest, urllib.error, urllib.request, zipfile
 from pathlib import Path
 from unittest.mock import patch

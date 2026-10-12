@@ -1,4 +1,5 @@
 """Local-only VR manifest, raw ZIP and independent signature checks."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import io
 import os
 from pathlib import Path

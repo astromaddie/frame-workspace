@@ -1,4 +1,5 @@
 """Every public sideload entry point reaches the mandatory five-slot writer."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import contextlib
 import io
 import json

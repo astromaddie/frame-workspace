@@ -6,6 +6,7 @@ identity line, then starts TLS as the *client*.
 
 Run: python3 -m unittest discover -s tests
 """
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import json
 import os
 import shutil

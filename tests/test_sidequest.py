@@ -1,3 +1,4 @@
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import json
 from pathlib import Path
 import sys

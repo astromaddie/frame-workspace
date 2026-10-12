@@ -1,4 +1,5 @@
 """Fake-Frame panel responses and the headset page's real HTTP guards."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import http.client
 import json
 from pathlib import Path

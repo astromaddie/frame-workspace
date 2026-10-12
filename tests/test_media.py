@@ -1,4 +1,5 @@
 """Owned media planning, eye isolation, decoder choice and fake-Frame ownership."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import argparse
 import io
 import json

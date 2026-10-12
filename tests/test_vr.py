@@ -1,4 +1,5 @@
 """Own VR telemetry, optional catalogue and entitlement guards; no headset needed."""
+import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import ctypes
 import json
 from pathlib import Path
