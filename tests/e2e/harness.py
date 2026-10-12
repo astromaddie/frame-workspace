@@ -10,6 +10,7 @@ import atexit
 import http.client
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -23,6 +24,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(ROOT / 'ui'), str(ROOT / 'tests'), str(ROOT / 'tests' / 'smoke')]
 
 ENABLED = os.environ.get('FRAME_E2E') == '1'
+if ENABLED:
+    # What tests/sandbox.py does, minus moving HOME: the container's real ~/.ssh is what
+    # points `ssh frame` at the fake Frame, and OpenSSH reads ~/.ssh from the password
+    # database, not $HOME. (These tests used to get this through test_frame_apk.)
+    _data = tempfile.mkdtemp(prefix='frame-control-e2e-')
+    atexit.register(shutil.rmtree, _data, ignore_errors=True)
+    os.environ['FRAME_CONTROL_DATA_DIR'] = _data
+    os.environ['FRAME_CONTROL_TELEMETRY'] = '0'
+    os.environ['FRAME_COMPAT_DB_URL'] = 'http://127.0.0.1:9'
 CTL = os.environ.get('FAKEFRAME_CTL', 'http://fakeframe:9999').rstrip('/')
 FAKE_HOST = os.environ.get('FAKEFRAME_HOST', 'fakeframe')
 HOME = '/home/steamos'

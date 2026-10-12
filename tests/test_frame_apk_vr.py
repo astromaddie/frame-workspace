@@ -16,7 +16,7 @@ import frame_apk
 import frame_apk_vr as vr
 import frame_apk_sign as signing
 import frame_android
-from test_frame_apk import pool
+from apk_fixtures import pool
 
 
 DEFAULT = 'android.intent.category.DEFAULT'

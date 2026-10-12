@@ -1,15 +1,18 @@
 import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "ui"))
 import frame_connect  # noqa: E402
 import frame_devices  # noqa: E402
+import frame_host  # noqa: E402
 
 
 def inside(path, folder):
@@ -40,9 +43,28 @@ class Sandbox(unittest.TestCase):
         self.assertTrue(inside(Path.home(), tmp), Path.home())
         self.assertTrue(inside(os.path.expanduser("~"), tmp))
         for d in (frame_devices.ssh_dir(), frame_devices.pin_dir(), frame_connect.SSH_DIR,
-                  os.environ["FRAME_CONTROL_SSH_DIR"]):
+                  os.environ["FRAME_CONTROL_SSH_DIR"], frame_host.cache_dir(), frame_host.data_dir()):
             self.assertTrue(inside(d, tmp), d)
             self.assertFalse(inside(d, sandbox.REAL_SSH_DIR), d)
+
+    def test_cache_folders_on_every_platform_are_throwaway(self):
+        """cache_dir() reads LOCALAPPDATA on Windows and XDG_CACHE_HOME on Linux, which a
+        moved HOME alone doesn't cover: servers sweep staging folders there."""
+        tmp = tempfile.gettempdir()
+        for platform in ("MAC", "WINDOWS", None):
+            with mock.patch.object(frame_host, "MAC", platform == "MAC"), \
+                    mock.patch.object(frame_host, "WINDOWS", platform == "WINDOWS"):
+                self.assertTrue(inside(frame_host.cache_dir("apk-sources"), tmp), platform)
+        for name in ("LOCALAPPDATA", "APPDATA", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"):
+            self.assertTrue(inside(os.environ[name], tmp), name)
+
+    def test_end_to_end_tests_stay_out_of_it(self):
+        """tests/e2e keeps the container's real home (OpenSSH reads ~/.ssh from the password
+        database, not $HOME), so nothing there may import sandbox, even through a test_* module."""
+        here = Path(__file__).resolve().parent
+        pattern = re.compile(r"^\s*(import sandbox|from sandbox |import test_|from test_)", re.M)
+        for f in [*(here / "e2e").glob("*.py"), *(here / "smoke").glob("*.py"), here / "apk_fixtures.py"]:
+            self.assertIsNone(pattern.search(f.read_text(encoding="utf-8")), f)
 
     def test_child_processes_inherit_it(self):
         out = subprocess.run(

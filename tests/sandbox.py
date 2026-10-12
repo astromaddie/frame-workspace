@@ -27,9 +27,20 @@ os.environ["FRAME_COMPAT_DB_URL"] = "http://127.0.0.1:9"
 # its lock file) and the other per-user folders some modules use. A server started
 # without FRAME_CONTROL_SSH_DIR used to import the real ~/.ssh/config and seed a pin
 # into the real ~/.ssh/frame-control-hosts on every run.
+#
+# tests/e2e must not import this (directly or through a test_* module): they run in
+# a throwaway container whose real ~/.ssh points `ssh frame` at the fake Frame, and
+# OpenSSH finds ~/.ssh from the password database, not $HOME. Shared helpers they
+# need live in sandbox-free modules such as apk_fixtures.py.
 HOME = os.path.join(_dir, "home")
 SSH_DIR = os.path.join(HOME, ".ssh")
 os.makedirs(SSH_DIR, mode=0o700)
 os.environ["HOME"] = HOME
 os.environ["USERPROFILE"] = HOME  # Path.home() on Windows
 os.environ["FRAME_CONTROL_SSH_DIR"] = SSH_DIR  # frame_devices.ssh_dir(), frame_connect.SSH_DIR
+# The per-user folders that don't follow HOME when these are set: frame_host.cache_dir()
+# (servers warm indexes there and sweep its staging folders) and data_dir()'s fallbacks.
+for _name, _sub in (("LOCALAPPDATA", "AppData/Local"), ("APPDATA", "AppData/Roaming"),
+                    ("XDG_CACHE_HOME", ".cache"), ("XDG_DATA_HOME", ".local/share"),
+                    ("XDG_STATE_HOME", ".local/state"), ("XDG_CONFIG_HOME", ".config")):
+    os.environ[_name] = os.path.join(HOME, *_sub.split("/"))
