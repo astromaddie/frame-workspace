@@ -3,9 +3,13 @@
 Run: python3 -m unittest discover -s tests
 """
 import io
+import json
+import os
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -52,12 +56,9 @@ class Mapping(unittest.TestCase):
         self.assertEqual(t.locate(5, None)["display"], ":0")
 
     def test_focus_display_is_decoded(self):
-        t = self.t
-        saved = t.xprop_root
-        self.addCleanup(lambda: setattr(t, "xprop_root", saved))
         for values, want in (([12602, 0, 58], ":1"), ([12346], ":0"), ([], None), ([0x41], None)):
-            t.xprop_root = lambda d, n, v=values: v
-            self.assertEqual(t.focus_display(), want)
+            self.assertEqual(self.t.focus_display({"GAMESCOPE_FOCUS_DISPLAY": values}), want)
+        self.assertIsNone(self.t.focus_display({}))
 
     def test_ascii_table_covers_printable_characters(self):
         for code in range(0x20, 0x7F):
@@ -270,11 +271,11 @@ class FindingPanels(unittest.TestCase):
 
     def setUp(self):
         t = self.t
-        names = ("xprop_root", "window_info", "window_pid", "displays", "desktop_running", "has_gamescope")
+        names = ("read_props", "window_info", "window_pid", "displays", "desktop_running")
         saved = {n: getattr(t, n) for n in names}
         saved_which = t.shutil.which
         self.real_displays = saved["displays"]
-        self.real_has = saved["has_gamescope"]
+        self.real_read_props = saved["read_props"]
 
         def restore():
             for n, v in saved.items():
@@ -285,9 +286,8 @@ class FindingPanels(unittest.TestCase):
         t._ROOT.clear()
         self.props = {}  # (display, property) -> values
         self.windows = {}  # (display, window) -> info
-        t.xprop_root = lambda d, n: list(self.props.get((d, n), []))
-        t.has_gamescope = lambda d, timeout: any((d, n) in self.props for n in
-                                                 ("GAMESCOPE_FOCUSABLE_WINDOWS", "GAMESCOPE_FOCUSED_WINDOW"))
+        self.reads = []  # displays whose gamescope properties were read
+        t.read_props = lambda d, limit=5.0: self.reads.append(d) or {n: list(v) for (dd, n), v in self.props.items() if dd == d}
         t.window_info = lambda d, w: self.windows.get((d, w))
         t.window_pid = lambda d, w: None
         t.displays = lambda: [":0", ":1", ":2"]
@@ -308,58 +308,79 @@ class FindingPanels(unittest.TestCase):
         self.assertEqual([(p["window"], p["display"], p["focused"]) for p in out["panels"]], [(4194307, ":0", True)])
         self.assertNotIn("why", out)
 
+    def test_display_0_costs_one_read(self):
+        # The layout of every build seen so far: one read of :0's properties for the whole run.
+        self.plasma_on(":0")
+        self.t.panels()
+        self.assertEqual(self.reads, [":0"])
+
     def test_gamescope_properties_on_another_display_are_found(self):
         # A build that numbers its displays differently: :0 has no gamescope properties.
         self.plasma_on(":1")
-        self.assertEqual(self.t.gamescope_root(), ":1")
+        self.assertEqual(self.t.gamescope()[0], ":1")
+        self.reads.clear()
+        self.t._ROOT.clear()
         self.assertEqual(len(self.t.panels()["panels"]), 1)
+        self.assertEqual(self.reads, [":0", ":1"])  # read once, then reused by focus() and focusable()
 
-    def test_root_search_shares_one_deadline(self):
-        # Every display stalls: the search gives up within ROOT_DEADLINE, each probe within
-        # ROOT_PROBE_TIMEOUT, and the answer (:0) is remembered rather than searched for again.
-        t, now, probes = self.t, [0.0], []
-        t.displays = lambda: [":0", ":1", ":2", ":3", ":4", ":5"]
+    def test_other_displays_are_probed_briefly(self):
+        limits = []
+        self.t.read_props = lambda d, limit=5.0: limits.append((d, limit)) or {}
+        self.assertEqual(self.t.gamescope(), (":0", {}))
+        self.assertEqual(limits, [(":0", 5.0), (":1", self.t.ROOT_PROBE_TIMEOUT), (":2", self.t.ROOT_PROBE_TIMEOUT)])
 
-        def stalled(display, timeout):
-            probes.append((display, timeout))
-            now[0] += timeout
-            return False
-        t.has_gamescope = stalled
-        self.assertEqual(t.gamescope_root(clock=lambda: now[0]), ":0")
-        self.assertLessEqual(now[0], t.ROOT_DEADLINE)
-        self.assertTrue(all(0 < timeout <= t.ROOT_PROBE_TIMEOUT for _, timeout in probes))
-        self.assertLess(len(probes), 6)
-        count = len(probes)
-        now[0] += 1
-        self.assertEqual(t.gamescope_root(clock=lambda: now[0]), ":0")
-        self.assertEqual(len(probes), count)  # remembered
-        now[0] += t.ROOT_RETRY
-        t.gamescope_root(clock=lambda: now[0])
-        self.assertGreater(len(probes), count)  # tried again later
-
-    def test_root_found_is_remembered(self):
+    def test_input_helper_remembers_the_display(self):
+        # The input helper lives for a session: a found display is kept, a failed search retried later.
+        t = self.t
         self.plasma_on(":1")
-        calls = []
-        has = self.t.has_gamescope
-        self.t.has_gamescope = lambda d, timeout: calls.append(d) or has(d, timeout)
-        self.assertEqual(self.t.gamescope_root(), ":1")
-        self.t.panels()
-        self.assertEqual(calls, [":0", ":1"])  # one search for the whole request
+        t.gamescope(); t.gamescope()
+        self.assertEqual(self.reads, [":0", ":1", ":1"])
+        self.props.clear()
+        self.reads.clear()
+        t._ROOT.clear()
+        t.gamescope(); t.gamescope()
+        self.assertEqual(self.reads, [":0", ":1", ":2", ":0"])  # given up: :0 for ROOT_RETRY
+        t._ROOT[1] -= t.ROOT_RETRY
+        self.reads.clear()
+        t.gamescope()
+        self.assertEqual(self.reads, [":0", ":1", ":2"])
 
-    def test_has_gamescope_reads_xprop_output(self):
+    def test_read_props_parses_xprop(self):
         t = self.t
         saved = t.subprocess.run
         self.addCleanup(setattr, t.subprocess, "run", saved)
-        for out, want in (("GAMESCOPE_FOCUSABLE_WINDOWS(CARDINAL) = 1, 0, 2\nGAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 1\n", True),
-                          ("GAMESCOPE_FOCUSABLE_WINDOWS:  not found.\nGAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 0\n", True),
-                          ("GAMESCOPE_FOCUSABLE_WINDOWS:  not found.\nGAMESCOPE_FOCUSED_WINDOW:  not found.\n", False)):
-            t.subprocess.run = lambda *a, o=out, **k: subprocess.CompletedProcess(a, 0, o, "")
-            self.assertEqual(self.real_has(":0", 1), want, out)
+        out = ("GAMESCOPE_FOCUSABLE_WINDOWS(CARDINAL) = 1, 0, 2, 3, 769, 4\n"
+               "GAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 0\nGAMESCOPE_FOCUS_DISPLAY:  not found.\n")
+        t.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, out, "")
+        self.assertEqual(self.real_read_props(":0"), {"GAMESCOPE_FOCUSABLE_WINDOWS": [1, 0, 2, 3, 769, 4],
+                                                      "GAMESCOPE_FOCUSED_WINDOW": [0]})
+        t.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, "GAMESCOPE_FOCUSED_WINDOW:  not found.\n", "")
+        self.assertEqual(self.real_read_props(":0"), {})
 
         def hang(*a, **k):
             raise subprocess.TimeoutExpired(a[0], k.get("timeout"))
         t.subprocess.run = hang
-        self.assertFalse(self.real_has(":0", 1))
+        self.assertEqual(self.real_read_props(":0"), {})
+
+    def test_deadline_returns_what_was_found(self):
+        t, clock = self.t, [0.0]
+        self.plasma_on(":0")
+        self.props[(":0", "GAMESCOPE_FOCUSABLE_WINDOWS")] = [4194307, 0, 2222, 5, 0, 1, 6, 0, 1]
+        saved = t.time.monotonic
+        self.addCleanup(setattr, t.time, "monotonic", saved)
+        t.time.monotonic = lambda: clock[0]
+        info = self.windows.get
+
+        def slow(d, w):  # every xwininfo takes 1 s: the run is out of time after a few
+            t.budget()
+            clock[0] += 1
+            return info((d, w))
+        t.window_info = slow
+        out = t.panels(limit=7)  # focus: 2 reads; the first panel: 3 displays and its root
+        self.assertEqual([p["window"] for p in out["panels"]], [4194307])
+        self.assertIn("took too long", out["why"])
+        self.assertIn("Some may be missing", out["why"])
+        self.assertIsNone(t.DEADLINE[0])  # the next run (or the input helper) has no deadline left over
 
     def test_listed_window_that_isnt_x11_explains_itself(self):
         self.plasma_on(":0")
@@ -408,6 +429,66 @@ class FindingPanels(unittest.TestCase):
             self.assertEqual(self.real_displays(), [":0", ":1"])
         finally:
             builtins.open, t.os.listdir = real_open, real_listdir
+
+
+FAKE_XPROP = """#!/bin/sh
+sleep "${FAKE_X_DELAY:-0}"
+if [ "$1" = "-root" ] && [ "$DISPLAY" = ":0" ]; then
+  echo "GAMESCOPE_FOCUSABLE_WINDOWS(CARDINAL) = 11, 0, 101, 12, 769, 102"
+  echo "GAMESCOPE_FOCUSED_WINDOW(CARDINAL) = 11"
+  echo "GAMESCOPE_FOCUS_DISPLAY(CARDINAL) = 12346"
+fi
+"""
+FAKE_XWININFO = """#!/bin/sh
+sleep "${FAKE_X_DELAY:-0}"
+[ "$DISPLAY" = ":0" ] || exit 1
+echo 'xwininfo: Window id: 0xb "Desktop"'
+echo '  Absolute upper-left X:  0'
+echo '  Absolute upper-left Y:  0'
+echo '  Width: 1280'
+echo '  Height: 800'
+echo '  Map State: IsViewable'
+"""
+
+
+@unittest.skipIf(sys.platform == "win32", "fake X tools are shell scripts; frame_touch.py runs on the Frame")
+class PanelsAsAFreshProcess(unittest.TestCase):
+    """`frame_touch.py panels` the way the server runs it: a new process each request, with
+    fake xprop and xwininfo first on PATH (two displays, :0 and :1)."""
+
+    def run_panels(self, delay):
+        with tempfile.TemporaryDirectory() as bin_dir:
+            for name, body in (("xprop", FAKE_XPROP), ("xwininfo", FAKE_XWININFO)):
+                path = Path(bin_dir) / name
+                path.write_text(body)
+                path.chmod(0o755)
+            env = dict(os.environ, PATH=bin_dir + os.pathsep + os.environ.get("PATH", ""), FAKE_X_DELAY=str(delay),
+                       PYTHONDONTWRITEBYTECODE="1")
+            code = ("import sys; sys.path.insert(0, sys.argv[1]); import frame_touch as t; "
+                    "t.displays = lambda: [':0', ':1']; t.desktop_running = lambda: False; "
+                    "sys.argv = ['frame_touch.py', 'panels']; sys.exit(t.main())")
+            start = time.monotonic()
+            r = subprocess.run([sys.executable, "-c", code, str(ROOT / "ui")], env=env, capture_output=True,
+                               text=True, timeout=60)
+            took = time.monotonic() - start
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout), took
+
+    def test_lists_panels(self):
+        out, _ = self.run_panels(0)
+        self.assertEqual(out["focus"], 11)
+        self.assertEqual(out["focus_display"], ":0")
+        self.assertEqual([(p["window"], p["display"], p["focused"]) for p in out["panels"]],
+                         [(11, ":0", True), (12, ":0", False)])
+        self.assertNotIn("why", out)
+
+    def test_slow_x_tools_stay_inside_the_servers_timeout(self):
+        # Review of #83: X tools answering in 4.6 s each would take well over the server's
+        # 20 s; one deadline for the run (PANELS_DEADLINE, 12 s) returns in time, saying why.
+        out, took = self.run_panels(4.6)
+        self.assertLess(took, 15, out)
+        self.assertEqual(out["panels"], [])
+        self.assertIn("took too long", out["why"])
 
 
 @unittest.skipUnless(shutil.which("node"), "needs node")

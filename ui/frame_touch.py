@@ -55,14 +55,41 @@ def say(state, **more):
 
 # ---- which panel has focus -----------------------------------------------------
 
-def xprop_root(display, name):
+PROPS = ("GAMESCOPE_FOCUSABLE_WINDOWS", "GAMESCOPE_FOCUSED_WINDOW", "GAMESCOPE_FOCUS_DISPLAY")
+TOOL_TIMEOUT = 5.0  # seconds for any one xprop or xwininfo
+PANELS_DEADLINE = 12.0  # seconds for a whole `panels` run: well inside the server's 20 s for /api/panels
+DEADLINE = [None]  # when the current `panels` run must stop asking X tools (monotonic), if it has one
+
+
+class OutOfTime(Exception):
+    """The current run's deadline passed: stop and report what was found."""
+
+
+def budget(limit=TOOL_TIMEOUT):
+    """Seconds an X tool may take now: its own limit, cut to what's left of the run's deadline."""
+    if DEADLINE[0] is None:
+        return limit
+    left = DEADLINE[0] - time.monotonic()
+    if left <= 0:
+        raise OutOfTime()
+    return min(limit, left)
+
+
+def read_props(display, limit=TOOL_TIMEOUT):
+    """gamescope's root properties on one display, in one xprop call: {name: [values]} for
+    those the display has, {} if none (or xprop didn't answer)."""
     try:
-        out = subprocess.run(["xprop", "-root", name], env=dict(os.environ, DISPLAY=display),
-                             capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["xprop", "-root", *PROPS], env=dict(os.environ, DISPLAY=display),
+                             capture_output=True, text=True, timeout=budget(limit)).stdout
     except (OSError, subprocess.SubprocessError):
-        return []
-    values = out.split("=", 1)[1] if "=" in out else ""
-    return [int(v) for v in values.replace(",", " ").split() if v.isdigit()]
+        return {}
+    props = {}
+    for line in out.splitlines():
+        name, sep, values = line.partition("=")
+        name = name.split("(", 1)[0].strip()
+        if sep and name in PROPS:
+            props[name] = [int(v) for v in values.replace(",", " ").split() if v.isdigit()]
+    return props
 
 
 def window_info(display, window):
@@ -70,7 +97,7 @@ def window_info(display, window):
     try:
         which = ["-root"] if window == "root" else ["-id", str(window)]
         out = subprocess.run(["xwininfo", *which], env=dict(os.environ, DISPLAY=display),
-                             capture_output=True, text=True, timeout=5).stdout
+                             capture_output=True, text=True, timeout=budget()).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     if "IsViewable" not in out:
@@ -104,52 +131,42 @@ def displays():
     return [f":{n}" for n in sorted(found)]
 
 
-_ROOT = []  # [display, when found or None]: the display that carries gamescope's properties
-ROOT_DEADLINE = 6.0  # seconds for the whole search: well inside the server's 20 s for /api/panels
-ROOT_PROBE_TIMEOUT = 2.0  # seconds for any one display, so one stalled display can't use it all
-ROOT_RETRY = 30.0  # seconds before a search that found nothing is tried again (the input helper lives on)
+# The input helper (`frame_touch.py` reading events) lives for a whole Control session and
+# reads focus often, so it remembers which display has gamescope's properties: found, for
+# good; not found, for ROOT_RETRY. A `panels` run is a fresh process each time, so this
+# saves it nothing; it costs nothing either while :0 has the properties.
+_ROOT = []  # [display, when it was given up on, or None if found]
+ROOT_PROBE_TIMEOUT = 2.0  # seconds for each display other than :0, so a stalled one can't use the run
+ROOT_RETRY = 30.0
 
 
-def has_gamescope(display, timeout):
-    """Whether this display's root has gamescope's properties: one xprop call, bounded."""
-    try:
-        out = subprocess.run(["xprop", "-root", "GAMESCOPE_FOCUSABLE_WINDOWS", "GAMESCOPE_FOCUSED_WINDOW"],
-                             env=dict(os.environ, DISPLAY=display), capture_output=True, text=True,
-                             timeout=timeout).stdout
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return any(line.startswith("GAMESCOPE_") and "=" in line for line in out.splitlines())
+def gamescope():
+    """(display, properties): the X display whose root window carries gamescope's panel
+    properties (GAMESCOPE_FOCUSABLE_WINDOWS and friends), and what they say now.
 
-
-def gamescope_root(clock=time.monotonic):
-    """The X display whose root window carries gamescope's panel properties
-    (GAMESCOPE_FOCUSABLE_WINDOWS and friends).
-
-    That's :0 on every build seen so far (SteamOS 0.3.0 to 0.4.1), so :0 is asked first
-    and is the answer when nothing publishes them. If a SteamOS update numbers its
-    displays differently, the others are probed rather than reporting no panels. The
-    search shares one deadline and is remembered: found for good, not found for ROOT_RETRY.
+    That's :0 on every build seen so far (SteamOS 0.3.0 to 0.4.1), so :0 is read first and,
+    when it has them, used with no other probe. Only if it hasn't are the other displays
+    asked, briefly each; with none, :0 and no properties.
     """
-    now = clock()
-    if _ROOT and (_ROOT[1] is None or now - _ROOT[1] < ROOT_RETRY):
-        return _ROOT[0]
-    deadline = now + ROOT_DEADLINE
-    found = None
-    for display in [":0"] + [d for d in displays() if d != ":0"]:
-        left = deadline - clock()
-        if left <= 0:
-            break
-        if has_gamescope(display, min(ROOT_PROBE_TIMEOUT, left)):
-            found = display
-            break
-    _ROOT[:] = [found, None] if found else [":0", clock()]
-    return _ROOT[0]
+    if _ROOT and (_ROOT[1] is None or time.monotonic() - _ROOT[1] < ROOT_RETRY):
+        return _ROOT[0], read_props(_ROOT[0])
+    props, found = read_props(":0"), ":0"
+    if not props:
+        found = None
+        for display in displays():
+            if display != ":0":
+                props = read_props(display, ROOT_PROBE_TIMEOUT)
+                if props:
+                    found = display
+                    break
+    _ROOT[:] = [found, None] if found else [":0", time.monotonic()]
+    return _ROOT[0], props
 
 
 def window_pid(display, window):
     try:
         out = subprocess.run(["xprop", "-id", str(window), "_NET_WM_PID"], env=dict(os.environ, DISPLAY=display),
-                             capture_output=True, text=True, timeout=5).stdout
+                             capture_output=True, text=True, timeout=budget()).stdout
     except (OSError, subprocess.SubprocessError):
         return None
     value = out.rsplit("=", 1)[-1].strip() if "=" in out else ""
@@ -177,20 +194,20 @@ def locate(window, pid):
             "root": [root.get("width", info["width"]), root.get("height", info["height"])]}
 
 
-def focusable():
-    """gamescope's focusable windows as (window, app id, pid)."""
-    t = xprop_root(gamescope_root(), "GAMESCOPE_FOCUSABLE_WINDOWS")
+def focusable(props=None):
+    """gamescope's focusable windows as (window, app id, pid), from props if already read."""
+    t = (gamescope()[1] if props is None else props).get("GAMESCOPE_FOCUSABLE_WINDOWS", [])
     return [tuple(t[i:i + 3]) for i in range(0, len(t) - 2, 3)]
 
 
-def focus_display():
-    """The display of the focused window, from GAMESCOPE_FOCUS_DISPLAY on :0's root.
+def focus_display(props=None):
+    """The display of the focused window, from GAMESCOPE_FOCUS_DISPLAY on gamescope's root.
 
     gamescope writes the name (":1") as 32-bit items, so its first four bytes land,
     little-endian, in the first value: 12602 is 0x313A, ":1" (steamcompmgr.cpp;
     seen 2026-09-29).
     """
-    values = xprop_root(gamescope_root(), "GAMESCOPE_FOCUS_DISPLAY")
+    values = (gamescope()[1] if props is None else props).get("GAMESCOPE_FOCUS_DISPLAY")
     if not values:
         return None
     name = (values[0] & 0xFFFFFFFF).to_bytes(4, "little").split(b"\0", 1)[0].decode("ascii", "replace")
@@ -198,19 +215,23 @@ def focus_display():
 
 
 def focus_now():
-    """Just which window and display have focus: two property reads, for checking a press."""
-    window = (xprop_root(gamescope_root(), "GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
-    return (window or None, focus_display() if window else None)
+    """Just which window and display have focus: one property read, for checking a press."""
+    props = gamescope()[1]
+    window = (props.get("GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
+    return (window or None, focus_display(props) if window else None)
 
 
-def focus():
+def focus(props=None):
     """The panel that has focus in the headset: window, display, name and sizes (gamescope
-    publishes the window and its display on its root display, :0 so far)."""
-    window = (xprop_root(gamescope_root(), "GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
+    publishes the window and its display on its root display, :0 so far). props: gamescope's
+    properties if already read."""
+    if props is None:
+        props = gamescope()[1]
+    window = (props.get("GAMESCOPE_FOCUSED_WINDOW") or [0])[0]
     if not window:
         return {"window": None}
-    app, pid = next(((a, p) for w, a, p in focusable() if w == window), (None, None))
-    display = focus_display()
+    app, pid = next(((a, p) for w, a, p in focusable(props) if w == window), (None, None))
+    display = focus_display(props)
     info = window_info(display, window) if display else None
     if info:
         root = window_info(display, "root") or {}
@@ -221,20 +242,35 @@ def focus():
     return {**panel, "app": app} if panel else {"window": None}
 
 
-def panels():
-    """Every app panel (gamescope's focusable windows), for watching one that hasn't focus."""
-    now = focus()
-    found, unfound = [], 0
-    for window, app, pid in focusable():
-        panel = locate(window, pid)
-        unfound += panel is None
-        if panel and panel["width"] > 1 and panel["height"] > 1 and \
-                not any(f["window"] == window and f["display"] == panel["display"] for f in found):
-            panel.pop("root", None)
-            found.append({**panel, "app": app, "focused": (window, panel["display"]) ==
-                          (now.get("window"), now.get("display"))})
+def panels(limit=None):
+    """Every app panel (gamescope's focusable windows), for watching one that hasn't focus.
+
+    One deadline (PANELS_DEADLINE) covers the whole run, inside the server's timeout: past
+    it, the panels found so far come back with a "why" saying the headset was too slow.
+    """
+    DEADLINE[0] = time.monotonic() + (PANELS_DEADLINE if limit is None else limit)
+    now, found, unfound, late = {}, [], 0, False
+    try:
+        props = gamescope()[1]
+        now = focus(props)
+        for window, app, pid in focusable(props):
+            panel = locate(window, pid)
+            unfound += panel is None
+            if panel and panel["width"] > 1 and panel["height"] > 1 and \
+                    not any(f["window"] == window and f["display"] == panel["display"] for f in found):
+                panel.pop("root", None)
+                found.append({**panel, "app": app, "focused": (window, panel["display"]) ==
+                              (now.get("window"), now.get("display"))})
+        late = time.monotonic() >= DEADLINE[0]  # the last read may have been cut short
+    except OutOfTime:
+        late = True
+    finally:
+        DEADLINE[0] = None
     out = {"focus": now.get("window"), "focus_display": now.get("display"), "panels": found}
-    if not found:
+    if late:
+        out["why"] = ("The headset took too long to list its panels (its X tools didn't answer in time). "
+                      + ("Some may be missing. " if found else "") + "Try again, or use the Headset view.")
+    elif not found:
         out["why"] = why_none(unfound)
     return out
 

@@ -265,9 +265,12 @@ How (**verified 2026-09-29**, SteamOS 0.4.1, build 20260925.6191901):
   Desktop view shows that instead of a bare "no app panel": X tools missing,
   gamescope listing windows that aren't X11 windows on any display, the desktop
   running but not listed, or nothing open. It reads gamescope's properties from
-  `:0` first and probes the other displays if `:0` has none. Added for
+  `:0` first (one `xprop` call) and probes the other displays, 2 s each, only if `:0`
+  has none. A whole run stops after 12 s, inside the server's 20 s, and says the headset
+  was too slow. Added for
   [#73](https://github.com/saphid/frame-control/issues/73) (SteamOS 0.4.5, desktop
-  open but not found); the cause on that build isn't confirmed yet.
+  open but not found). The likely cause there was the page itself: a second
+  `loadPanels` (the panel switcher's) replaced the Desktop view's, fixed in #84.
 - Tested from the iPhone app (Simulator): a tap on the Desktop view focused a
   text box in the panel and the text field typed into it; a trackpad move went
   exactly (+40, +25).
