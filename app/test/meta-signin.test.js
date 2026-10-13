@@ -23,22 +23,24 @@ class FakeCookies extends EventEmitter {
 }
 
 class FakeSession {
-  constructor(name) { this.name = name; this.cookies = new FakeCookies(); this.cleared = []; this.permission = null; }
+  constructor(name, log) { this.name = name; this.log = log; this.cookies = new FakeCookies(); this.cleared = []; this.permission = null; }
   setPermissionRequestHandler(fn) { this.permission = fn; }
+  setPermissionCheckHandler(fn) { this.permissionCheck = fn; }
   getUserAgent() { return "Mozilla/5.0 Chrome/140.0 frame-control/0.4.4 Electron/44.4.5 Safari/537.36"; }
   setUserAgent(ua) { this.ua = ua; }
-  async clearStorageData(opts) { this.cleared.push(["storage", opts]); }
+  async clearStorageData(opts) { this.log.push("clear"); this.cleared.push(["storage", opts]); }
   async clearCache() { this.cleared.push(["cache"]); }
   async clearAuthCache() { this.cleared.push(["auth"]); }
 }
 
-function fakes() {
+function fakes({ timeout } = {}) {
+  const log = [];  // the order things happened in
   const sessions = new Map();
-  const defaultSession = new FakeSession("default");
+  const defaultSession = new FakeSession("default", log);
   const session = {
     defaultSession,
     fromPartition(name) {
-      if (!sessions.has(name)) sessions.set(name, new FakeSession(name));
+      if (!sessions.has(name)) sessions.set(name, new FakeSession(name, log));
       return sessions.get(name);
     },
   };
@@ -48,6 +50,7 @@ function fakes() {
       super();
       this.opts = opts;
       this.destroyed = false;
+      this.veto = false;  // a page whose beforeunload keeps the window open on close()
       this.focused = 0;
       const wc = new EventEmitter();
       wc.loaded = [];
@@ -60,15 +63,20 @@ function fakes() {
     }
     isDestroyed() { return this.destroyed; }
     focus() { this.focused++; }
-    close() { if (this.destroyed) return; this.destroyed = true; this.emit("closed"); }
+    close() { if (this.destroyed || this.veto) return; this.destroy(); }
+    destroy() { if (this.destroyed) return; this.destroyed = true; log.push("destroyed"); this.emit("closed"); }
   }
   const opened = [];
   const shell = { openExternal: (u) => { opened.push(u); } };
-  const calls = [];
+  const calls = [], attempts = [], cancels = [];
   let answer = () => ({ status: 200, data: { connected: true, user: { name: "Alex" }, message: "Connected your Meta account (Experimental)" } });
-  const connect = async (token) => { calls.push(token); return answer(token); };
-  const flow = createMetaSignIn({ BrowserWindow, session, shell, connect, parent: () => null });
-  return { flow, session, sessions, windows, opened, calls, setAnswer: (fn) => { answer = fn; },
+  const connect = async (token, attempt) => { calls.push(token); attempts.push(attempt); log.push("connect"); return answer(token); };
+  const cancel = async (attempt) => {
+    cancels.push(attempt);
+    log.push(`cancel (cookie listeners: ${session.fromPartition(PARTITION).cookies.listenerCount("changed")})`);
+  };
+  const flow = createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, parent: () => null, ...(timeout ? { timeout } : {}) });
+  return { flow, session, sessions, windows, opened, calls, attempts, cancels, log, setAnswer: (fn) => { answer = fn; },
            meta: () => session.fromPartition(PARTITION) };
 }
 
@@ -105,12 +113,14 @@ test("the window is isolated: its own partition, no preload, no Node, sandboxed,
   assert.strictEqual(wp.nodeIntegration, false);
   assert.strictEqual(wp.sandbox, true);
   assert.strictEqual(wp.preload, undefined);
+  assert.strictEqual(wp.devTools, false);
   assert.deepStrictEqual(w.webContents.loaded, [LOGIN_URL]);
   assert.strictEqual(LOGIN_URL, "https://secure.oculus.com");
   // Permission prompts (camera, notifications...) are refused.
   let granted = null;
   f.meta().permission(null, "media", (v) => { granted = v; });
   assert.strictEqual(granted, false);
+  assert.strictEqual(f.meta().permissionCheck(null, "notifications", "https://secure.oculus.com"), false);
   assert.ok(!/Electron|frame-control/.test(f.meta().ua));
   w.close();
 });
@@ -270,4 +280,115 @@ test("the first look at a cookie value matches the server's token rules", () => 
                      "XY" + "a".repeat(30), "OC" + "A".repeat(30)]) {
     assert.ok(!looksLikeUserToken(bad), String(bad));
   }
+});
+
+function frameNav(wc, url, isMainFrame) {
+  let prevented = false;
+  wc.emit("will-frame-navigate", { url, isMainFrame, preventDefault: () => { prevented = true; } });
+  return prevented;
+}
+
+test("every frame stays on Meta's sites; a frame going elsewhere is stopped, not opened", async () => {
+  const f = fakes();
+  f.flow.signIn();
+  const wc = f.windows[0].webContents;
+  assert.strictEqual(frameNav(wc, "https://evil.example/phish", false), true);
+  assert.strictEqual(frameNav(wc, "http://www.facebook.com/plugin", false), true);
+  assert.strictEqual(frameNav(wc, "https://www.facebook.com/plugin", false), false);
+  assert.strictEqual(frameNav(wc, "about:blank", false), false);
+  assert.strictEqual(frameNav(wc, "about:srcdoc", false), false);
+  assert.strictEqual(frameNav(wc, "about:blank", true), true);  // the window itself: Meta's sites only
+  assert.strictEqual(frameNav(wc, "https://evil.example/", true), true);
+  assert.strictEqual(frameNav(wc, "https://auth.meta.com/login/", true), false);
+  assert.deepStrictEqual(f.opened, []);
+  f.windows[0].destroy();
+});
+
+test("a page's beforeunload can't keep the window open", async () => {
+  const f = fakes();
+  const done = f.flow.signIn();
+  const w = f.windows[0];
+  let prevented = false;
+  w.webContents.emit("will-prevent-unload", { preventDefault: () => { prevented = true; } });
+  assert.ok(prevented);
+  // Even if close() would be vetoed, finishing destroys the window.
+  w.veto = true;
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  assert.strictEqual((await done).ok, true);
+  assert.ok(w.isDestroyed());
+});
+
+test("closing the window while a connect is under way has the server drop that attempt", async () => {
+  const f = fakes();
+  let release;
+  f.setAnswer(() => new Promise((r) => { release = r; }));
+  const done = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  await settle();
+  assert.deepStrictEqual(f.calls, [TOKEN]);
+  f.windows[0].close();  // the user gives up while Meta is answering
+  const r = await done;
+  assert.strictEqual(r.ok, false);
+  // The same attempt id the connect carried, cancelled after cookie intake stopped.
+  assert.strictEqual(f.cancels.length, 1);
+  assert.strictEqual(f.cancels[0], f.attempts[0]);
+  assert.match(f.cancels[0], /^[A-Za-z0-9-]{8,64}$/);
+  assert.deepStrictEqual(f.log, ["connect", "destroyed", "cancel (cookie listeners: 0)"]);
+  release({ status: 200, data: { connected: true } });  // the late answer changes nothing here
+  await settle();
+  assert.deepStrictEqual(f.calls, [TOKEN]);
+});
+
+test("a timeout drops the attempt too", async () => {
+  const f = fakes({ timeout: 50 });
+  f.setAnswer(() => new Promise(() => {}));  // Meta never answers
+  const done = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  const r = await done;
+  assert.match(r.error, /timed out/);
+  assert.ok(f.windows[0].isDestroyed());
+  assert.deepStrictEqual(f.cancels, [f.attempts[0]]);
+});
+
+test("nothing sent means nothing to cancel; sign-out destroys the window, cancels, then clears", async () => {
+  const f = fakes();
+  // Nothing sent: closing cancels nothing.
+  const a = f.flow.signIn();
+  f.windows[0].close();
+  await a;
+  assert.deepStrictEqual(f.cancels, []);
+  // Something sent, then signed out: the attempt is cancelled before the session is cleared.
+  f.setAnswer(() => ({ status: 400, data: { error: "Meta didn't accept this token." } }));
+  const b = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  await settle();
+  f.windows[1].veto = true;  // and its page tries to stay open
+  f.log.length = 0;
+  await f.flow.signOut();
+  assert.strictEqual((await b).ok, false);
+  assert.ok(f.windows[1].isDestroyed());
+  assert.deepStrictEqual(f.log, ["destroyed", "cancel (cookie listeners: 0)", "clear"]);
+  assert.deepStrictEqual(f.cancels, [f.attempts[0]]);
+  // After sign-out a new cookie in the partition sends nothing.
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: OTHER });
+  await settle();
+  assert.deepStrictEqual(f.calls, [TOKEN]);
+});
+
+test("each sign-in has its own attempt id", async () => {
+  const f = fakes();
+  f.setAnswer(() => ({ status: 400, data: { error: "no" } }));
+  const a = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  await settle();
+  f.windows[0].close();
+  await a;
+  const b = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: OTHER });
+  await settle();
+  f.windows[1].close();
+  await b;
+  assert.strictEqual(f.attempts.length, 2);
+  assert.notStrictEqual(f.attempts[0], f.attempts[1]);
+  assert.deepStrictEqual(f.cancels, f.attempts);
 });

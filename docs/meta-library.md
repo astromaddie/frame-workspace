@@ -41,16 +41,22 @@ closes the window. The window:
   from Frame Control's main window and from every browser on your computer;
   the cookie is read only from there, and only for `oculus.com`;
 - runs Meta's page sandboxed, with no access to Frame Control (no preload, no
-  Node, context isolation on) and every permission request (camera,
-  notifications…) refused;
+  Node, context isolation on, no developer tools) and every permission request
+  or check (camera, notifications…) refused;
 - only goes to `https://` pages on `oculus.com`, `meta.com` and `facebook.com`
   (and their subdomains). A link anywhere else opens in your system browser; a
-  redirect anywhere else is stopped. Pop-ups on those sites open in the same
-  window;
+  redirect anywhere else is stopped. Frames inside the page are held to the
+  same list (plus `about:blank`), and one going elsewhere is just stopped.
+  Pop-ups on those sites open in the same window;
 - sends a cookie value on only if it looks like a user token (`OC` or `FRL`,
   mixed case, no `%`, `|` or `:`), and each value once. If the server refuses
   it, the window stays open; close it to see why;
-- gives up after 10 minutes, as BSManager does.
+- gives up after 10 minutes, as BSManager does;
+- when it is closed, times out or is signed out of, stops reading cookies
+  first, then is destroyed (a page's "leave this page?" can't keep it open),
+  and, if it had sent a token, tells the server to drop that sign-in: each
+  sign-in has a random attempt id, and a connect from a cancelled attempt is
+  never saved, even if Meta is still answering when the cancel arrives.
 
 The page never sees the token: the desktop app hands it straight to the local
 server's connect path and tells the page only the answer (connected, and your
@@ -123,11 +129,13 @@ python3 ui/frame_meta.py disconnect
 The local API: `GET /api/meta` (connected or not, never the token),
 `GET /api/meta?library=1[&refresh=1]` (the games), and `POST /api/meta` with
 `{"action": "connect", "token": "...", "acknowledged": true}`,
-`{"action": "disconnect"}`, `{"action": "install", "app": "APP_ID", "test": false,
+`{"action": "disconnect"}`, `{"action": "cancel-signin", "attempt": "..."}`, `{"action": "install", "app": "APP_ID", "test": false,
 "allowDowngrade": false}` or `{"action": "test", "package": "..."}`. Install and
 test return a background job (`/api/job`). Sign in with Meta uses the same
 `connect` action: the desktop app's main process (`app/meta-signin.js`) posts
-it with the cookie's value once the page's acknowledgement box is ticked.
+it with the cookie's value and an `"attempt"` id (8 to 64 letters, digits or
+`-`) once the page's acknowledgement box is ticked. A connect whose attempt
+was cancelled answers 409 and saves nothing.
 
 ## What an install does
 
@@ -234,9 +242,10 @@ turn that on.
   token-shaped value, before it is shortened.
 - Disconnect deletes the file and the library Frame Control holds in memory,
   and stops a download under way. A connect still being checked when you
-  disconnect is not saved. In the desktop app it also closes any open sign-in
-  window and clears the `persist:meta-signin` session (cookies, storage,
-  cache); no other session is touched.
+  disconnect is not saved. In the desktop app, before the token is deleted, it
+  also stops any sign-in under way (cancelling its attempt), destroys the
+  sign-in window, and only then clears the `persist:meta-signin` session
+  (cookies, storage, cache); no other session is touched.
 - With Sign in with Meta, a second copy of your Meta sign-in lives in that
   session's storage, in Electron's per-user data folder (`Partitions/meta-signin`),
   until you disconnect or sign out of Meta in Frame Control.
@@ -295,15 +304,21 @@ here only with a fake connection.
 **Sign in with Meta, verified locally** with fake Electron windows, sessions
 and cookies (`app/test/meta-signin.test.js`): the window's options (its own
 partition, sandbox, context isolation, no Node, no preload) and Meta's login
-address; permission requests refused; the navigation allow-list (links
-elsewhere open in the system browser, redirects elsewhere are stopped,
-pop-ups never become windows); the cookie read only from
+address, no developer tools; permission requests and checks refused; the
+navigation allow-list (links elsewhere open in the system browser, redirects
+and frames going elsewhere are stopped, pop-ups never become windows); a
+page's beforeunload not keeping the window open; the cookie read only from
 `persist:meta-signin` and only for `oculus.com`, even when the default
 session and another partition hold one; signed-out values ignored; a value
 sent once, a refused one keeping the window open; the window closing after a
 connect, with the page getting the answer and never the token; nothing
 logged, and a server error that echoed the token scrubbed; closing the window
-or signing out ending the wait; sign-out clearing only that partition.
+or signing out ending the wait; closing, timing out or signing out during a
+connect cancelling that attempt (with its own id) after cookie intake stops;
+sign-out destroying the window before clearing only that partition. The
+server side (`tests/test_meta.py`): a cancelled attempt refused before
+anything is sent to Meta, and also when cancelled while Meta is answering;
+attempt ids checked; other attempts and pasted tokens unaffected.
 
 **Differences from BSManager:** BSManager uses its app's default session (and
 clears only `.oculus.com` cookies afterwards); Frame Control uses a session of
@@ -316,7 +331,8 @@ working token.
 Meta account was used, and nothing was sent to Meta): whether Meta's login
 still goes only through `oculus.com`, `meta.com` and `facebook.com`, whether
 it uses pop-ups (they open in the same window here, which would break a
-pop-up that reports back to its opener), whether `oc_ac_at` is still set on
+pop-up that reports back to its opener), whether it needs frames from other
+sites such as a captcha (those are stopped), whether `oc_ac_at` is still set on
 `oculus.com` after login, and whether Meta accepts the window (Frame Control
 removes Electron's name from the user agent as a precaution). A real Meta token and Meta's real answers (none was
 available; nothing was sent to Meta), real downloads and their redirects,

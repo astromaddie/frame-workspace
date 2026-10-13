@@ -26,6 +26,7 @@ Python stdlib only. CLI: python3 ui/frame_meta.py
   connect --token-stdin | status | disconnect | list [--refresh] | download APP_ID
   install APP_ID [--test] [--allow-downgrade] | test PACKAGE [--wait SECONDS] [--no-report]
 """
+import collections
 import concurrent.futures
 import hashlib
 import http.client
@@ -94,6 +95,11 @@ class MetaError(android.FrameError):
 
 class TokenRejected(MetaError):
     pass
+
+
+class SignInCancelled(MetaError):
+    """The desktop app's Sign in with Meta window gave up on this attempt (closed, timed
+    out, signed out), so a connect it had started is not saved."""
 
 
 # ---- Keeping the token out of everything ---------------------------------------
@@ -319,14 +325,44 @@ def status():
             'connectedAt': (account or {}).get('connected')}
 
 
-def connect(token):
+# Sign in with Meta (app/meta-signin.js) names each of its attempts; one it gave up on is
+# remembered here, so its connect is refused whether the cancel arrives before or after it.
+SIGNIN_ATTEMPT = re.compile(r'[A-Za-z0-9-]{8,64}')
+SIGNIN_CANCELLED = 'Sign in with Meta was cancelled, so that sign-in was not saved.'
+_cancelled = collections.deque(maxlen=256)
+
+
+def _check_attempt(attempt):
+    if attempt is not None and not (isinstance(attempt, str) and SIGNIN_ATTEMPT.fullmatch(attempt)):
+        raise MetaError('Invalid sign-in attempt id.')
+    return attempt
+
+
+def cancel_signin(attempt):
+    """Refuse to save any connect made under this Sign in with Meta attempt, now or later."""
+    _check_attempt(attempt)
+    if attempt is None:
+        raise MetaError('Invalid sign-in attempt id.')
+    with _lock:
+        if attempt not in _cancelled:
+            _cancelled.append(attempt)
+    return status()
+
+
+def connect(token, attempt=None):
     """Check the token with Meta ("who am I"), then keep it. A disconnect (or another
-    connect) that happens while it is being checked wins: this one is then not saved."""
+    connect) that happens while it is being checked wins: this one is then not saved. So
+    does cancelling the Sign in with Meta attempt it came from (cancel_signin)."""
+    _check_attempt(attempt)
     token = check_token(token)
     with _lock:
+        if attempt is not None and attempt in _cancelled:
+            raise SignInCancelled(SIGNIN_CANCELLED)
         generation = _state['generation']
     user = whoami(token)
     with _lock:
+        if attempt is not None and attempt in _cancelled:
+            raise SignInCancelled(SIGNIN_CANCELLED)
         if _state['generation'] != generation:
             raise MetaError('The Meta account was disconnected (or another token connected) while this one '
                             'was being checked, so it was not saved.')

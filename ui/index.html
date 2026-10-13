@@ -3502,7 +3502,7 @@ $("metaSignIn").onclick = async () => {
   try {
     const r = await window.frameApp.meta.signIn(true);
     if (r && r.ok) { toast(r.message || "Connected"); loadMeta(); }
-    else $("metaState").textContent = (r && r.error) || "Sign-in didn't finish.";
+    else { await loadMeta(); $("metaState").textContent = (r && r.error) || "Sign-in didn't finish."; }
   } catch (e) { $("metaState").textContent = e.message; }
   finally { $("metaSignIn").disabled = !$("metaAck").checked; }
 };
@@ -3524,11 +3524,12 @@ $("metaConnect").onclick = async () => {
 $("metaDisconnect").onclick = async () => {
   if (!confirm("Disconnect your Meta account? Its token is deleted from this computer. Games already installed stay."
                + (metaSignInOk ? "\n\nThis also signs out of Meta in Frame Control (its Sign in with Meta window), so the next sign-in starts fresh." : ""))) return;
-  try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
-  catch (e) { toast(e.message, true); }
+  // Sign-out first: it stops the sign-in window taking a new token before the account is forgotten.
   if (metaSignInOk) {
     try { await window.frameApp.meta.signOut(); } catch (e) { toast(`Couldn't sign out of Meta in Frame Control: ${e.message}`, true); }
   }
+  try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
+  catch (e) { toast(e.message, true); }
   $("metaAck").checked = false; $("metaToken").disabled = $("metaConnect").disabled = $("metaSignIn").disabled = true;
   metaLib.results.clear(); loadMeta();
 };

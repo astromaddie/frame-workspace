@@ -50,9 +50,10 @@ function scrub(text, token) {
   return s.replace(/(?:OC|FRL)[A-Za-z0-9+/=_%|:-]{8,}/g, "<redacted>").slice(0, 600);
 }
 
-// deps: { BrowserWindow, session, shell, connect(token) -> Promise<{status, data}>,
-//         parent() -> BrowserWindow|null, timeout }
-function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () => null, timeout = TIMEOUT }) {
+// deps: { BrowserWindow, session, shell, parent() -> BrowserWindow|null, timeout,
+//         connect(token, attempt) -> Promise<{status, data}>  (the server's connect action),
+//         cancel(attempt) -> Promise  (the server's cancel-signin: never save that attempt) }
+function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, parent = () => null, timeout = TIMEOUT }) {
   let active = null;  // { win, promise, finish }
 
   const openOutside = (target) => {
@@ -63,6 +64,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
     if (active) { active.win.focus(); return active.promise; }
     const ses = session.fromPartition(PARTITION);
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+    ses.setPermissionCheckHandler(() => false);
     // Electron adds its own name and the app's to the user agent; send a plain Chrome one.
     if (ses.getUserAgent && ses.setUserAgent) {
       ses.setUserAgent(ses.getUserAgent().replace(/\s(?:Electron|frame-control|Frame Control)\/\S+/g, ""));
@@ -72,7 +74,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
       width: 520, height: 760, title: "Sign in with Meta – Frame Control", autoHideMenuBar: true,
       ...(p ? { parent: p } : {}),
       webPreferences: { partition: PARTITION, contextIsolation: true, nodeIntegration: false, sandbox: true,
-                        nodeIntegrationInSubFrames: false, webviewTag: false, safeDialogs: true },
+                        nodeIntegrationInSubFrames: false, webviewTag: false, safeDialogs: true, devTools: false },
     });
     const wc = win.webContents;
 
@@ -80,6 +82,8 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
     const promise = new Promise((r) => { resolve = r; });
     let done = false, busy = false, again = false, lastError = null;
     const tried = new Set();  // fingerprints of values already sent, so each goes once
+    // The server refuses to save a connect from an attempt this window gave up on.
+    const attemptId = crypto.randomUUID();
 
     const onCookie = (_e, cookie, _cause, removed) => {
       if (!removed && cookie && cookie.name === COOKIE && underDomain(cookie.domain, ["oculus.com"])) attempt();
@@ -87,14 +91,21 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
     const timer = setTimeout(() => finish({ ok: false, error: "Sign-in timed out after 10 minutes. Try again." }), timeout);
     if (timer.unref) timer.unref();
 
+    // Stops cookie intake first, then the window (destroy: a page's beforeunload can't
+    // keep it open), then, unless it connected, tells the server not to save a connect
+    // that may still be under way. Resolves once that is done.
+    let finished = null;
     function finish(result) {
-      if (done) return;
+      if (done) return finished || Promise.resolve();  // destroy() below re-enters through "closed"
       done = true;
-      clearTimeout(timer);
       ses.cookies.removeListener("changed", onCookie);
+      clearTimeout(timer);
       if (active && active.win === win) active = null;
-      if (!win.isDestroyed()) win.close();
-      resolve(result);
+      if (!win.isDestroyed()) win.destroy();
+      const sent = tried.size > 0;  // a connect is sent synchronously after its value is added
+      finished = (result.ok || !sent ? Promise.resolve() : Promise.resolve().then(() => cancel(attemptId)))
+        .catch(() => {}).then(() => resolve(result));
+      return finished;
     }
 
     async function attempt() {
@@ -113,7 +124,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
           tried.add(key);
           let r;
           try {
-            r = await connect(c.value);
+            r = await connect(c.value, attemptId);
           } catch {
             lastError = "Frame Control's local server didn't answer.";
             continue;
@@ -136,8 +147,15 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
 
     // Navigation stays on Meta's login sites. A link elsewhere opens in the system
     // browser; a redirect elsewhere is just stopped (it may carry sign-in data).
+    // Every frame too: an iframe can't wander off the list either (it is just stopped).
     wc.on("will-navigate", (e, target) => { if (!allowedUrl(target)) { e.preventDefault(); openOutside(target); } });
+    wc.on("will-frame-navigate", (e) => {
+      if (allowedUrl(e.url) || (!e.isMainFrame && /^about:(?:blank|srcdoc)$/.test(String(e.url)))) return;
+      e.preventDefault();
+    });
     wc.on("will-redirect", (e, target) => { if (!allowedUrl(target)) e.preventDefault(); });
+    // A page's beforeunload never keeps the window open.
+    wc.on("will-prevent-unload", (e) => e.preventDefault());
     wc.setWindowOpenHandler(({ url: target }) => {
       if (allowedUrl(target)) wc.loadURL(target).catch(() => {});
       else openOutside(target);
@@ -156,10 +174,16 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, parent = () 
     return promise;
   }
 
-  // Signs out of Meta in Frame Control: closes the window and clears everything
+  // Signs out of Meta in Frame Control: stops any sign-in under way (and has the server
+// refuse to save it), destroys the window, then clears everything
   // the sign-in session stored (cookies, storage, cache), so the next sign-in starts fresh.
   async function signOut() {
-    if (active) active.finish({ ok: false, cancelled: true, error: "Signed out of Meta in Frame Control." });
+    if (active) {
+      const { win, finish } = active;
+      await finish({ ok: false, cancelled: true, error: "Signed out of Meta in Frame Control." });
+      // Clear only once nothing can write to the session again.
+      if (!win.isDestroyed()) throw new Error("The Sign in with Meta window didn't close; try again.");
+    }
     const ses = session.fromPartition(PARTITION);
     await ses.clearStorageData();
     await ses.clearCache();

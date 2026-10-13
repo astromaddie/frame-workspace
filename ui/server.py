@@ -1378,6 +1378,8 @@ META_APP_ID = re.compile(r"^[0-9]{1,25}$")
 
 
 def _meta_failure(e):
+    if isinstance(e, frame_meta.SignInCancelled):
+        return Failure(frame_meta.redact(e, 600), 409)
     status = 400 if isinstance(e, frame_meta.TokenRejected) or "token" in str(e).lower() else 502
     return Failure(frame_meta.redact(e, 600), status)
 
@@ -1404,7 +1406,8 @@ def meta_status(query):
 
 
 def meta(body):
-    """{"action": "connect", "token", "acknowledged": true} | {"action": "disconnect"} |
+    """{"action": "connect", "token", "acknowledged": true, "attempt"?} | {"action": "disconnect"} |
+    {"action": "cancel-signin", "attempt"} |
     {"action": "install", "app", "test"?, "allowDowngrade"?} | {"action": "test", "package"}."""
     action = body.get("action")
     try:
@@ -1413,8 +1416,17 @@ def meta(body):
                 raise Failure("My Meta library is experimental: tick that you understand the warning first", 400)
             if not isinstance(body.get("token"), str):
                 raise Failure("paste your Meta access token", 400)
-            return dict(frame_meta.connect(body["token"]), sharing=meta_sharing(),
+            attempt = body.get("attempt")
+            if attempt is not None and not (isinstance(attempt, str) and frame_meta.SIGNIN_ATTEMPT.fullmatch(attempt)):
+                raise Failure("invalid sign-in attempt id", 400)
+            return dict(frame_meta.connect(body["token"], attempt=attempt), sharing=meta_sharing(),
                         message="Connected your Meta account (Experimental)")
+        if action == "cancel-signin":
+            attempt = body.get("attempt")
+            if not (isinstance(attempt, str) and frame_meta.SIGNIN_ATTEMPT.fullmatch(attempt)):
+                raise Failure("invalid sign-in attempt id", 400)
+            return dict(frame_meta.cancel_signin(attempt), sharing=meta_sharing(),
+                        message="Cancelled that Sign in with Meta; it won't be saved")
         if action == "disconnect":
             return dict(frame_meta.disconnect(), sharing=meta_sharing(),
                         message="Disconnected your Meta account; its token was deleted from this computer")

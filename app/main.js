@@ -379,7 +379,8 @@ let metaSignIn = null;
 const meta = () => (metaSignIn ||= createMetaSignIn({
   BrowserWindow, session, shell, parent: () => win,
   // The page only offers sign-in after its "I understand" box is ticked (checked again below).
-  connect: (token) => postApi("/api/meta", { action: "connect", token, acknowledged: true }),
+  connect: (token, attempt) => postApi("/api/meta", { action: "connect", token, acknowledged: true, attempt }),
+  cancel: (attempt) => postApi("/api/meta", { action: "cancel-signin", attempt }),
 }));
 ipcMain.handle("meta:signin", (e, acknowledged) => {
   if (!fromUi(e)) return null;
