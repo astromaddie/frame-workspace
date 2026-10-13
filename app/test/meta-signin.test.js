@@ -288,19 +288,27 @@ function frameNav(wc, url, isMainFrame) {
   return prevented;
 }
 
-test("every frame stays on Meta's sites; a frame going elsewhere is stopped, not opened", async () => {
+test("the window stays on Meta's sites; frames inside it may load any HTTPS page, nothing else", async () => {
   const f = fakes();
   f.flow.signIn();
   const wc = f.windows[0].webContents;
-  assert.strictEqual(frameNav(wc, "https://evil.example/phish", false), true);
-  assert.strictEqual(frameNav(wc, "http://www.facebook.com/plugin", false), true);
-  assert.strictEqual(frameNav(wc, "https://www.facebook.com/plugin", false), false);
-  assert.strictEqual(frameNav(wc, "about:blank", false), false);
-  assert.strictEqual(frameNav(wc, "about:srcdoc", false), false);
-  assert.strictEqual(frameNav(wc, "about:blank", true), true);  // the window itself: Meta's sites only
+  // Frames: captcha and CDN frames from other sites load; other schemes are stopped.
+  for (const ok of ["https://client-api.arkoselabs.com/fc/gc/", "https://newassets.hcaptcha.com/captcha/v1/x",
+                    "https://www.google.com/recaptcha/api2/anchor", "https://static.xx.fbcdn.net/x",
+                    "https://www.facebook.com/plugin", "about:blank", "about:srcdoc"]) {
+    assert.strictEqual(frameNav(wc, ok, false), false, ok);
+  }
+  for (const bad of ["http://www.facebook.com/plugin", "data:text/html,<script>x</script>", "blob:https://evil.example/1",
+                     "javascript:alert(1)", "file:///etc/passwd", "ftp://example.com/", "https://u:p@evil.example/",
+                     "chrome://settings", "not a url"]) {
+    assert.strictEqual(frameNav(wc, bad, false), true, bad);
+  }
+  // The window itself: Meta's sites only.
+  assert.strictEqual(frameNav(wc, "about:blank", true), true);
   assert.strictEqual(frameNav(wc, "https://evil.example/", true), true);
+  assert.strictEqual(frameNav(wc, "https://client-api.arkoselabs.com/", true), true);
   assert.strictEqual(frameNav(wc, "https://auth.meta.com/login/", true), false);
-  assert.deepStrictEqual(f.opened, []);
+  assert.deepStrictEqual(f.opened, []);  // stopped, never opened outside
   f.windows[0].destroy();
 });
 

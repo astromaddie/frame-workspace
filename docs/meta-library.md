@@ -45,9 +45,14 @@ closes the window. The window:
   or check (camera, notifications…) refused;
 - only goes to `https://` pages on `oculus.com`, `meta.com` and `facebook.com`
   (and their subdomains). A link anywhere else opens in your system browser; a
-  redirect anywhere else is stopped. Frames inside the page are held to the
-  same list (plus `about:blank`), and one going elsewhere is just stopped.
-  Pop-ups on those sites open in the same window;
+  redirect anywhere else is stopped. Pop-ups on those sites open in the same
+  window. Frames inside the page may load any `https://` page (Meta's login
+  can embed captcha and CDN frames from other sites, such as Arkose Labs,
+  hCaptcha, reCAPTCHA or fbcdn) or an empty frame (`about:blank`,
+  `about:srcdoc`); a frame going to any other scheme (`http:`, `data:`,
+  `blob:`, `javascript:`, `file:`…) is just stopped. Frames can't reach the
+  token: the cookie is read by Frame Control's main process, and the window
+  has no IPC;
 - sends a cookie value on only if it looks like a user token (`OC` or `FRL`,
   mixed case, no `%`, `|` or `:`), and each value once. If the server refuses
   it, the window stays open; close it to see why;
@@ -306,7 +311,8 @@ and cookies (`app/test/meta-signin.test.js`): the window's options (its own
 partition, sandbox, context isolation, no Node, no preload) and Meta's login
 address, no developer tools; permission requests and checks refused; the
 navigation allow-list (links elsewhere open in the system browser, redirects
-and frames going elsewhere are stopped, pop-ups never become windows); a
+elsewhere are stopped, pop-ups never become windows); frames allowed any
+HTTPS page but no other scheme, the window itself only Meta's sites; a
 page's beforeunload not keeping the window open; the cookie read only from
 `persist:meta-signin` and only for `oculus.com`, even when the default
 session and another partition hold one; signed-out values ignored; a value
@@ -331,8 +337,7 @@ working token.
 Meta account was used, and nothing was sent to Meta): whether Meta's login
 still goes only through `oculus.com`, `meta.com` and `facebook.com`, whether
 it uses pop-ups (they open in the same window here, which would break a
-pop-up that reports back to its opener), whether it needs frames from other
-sites such as a captcha (those are stopped), whether `oc_ac_at` is still set on
+pop-up that reports back to its opener), whether `oc_ac_at` is still set on
 `oculus.com` after login, and whether Meta accepts the window (Frame Control
 removes Electron's name from the user agent as a precaution). A real Meta token and Meta's real answers (none was
 available; nothing was sent to Meta), real downloads and their redirects,

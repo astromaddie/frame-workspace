@@ -32,6 +32,16 @@ function allowedUrl(raw) {
   return underDomain(u.hostname, ALLOWED);
 }
 
+// Frames inside the page: any HTTPS address (Meta's login can embed captcha and CDN
+// frames from other sites), or an empty frame; never data:, blob:, javascript:, http:,
+// file: or any other scheme. Frames can't reach the cookie read or IPC (main process only).
+function allowedSubframeUrl(raw) {
+  if (/^about:(?:blank|srcdoc)$/.test(String(raw))) return true;
+  let u;
+  try { u = new URL(String(raw)); } catch { return false; }
+  return u.protocol === "https:" && !u.username && !u.password;
+}
+
 const onOculus = (raw) => { try { return underDomain(new URL(raw).hostname, ["oculus.com"]); } catch { return false; } };
 
 // A cheap first look, so a signed-out or app value is never sent anywhere; the server's
@@ -147,10 +157,11 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
 
     // Navigation stays on Meta's login sites. A link elsewhere opens in the system
     // browser; a redirect elsewhere is just stopped (it may carry sign-in data).
-    // Every frame too: an iframe can't wander off the list either (it is just stopped).
+    // Every frame: the window itself stays on the list; frames inside it may load any
+    // HTTPS page (captchas), and one going anywhere else is just stopped.
     wc.on("will-navigate", (e, target) => { if (!allowedUrl(target)) { e.preventDefault(); openOutside(target); } });
     wc.on("will-frame-navigate", (e) => {
-      if (allowedUrl(e.url) || (!e.isMainFrame && /^about:(?:blank|srcdoc)$/.test(String(e.url)))) return;
+      if (e.isMainFrame ? allowedUrl(e.url) : allowedSubframeUrl(e.url)) return;
       e.preventDefault();
     });
     wc.on("will-redirect", (e, target) => { if (!allowedUrl(target)) e.preventDefault(); });
@@ -194,4 +205,4 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
   return { signIn, signOut, isOpen: () => !!active };
 }
 
-module.exports = { createMetaSignIn, allowedUrl, looksLikeUserToken, scrub, PARTITION, LOGIN_URL, COOKIE, ALLOWED };
+module.exports = { createMetaSignIn, allowedUrl, allowedSubframeUrl, looksLikeUserToken, scrub, PARTITION, LOGIN_URL, COOKIE, ALLOWED };
