@@ -33,6 +33,12 @@ computer, exactly as they were sent.
   yours.
 - Every event includes the app version, OS name (macOS, Windows or Linux),
   CPU architecture and Python version.
+- `frame_connected` carries `headset_id`: the first 16 hex digits of a
+  SHA-256 hash of the headset's `/etc/machine-id`, worked out on the headset,
+  so the machine-id itself never leaves it. It is the same for one headset on
+  every computer, which lets us count headsets rather than installs; it can't
+  be turned back into the machine-id or a serial number. `headsets_saved` is how
+  many headsets this copy of Frame Control has set up.
 
 ## Usage events
 
@@ -41,7 +47,7 @@ computer, exactly as they were sent.
 | `app_installed` | First run | |
 | `app_updated` | First run of a new version | `from_version` |
 | `app_opened` | At most once a day | |
-| `frame_connected` | The first time a SteamOS build is seen | `steamos_build`, `steamos_version` |
+| `frame_connected` | The first time a SteamOS build is seen on each headset | `steamos_build`, `steamos_version`, `headset_id`, `headsets_saved` |
 | `tab_viewed` | The first click on each tab in a session | `tab` |
 | `install_finished` | Any install finishes, working or not | `kind` (apk, flatpak, steam, title, web), `ok`, `seconds`, `error_category` (only when `ok` is false), `installer_code`, `xr_layer_missing`, and see below |
 | `update_offered`, `update_started`, `update_failed` | The update banner | `to_version`, `error_category` |
@@ -51,12 +57,15 @@ error becomes one category from this fixed list, plus Android's own
 `INSTALL_FAILED_…` code (`installer_code`) when there is one:
 `android_installer`, `apk_needs_newer_android`, `apk_wrong_abi`,
 `layer_missing`, `apk_repack_failed`, `tool_missing`, `apk_unreadable`,
-`cant_run_on_frame`, `steam_shortcut`, `frame_not_set_up`, `frame_auth`,
-`frame_unreachable`, `frame_disk_full`, `download_failed`, `flatpak`,
-`cancelled`, `lepton` or `other`. A VR APK that installed without Frame
-Control's OpenXR compatibility layer, because this copy of the app is missing
-it, carries `xr_layer_missing: true`; otherwise that field is left out. It
-names what was installed only when that's already public:
+`cant_run_on_frame`, `steam_shortcut`, `steam_not_running`,
+`steam_not_responding`, `steam_js_error`, `artwork_failed`, `copy_timeout`,
+`frame_not_set_up`, `frame_auth`, `frame_unreachable`, `frame_disk_full`,
+`copy_failed`, `download_failed`, `flatpak`, `cancelled`, `lepton`,
+`internal_error` (a mistake in Frame Control's own code) or `other`. A VR
+APK that installed without Frame Control's OpenXR compatibility layer,
+because this copy of the app is missing it, carries `xr_layer_missing: true`;
+otherwise that field is left out. It names what was installed only when
+that's already public:
 
 - F-Droid catalogue apps: `package`. Never the version, since a local build can reuse a
   catalogue app's package name
