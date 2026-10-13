@@ -403,9 +403,36 @@ def status(_body):
     s = json.loads(ssh("python3 -", stdin=(HERE / "frame_status.py").read_text(), timeout=20))
     osr = s.get("os") if isinstance(s, dict) else None
     if isinstance(osr, dict):
-        frame_telemetry.frame_seen(osr.get("build"), osr.get("version"))
+        # The headset's hash is for usage statistics only; the page and MCP clients don't get it.
+        frame_telemetry.frame_seen(osr.get("build"), osr.get("version"), osr.pop("headset", None),
+                                   len(LINK.reg.devices()) if LINK else None)
         frame_report.frame.update(build=osr.get("build"), version=osr.get("version"))
     return s
+
+
+COMFORT_FILES = ("frame_comfort.py", "frame_status.py", "frame_steam.py")
+COMFORT_MISSING = {"comfort": "missing"}  # what COMFORT_RUN prints when the cached copy isn't complete
+# Runs frame_comfort.py from ~/.cache/frame-control/comfort/<version>, first writing any of
+# `files` that aren't there (none: just check they all are). Private, and each file written
+# whole or not at all, so a copy cut short is finished by the next call.
+COMFORT_RUN = """import json, os, pathlib, subprocess, sys
+os.umask(0o077)
+files = %r
+root = pathlib.Path.home() / '.cache/frame-control/comfort' / %r
+if files:
+    root.mkdir(parents=True, exist_ok=True)
+for name, source in files.items():
+    path = root / name
+    if not path.exists():
+        tmp = root / (name + '.' + str(os.getpid()))
+        tmp.write_text(source)
+        tmp.replace(path)
+if not all((root / name).is_file() for name in %r):
+    print('{"comfort": "missing"}')
+    sys.exit()
+r = subprocess.run([sys.executable, str(root / 'frame_comfort.py'), %r], capture_output=True, text=True)
+print(r.stdout, end='')
+"""
 
 
 def comfort(body):
@@ -415,25 +442,14 @@ def comfort(body):
         raise Failure(str(e), 400)
     # Content-addressed, user-only helper bundle. Desktop and phone use the same
     # on-headset state/lock; no listener, service registration or third-party app.
-    import hashlib
-    files = {name: (HERE / name).read_text() for name in
-             ("frame_comfort.py", "frame_status.py", "frame_steam.py")}
+    # The page polls this every few seconds, so run the copy already on the headset and
+    # send the sources only when that version isn't there yet.
+    files = {name: (HERE / name).read_text() for name in COMFORT_FILES}
     version = hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest()[:16]
-    script = """import json, os, pathlib, subprocess, sys
-os.umask(0o077)
-files = %r
-root = pathlib.Path.home() / '.cache/frame-control/comfort' / %r
-root.mkdir(parents=True, exist_ok=True)
-for name, source in files.items():
-    path = root / name
-    if not path.exists():
-        tmp = root / (name + '.' + str(os.getpid()))
-        tmp.write_text(source)
-        tmp.replace(path)
-r = subprocess.run([sys.executable, str(root / 'frame_comfort.py'), %r], capture_output=True, text=True)
-print(r.stdout, end='')
-""" % (files, version, json.dumps(body))
-    out = json.loads(ssh("python3 -", stdin=script, timeout=65))
+    out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % ({}, version, COMFORT_FILES, json.dumps(body)), timeout=65))
+    if out == COMFORT_MISSING:
+        out = json.loads(ssh("python3 -", stdin=COMFORT_RUN % (files, version, COMFORT_FILES, json.dumps(body)),
+                             timeout=65))
     if out.get("error") and "active" not in out:
         raise Failure(out["error"], 409)
     return out
@@ -2280,6 +2296,10 @@ def connection_state():
 
 # ---- HTTP ------------------------------------------------------------------
 
+# POST reads the page repeats on a timer, as (path, action).
+POLLS = {("/api/comfort", "status")}
+
+
 def action_of(body):
     """The action a request asked for, for diagnostics: a short word, never user data."""
     a = body.get("action") if isinstance(body, dict) else None
@@ -2533,7 +2553,10 @@ class Handler(BaseHTTPRequestHandler):
         except ClientGone:
             raise
         except Failure as e:
-            if e.status >= 500:
+            # A poll that couldn't reach the headset is the headset asleep or away, which the page
+            # already shows; like GET /api/status, not an error to report.
+            polled = (path, action_of(body)) in POLLS and frame_telemetry.link_failed(e)
+            if e.status >= 500 and not polled:
                 frame_telemetry.diagnostic(f"POST {path} {action_of(body)}", e)
             self.send_error_json(str(e), e.status, e.apk)
         except (ValueError, TypeError) as e:

@@ -256,3 +256,47 @@ class SensorTests(unittest.TestCase):
                 self.assertIsNone(status.activity_level())
         with patch.object(status, 'run', return_value='[{"operation":"status","activity_level":3}]'):
             self.assertEqual(status.activity_level(), 3)
+
+
+class DesktopBundleTests(unittest.TestCase):
+    """server.comfort runs the copy cached on the headset; the sources go only when it's missing."""
+
+    @unittest.skipUnless(os.name == "posix", "checks POSIX permissions")
+    def test_sources_are_sent_once_per_version(self):
+        import server
+        with tempfile.TemporaryDirectory() as tmp:
+            here, home = Path(tmp) / 'ui', Path(tmp) / 'frame'
+            here.mkdir()
+            home.mkdir()
+            for name in server.COMFORT_FILES:
+                (here / name).write_text('# ' + name + '\n')
+            (here / 'frame_comfort.py').write_text('import json, sys\nprint(json.dumps({"active": False, "got": sys.argv[1]}))\n')
+            sent = []
+
+            def ssh(remote, *, stdin, timeout):  # the headset: the script run under its own home
+                sent.append(stdin)
+                return subprocess.run([sys.executable, '-'], input=stdin, capture_output=True, text=True, check=True,
+                                      env={**os.environ, 'HOME': str(home)}).stdout
+
+            with patch.object(server, 'HERE', here), patch.object(server, 'ssh', side_effect=ssh):
+                first = server.comfort({'action': 'status'})
+                self.assertEqual(json.loads(first['got']), {'action': 'status'})
+                self.assertEqual(len(sent), 2)  # the check, then the sources
+                self.assertNotIn('# frame_steam.py', sent[0])
+                self.assertIn('# frame_steam.py', sent[1])
+                self.assertEqual(server.comfort({'action': 'status'}), first)
+                self.assertEqual(len(sent), 3)
+                self.assertNotIn('# frame_steam.py', sent[2])
+                cached, = (home / '.cache/frame-control/comfort').iterdir()
+                self.assertEqual(sorted(p.name for p in cached.iterdir()), sorted(server.COMFORT_FILES))
+                self.assertEqual(cached.stat().st_mode & 0o777, 0o700)
+                self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in cached.iterdir()))
+                # A copy cut short is completed; a changed helper is a new version.
+                (cached / 'frame_status.py').unlink()
+                server.comfort({'action': 'status'})
+                self.assertEqual(len(sent), 5)
+                self.assertTrue((cached / 'frame_status.py').exists())
+                (here / 'frame_steam.py').write_text('# frame_steam.py, changed\n')
+                server.comfort({'action': 'status'})
+                self.assertEqual(len(sent), 7)
+                self.assertEqual(len(list((home / '.cache/frame-control/comfort').iterdir())), 2)
