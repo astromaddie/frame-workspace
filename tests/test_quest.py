@@ -240,17 +240,22 @@ class Inspection(unittest.TestCase):
         self.addCleanup(os.unlink, tmp.name)
         return tmp.name
 
-    def test_meta_licence_check_refused_in_base_or_split(self):
+    def test_meta_licence_check_warned_not_refused_in_base_or_split(self):
+        # Linking the Platform SDK doesn't mean the check is enforced: install, with a warning.
         base = self.write(apk_bytes(files=dict(OPENXR, **{'lib/arm64-v8a/libovrplatformloader.so': b''})))
-        with self.assertRaises(quest.QuestError) as e:
-            quest.inspect(PKG, base)
-        self.assertIn('libovrplatformloader.so', str(e.exception))
-        self.assertIn("won't remove or work around", str(e.exception))
-        self.assertIn('only exist on Meta headsets', str(e.exception))
+        result = quest.inspect(PKG, base)
+        self.assertTrue(result['platform_sdk'])
+        self.assertEqual(len(result['warnings']), 1)
+        warning = result['warnings'][0]
+        self.assertIn("uses meta's licence check", warning.lower())
+        self.assertIn('may quit, hang, or run without online features', warning)
+        self.assertIn("Frame Control won't remove the check", warning)
         base = self.write(apk_bytes(split_required=True))
         split = self.write(apk_bytes(split='config.arm64_v8a', files={'lib/arm64-v8a/libovrplatformloader.so': b''}))
-        with self.assertRaisesRegex(quest.QuestError, 'licence'):
-            quest.inspect(PKG, base, [split])
+        result = quest.inspect(PKG, base, [split])
+        self.assertTrue(result['platform_sdk'])
+        self.assertIn('licence check', result['warnings'][0])
+        self.assertFalse(quest.inspect(PKG, self.write(apk_bytes(files=OPENXR)))['platform_sdk'])
 
     def test_32_bit_only_refused(self):
         base = self.write(apk_bytes(files={'lib/armeabi-v7a/libgame.so': b''}))
@@ -261,6 +266,7 @@ class Inspection(unittest.TestCase):
         base = self.write(apk_bytes(files={'lib/arm64-v8a/libvrapi.so': b'', 'lib/arm64-v8a/libgame.so': b''}))
         result = quest.inspect(PKG, base)
         self.assertIn('VrApi', result['warnings'][0])
+        self.assertIn('may not run', result['warnings'][0])
         result = quest.inspect(PKG, self.write(apk_bytes(files=dict(OPENXR, **{'lib/arm64-v8a/libvrapi.so': b''}))))
         self.assertEqual(result['warnings'], [])
         self.assertTrue(result['vr'])
@@ -707,18 +713,27 @@ class Import(unittest.TestCase):
         self.assertEqual(len(self.pulls(fake)), 2)
         self.assertEqual(self.cache_left(), [])
 
+    def test_licence_check_installs_with_a_warning(self):
+        fake = FakeQuest(self)
+        fake.add(PKG, [apk_bytes(files=dict(OPENXR, **{'lib/arm64-v8a/libovrplatformloader.so': b''}))])
+        result = quest.import_game(PKG)
+        self.assertEqual(self.order, [('install', 'base.apk', [])])
+        self.assertIn("Meta's licence check", result['message'])
+        self.assertIn("Frame Control won't remove the check", result['message'])
+        self.assertEqual(result['warnings'], [quest.ENTITLEMENT])
+        self.assertEqual(self.cache_left(), [])
+
     def test_refusals_copy_nothing_more_and_clean_up(self):
         fake = FakeQuest(self)
-        fake.add(PKG, [apk_bytes(files=dict(OPENXR, **{'lib/arm64-v8a/libovrplatformloader.so': b''}))],
-                 obb={f'main.1.{PKG}.obb': b'big'})
-        self.open_on_frame()
-        with self.assertRaisesRegex(quest.QuestError, 'licence'):
-            quest.import_game(PKG)
-        self.running = False
         fake.add('org.example.old', [apk_bytes('org.example.old', files={'lib/armeabi-v7a/libgame.so': b''})],
                  obb={'main.1.org.example.old.obb': b'big'})
         with self.assertRaisesRegex(quest.QuestError, '32-bit'):
             quest.import_game('org.example.old')
+        fake.add(PKG, [apk_bytes(files=OPENXR)], obb={f'main.1.{PKG}.obb': b'big'})
+        real_info = android.apk_info
+        with patch.object(android, 'apk_info', side_effect=lambda p: dict(real_info(p), min_sdk=31)):
+            with self.assertRaisesRegex(android.FrameError, 'API 31'):
+                quest.import_game(PKG)
         self.assertEqual(self.order, [])
         self.assertFalse([p for p in self.pulls(fake) if '/obb/' in p])
         self.assertEqual(self.cache_left(), [])

@@ -118,7 +118,7 @@ def detection(data, names):
     info, _ = inspect(data)
     issues = []
     if 'lib/arm64-v8a/libvrapi.so' in names:
-        issues.append("Uses Meta's legacy VrApi, which the Frame doesn't have; it won't run.")
+        issues.append("Uses Meta's legacy VrApi, which the Frame doesn't have; it may not run.")
     if any(n.endswith('/libovrplatformloader.so') for n in names):
         issues.append("Uses Meta's platform SDK; if it checks your Quest store licence it will quit.")
     if 'lib/arm64-v8a/libopenxr_loader.so' in names:
