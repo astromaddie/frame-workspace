@@ -61,9 +61,11 @@ def ssh(cmd, input=None, timeout=120):
     try:
         # No inherited stdin (see server.ssh): Windows' ssh.exe would wait on it.
         feed = {'input': input} if input is not None else {'stdin': subprocess.DEVNULL}
-        # errors='replace': a message in another encoding (a Windows code page, a file name) mustn't
-        # turn a failed command, or one that worked, into a UnicodeDecodeError.
-        text = {'text': True, 'errors': 'replace'} if isinstance(input, str) or input is None else {}
+        # The Frame writes UTF-8, whatever this computer's code page (Windows would decode it as
+        # cp1252). errors='replace': stray bytes (a file name) mustn't turn a failed command, or
+        # one that worked, into a UnicodeDecodeError.
+        text = ({'text': True, 'encoding': 'utf-8', 'errors': 'replace'}
+                if isinstance(input, str) or input is None else {})
         p = frame_host.run_ssh(['ssh', *SSH_OPTS, FRAME, cmd], capture_output=True, **feed,
                                timeout=timeout, **text)
     except subprocess.TimeoutExpired:
