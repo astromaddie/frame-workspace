@@ -112,12 +112,15 @@ _GENERIC = [
 
 def _clean(message, token):
     """message without the token, or any start of it (8+ characters, as truncation leaves), in
-    any letter case, with any of its characters written literally or percent-encoded (%4B or
-    %4b). Mirrors _itch_account._clean on feat/itch-purchases, so the two can be unified."""
+    any letter case, with any of its characters written literally, percent-encoded (%4B or
+    %4b) or percent-encoded twice (%254B, %254b). Mirrors _itch_account._clean on
+    feat/itch-purchases (plus the double encoding), so the two can be unified."""
     if not token:
         return message
-    # Each character: itself, or the percent-encoding of either of its letter cases.
-    tokens = ['(?:%s)' % '|'.join([re.escape(c)] + ['%%%02x' % ord(v) for v in sorted({c.lower(), c.upper()})])
+    # Each character: itself, or the (once or twice) percent-encoding of either of its letter
+    # cases; hex digits in any case (re.I).
+    tokens = ['(?:%s)' % '|'.join([re.escape(c)] + [f % ord(v) for v in sorted({c.lower(), c.upper()})
+                                                     for f in ('%%%02x', '%%25%02x')])
               for c in token]
     start, rest = re.compile(''.join(tokens[:8]), re.I), [re.compile(t, re.I) for t in tokens[8:]]
     out, pos = [], 0
@@ -1062,18 +1065,35 @@ RESULTS = {'runs': 'runs', 'runs-with-issues': 'runs', 'quits': 'crashes', 'cras
 OUTCOME_WORDS = {'runs': 'runs', 'runs-with-issues': 'runs, with issues', 'quits': 'quit',
                  'crashes': 'crashed', 'hangs': 'seems stuck', 'instance-failed': "didn't start",
                  'inconclusive': 'gave no clear result'}
-EXCERPT = 80  # characters of a shown excerpt, after redaction
 
 
 def _excerpt(key, line):
     """A short name from the log line behind a cause, for the person only: an OpenXR
-    extension, a library, an exception class or a signal. Redacted, then shortened."""
-    patterns = {'extension': r'\bXR_(?!ERROR_)[A-Z0-9]+_[A-Za-z0-9_]{1,60}',
-                'library': r'[\w.+-]{1,60}\.so\b',
+    extension, a library, an exception class or a signal. The whole line is redacted first,
+    then the name is taken whole (never a cut-off end of something longer), and dropped
+    unless it looks like a real identifier."""
+    patterns = {'extension': r'\bXR_(?!ERROR_)[A-Z0-9]+_[A-Za-z0-9_]+',
+                'library': r'[\w.+-]+\.so\b',
                 'crash-java': r'\b[\w$]+(?:\.[\w$]+)*(?:Exception|Error)\b',
                 'crash-native': r'\bSIG[A-Z]{2,6}\b'}
-    m = re.search(patterns[key], line or '') if key in patterns else None
-    return redact(m.group(0), EXCERPT) if m else ''
+    if key not in patterns or not line:
+        return ''
+    m = re.search(patterns[key], redact(line))
+    name = m.group(0) if m else ''
+    return name if _plausible(name) else ''
+
+
+def _plausible(name):
+    """A name short and plain enough to be a library, extension, class or signal name, not
+    a credential: at most 64 characters, no run of 32+ letters and digits, and no run of 16+
+    that mixes upper case, lower case and digits (as tokens and base64 do)."""
+    if not name or len(name) > 64 or REDACTED in name:
+        return False
+    for run in re.findall(r'[A-Za-z0-9]+', name):
+        if len(run) >= 32 or (len(run) >= 16 and re.search(r'[a-z]', run) and re.search(r'[A-Z]', run)
+                               and re.search(r'[0-9]', run)):
+            return False
+    return True
 
 
 def classify(log, alive, instance_up=True, seconds=None, started=True):

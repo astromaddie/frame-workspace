@@ -212,14 +212,24 @@ class Redaction(unittest.TestCase):
         for text in (TOKEN, TOKEN.lower(), TOKEN.upper(), TOKEN.swapcase()):
             forms += [encoded(text, '%%%02X'), encoded(text, '%%%02x')]
         forms.append(''.join(c if i % 2 else '%%%02x' % ord(c.lower()) for i, c in enumerate(TOKEN)))
+        # Percent-encoded twice (%25XX), as an error quoting an encoded URL shows it: recased too.
+        once = encoded(TOKEN, '%%%02X')
+        forms += [urllib.parse.quote(once, safe=''), urllib.parse.quote(urllib.parse.quote(TOKEN, safe=''), safe='')]
+        for text in (TOKEN, TOKEN.lower(), TOKEN.swapcase()):
+            forms += [encoded(text, '%%25%02X'), encoded(text, '%%25%02x')]
+        forms.append(''.join(('%%25%02x' if i % 3 == 0 else '%%%02X' if i % 3 == 1 else '%s') % (ord(c) if i % 3 < 2 else c)
+                             for i, c in enumerate(TOKEN.swapcase())))
         for form in forms:
             out = meta.redact(f'GET https://example.invalid/x?id=1&tok={form} failed')
             self.assertNotIn(form, out)
             self.assertIn(meta.REDACTED, out)
-            self.assertNotIn(TOKEN[2:12].lower(), urllib.parse.unquote(out).lower())
+            plain = urllib.parse.unquote(urllib.parse.unquote(out)).lower()
+            self.assertNotIn(TOKEN[2:12].lower(), plain)
+            self.assertNotIn(TOKEN[-10:].lower(), plain)  # the whole credential, not just its start
         # Any start of it of 8+ characters (as a cut elsewhere leaves), however written.
         for n in (8, 12, 20):
-            for prefix in (TOKEN[:n], TOKEN[:n].lower(), encoded(TOKEN[:n].lower(), '%%%02x')):
+            for prefix in (TOKEN[:n], TOKEN[:n].lower(), encoded(TOKEN[:n].lower(), '%%%02x'),
+                           encoded(TOKEN[:n].swapcase(), '%%25%02X'), encoded(TOKEN[:n], '%%25%02x')):
                 self.assertNotIn(prefix, meta.redact(f'cut: {prefix}', token=TOKEN))
 
     def test_token_shaped_values_that_are_not_stored(self):
@@ -785,6 +795,28 @@ class RunTest(unittest.TestCase):
             self.assertNotIn(fragment, everything)
         self.assertNotIn('IllegalStateException', kwargs['notes'])  # reports: fixed texts only
         self.assertIn(meta.CAUSES['crash-java'].rstrip('.'), kwargs['notes'])
+
+    def test_long_token_in_a_library_name_is_never_shown(self):
+        connected(self)
+        long_token = TOKEN + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4Y5z6'
+        meta.disconnect()
+        fake = FakeMeta(self, token=long_token)
+        meta.connect(long_token)
+        self.alive = False
+        for line in (f'E linker: dlopen failed: library "{long_token}.so" not found',
+                     f'E linker: dlopen failed: library "lib{long_token[-40:]}.so" not found',
+                     'E linker: dlopen failed: library "libZq9Xw3Rt7Yu1Io5Pa8Sd2Fg6.so" not found'):
+            self.log = line + '\n'
+            self.reports.clear()
+            v = meta.run_test(PKG, wait=5)
+            self.assertEqual(v['cause_key'], 'library')
+            self.assertEqual(v['detail'], '', line)
+            everything = json.dumps([v, self.reports])
+            for fragment in (long_token[-30:], long_token[-60:-30], long_token[:8], 'Zq9Xw3Rt7Yu1Io5Pa8Sd2Fg6'):
+                self.assertNotIn(fragment, everything)
+        self.log = 'E linker: dlopen failed: library "libfoo_engine.so" not found\n'
+        self.assertEqual(meta.run_test(PKG, wait=5)['detail'], 'libfoo_engine.so')  # real names still shown
+        self.assertEqual(fake.token, long_token)
 
     def test_inconclusive_is_not_reported_or_closed(self):
         connected(self)

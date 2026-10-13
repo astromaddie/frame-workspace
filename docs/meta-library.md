@@ -151,8 +151,10 @@ The result goes through the same path as **Test** and **Report**
 notes with the outcome, the cause, the names of the matched signals and the
 version code, all fixed texts. Nothing else: no token, account name, file or
 log text. The page may show a short name from the log next to the cause (an
-OpenXR extension, a library, an exception class or a signal), cleaned of the
-token first; reports never carry it. It is always kept on this
+OpenXR extension, a library, an exception class or a signal), taken from the
+log line after the token is removed from it, and left out unless it looks like
+a real name (64 characters at most, no long mixed letter-and-digit runs);
+reports never carry it. It is always kept on this
 computer; it reaches the shared database only if **Share compatibility
 results** is on in Privacy settings, as for every report. The panel offers to
 turn that on.
@@ -180,8 +182,8 @@ turn that on.
 - Never in logs, error messages, API answers, the page or reports: every
   message is cleaned first, matching the token (or any start of it of 8+
   characters) in any letter case, with each character written literally or
-  percent-encoded in either case, and any other token-shaped value, before it
-  is shortened.
+  percent-encoded once or twice (%XX, %25XX) in either case, and any other
+  token-shaped value, before it is shortened.
 - Disconnect deletes the file and the library Frame Control holds in memory,
   and stops a download under way. A connect still being checked when you
   disconnect is not saved.
