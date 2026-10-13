@@ -106,8 +106,15 @@ _GENERIC = [
     re.compile(r'(?i)\b(bearer|oauth)\s+[^\s"\'<>,;]+'),
     # Upper-case prefix and no dots, so package names (com.oculus...) are left alone; the
     # stored token itself is matched in any case by _clean.
-    re.compile(r'\b(?:OC|FRL)(?=[A-Za-z0-9%|:_\-]*\d)[A-Za-z0-9%|:_\-]{16,}'),
+    # Matched as one run (no lookahead, so linear); kept unless it has a digit (_generic).
+    re.compile(r'\b(?:OC|FRL)[A-Za-z0-9%|:_\-]{16,}'),
 ]
+
+
+def _generic(m):
+    if m.re is _GENERIC[2]:
+        return REDACTED if any(c.isdigit() for c in m.group(0)) else m.group(0)
+    return (m.group(1) + REDACTED) if m.groups() else REDACTED
 
 
 def _clean(message, token):
@@ -158,7 +165,7 @@ def redact(text, limit=None, token=None):
     for t in {t for t in (token, _stored_token_quiet()) if t}:
         text = _clean(text, t)
     for pattern in _GENERIC:
-        text = pattern.sub(lambda m: (m.group(1) + REDACTED) if m.groups() else REDACTED, text)
+        text = pattern.sub(_generic, text)
     if limit is not None and len(text) > limit:
         text = text[:max(0, limit - 1)] + '…'
     return text
@@ -1005,25 +1012,29 @@ def _install(app, work, token, generation, report, test, allow_downgrade):
 
 SIGNATURES = [
     # Explicit failure evidence only: a game that merely calls the check (and passes) isn't one.
-    ('licence', re.compile(r'(?i)entitle\w*\s*(?:check\s*)?(?:has\s+)?(?:failed|failure|denied|rejected|error)|'
+    ('licence', re.compile(r'(?i)entitle\w{0,40}\s{0,8}(?:check\s{0,8})?(?:has\s{1,8})?'
+                           r'(?:failed|failure|denied|rejected|error)|'
                            r'\bnot entitled\b|failed to (?:verify|check|get) (?:the )?entitlement|'
-                           r'(?:ovr_Entitlement\w*|IsUserEntitledToApplication)\S*\s*(?:\(\)\s*)?'
-                           r'(?:failed|returned (?:an )?error|error|=\s*false|:\s*false)'), 'blocker'),
-    ('platform', re.compile(r'(?i)ovr_Platform(?:Initialize)?\w*\s*(?:failed|error)|libovrplatform\w*\.so.*(?:not found|failed)|'
-                            r'Failed to initialize (?:the )?(?:Oculus|Meta) Platform|Oculus Platform.*(?:failed|not initialized)'),
+                           r'(?:ovr_Entitlement\w{0,60}|IsUserEntitledToApplication)(?:\(\))?\s{0,8}'
+                           r'(?:failed|returned (?:an )?error|error|=\s{0,8}false|:\s{0,8}false)'), 'blocker'),
+    ('platform', re.compile(r'(?i)ovr_Platform(?:Initialize)?\w{0,60}\s{0,8}(?:failed|error)|'
+                            r'libovrplatform\w{0,40}\.so.{0,200}?(?:not found|failed)|'
+                            r'Failed to initialize (?:the )?(?:Oculus|Meta) Platform|'
+                            r'Oculus Platform.{0,200}?(?:failed|not initialized)'),
      'blocker'),
     ('device', re.compile(r'(?i)Failed to launch SystemActivities|IsRunningOnSantaCruz|'
                           r'(?:device|headset) (?:is )?not supported|unsupported (?:device|headset)|not an? (?:Oculus|Meta) (?:Quest|device)'),
      'blocker'),
-    ('vrapi', re.compile(r'(?i)vrapi_\w+ was called before|libvrapi\.so.*(?:not found|failed)|vrapi_Initialize\w*\s*(?:failed|error)'),
+    ('vrapi', re.compile(r'(?i)vrapi_\w{1,60} was called before|libvrapi\.so.{0,200}?(?:not found|failed)|'
+                         r'vrapi_Initialize\w{0,40}\s{0,8}(?:failed|error)'),
      'blocker'),
     ('extension', re.compile(r'XR_ERROR_EXTENSION_NOT_PRESENT'), 'blocker'),
     ('xr-version', re.compile(r'XR_ERROR_API_VERSION_UNSUPPORTED'), 'blocker'),
     ('runtime', re.compile(r'XR_ERROR_RUNTIME_(?:UNAVAILABLE|FAILURE)|XR_ERROR_INITIALIZATION_FAILED|'
-                           r'(?i:xrCreateInstance\w*\s*(?:failed|returned -))'), 'blocker'),
-    ('gpu', re.compile(r'(?i)VK_ERROR_DEVICE_LOST|DEVICE[ _]LOST|vkCreate\w+ failed|VK_ERROR_\w+|'
-                       r'libgallium_dri\.so|zink.*(?:error|fail)|GL_INVALID_\w+|GL_OUT_OF_MEMORY|'
-                       r'shader (?:compil|link)\w* (?:failed|error)|failed to (?:compile|link) shader'), 'issue'),
+                           r'(?i:xrCreateInstance\w{0,40}\s{0,8}(?:failed|returned -))'), 'blocker'),
+    ('gpu', re.compile(r'(?i)VK_ERROR_DEVICE_LOST|DEVICE[ _]LOST|vkCreate\w{1,60} failed|VK_ERROR_\w+|'
+                       r'libgallium_dri\.so|zink.{0,200}?(?:error|fail)|GL_INVALID_\w+|GL_OUT_OF_MEMORY|'
+                       r'shader (?:compil|link)\w{0,20} (?:failed|error)|failed to (?:compile|link) shader'), 'issue'),
     ('clipboard', re.compile(r'ClipboardManager'), 'blocker'),
     ('android', re.compile(r'NoSuchMethodError|NoClassDefFoundError'), 'issue'),
     ('library', re.compile(r'UnsatisfiedLinkError|dlopen failed'), 'blocker'),
@@ -1053,12 +1064,15 @@ CAUSES = {
     'no-session': "It stayed open, but its log didn't show its VR scene starting, so Frame Control can't tell "
                   "whether it runs. This result isn't recorded.",
 }
-CRASH = re.compile(r'FATAL EXCEPTION|Fatal signal \d+|\bSIG(?:SEGV|ABRT|BUS|ILL)\b|>>> [\w.]+ <<<|Abort message:')
+CRASH = re.compile(r'FATAL EXCEPTION|Fatal signal \d+|\bSIG(?:SEGV|ABRT|BUS|ILL)\b|>>> [\w.]{1,200} <<<|Abort message:')
 HANG = re.compile(r'ANR in [\w.]+|Application Not Responding|Input dispatching timed out')
 # Signs the game got far enough to show its VR scene.
 SESSION = re.compile(r'XR_SESSION_STATE_(?:SYNCHRONIZED|VISIBLE|FOCUSED)|xrEndFrame|xrBeginSession|'
                      r'session state (?:changed )?(?:to )?(?:SYNCHRONIZED|VISIBLE|FOCUSED)', re.I)
-XR_STARTED = re.compile(r'FrameXrCompat.*created instance|xrCreateInstance', re.I)
+XR_STARTED = re.compile(r'FrameXrCompat.{0,200}?created instance|xrCreateInstance', re.I)
+LINE_SCAN = 4096  # characters of each log line the signatures look at (Android's own line limit)
+LOG_UNREADABLE = ("Frame Control couldn't read the game's log from the Frame, so the test has no result. "
+                  'Check the Frame is connected, then test again.')
 # The compatibility database's result for each outcome; None: not recorded at all.
 RESULTS = {'runs': 'runs', 'runs-with-issues': 'runs', 'quits': 'crashes', 'crashes': 'crashes',
            'hangs': 'crashes', 'instance-failed': 'instance_failed', 'inconclusive': None}
@@ -1072,15 +1086,21 @@ def _excerpt(key, line):
     extension, a library, an exception class or a signal. The whole line is redacted first,
     then the name is taken whole (never a cut-off end of something longer), and dropped
     unless it looks like a real identifier."""
-    patterns = {'extension': r'\bXR_(?!ERROR_)[A-Z0-9]+_[A-Za-z0-9_]+',
-                'library': r'[\w.+-]+\.so\b',
-                'crash-java': r'\b[\w$]+(?:\.[\w$]+)*(?:Exception|Error)\b',
-                'crash-native': r'\bSIG[A-Z]{2,6}\b'}
-    if key not in patterns or not line:
+    if key not in _NAMES or not line:
         return ''
-    m = re.search(patterns[key], redact(line))
-    name = m.group(0) if m else ''
-    return name if _plausible(name) else ''
+    # The whole line is redacted, then split once into words; only words short enough to
+    # be names are tested, each with one fullmatch: linear in the line, however long.
+    for word in re.split(r'[^\w.+$-]+', redact(line)):
+        word = word.strip('.')
+        if 0 < len(word) <= 64 and _NAMES[key].fullmatch(word) and _plausible(word):
+            return word
+    return ''
+
+
+_NAMES = {'extension': re.compile(r'XR_(?!ERROR_)[A-Z0-9]+_[A-Za-z0-9_]+'),
+          'library': re.compile(r'[\w.+-]+\.so'),
+          'crash-java': re.compile(r'[\w$]+(?:\.[\w$]+)*(?:Exception|Error)'),
+          'crash-native': re.compile(r'SIG[A-Z]{2,6}')}
 
 
 def _plausible(name):
@@ -1101,8 +1121,13 @@ def classify(log, alive, instance_up=True, seconds=None, started=True):
     inconclusive when the game stayed open without showing its VR scene), the key of a fixed
     plain-English cause, and the signals behind it, from the game's Android log, whether its
     Lepton instance started at all, and whether its process and instance were up at the end."""
-    log = log or ''
-    lines = log.splitlines()
+    # Signatures look at the start of each line only (LINE_SCAN), and every pattern is
+    # bounded, so a hostile log can't make this slow. The full line is kept for the excerpt,
+    # which redacts all of it before taking a name.
+    full = (log or '').splitlines()
+    lines = [l[:LINE_SCAN] for l in full]
+    log = '\n'.join(lines)
+    by_scan = dict(zip(lines, full))
     found = []  # (key, kind, line)
     for key, pattern, kind in SIGNATURES:
         line = next((l for l in lines if pattern.search(l)), None)
@@ -1144,7 +1169,7 @@ def classify(log, alive, instance_up=True, seconds=None, started=True):
     if seconds is not None:
         signals['seconds'] = seconds
     return {'outcome': outcome, 'result': RESULTS[outcome], 'cause_key': key, 'cause': cause,
-            'detail': _excerpt(key, line), 'signals': signals}
+            'detail': _excerpt(key, by_scan.get(line, line)), 'signals': signals}
 
 
 def collect_log(meta):
@@ -1160,14 +1185,25 @@ def run_test(pkg, wait=TEST_WAIT, app=None, report_result=True):
     (source meta-store, with the version code), shared only if the person chose to share
     compatibility results; an inconclusive one isn't recorded. The game is left running, as
     Test does, unless it hangs."""
+    try:
+        return _run_test(pkg, wait, app, report_result)
+    except MetaError:
+        raise  # fixed texts already
+    except android.FrameError:
+        # A failed ssh command's error is its output, which here can be the game's own log:
+        # never shown, not even redacted.
+        raise MetaError(LOG_UNREADABLE) from None
+
+
+def _run_test(pkg, wait, app, report_result):
     meta = android._meta_or_fail(pkg)
     ctr = f"lepton-steamlaunch-{int(meta['instance'])}"
     label = meta.get('label') or (app or {}).get('title') or pkg
     if quest._running(pkg):
-        closed, why = quest._close(pkg)  # a fresh start gives a clean log
+        closed, _ = quest._close(pkg)  # a fresh start gives a clean log
         if not closed:
-            raise MetaError(f"{label} is open on the Frame and Frame Control couldn't close it "
-                            f"({redact(why, 200)}), so it wasn't tested. Close it from Steam, then test again.")
+            raise MetaError(f"{label} is open on the Frame and Frame Control couldn't close it, so it wasn't "
+                            'tested. Close it from Steam, then test again.')
     android.launch(pkg)
     started = up = _wait_running(pkg)
     alive, log, seconds = False, '', 0
@@ -1198,11 +1234,10 @@ def run_test(pkg, wait=TEST_WAIT, app=None, report_result=True):
             verdict['outcome'] not in ('runs', 'inconclusive'):
         message += ' ' + RAN_PLATFORM_SDK
     if verdict['outcome'] == 'hangs':
-        closed, why = quest._close(pkg)
+        closed, _ = quest._close(pkg)
         verdict['closed'] = closed
         message += (' Frame Control closed it.' if closed else
-                    f" Frame Control couldn't close it ({redact(why, 200)}): the game may still be running; "
-                    'close it from Steam.')
+                    " Frame Control couldn't close it: the game may still be running; close it from Steam.")
     verdict['message'] = message
     if report_result and verdict['result']:
         verdict['report'] = submit(verdict)

@@ -27,6 +27,7 @@ APK = test_quest.apk_bytes(files=test_quest.OPENXR, version_code=100, version_na
 OBB = b'obb data ' * 100
 PUBLIC = {'157.240.22.35'}
 REAL_SEND = meta._send  # before any test replaces it with a fake Meta
+REAL_SSH = android.ssh
 
 
 def entitlements(apk=APK, obb=OBB, platform_sdk=False):
@@ -709,6 +710,53 @@ class Classify(unittest.TestCase):
         self.assertEqual(meta.classify(LOGS['licence'], False)['signals']['matched'], ['licence'])
 
 
+class Speed(unittest.TestCase):
+    """A hostile or broken log can't make classifying or redacting slow: 100 KB adversarial
+    lines, each step well under 200 ms."""
+    LINES = {
+        'no .so': 'a' * 100000,
+        'dots': 'a.' * 50000,
+        'dotted names': ('a.' * 40 + ' ') * 1235,
+        'OC-': 'OC-' * 33334,
+        'OC run': ' OC' + 'a-' * 50000,
+        'zink': 'zink' * 25000,
+        'entitle': 'entitle' * 14286,
+        'entitlement calls': 'ovr_Entitlement' * 6667,
+        'platform': 'libovrplatform.so' * 5883,
+        'crash marker': '>>> ' + 'a' * 100000,
+        'access_token': 'access_token=' * 7693,
+        'percent': '%4f%43' * 16667,
+        'words': ('libx.so XR_FB_y java.lang.ZException SIGSEGV ' * 2300)[:100000],
+    }
+
+    def timed(self, fn, *args):
+        import time
+        start = time.perf_counter()
+        fn(*args)
+        return time.perf_counter() - start
+
+    def test_adversarial_lines(self):
+        for name, line in self.LINES.items():
+            self.assertTrue(99000 <= len(line) <= 101000, name)
+            for alive in (True, False):
+                self.assertLess(self.timed(meta.classify, line + '\nFATAL EXCEPTION\n', alive), 0.2, name)
+            self.assertLess(self.timed(meta.redact, line, None, TOKEN), 0.2, name)
+            for key in ('extension', 'library', 'crash-java', 'crash-native'):
+                self.assertLess(self.timed(meta._excerpt, key, line), 0.2, (name, key))
+
+    def test_names_are_still_found(self):
+        self.assertEqual(meta._excerpt('library', 'E linker: dlopen failed: library "libfoo.so" not found'), 'libfoo.so')
+        self.assertEqual(meta._excerpt('extension', 'XR_ERROR_EXTENSION_NOT_PRESENT: XR_FB_passthrough.'),
+                         'XR_FB_passthrough')
+        self.assertEqual(meta._excerpt('crash-java', 'AndroidRuntime: java.lang.IllegalStateException: x'),
+                         'java.lang.IllegalStateException')
+        self.assertEqual(meta._excerpt('crash-native', 'Fatal signal 11 (SIGSEGV)'), 'SIGSEGV')
+        self.assertEqual(meta.redact('error near OC-' + 'x' * 20 + ' here'), 'error near OC-' + 'x' * 20 + ' here')
+        self.assertEqual(meta.redact('error near ' + OTHER_TOKEN + ' here'), 'error near <redacted> here')
+        long_line = 'x' * (meta.LINE_SCAN + 10) + ' Entitlement check failed'
+        self.assertNotIn('licence', meta.classify(long_line, False)['signals']['matched'])  # only the start is scanned
+
+
 class RunTest(unittest.TestCase):
     META = dict(test_quest.Import.META)
 
@@ -818,6 +866,48 @@ class RunTest(unittest.TestCase):
         self.assertEqual(meta.run_test(PKG, wait=5)['detail'], 'libfoo_engine.so')  # real names still shown
         self.assertEqual(fake.token, long_token)
 
+    def test_log_read_failure_never_shows_the_ssh_output(self):
+        # A failed ssh command with empty stderr: frame_android.ssh raises its stdout, which
+        # here is the game's log, carrying a token. Neither the test, the CLI nor the job says it.
+        import subprocess
+        import server
+        connected(self)
+        leaked = f'I Game: url https://graph.oculus.com/?x=1&tok={TOKEN[5:]} {OTHER_TOKEN[3:]}\n' * 3
+
+        def run_ssh(cmd, **kw):
+            remote = cmd[-1]
+            if 'logcat' in remote:
+                return subprocess.CompletedProcess(cmd, 1, stdout=leaked, stderr='')
+            return subprocess.CompletedProcess(cmd, 0, stdout='4242\n' if 'pidof' in remote else '', stderr='')
+        with patch.object(android, 'ssh', REAL_SSH), patch.object(android.frame_host, 'run_ssh', side_effect=run_ssh):
+            with self.assertRaises(meta.MetaError) as e:
+                meta.run_test(PKG, wait=5)
+            self.assertEqual(str(e.exception), meta.LOG_UNREADABLE)
+            self.assertIsNone(e.exception.__cause__)
+            self.assertTrue(e.exception.__suppress_context__)
+            # The standalone Test route (a background job).
+            with patch.object(server, 'ensure_master'), patch.object(server, 'start_job',
+                                                                     return_value={'job': 'j'}) as job:
+                server.meta({'action': 'test', 'package': PKG})
+            with self.assertRaises(meta.MetaError) as e:
+                job.call_args.args[1]()
+            self.assertEqual(str(e.exception), meta.LOG_UNREADABLE)
+            # The CLI.
+            with patch.object(sys, 'argv', ['frame_meta.py', 'test', PKG, '--wait', '5']):
+                with self.assertRaises(SystemExit) as cli:
+                    meta.main()
+            self.assertEqual(cli.exception.code, 'error: ' + meta.LOG_UNREADABLE)
+        for fragment in (TOKEN[5:20], OTHER_TOKEN[3:15]):
+            self.assertNotIn(fragment, str(e.exception) + str(cli.exception.code))
+        self.assertEqual(self.reports, [])
+        # Anything else that goes wrong in a test job is a fixed text too.
+        with patch.object(server, 'ensure_master'), patch.object(server, 'start_job', return_value={'job': 'j'}) as job:
+            server.meta({'action': 'test', 'package': PKG})
+        with patch.object(meta, 'run_test', side_effect=KeyError(TOKEN)):
+            with self.assertRaises(meta.MetaError) as e:
+                job.call_args.args[1]()
+        self.assertEqual(str(e.exception), 'The test stopped unexpectedly (KeyError); try again.')
+
     def test_inconclusive_is_not_reported_or_closed(self):
         connected(self)
         self.log = 'I Unity: ovr_Entitlement_GetIsViewerEntitled called\nI Unity: loading\n'
@@ -833,7 +923,7 @@ class RunTest(unittest.TestCase):
         launched = []
         with patch.object(quest, '_close', return_value=(False, 'it is still running')), \
                 patch.object(android, 'launch', side_effect=launched.append):
-            with self.assertRaisesRegex(meta.MetaError, "couldn't close it .*wasn't tested.*Close it from Steam"):
+            with self.assertRaisesRegex(meta.MetaError, "couldn't close it, so it wasn't tested.*Close it from Steam"):
                 meta.run_test(PKG, wait=5)
         self.assertEqual(launched, [])
         self.assertEqual(self.reports, [])

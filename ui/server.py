@@ -1423,7 +1423,20 @@ def meta(body):
             if not frame_android.PKG_RE.match(pkg):
                 raise Failure("invalid Android package id", 400)
             ensure_master()
-            return start_job(f"Test {pkg}", lambda: frame_meta.run_test(pkg))
+
+            def test():
+                # run_test's own errors are fixed texts; anything else could carry the game's
+                # log (an ssh error is its output), so it is never shown, not even redacted.
+                try:
+                    return frame_meta.run_test(pkg)
+                except frame_meta.MetaError:
+                    raise
+                except frame_android.FrameError:
+                    raise frame_meta.MetaError(frame_meta.LOG_UNREADABLE) from None
+                except Exception as e:
+                    raise frame_meta.MetaError(f"The test stopped unexpectedly ({type(e).__name__}); "
+                                               "try again.") from None
+            return start_job(f"Test {pkg}", test)
     except frame_meta.MetaError as e:
         raise _meta_failure(e) from None
     raise Failure("unknown action", 400)

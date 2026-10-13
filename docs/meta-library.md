@@ -141,7 +141,11 @@ couldn't), **didn't start** (its instance never came up), or **no clear
 result**: it stayed open but its log never showed its VR scene starting. That
 can be a game still loading, or one stuck after a failed check; Frame Control
 can't tell, so it doesn't record it. A game already open is closed first, so
-the test starts clean; if it can't be closed, nothing is tested. Signatures
+the test starts clean; if it can't be closed, nothing is tested. If the Frame
+fails while the test reads the game or its log, the test says only that it
+couldn't read the log: a failed command's output can be the game's log, so it
+is never shown. Signatures look at the first 4 KB of each log line and are
+bounded, so a huge or hostile log can't make the test slow. They
 are written for Frame Control from the research in [vr-apks.md](vr-apks.md);
 they are not copied from other tools.
 
