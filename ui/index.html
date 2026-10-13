@@ -3524,18 +3524,24 @@ $("metaConnect").onclick = async () => {
   finally { $("metaConnect").disabled = !$("metaAck").checked; }
 };
 $("metaDisconnect").onclick = async () => {
+  // One Disconnect at a time, guarded from before the confirm until the delete returns.
+  if (metaDisconnecting) return;
+  metaDisconnecting = true; $("metaDisconnect").disabled = $("metaSignIn").disabled = true;
   if (!confirm("Disconnect your Meta account? Its token is deleted from this computer. Games already installed stay."
-               + (metaSignInOk ? "\n\nThis also signs out of Meta in Frame Control (its Sign in with Meta window), so the next sign-in starts fresh." : ""))) return;
+               + (metaSignInOk ? "\n\nThis also signs out of Meta in Frame Control (its Sign in with Meta window), so the next sign-in starts fresh." : ""))) {
+    metaDisconnecting = false; $("metaDisconnect").disabled = false;
+    $("metaSignIn").disabled = !$("metaAck").checked;
+    return;
+  }
   // No sign-in from here until the token is deleted. Sign-out first: it stops the sign-in
   // window (and any connect it started) before the account is forgotten.
-  metaDisconnecting = true; $("metaSignIn").disabled = true;
   try {
     if (metaSignInOk) {
       try { await window.frameApp.meta.signOut(); } catch (e) { toast(`Couldn't sign out of Meta in Frame Control: ${e.message}`, true); }
     }
     try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
     catch (e) { toast(e.message, true); }
-  } finally { metaDisconnecting = false; }
+  } finally { metaDisconnecting = false; $("metaDisconnect").disabled = false; }
   $("metaAck").checked = false; $("metaToken").disabled = $("metaConnect").disabled = $("metaSignIn").disabled = true;
   metaLib.results.clear(); loadMeta();
 };
