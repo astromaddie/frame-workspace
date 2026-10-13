@@ -261,6 +261,16 @@ class Redaction(unittest.TestCase):
             for frag in ('Ca', '4fCa', 'abcdef', '123456789012'):
                 self.assertNotIn(frag, out.replace('error near', '').replace(meta.REDACTED, ''), (text, out))
 
+    def test_a_partial_match_before_the_token_cannot_hide_its_start(self):
+        known = 'OCabcdefOCabcdefg1234567890'
+        for text in (known[:8].lower() + known.lower(), known[:9] + known, 'xx' + known[:8] + known + 'yy'):
+            out = meta.redact(text, token=known)
+            self.assertNotIn('1234567890', out, (text, out))
+            self.assertNotIn('g123', out, (text, out))
+        import time
+        t0 = time.monotonic(); meta.redact(('OCabcdef' * 12000)[:100000], token=known)
+        self.assertLess(time.monotonic() - t0, 2.0)
+
     def test_redacted_before_truncation(self):
         for cut in range(1, len(TOKEN) + 1):
             text = 'x' * 50 + TOKEN + ' tail'

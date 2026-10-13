@@ -157,7 +157,9 @@ def _clean_spans(message, token):
                 break
             end = more.end()
         spans.append((found.start(), end))
-        pos = end
+        # Look again from the next character, not the end: a partial match just before the
+        # real token can overlap its start. Overlapping spans merge in _replace.
+        pos = found.start() + 1
     return spans
 
 
