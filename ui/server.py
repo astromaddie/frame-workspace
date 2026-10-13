@@ -1343,12 +1343,13 @@ def quest(body):
     pkg = str(body.get("package", ""))
     if not frame_android.PKG_RE.match(pkg):
         raise Failure("invalid Android package id", 400)
-    serial, data = quest_serial(body.get("serial")), body.get("data", False)
-    if type(data) is not bool:
-        raise Failure("data must be true or false", 400)
+    serial, data, older = quest_serial(body.get("serial")), body.get("data", False), body.get("allowDowngrade", False)
+    if type(data) is not bool or type(older) is not bool:
+        raise Failure("data and allowDowngrade must be true or false", 400)
     ensure_master()
     return start_job(f"Import {pkg} from Quest",
-                     lambda report: frame_quest.import_game(pkg, serial, data=data, progress=report), progress=True)
+                     lambda report: frame_quest.import_game(pkg, serial, data=data, progress=report,
+                                                            allow_downgrade=older), progress=True)
 
 
 # Errors that are the APK's own fault, so they belong in the compatibility

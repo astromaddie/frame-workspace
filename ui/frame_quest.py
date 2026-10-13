@@ -11,7 +11,7 @@ starts the game itself. The cache is always removed. Games that check their Meta
 Frame Control does not remove it or work around it. See docs/quest-import.md.
 
 Python stdlib only. CLI: python3 ui/frame_quest.py
-  devices | list [--serial SERIAL] | import PACKAGE [--serial SERIAL] [--data]
+  devices | list [--serial SERIAL] | import PACKAGE [--serial SERIAL] [--data] [--allow-downgrade]
 """
 import json
 import os
@@ -273,7 +273,8 @@ def inspect(package_name, base, splits=()):
     if 'lib/arm64-v8a/libvrapi.so' in names and not openxr:
         warnings.append("Uses Meta's legacy VrApi and no OpenXR. The Frame doesn't have VrApi, so it "
                         "will install but won't run.")
-    return {'package': info['package'], 'label': label, 'version': info['version'], 'abis': abis,
+    return {'package': info['package'], 'label': label, 'version': info['version'],
+            'version_code': info.get('version_code'), 'abis': abis,
             'vr': bool(info.get('vr') or openxr), 'warnings': warnings}
 
 
@@ -382,13 +383,15 @@ def _check_space(work, need, pkg):
                          f'({free / 1024**3:.1f} GB available in {work.parent})')
 
 
-def import_game(package_name, serial=None, data=False, progress=None):
+def import_game(package_name, serial=None, data=False, progress=None, allow_downgrade=False):
     """Copy package_name from the Quest to the Frame. progress(stage, percent).
 
     Frame Control never starts the game itself. Its game data (OBB, and Android/data if
     asked) can only be written into a running Lepton instance, and there is no way to
     boot one without its game, so that's a second import: the person starts the game,
-    imports again, and Frame Control copies the data in and closes the game."""
+    imports again, and Frame Control copies the data in and closes the game.
+
+    allow_downgrade: replace a newer version on the Frame with the Quest's older one."""
     if not android.PKG_RE.match(package_name or ''):
         raise QuestError('invalid package name')
     report = progress or (lambda stage, percent=None: None)
@@ -402,7 +405,7 @@ def import_game(package_name, serial=None, data=False, progress=None):
         work = cache_root() / f'{package_name}-{secrets.token_hex(4)}'
         work.mkdir(parents=True)
         try:
-            return _import(quest['serial'], app, data, work, report)
+            return _import(quest['serial'], app, data, work, report, allow_downgrade)
         finally:
             shutil.rmtree(work, ignore_errors=True)
     finally:
@@ -413,7 +416,65 @@ def _running(pkg):
     return f'lepton-steamlaunch-{android.instance_id(pkg)}' in android.running_instances()
 
 
-def _import(serial, app, data, work, report):
+def _version(name, code):
+    return ' '.join(x for x in (f'version {name}' if name else '', f'code {code}' if code is not None else 'unknown code') if x)
+
+
+def _check_downgrade(existing, checked, allow):
+    """Refuse to replace a newer install on the Frame with the Quest's older copy."""
+    if not existing or allow:
+        return
+    have, new = existing.get('version_code'), checked['version_code']
+    if have is not None and new is not None and int(new) < int(have):
+        raise QuestError(f"The Frame has a newer {checked['label']} ({_version(existing.get('version'), have)}) than "
+                         f"your Quest ({_version(checked['version'], new)}). Frame Control won't replace it with "
+                         "an older version unless you allow it (Allow replacing a newer version, or "
+                         "--allow-downgrade).")
+
+
+def _check_target(pkg, meta, checked):
+    """The install record of the game open on the Frame, if it is this package, in its own
+    instance, at the Quest's exact version code; else a QuestError."""
+    label = checked['label']
+    if (not meta or meta.get('package') != pkg or android._int(meta.get('instance')) != android.instance_id(pkg)):
+        raise QuestError(f"{label} is open on the Frame, but Frame Control has no matching install record for "
+                         'it. Close it, then import again to install it.')
+    have, new = meta.get('version_code'), checked['version_code']
+    if have is None or new is None or int(have) != int(new):
+        raise QuestError(f"{label} is open on the Frame with a different version (Frame: "
+                         f"{_version(meta.get('version'), have)}; Quest: {_version(checked['version'], new)}). "
+                         "Close it, then import again to install the Quest's version.")
+    return meta
+
+
+def _check_android_package(meta, code):
+    """The package Android itself has installed in the instance is this one, at this version."""
+    pkg = meta['package']
+    container = f"lepton-steamlaunch-{int(meta['instance'])}"
+    out = android.ssh(f"podman exec {container} /system/bin/sh -c 'dumpsys package {pkg}' 2>/dev/null || true",
+                      timeout=60)
+    found = re.search(r'\bversionCode=(\d+)', out)
+    if not found:
+        raise QuestError(f'Android in {container} does not have {pkg} installed')
+    if int(found.group(1)) != int(code):
+        raise QuestError(f'Android in {container} has {pkg} version code {found.group(1)}, not the '
+                         f"Quest's {code}")
+
+
+def _close(pkg):
+    """Stop the game and confirm its instance is gone: (closed, why not)."""
+    try:
+        android.stop(pkg)
+        for _ in range(6):
+            if not _running(pkg):
+                return True, None
+            _sleep(2)
+        return False, 'it is still running'
+    except android.FrameError as e:
+        return False, str(e) or type(e).__name__
+
+
+def _import(serial, app, data, work, report, allow_downgrade=False):
     pkg = app['package']
     obb_bytes = app['obb'] or 0
     data_bytes = (app['data'] or 0) if data else 0
@@ -439,9 +500,14 @@ def _import(serial, app, data, work, report):
     _check_space(work, space_needed(0, merged, obb_bytes, data_bytes), pkg)
     wants_data = app['obb'] is not None or bool(data and app['data'] is not None)
     if not _running(pkg):
-        # 2a. Install. The game is never started here: see import_game.
+        # 2a. Install. The game is never started here: see import_game. Checked and installed
+        # under the shared install lock, so nothing installs or removes it in between.
         report('Installing on the Frame', 60)
-        meta = android.install(str(base), splits=[str(p) for p in splits], source='Meta Quest (USB)')
+        with android._install_lock:
+            if _running(pkg):
+                raise QuestError(f'{label} was started on the Frame during the import. Close it, then import again.')
+            _check_downgrade(android.read_meta(pkg), checked, allow_downgrade)
+            meta = android.install(str(base), splits=[str(p) for p in splits], source='Meta Quest (USB)')
         report('Done', 100)
         message = f"Imported {meta['label']} from your Quest. It's in the Steam library."
         if wants_data:
@@ -451,12 +517,10 @@ def _import(serial, app, data, work, report):
                         "screen, then import it again here: Frame Control copies the data in and closes the game.")
         note = android.layer_note(meta)
         return {'message': ' '.join([message, *warnings, *([note] if note else [])]), 'app': meta, 'obb': [],
-                'files': 0, 'warnings': warnings, 'split': bool(splits), 'needs_game_data': wants_data}
-    # 2b. The game is open on the Frame: add its data, but never replace the APK under it.
-    meta = android.read_meta(pkg)
-    if not meta or meta.get('version') != checked['version']:
-        raise QuestError(f"{label} is open on the Frame{' with a different version' if meta else ''}. Close it, "
-                         'then import again to install this version.')
+                'files': 0, 'warnings': warnings, 'split': bool(splits), 'needs_game_data': wants_data,
+                'closed': None}
+    # 2b. The game is open on the Frame: add its data to exactly this install, never replacing it.
+    _check_target(pkg, android.read_meta(pkg), checked)  # early, before copying the data off the Quest
     if not wants_data:
         raise QuestError(f"{label} is already installed and open on the Frame, and has no game data to add. "
                          'Close it first to install it again.')
@@ -477,32 +541,44 @@ def _import(serial, app, data, work, report):
         (work / 'data').mkdir()
         _pull(serial, f'{DATA}/{pkg}', work / 'data')
         data_folder = work / 'data' / pkg if (work / 'data' / pkg).is_dir() else None
-    copied_obb, copied_files = [], 0
-    try:
-        report('Waiting for Android on the Frame', 70)
-        _wait_ready(meta)
-        if obb_files:
-            report('Copying game data (OBB) to the Frame', 80)
-            copied_obb = android.install_obb(pkg, [str(p) for p in obb_files])['obb']
-        if data_folder:
-            report('Copying app files to the Frame', 92)
-            copied_files = push_data(meta, data_folder)
-    except android.FrameError as e:
-        raise QuestError(f"Copying {meta['label']}'s game data failed: {e}. Start it again and import again "
-                         'to retry.') from e
-    finally:
+    copied_obb, copied_files, failure = [], 0, None
+    # The pulls can take a long time: check the target again, and hold the shared install
+    # lock (install, remove and install_obb take it too) until the game is closed.
+    with android._install_lock:
+        if not _running(pkg):
+            raise QuestError(f'{label} was closed on the Frame during the import. Start it, then import again.')
+        meta = _check_target(pkg, android.read_meta(pkg), checked)
         try:
-            android.stop(pkg)  # the next start reads the new data from the beginning
-        except android.FrameError:
-            pass
+            report('Waiting for Android on the Frame', 70)
+            _wait_ready(meta)
+            _check_android_package(meta, checked['version_code'])
+            if obb_files:
+                report('Copying game data (OBB) to the Frame', 80)
+                copied_obb = android.install_obb(pkg, [str(p) for p in obb_files])['obb']
+            if data_folder:
+                report('Copying app files to the Frame', 92)
+                copied_files = push_data(meta, data_folder)
+        except android.FrameError as e:
+            failure = e
+        report('Closing the game on the Frame', 97)
+        closed, why = _close(pkg)
+    if failure:
+        message = f"Copying {meta['label']}'s game data failed: {failure}."
+        message += (' The game was closed; start it and import again to retry.' if closed else
+                    f" Frame Control also couldn't close the game ({why}): close it from Steam, then start it "
+                    'and import again.')
+        raise QuestError(message) from failure
     report('Done', 100)
-    message = f"Added {meta['label']}'s game data from your Quest and closed it; start it again from the Steam library."
+    message = f"Added {meta['label']}'s game data from your Quest"
+    message += ('; the game is closed, start it again from the Steam library.' if closed else
+                f", but Frame Control couldn't close the game ({why}). Close it from Steam before playing, so it "
+                'starts with the new data.')
     if copied_obb:
         message += f' Added {len(copied_obb)} OBB file{"s" if len(copied_obb) != 1 else ""}.'
     if copied_files:
         message += f' Copied {copied_files} app file{"s" if copied_files != 1 else ""}.'
     return {'message': ' '.join([message, *warnings]), 'app': meta, 'obb': copied_obb, 'files': copied_files,
-            'warnings': warnings, 'split': bool(splits), 'needs_game_data': False}
+            'warnings': warnings, 'split': bool(splits), 'needs_game_data': False, 'closed': closed}
 
 
 def main():
@@ -516,8 +592,8 @@ def main():
         elif cmd == 'import':
             names = [a for a in args if not a.startswith('--') and a != serial]
             if len(names) != 1:
-                raise QuestError('usage: import PACKAGE [--serial SERIAL] [--data]')
-            r = import_game(names[0], serial, data='--data' in args,
+                raise QuestError('usage: import PACKAGE [--serial SERIAL] [--data] [--allow-downgrade]')
+            r = import_game(names[0], serial, data='--data' in args, allow_downgrade='--allow-downgrade' in args,
                             progress=lambda stage, percent=None: print(f'{percent:>3}% {stage}' if percent is not None
                                                                        else stage, file=sys.stderr))
         else:

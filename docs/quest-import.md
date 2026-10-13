@@ -94,16 +94,25 @@ which returns a background job (`/api/job`) with a stage and percentage.
 5. If the game isn't open on the Frame: installs it through the normal APK
    install (`frame_android.install`: VR detection, the launcher fix, the
    OpenXR compatibility layer, artwork), and says whether it has game data
-   to add.
-6. If the game is open on the Frame (the second import): refuses if the
-   installed version differs from the Quest's (an open game is never
+   to add. An older Quest copy never replaces a newer version on the Frame
+   (compared by version code, which installs now record) unless you tick
+   **Allow replacing a newer version** (`--allow-downgrade`,
+   `"allowDowngrade": true`).
+6. If the game is open on the Frame (the second import): refuses unless
+   Frame Control's install record is for this package, in this package's own
+   instance, at the Quest's exact version code (an open game is never
    replaced), otherwise copies the OBB folder (and `Android/data` if ticked)
    from the Quest, waits for Android to have finished booting, copies standard
    `main|patch.<version>.<package>.obb` files with the existing OBB helper
-   (checked by SHA-256 inside Android, [sidequest.md](sidequest.md#obb-files)),
+   (checked by SHA-256 inside Android, [sidequest.md](sidequest.md#obb-files))
+   once Android's own `dumpsys package` in that instance shows the same
+   package at the same version code,
    streams the `Android/data` files in as a tar written straight into the SSH
-   transfer, then closes the game so its next start reads them. Other files in
-   the OBB folder are listed as not copied.
+   transfer, then closes the game so its next start reads them, and checks
+   its instance has stopped; if it hasn't, the result says so. Everything
+   from the second check of the install record (after the pulls, which can
+   be long) to closing the game holds the same lock as installs and removals.
+   Other files in the OBB folder are listed as not copied.
 7. Deletes the cache folder, whether the import worked or not. A folder left
    by a crash is removed by a later import after six hours.
 
@@ -125,8 +134,11 @@ the Frame: splits with resources (screen density or language), code
 libraries (`<service>`, `<uses-library>`...), feature splits, and splits of
 another package. The merged files are held in memory while the APK is
 repacked and signed (as for every patched APK), so a merge adds at most
-512 MB per file and 1 GB in all, checked from the headers and again while
-reading, with each file's checksum. A merged, re-signed APK can't update a
+512 MB per file and 1 GB in all. Each file is read from its raw bytes: a
+stored file must be exactly its declared size, a compressed one must end
+exactly there, and its checksum must match, so a header that understates the
+size can't truncate it or fill memory. A resource table counts as empty only
+if it defines nothing at all (styles and other complex entries included). A merged, re-signed APK can't update a
 copy signed by the publisher.
 
 ## What won't run, and why

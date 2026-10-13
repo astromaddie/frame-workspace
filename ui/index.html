@@ -956,6 +956,7 @@
           <button class="small" id="questScan" title="Look for a Meta Quest plugged into this computer by USB">Look for my Quest</button></div>
         <div class="sub" id="questState" role="status" aria-live="polite">Plug your Quest into this computer by USB, put it on, then Look for my Quest.</div>
         <label class="sub" style="display:block;margin-top:8px"><input type="checkbox" id="questData"> Also copy each game's files in Android/data (some games keep saves there)</label>
+        <label class="sub" style="display:block;margin-top:4px"><input type="checkbox" id="questOlder"> Allow replacing a newer version on the Frame with the Quest's older one</label>
         <progress id="questProgress" max="100" hidden aria-label="Import progress" style="width:100%;margin-top:8px"></progress>
         <div class="list" id="questApps" style="margin-top:8px"></div>
         <div class="hint">Copies games you own from your own Quest (developer mode on) to the Frame. A game with
@@ -3370,7 +3371,7 @@ $("questApps").addEventListener("click", e => {
   const bar = $("questProgress");
   bar.hidden = false; bar.value = 0;
   runJob(`Import ${pkg} from Quest`, key,
-         () => api("/api/quest", { action: "import", package: pkg, serial: quest.serial, data: $("questData").checked }),
+         () => api("/api/quest", { action: "import", package: pkg, serial: quest.serial, data: $("questData").checked, allowDowngrade: $("questOlder").checked }),
          j => { if (j.stage) $("questState").textContent = `${pkg}: ${j.stage}`; if (j.percent != null) bar.value = j.percent; })
     .then(r => { bar.hidden = true; if (r && r.app) { $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
                   else { b.disabled = false; $("questState").textContent = `${pkg} wasn't imported; the reason is in the message log below.`; } });

@@ -135,7 +135,9 @@ def check_installable(info):
                          "(or arm64, or universal) and install that instead")
 
 
-_install_lock = threading.Lock()  # installs are rare; one at a time avoids every race
+# Installs are rare; one at a time avoids every race. Reentrant so a caller (a Quest import's
+# final checks and data copy) can hold it around install_obb and install, which take it too.
+_install_lock = threading.RLock()
 
 
 def _copy(src, dest, executable=False, timeout=600):
@@ -230,7 +232,7 @@ def split_entries(base, splits):
                         continue
                     if entry == 'resources.arsc':
                         # A config split for native code may carry an empty table; any resource needs merging.
-                        if frame_apk.Resources(frame_apk._read(z, entry, frame_apk.MAX_ARSC)).entries:
+                        if not resources_empty(frame_apk._read(z, entry, frame_apk.MAX_ARSC)):
                             raise FrameError(f'{label} holds screen-density or language resources; Frame Control '
                                              'can only merge splits that add native libraries or assets')
                         continue
@@ -261,6 +263,89 @@ def split_entries(base, splits):
         raise FrameError(f'could not read the split APKs: {e}') from e
 
 
+def resources_empty(data):
+    """True only for a resource table that provably defines nothing: every type chunk's
+    entries absent. Bags (styles, plurals) count, and anything not understood counts too."""
+    def covered(start, end):
+        chunks, at = [], start
+        for chunk in frame_apk._chunks(data, start, end):
+            if chunk[2] != at:
+                return None
+            chunks.append(chunk)
+            at = chunk[2] + chunk[3]
+        return chunks if at == end else None
+
+    try:
+        if len(data) < 12 or struct.unpack_from('<H', data, 0)[0] != 0x0002:
+            return False
+        top = covered(struct.unpack_from('<H', data, 2)[0], len(data))
+        if top is None:
+            return False
+        for ctype, _, off, size in top:
+            if ctype == 0x0001:  # the global string pool
+                continue
+            if ctype != 0x0200:
+                return False
+            inner = covered(off + struct.unpack_from('<H', data, off + 2)[0], off + size)
+            if inner is None:
+                return False
+            for kind, hs, t, _ in inner:
+                if kind in (0x0001, 0x0202):  # type and key names, type specs
+                    continue
+                if kind != 0x0201:
+                    return False
+                flags, count = struct.unpack_from('<xBxxI', data, t + 8)
+                if flags & 0x01:  # sparse: only present entries are listed
+                    if count:
+                        return False
+                elif flags & 0x02:
+                    if any(o != 0xffff for o in struct.unpack_from(f'<{count}H', data, t + hs)):
+                        return False
+                elif any(o != 0xffffffff for o in struct.unpack_from(f'<{count}I', data, t + hs)):
+                    return False
+        return True
+    except (struct.error, IndexError):
+        return False
+
+
+def read_member(path, member):
+    """A split member's bytes, read from its raw compressed data with output bounded by its
+    declared size: a stored member must be exactly that size, a deflated stream must end
+    exactly there, and the checksum must match. Never trusts zipfile to stop early."""
+    with zipfile.ZipFile(path) as z:
+        info = z.getinfo(member)
+    name, size = f'{member} in {os.path.basename(path)}', info.file_size
+    if info.flag_bits & 1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+        raise FrameError(f'{name} is encrypted or uses a compression Android does not')
+    if size > MAX_SPLIT_MEMBER or info.compress_size > MAX_SPLIT_MEMBER:
+        raise FrameError(f'{name} is larger than Frame Control merges ({MAX_SPLIT_MEMBER // 1024**2} MB)')
+    with open(path, 'rb') as raw:
+        raw.seek(info.header_offset)
+        header = raw.read(30)
+        if len(header) != 30 or header[:4] != b'PK\3\4':
+            raise FrameError(f'{name}: invalid local ZIP header')
+        nl, el = struct.unpack_from('<HH', header, 26)
+        raw.seek(nl + el, 1)
+        compressed = raw.read(info.compress_size)
+    if len(compressed) != info.compress_size:
+        raise FrameError(f'{name} is truncated')
+    if info.compress_type == zipfile.ZIP_STORED:
+        if info.compress_size != size:
+            raise FrameError(f'{name} does not match its header (stored {info.compress_size} bytes, says {size})')
+        data = compressed
+    else:
+        inflate = zlib.decompressobj(-15)
+        try:
+            data = inflate.decompress(compressed, size + 1)
+        except zlib.error as e:
+            raise FrameError(f'{name} is corrupt: {e}') from e
+        if len(data) != size or not inflate.eof or inflate.unconsumed_tail:
+            raise FrameError(f'{name} does not match its header (it holds more or less than {size} bytes)')
+    if zlib.crc32(data) != info.CRC:
+        raise FrameError(f'{name} does not match its checksum')
+    return data
+
+
 def merge_splits(base, splits, dst):
     """One installable APK from a base APK and its splits (see split_entries), re-signed
     with Frame Control's key, without the base's isSplitRequired flag."""
@@ -268,12 +353,7 @@ def merge_splits(base, splits, dst):
     add, total = {}, 0
     try:
         for entry, (path, member, size) in plan.items():
-            with zipfile.ZipFile(path) as z, z.open(member) as f:
-                # Never more than the header promised, whatever the compressed stream holds;
-                # a header that understates the size then fails the checksum.
-                crc, data = z.getinfo(member).CRC, f.read(size + 1)
-            if len(data) != size or zlib.crc32(data) != crc:
-                raise FrameError(f'{member} in {os.path.basename(path)} does not match its header')
+            data = read_member(path, member)
             total += len(data)
             if total > MAX_SPLIT_TOTAL:
                 raise FrameError(f'the split APKs add more than {MAX_SPLIT_TOTAL // 1024**3} GB')
@@ -392,6 +472,7 @@ def _install(apk_path, info, pkg, flatscreen, name, source, artwork=None):
                                               'source': source or os.path.basename(apk_path)})
         presentation['warnings'] = art_warnings + presentation.get('warnings', [])
         meta = {'package': pkg, 'label': name or info['label'], 'version': info['version'],
+                'version_code': info.get('version_code'),
                 'instance': iid, 'shortcut': shortcut, 'game_id': game_id(shortcut),
                 'vr': info.get('vr', False), 'vr_issues': info.get('vr_issues', []),
                 'launchable': info.get('launchable', False), 'patched': info.get('patched', []),
