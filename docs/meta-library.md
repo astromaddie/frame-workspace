@@ -103,7 +103,10 @@ test return a background job (`/api/job`).
 5. Game data: the app's OBB (saved as Meta names it when that is a standard
    `main|patch.<version>.<package>.obb` name, otherwise as
    `main.<version code>.<package>.obb`) and any *required* asset files with
-   standard OBB names, at most 8 GB each and 16 GB in all, copied into the
+   standard OBB names, at most 8 GB each. One install downloads at most 16 GB
+   in all, APK included, counted as the bytes arrive (so files whose size Meta
+   doesn't give count too); a file that goes past it is stopped and removed.
+   The data is copied into the
    running game by the same two-step helper Import from my Quest uses. Other
    asset files (DLC packs, `.pak` files a game fetches through Meta's
    Platform SDK) aren't downloaded; the result lists them.
@@ -118,7 +121,7 @@ log (main, system and crash buffers) say. It recognises:
 
 | In the log | Cause given |
 |---|---|
-| `ovr_Entitlement…`, "entitlement check failed", "not entitled" | Meta's licence check failed |
+| "entitlement check failed", "not entitled", `ovr_Entitlement…` or `IsUserEntitledToApplication` reporting a failure (a call that passes doesn't count) | Meta's licence check failed |
 | Platform SDK initialisation errors | Meta's Platform SDK couldn't start |
 | `Failed to launch SystemActivities`, "device not supported" | The game checks it is on a Meta Quest |
 | `vrapi_… was called before…`, VrApi load errors | Legacy VrApi |
@@ -131,17 +134,25 @@ log (main, system and crash buffers) say. It recognises:
 | `ANR in …`, "Input dispatching timed out" | Not responding |
 | `XR_SESSION_STATE_SYNCHRONIZED/VISIBLE/FOCUSED`, `xrEndFrame` | The VR scene started |
 
-The outcome is one of **runs**, **runs with issues**, **quits** (closed by
-itself), **crashes**, **hangs** (open, but not responding or stuck before its
-VR scene; Frame Control then closes it) or **didn't start** (its instance
-never came up). Signatures are written for Frame Control from the research in
-[vr-apks.md](vr-apks.md); they are not copied from other tools.
+The outcome is one of **runs** or **runs with issues** (its VR scene
+started), **quits** (closed by itself), **crashes**, **hangs** (Android
+reported it not responding; Frame Control then closes it, and says so if it
+couldn't), **didn't start** (its instance never came up), or **no clear
+result**: it stayed open but its log never showed its VR scene starting. That
+can be a game still loading, or one stuck after a failed check; Frame Control
+can't tell, so it doesn't record it. A game already open is closed first, so
+the test starts clean; if it can't be closed, nothing is tested. Signatures
+are written for Frame Control from the research in [vr-apks.md](vr-apks.md);
+they are not copied from other tools.
 
 The result goes through the same path as **Test** and **Report**
 (`frame_catalog.add_report`): `via` probe, source `meta-store`, the result
 (`runs`, `crashes` or `instance_failed`, the values the database accepts), and
-notes with the outcome, the cause, the matched signals and the version code.
-Nothing else: no token, account name, file or log. It is always kept on this
+notes with the outcome, the cause, the names of the matched signals and the
+version code, all fixed texts. Nothing else: no token, account name, file or
+log text. The page may show a short name from the log next to the cause (an
+OpenXR extension, a library, an exception class or a signal), cleaned of the
+token first; reports never carry it. It is always kept on this
 computer; it reaches the shared database only if **Share compatibility
 results** is on in Privacy settings, as for every report. The panel offers to
 turn that on.
@@ -155,12 +166,22 @@ turn that on.
   Frame.
 - Sent only to `graph.oculus.com` (in the POST body) and
   `securecdn.oculus.com` (in the download address, which is how that server
-  takes it), over HTTPS. Downloads that redirect elsewhere (Meta's CDN) go
-  without the token, and only to HTTPS addresses on port 443 whose addresses
-  are all public. API answers that redirect are refused.
+  takes it), over HTTPS. A download that redirects elsewhere (Meta's CDN) is
+  followed only to a plain HTTPS address on port 443 that doesn't carry the
+  token in any form, anywhere (host, path, query or fragment; literal,
+  recased, percent-encoded, or 8+ characters of it), nor an `access_token`
+  parameter. That is checked before any lookup or connection, and a redirect
+  that fails it is refused. API answers that redirect are refused.
+- Every connection goes to an address checked to be public (an allow-list:
+  no private, local, shared, reserved, multicast, NAT64, 6to4 or Teredo
+  addresses), and to exactly that address, with TLS checked for the host
+  name, so a second DNS answer can't swap in another. System proxy settings
+  aren't used. This is the same design as the itch.io purchases branch.
 - Never in logs, error messages, API answers, the page or reports: every
-  message is cleaned first, matching the token in any letter case and
-  percent-encoded, and any other token-shaped value, before it is shortened.
+  message is cleaned first, matching the token (or any start of it of 8+
+  characters) in any letter case, with each character written literally or
+  percent-encoded in either case, and any other token-shaped value, before it
+  is shortened.
 - Disconnect deletes the file and the library Frame Control holds in memory,
   and stops a download under way. A connect still being checked when you
   disconnect is not saved.
@@ -187,7 +208,8 @@ answers carry the fields above in the shapes the libraries' models describe
 (the stored queries are opaque); that the list isn't paginated (none of the
 tools page it); that `ANDROID_6DOF` marks Quest apps; where downloads redirect
 to (the tools let their HTTP client follow redirects; Frame Control follows
-up to five, to any public HTTPS host, without the token); and a `sha256`
+up to five, to any public HTTPS host, and refuses one carrying the token); and
+a `sha256`
 field (none was seen, so in practice only sizes are checked). The log
 signatures for the test are inferred from the compatibility research, not
 from a real Frame.
@@ -196,16 +218,23 @@ from a real Frame.
 
 **Verified locally** with a fake Meta and a fake Frame (`tests/test_meta.py`):
 token checks; storage owner-only through a temporary file; redaction (the
-stored token in any case and percent-encoded once or twice, other token-shaped
-values, and redaction before cutting); HTTPS-only, public-address-only hosts;
-the token dropped on redirects away from Meta's hosts and never sent to the
+stored token recased and percent-encoded in either case, starts of it, other
+token-shaped values, and redaction before cutting); HTTPS-only URLs; the
+public-address allow-list, resolving once and connecting only to a checked
+address within one deadline; redirects off Meta's hosts refused when they
+carry the token anywhere, before any lookup; the token never sent to the
 CDN; GraphQL redirects refused; disconnect beating a connect in flight and
 stopping a download; library parsing (Quest apps only, nothing expired or
 inactive, details from the binary query); downloads with an OBB; size, length
-and checksum limits with nothing left behind; refusing apps not in the
+and checksum limits and the whole-install budget with nothing left behind;
+refusing apps not in the
 library; the handoff to Import from my Quest's checks, install and data step;
 the licence-check warning instead of a refusal; test outcomes from log
-fixtures; reports carrying no token or file names.
+fixtures (a passing licence check isn't a failure; no VR scene is no clear
+result, not recorded); closing before a test and saying when a close failed;
+reports carrying only fixed texts, no token, log text or file names. The
+real TLS connection code is the same as the itch.io branch's and is exercised
+here only with a fake connection.
 
 **Not verified:** a real Meta token and Meta's real answers (none was
 available; nothing was sent to Meta), real downloads and their redirects,

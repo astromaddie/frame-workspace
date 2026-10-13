@@ -19,7 +19,7 @@ Rules this module keeps:
 - Only games the account owns: a download must be an app in the account's own library.
 - No licence-check bypass of any kind: games are installed as Meta ships them.
 - The token goes only to TOKEN_HOSTS over HTTPS, never into logs, errors, API answers,
-  the page or reports (redact()); a redirect anywhere else drops it.
+  the page or reports (redact()); a redirect elsewhere carrying it is refused.
 - Game files stay in the local install cache and are deleted after each install.
 
 Python stdlib only. CLI: python3 ui/frame_meta.py
@@ -28,6 +28,7 @@ Python stdlib only. CLI: python3 ui/frame_meta.py
 """
 import concurrent.futures
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -36,13 +37,12 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import sys
 import tempfile
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 import zipfile
 
 import frame_android as android
@@ -52,7 +52,7 @@ import frame_quest as quest
 GRAPH_URL = 'https://graph.oculus.com/graphql'
 DOWNLOAD_URL = 'https://securecdn.oculus.com/binaries/download/'
 # The only hosts the token is ever sent to. Downloads may redirect elsewhere (a CDN): the
-# token is dropped from the request before it goes there.
+# token never goes there: a redirect carrying it in any form is refused (next_hop).
 TOKEN_HOSTS = frozenset({'graph.oculus.com', 'securecdn.oculus.com'})
 # Stored queries ("doc_id") as the public tools use them (docs/meta-library.md).
 DOC_VIEWER = '4149322231793299'        # data.viewer.user {id, alias}
@@ -105,27 +105,47 @@ _GENERIC = [
     re.compile(r'(?i)(access[_%5f-]*token["\']?\s*(?:=|:|%3d)\s*["\']?)[^&\s"\'<>,;]+'),
     re.compile(r'(?i)\b(bearer|oauth)\s+[^\s"\'<>,;]+'),
     # Upper-case prefix and no dots, so package names (com.oculus...) are left alone; the
-    # stored token itself is matched in any case by _variants.
+    # stored token itself is matched in any case by _clean.
     re.compile(r'\b(?:OC|FRL)(?=[A-Za-z0-9%|:_\-]*\d)[A-Za-z0-9%|:_\-]{16,}'),
 ]
 
 
-def _variants(token):
-    """A pattern for token as written, in any letter case, and percent-encoded (once or
-    twice, in either case) character by character."""
-    parts = []
-    for ch in token:
-        code = ord(ch)
-        alts = [re.escape(ch)]
-        if code < 256:
-            alts += [f'%{code:02x}', f'%25{code:02x}']
-        if ch == ' ':
-            alts.append(r'\+')
-        parts.append('(?:' + '|'.join(alts) + ')')
-    return re.compile(''.join(parts), re.I)
+def _clean(message, token):
+    """message without the token, or any start of it (8+ characters, as truncation leaves), in
+    any letter case, with any of its characters written literally or percent-encoded (%4B or
+    %4b). Mirrors _itch_account._clean on feat/itch-purchases, so the two can be unified."""
+    if not token:
+        return message
+    # Each character: itself, or the percent-encoding of either of its letter cases.
+    tokens = ['(?:%s)' % '|'.join([re.escape(c)] + ['%%%02x' % ord(v) for v in sorted({c.lower(), c.upper()})])
+              for c in token]
+    start, rest = re.compile(''.join(tokens[:8]), re.I), [re.compile(t, re.I) for t in tokens[8:]]
+    out, pos = [], 0
+    while True:
+        found = start.search(message, pos)
+        if not found:
+            break
+        end = found.end()
+        for t in rest:  # as much more of the token as follows
+            more = t.match(message, end)
+            if not more:
+                break
+            end = more.end()
+        out += [message[pos:found.start()], REDACTED]
+        pos = end
+    return ''.join(out) + message[pos:]
 
 
-_pattern_cache = {}
+def carries_token(url, token):
+    """True if url holds the token (or 8+ characters of its start), however cased or encoded,
+    anywhere (host, path, query or fragment), or an access_token parameter of any value.
+    Mirrors _itch_account._carries_key on feat/itch-purchases."""
+    for form in (url, urllib.parse.unquote(url), urllib.parse.unquote_plus(url)):
+        if _clean(form, token) != form:
+            return True
+    names = {name.lower() for name, _ in urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query,
+                                                                  keep_blank_values=True)}
+    return 'access_token' in names
 
 
 def redact(text, limit=None, token=None):
@@ -133,12 +153,7 @@ def redact(text, limit=None, token=None):
     characters. Redacting before cutting means a cut can't leave part of a token behind."""
     text = '' if text is None else str(text)
     for t in {t for t in (token, _stored_token_quiet()) if t}:
-        pattern = _pattern_cache.get(t)
-        if pattern is None:
-            if len(_pattern_cache) > 4:
-                _pattern_cache.clear()  # only ever the current tokens
-            pattern = _pattern_cache[t] = _variants(t)
-        text = pattern.sub(REDACTED, text)
+        text = _clean(text, t)
     for pattern in _GENERIC:
         text = pattern.sub(lambda m: (m.group(1) + REDACTED) if m.groups() else REDACTED, text)
     if limit is not None and len(text) > limit:
@@ -265,83 +280,176 @@ def disconnect():
             os.remove(str(account_path()))
         except FileNotFoundError:
             pass
-    _pattern_cache.clear()
     return status()
 
 
 # ---- HTTPS to Meta ----------------------------------------------------------------
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Redirects are followed by hand (_follow), so the token never goes along by accident."""
-    def redirect_request(self, *args, **kwargs):
-        return None
+# Connections: every address a host resolves to must be public (public_address), and the
+# connection is made to exactly one of those checked addresses, with TLS verified for the
+# host name, so a second DNS answer can't swap in another (no urllib, so no environment
+# proxies either). This mirrors _web.public_address / resolve_public / _public_connection
+# on feat/itch-purchases, so the two can be unified when both merge.
+
+# IPv6 is an allow-list: only global unicast (2000::/3), which rules out everything else at
+# once (loopback, unspecified, mapped/compatible IPv4, NAT64 64:ff9b::, site-local fec0::,
+# unique-local fc00::, link-local, multicast, reserved). Inside it, these special blocks are
+# refused too: 6to4 and Teredo carry IPv4 that may be private; the rest aren't the internet.
+_GLOBAL6 = ipaddress.ip_network('2000::/3')
+_SPECIAL6 = tuple(ipaddress.ip_network(n) for n in (
+    '2001::/32',      # Teredo
+    '2001:2::/48',    # benchmarking
+    '2001:10::/28',   # ORCHID
+    '2001:20::/28',   # ORCHIDv2
+    '2001:db8::/32',  # documentation
+    '2002::/16',      # 6to4
+    '3fff::/20'))     # documentation (2024)
+# IPv4 blocks that are never the public internet, listed in full rather than trusting
+# is_global (Python 3.9 calls 192.0.0.8, .11 and .255 global).
+_SPECIAL4 = tuple(ipaddress.ip_network(n) for n in (
+    '0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12',
+    '192.0.0.0/24', '192.0.2.0/24', '192.88.99.0/24', '192.168.0.0/16', '198.18.0.0/15',
+    '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '255.255.255.255/32'))
 
 
-_opener = urllib.request.build_opener(_NoRedirect)
+def public_address(ip):
+    """True for an address on the public internet: never loopback, private, link-local,
+    site-local, shared (CGNAT), reserved, unspecified or multicast, nor an IPv6 wrapper
+    around IPv4. Python 3.9's is_global alone lets several of these through."""
+    try:
+        a = ipaddress.ip_address(ip.split('%', 1)[0])
+    except ValueError:
+        return False
+    if a.version == 6 and (a not in _GLOBAL6 or any(a in n for n in _SPECIAL6)):
+        return False
+    if a.version == 4 and any(a in n for n in _SPECIAL4):
+        return False
+    return a.is_global and not (a.is_reserved or a.is_private or a.is_loopback or a.is_link_local
+                                or a.is_multicast or a.is_unspecified)
+
+
+def resolve_public(host):
+    """host's addresses for port 443, if every address it has is public; else MetaError."""
+    try:
+        addresses = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        raise MetaError(f"Couldn't find {host}; check the internet connection") from None
+    if not addresses or not all(public_address(a[4][0]) for a in addresses):
+        raise MetaError(f'{host} is on a private or local network address; not connecting')
+    found = []
+    for a in addresses:
+        if a[4][:2] not in found:
+            found.append(a[4][:2])
+    return found
+
+
+CONNECT_BUDGET = 20  # seconds for connecting, all addresses and TLS handshakes together
+
+
+def _public_connection(host, timeout, budget=CONNECT_BUDGET):
+    """A verified TLS connection to host:443, made to an address checked to be public.
+
+    Each checked address is tried in turn, all within one deadline (budget, or timeout if
+    shorter) covering both connecting and the handshake. The one connected to is always one
+    that was checked, so a second lookup can't swap in another. timeout is for reads after."""
+    deadline = time.monotonic() + min(budget, timeout)
+    error = None
+    for address in resolve_public(host):
+        if time.monotonic() >= deadline:
+            break
+        try:
+            return _connect(host, address, timeout, deadline)
+        except OSError as e:  # unreachable, refused, or its TLS failed: try the next one
+            error = e
+    raise error or socket.timeout('Timed out connecting to ' + host)
+
+
+def _connect(host, address, timeout, deadline):
+    """TLS to exactly address, verified as host, connected and handshaken before deadline
+    (a time.monotonic() value); reads then get timeout seconds each."""
+    def remaining():
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise socket.timeout('Timed out connecting to ' + host)
+        return left
+    sock = socket.create_connection(address, timeout=remaining())
+    try:
+        sock.settimeout(remaining())
+        sock = ssl.create_default_context().wrap_socket(sock, server_hostname=host,
+                                                        do_handshake_on_connect=False)
+        sock.settimeout(remaining())
+        sock.do_handshake()
+        sock.settimeout(timeout)
+    except BaseException:
+        sock.close()
+        raise
+    conn = http.client.HTTPConnection(host, 443, timeout=timeout)
+    conn.sock = sock
+    return conn
+
+
+class _Answer:
+    """A response that closes its connection with it."""
+
+    def __init__(self, conn, response):
+        self.conn, self.response = conn, response
+
+    def read(self, n=-1):
+        return self.response.read(n)
+
+    def close(self):
+        try:
+            self.response.close()
+        finally:
+            self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 def _send(url, data=None, headers=None, timeout=TIMEOUT):
-    """One HTTPS request, redirects not followed: (status, headers, readable body). The
-    tests replace this with a fake Meta."""
-    req = urllib.request.Request(url, data=data, headers=headers or {},
-                                 method='POST' if data is not None else 'GET')
+    """One HTTPS request to a checked public address, redirects not followed: (status,
+    headers, readable body). The tests replace this with a fake Meta."""
+    p = urllib.parse.urlsplit(check_url(url))
+    conn = _public_connection(p.hostname, timeout)
     try:
-        r = _opener.open(req, timeout=timeout)
-        return r.status, r.headers, r
-    except urllib.error.HTTPError as e:
-        return e.code, e.headers, e
-
-
-def _addresses(host):
-    return {info[4][0] for info in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)}
+        conn.request('POST' if data is not None else 'GET', (p.path or '/') + ('?' + p.query if p.query else ''),
+                     body=data, headers=headers or {})
+        r = conn.getresponse()
+    except BaseException:
+        conn.close()
+        raise
+    return r.status, r.headers, _Answer(conn, r)
 
 
 def check_url(url):
-    """url if it is HTTPS on port 443, without credentials, to a host whose addresses are all
-    public; else MetaError (never echoing the URL, which can hold the token)."""
+    """url if it is HTTPS on port 443 without credentials; else MetaError (never echoing the
+    URL, which can hold the token). No lookup: addresses are checked when connecting."""
     try:
         p = urllib.parse.urlsplit(url)
         port = p.port
     except (ValueError, TypeError):
         raise MetaError("Meta's server gave an invalid address") from None
-    host = (p.hostname or '').lower()
-    if p.scheme != 'https' or p.username or p.password or port not in (None, 443) or not host:
+    if p.scheme != 'https' or p.username or p.password or port not in (None, 443) or not p.hostname:
         raise MetaError("Meta's server sent the download somewhere that isn't plain HTTPS; not following it")
-    try:
-        addresses = _addresses(host)
-    except OSError:
-        raise MetaError(f"Couldn't look up {host}; check the internet connection") from None
-    for a in addresses:
-        try:
-            ip = ipaddress.ip_address(a.split('%', 1)[0])
-        except ValueError:
-            raise MetaError(f'{host} has an address Frame Control can\'t check; not connecting') from None
-        if not ip.is_global:
-            raise MetaError(f'{host} points at a private or local address; not connecting')
     return url
 
 
-def strip_token(url):
-    """url without any access_token query parameter (any letter case)."""
-    p = urllib.parse.urlsplit(url)
-    if not p.query:
-        return url
-    kept = [(k, v) for k, v in urllib.parse.parse_qsl(p.query, keep_blank_values=True)
-            if k.lower() != 'access_token']
-    return urllib.parse.urlunsplit(p._replace(query=urllib.parse.urlencode(kept)))
-
-
-def next_hop(current, location):
-    """Where a redirect from current to location goes: absolute, checked, and without the
-    token unless it stays on a TOKEN_HOSTS host."""
-    url = urllib.parse.urljoin(current, location or '')
-    url = check_url(url)
-    if (urllib.parse.urlsplit(url).hostname or '').lower() not in TOKEN_HOSTS:
-        url = strip_token(url)
+def next_hop(current, location, token):
+    """Where a redirect from current to location goes, checked before any lookup or
+    connection: plain HTTPS, and off Meta's own hosts never carrying the token in any form,
+    anywhere in the address (host, path, query or fragment). Refused, not rewritten."""
+    url = check_url(urllib.parse.urljoin(current, location or ''))
+    if (urllib.parse.urlsplit(url).hostname or '').lower() not in TOKEN_HOSTS and carries_token(url, token):
+        raise MetaError("Meta's server pointed the download at an address carrying your token; refused, so "
+                        'the token is not sent anywhere but Meta')
     return url
 
 
-def _follow(url, headers):
+def _follow(url, headers, token):
     """GET url, following up to MAX_REDIRECTS redirects through next_hop. Returns
     (status, headers, body) of the final answer."""
     check_url(url)
@@ -352,7 +460,7 @@ def _follow(url, headers):
             body.close()
             if not location:
                 raise MetaError("Meta's server redirected the download without saying where")
-            url = next_hop(url, location)
+            url = next_hop(url, location, token)
             continue
         return status, rheaders, body
     raise MetaError("Meta's server redirected the download too many times")
@@ -364,14 +472,13 @@ def graphql(token, doc_id, variables=None):
     body = urllib.parse.urlencode({'access_token': token, 'doc_id': doc_id,
                                    'variables': json.dumps(variables or {})}).encode()
     try:
-        check_url(GRAPH_URL)
         status, _, r = _send(GRAPH_URL, data=body, headers={
             'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json', 'User-Agent': UA})
         with r:
             raw = r.read(MAX_RESPONSE + 1)
     except MetaError:
         raise
-    except (urllib.error.URLError, OSError, ValueError) as e:
+    except (http.client.HTTPException, OSError, ValueError) as e:
         raise MetaError("Couldn't reach Meta's API: " + redact(getattr(e, 'reason', e), 200, token)) from None
     if len(raw) > MAX_RESPONSE:
         raise MetaError("Meta's API answer was too large")
@@ -601,21 +708,37 @@ def sweep_cache(now=None):
                 pass
 
 
-def fetch(file_id, dest, limit, token, generation, expected=None, sha256=None, progress=None):
-    """Download one file by id from Meta's download server into dest. Bounded by limit and
-    by the size Meta declared; checked against its SHA-256 when Meta gives one. Stops if the
-    account is disconnected meanwhile. Nothing is left behind on failure."""
-    if expected is not None and expected > limit:
+class Budget:
+    """The bytes one install (or CLI download) may still download, across all its files.
+    Counted from the bytes actually received, so files of unknown size count too."""
+
+    def __init__(self, total=None):
+        self.left = MAX_TOTAL if total is None else total
+
+    def take(self, n, name):
+        if n > self.left:
+            raise MetaError(f'{name} would take this install past the {MAX_TOTAL / 1024**3:.0f} GB Frame Control '
+                            'downloads for one game; download stopped and removed')
+        self.left -= n
+
+
+def fetch(file_id, dest, limit, token, generation, expected=None, sha256=None, progress=None, budget=None):
+    """Download one file by id from Meta's download server into dest. Bounded by limit, by
+    the size Meta declared and by budget (the whole install's bytes); checked against its
+    SHA-256 when Meta gives one. Stops if the account is disconnected meanwhile. Nothing is
+    left behind on failure."""
+    budget = budget if budget is not None else Budget()
+    if expected is not None and (expected > limit or expected > budget.left):
         raise MetaError(f'{dest.name} is {expected / 1024**3:.1f} GB, more than Frame Control downloads '
-                        f'({limit / 1024**3:.0f} GB)')
+                        f'({min(limit, budget.left) / 1024**3:.1f} GB left for this game)')
     url = DOWNLOAD_URL + '?' + urllib.parse.urlencode({'id': file_id, 'access_token': token})
     part = dest.with_name(dest.name + '.part')
     try:
         try:
-            status, headers, body = _follow(url, {'User-Agent': UA})
+            status, headers, body = _follow(url, {'User-Agent': UA}, token)
         except MetaError:
             raise
-        except (urllib.error.URLError, OSError, ValueError) as e:
+        except (http.client.HTTPException, OSError, ValueError) as e:
             raise MetaError(f"Couldn't download {dest.name} from Meta: " + redact(getattr(e, 'reason', e), 200, token)) from None
         with body:
             if status in (401, 403):
@@ -639,6 +762,7 @@ def fetch(file_id, dest, limit, token, generation, expected=None, sha256=None, p
                         raise MetaError(f'{dest.name} is larger than Meta said; download stopped')
                     if not _current(generation):
                         raise MetaError('The Meta account was disconnected; the download was stopped and removed.')
+                    budget.take(len(chunk), dest.name)
                     h.update(chunk)
                     f.write(chunk)
                     if progress:
@@ -694,11 +818,11 @@ def _bar(report, stage, start, span, total):
     return progress
 
 
-def download_apk(app, work, token, generation, report):
+def download_apk(app, work, token, generation, report, budget):
     report(f"Downloading {app['title']} from Meta", 5)
     got = fetch(app['binary_id'], work / 'base.apk', MAX_APK, token, generation, expected=app.get('size'),
                 sha256=app.get('sha256'), progress=_bar(report, f"Downloading {app['title']} from Meta", 5, 40,
-                                                        app.get('size')))
+                                                        app.get('size')), budget=budget)
     try:
         with zipfile.ZipFile(got['path']) as z:
             if 'AndroidManifest.xml' not in z.namelist():
@@ -708,20 +832,21 @@ def download_apk(app, work, token, generation, report):
     return Path(got['path'])
 
 
-def download_data(app, work, token, generation, report):
-    """The app's OBB files, in work/obb: ([paths], [names not copied])."""
+def download_data(app, work, token, generation, report, budget):
+    """The app's OBB files, in work/obb: ([paths], [names not copied]). Every byte counts
+    against budget as it arrives; a file that overflows it is removed."""
     plan, skipped = data_plan(app)
     folder = work / 'obb'
     folder.mkdir(exist_ok=True)
     paths, total = [], sum(f.get('size') or 0 for f, _ in plan)
-    if total > MAX_TOTAL:
+    if total > budget.left:
         raise MetaError(f"{app['title']}'s game data is {total / 1024**3:.1f} GB, more than Frame Control "
                         f"downloads ({MAX_TOTAL // 1024**3} GB)")
     for i, (f, name) in enumerate(plan):
         stage = f"Downloading {app['title']}'s game data ({i + 1} of {len(plan)})"
         report(stage, 50)
         got = fetch(f['id'], folder / name, MAX_DATA_FILE, token, generation, expected=f.get('size'),
-                    sha256=f.get('sha256'), progress=_bar(report, stage, 50, 15, f.get('size')))
+                    sha256=f.get('sha256'), progress=_bar(report, stage, 50, 15, f.get('size')), budget=budget)
         paths.append(got['path'])
     return paths, skipped
 
@@ -738,8 +863,9 @@ def download(app_id, progress=None):
     try:
         _check_space(work, (app.get('size') or 0) + sum(f.get('size') or 0 for f, _ in data_plan(app)[0]),
                      app['title'])
-        apk = download_apk(app, work, token, generation, report)
-        obb, skipped = download_data(app, work, token, generation, report)
+        budget = Budget()
+        apk = download_apk(app, work, token, generation, report, budget)
+        obb, skipped = download_data(app, work, token, generation, report, budget)
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
@@ -808,7 +934,8 @@ def _install(app, work, token, generation, report, test, allow_downgrade):
     apk_bytes = app.get('size') or 0
     # The APK, a merged or patched copy of it, and the OBB files.
     _check_space(work, 2 * apk_bytes + data_bytes, app['title'])
-    apk = download_apk(app, work, token, generation, report)
+    budget = Budget()
+    apk = download_apk(app, work, token, generation, report, budget)
     report('Checking it can run on the Frame', 46)
     checked = quest.inspect(pkg, str(apk))
     if app.get('version_code') is not None and checked['version_code'] not in (None, app['version_code']):
@@ -825,7 +952,7 @@ def _install(app, work, token, generation, report, test, allow_downgrade):
         if not plan:
             raise MetaError(f'{label} is already installed and open on the Frame, and has no game data to add. '
                             'Close it first to install it again.')
-        obb, _ = download_data(app, work, token, generation, report)
+        obb, _ = download_data(app, work, token, generation, report, budget)
         result = quest.add_game_data(pkg, checked, obb, None, report, warnings, source="Meta's download server")
         result.update(package=pkg, source='meta-store', version_code=checked['version_code'])
         return result
@@ -843,7 +970,7 @@ def _install(app, work, token, generation, report, test, allow_downgrade):
     needs_data = bool(plan)
     added = None
     if plan and test:
-        obb, _ = download_data(app, work, token, generation, report)
+        obb, _ = download_data(app, work, token, generation, report, budget)
         report(f'Starting {label} to add its game data', 68)
         android.launch(pkg)
         if not _wait_running(pkg):
@@ -868,115 +995,136 @@ def _install(app, work, token, generation, report, test, allow_downgrade):
 #
 # Signatures for common reasons a Quest game fails on the Frame (from the compatibility
 # research in docs/meta-library.md), written for Frame Control. Each is (key, pattern,
-# kind, plain-English cause). kind: 'blocker' explains a quit or a stall, 'issue' a game
-# that runs with something missing.
+# kind): 'blocker' explains a quit or a stall, 'issue' a game that runs with something
+# missing. Causes are fixed texts (CAUSES), never log text: reports carry only those. A
+# short excerpt (an extension, library, exception or signal name, matched by a strict
+# pattern) may be shown to the person, redacted before it is shortened, never reported.
 
 SIGNATURES = [
-    ('licence', re.compile(r'(?i)ovr_Entitlement|IsUserEntitledToApplication|entitlement (?:check )?(?:failed|error)|'
-                           r'not entitled|user is not entitled|failed to (?:verify|check) entitlement'),
-     'blocker', "Meta's licence check failed (it needs Meta's services, which the Frame doesn't have). "
-                "Frame Control won't remove the check."),
+    # Explicit failure evidence only: a game that merely calls the check (and passes) isn't one.
+    ('licence', re.compile(r'(?i)entitle\w*\s*(?:check\s*)?(?:has\s+)?(?:failed|failure|denied|rejected|error)|'
+                           r'\bnot entitled\b|failed to (?:verify|check|get) (?:the )?entitlement|'
+                           r'(?:ovr_Entitlement\w*|IsUserEntitledToApplication)\S*\s*(?:\(\)\s*)?'
+                           r'(?:failed|returned (?:an )?error|error|=\s*false|:\s*false)'), 'blocker'),
     ('platform', re.compile(r'(?i)ovr_Platform(?:Initialize)?\w*\s*(?:failed|error)|libovrplatform\w*\.so.*(?:not found|failed)|'
                             r'Failed to initialize (?:the )?(?:Oculus|Meta) Platform|Oculus Platform.*(?:failed|not initialized)'),
-     'blocker', "Meta's Platform SDK couldn't start (no Meta services on the Frame); online features, "
-                "and the licence check if the game enforces it, won't work."),
-    ('device', re.compile(r'(?i)Failed to launch SystemActivities|com\.oculus\.systemactivities|IsRunningOnSantaCruz|'
+     'blocker'),
+    ('device', re.compile(r'(?i)Failed to launch SystemActivities|IsRunningOnSantaCruz|'
                           r'(?:device|headset) (?:is )?not supported|unsupported (?:device|headset)|not an? (?:Oculus|Meta) (?:Quest|device)'),
-     'blocker', 'The game checks that it is on a Meta Quest and stops on the Frame.'),
+     'blocker'),
     ('vrapi', re.compile(r'(?i)vrapi_\w+ was called before|libvrapi\.so.*(?:not found|failed)|vrapi_Initialize\w*\s*(?:failed|error)'),
-     'blocker', "The game uses Meta's legacy VrApi, which the Frame doesn't have."),
-    ('extension', re.compile(r'XR_ERROR_EXTENSION_NOT_PRESENT'),
-     'blocker', 'The game asked for an OpenXR feature the Frame lacks{detail}.'),
-    ('xr-version', re.compile(r'XR_ERROR_API_VERSION_UNSUPPORTED'),
-     'blocker', 'The game asked for an OpenXR version the Frame\'s runtime refuses.'),
+     'blocker'),
+    ('extension', re.compile(r'XR_ERROR_EXTENSION_NOT_PRESENT'), 'blocker'),
+    ('xr-version', re.compile(r'XR_ERROR_API_VERSION_UNSUPPORTED'), 'blocker'),
     ('runtime', re.compile(r'XR_ERROR_RUNTIME_(?:UNAVAILABLE|FAILURE)|XR_ERROR_INITIALIZATION_FAILED|'
-                           r'(?i:xrCreateInstance\w*\s*(?:failed|returned -))'),
-     'blocker', "The game couldn't start an OpenXR session with the Frame's runtime."),
+                           r'(?i:xrCreateInstance\w*\s*(?:failed|returned -))'), 'blocker'),
     ('gpu', re.compile(r'(?i)VK_ERROR_DEVICE_LOST|DEVICE[ _]LOST|vkCreate\w+ failed|VK_ERROR_\w+|'
                        r'libgallium_dri\.so|zink.*(?:error|fail)|GL_INVALID_\w+|GL_OUT_OF_MEMORY|'
-                       r'shader (?:compil|link)\w* (?:failed|error)|failed to (?:compile|link) shader'),
-     'issue', 'Graphics errors (the Frame uses the Mesa Vulkan and GLES drivers, which are stricter than '
-              "the Quest's); it may draw wrongly or crash."),
-    ('clipboard', re.compile(r'ClipboardManager'),
-     'blocker', "The game needs Android's clipboard service, which Lepton doesn't have."),
-    ('android', re.compile(r'NoSuchMethodError|NoClassDefFoundError'),
-     'issue', 'The game called an Android feature Lepton (Android 11) lacks.'),
-    ('library', re.compile(r'UnsatisfiedLinkError|dlopen failed'),
-     'blocker', 'The game needs a library the Frame doesn\'t have{detail}.'),
+                       r'shader (?:compil|link)\w* (?:failed|error)|failed to (?:compile|link) shader'), 'issue'),
+    ('clipboard', re.compile(r'ClipboardManager'), 'blocker'),
+    ('android', re.compile(r'NoSuchMethodError|NoClassDefFoundError'), 'issue'),
+    ('library', re.compile(r'UnsatisfiedLinkError|dlopen failed'), 'blocker'),
 ]
+CAUSES = {
+    'licence': "Meta's licence check failed (it needs Meta's services, which the Frame doesn't have). "
+               "Frame Control won't remove the check.",
+    'platform': "Meta's Platform SDK couldn't start (no Meta services on the Frame); online features, and the "
+                'licence check if the game enforces it, won\'t work.',
+    'device': 'The game checks that it is on a Meta Quest and stops on the Frame.',
+    'vrapi': "The game uses Meta's legacy VrApi, which the Frame doesn't have.",
+    'extension': 'The game asked for an OpenXR feature the Frame lacks.',
+    'xr-version': "The game asked for an OpenXR version the Frame's runtime refuses.",
+    'runtime': "The game couldn't start an OpenXR session with the Frame's runtime.",
+    'gpu': "Graphics errors (the Frame uses the Mesa Vulkan and GLES drivers, which are stricter than the "
+           "Quest's); it may draw wrongly or crash.",
+    'clipboard': "The game needs Android's clipboard service, which Lepton doesn't have.",
+    'android': 'The game called an Android feature Lepton (Android 11) lacks.',
+    'library': "The game needs a library the Frame doesn't have.",
+    'not-started': f"Its Lepton instance didn't start within {START_TIMEOUT} s.",
+    'crash-java': 'It crashed (a Java exception).',
+    'crash-native': 'It crashed (a native crash signal).',
+    'crash': 'It crashed.',
+    'quit': 'It closed by itself without a recognisable error.',
+    'quit-no-log': 'It closed by itself, and its instance stopped before its log could be read.',
+    'not-responding': 'It stopped responding (Android reported it not responding).',
+    'no-session': "It stayed open, but its log didn't show its VR scene starting, so Frame Control can't tell "
+                  "whether it runs. This result isn't recorded.",
+}
 CRASH = re.compile(r'FATAL EXCEPTION|Fatal signal \d+|\bSIG(?:SEGV|ABRT|BUS|ILL)\b|>>> [\w.]+ <<<|Abort message:')
 HANG = re.compile(r'ANR in [\w.]+|Application Not Responding|Input dispatching timed out')
 # Signs the game got far enough to show its VR scene.
 SESSION = re.compile(r'XR_SESSION_STATE_(?:SYNCHRONIZED|VISIBLE|FOCUSED)|xrEndFrame|xrBeginSession|'
                      r'session state (?:changed )?(?:to )?(?:SYNCHRONIZED|VISIBLE|FOCUSED)', re.I)
 XR_STARTED = re.compile(r'FrameXrCompat.*created instance|xrCreateInstance', re.I)
+# The compatibility database's result for each outcome; None: not recorded at all.
 RESULTS = {'runs': 'runs', 'runs-with-issues': 'runs', 'quits': 'crashes', 'crashes': 'crashes',
-           'hangs': 'crashes', 'instance-failed': 'instance_failed'}
+           'hangs': 'crashes', 'instance-failed': 'instance_failed', 'inconclusive': None}
 OUTCOME_WORDS = {'runs': 'runs', 'runs-with-issues': 'runs, with issues', 'quits': 'quit',
-                 'crashes': 'crashed', 'hangs': 'seems stuck', 'instance-failed': "didn't start"}
+                 'crashes': 'crashed', 'hangs': 'seems stuck', 'instance-failed': "didn't start",
+                 'inconclusive': 'gave no clear result'}
+EXCERPT = 80  # characters of a shown excerpt, after redaction
 
 
-def _detail(key, line):
-    if key == 'extension':
-        m = re.search(r'\bXR_[A-Z0-9]+_[A-Za-z0-9_]+', line.replace('XR_ERROR_EXTENSION_NOT_PRESENT', ''))
-        return f' ({m.group(0)})' if m else ''
-    if key == 'library':
-        m = re.search(r'"?([\w.+-]+\.so)"?', line)
-        return f' ({m.group(1)})' if m else ''
-    return ''
+def _excerpt(key, line):
+    """A short name from the log line behind a cause, for the person only: an OpenXR
+    extension, a library, an exception class or a signal. Redacted, then shortened."""
+    patterns = {'extension': r'\bXR_(?!ERROR_)[A-Z0-9]+_[A-Za-z0-9_]{1,60}',
+                'library': r'[\w.+-]{1,60}\.so\b',
+                'crash-java': r'\b[\w$]+(?:\.[\w$]+)*(?:Exception|Error)\b',
+                'crash-native': r'\bSIG[A-Z]{2,6}\b'}
+    m = re.search(patterns[key], line or '') if key in patterns else None
+    return redact(m.group(0), EXCERPT) if m else ''
 
 
 def classify(log, alive, instance_up=True, seconds=None, started=True):
-    """An outcome (runs, runs-with-issues, quits, crashes, hangs, instance-failed), a short
-    plain-English cause when one is recognised, and the signals behind it, from the game's
-    Android log, whether its Lepton instance started at all, and whether its process and
-    instance were still up at the end."""
+    """An outcome (runs, runs-with-issues, quits, crashes, hangs, instance-failed, or
+    inconclusive when the game stayed open without showing its VR scene), the key of a fixed
+    plain-English cause, and the signals behind it, from the game's Android log, whether its
+    Lepton instance started at all, and whether its process and instance were up at the end."""
     log = log or ''
     lines = log.splitlines()
-    found, causes = [], []
-    for key, pattern, kind, cause in SIGNATURES:
+    found = []  # (key, kind, line)
+    for key, pattern, kind in SIGNATURES:
         line = next((l for l in lines if pattern.search(l)), None)
         if line is not None:
-            found.append({'signal': key, 'kind': kind})
-            causes.append((kind, cause.format(detail=_detail(key, line))))
+            found.append((key, kind, line))
     crash = next((l for l in lines if CRASH.search(l)), None)
     hang = bool(HANG.search(log))
     session = bool(SESSION.search(log))
     signals = {'alive': bool(alive), 'instance_up': bool(instance_up), 'crash': bool(crash), 'not_responding': hang,
                'xr_session': session, 'xr_started': session or bool(XR_STARTED.search(log)),
-               'matched': [f['signal'] for f in found]}
-    blockers = [c for kind, c in causes if kind == 'blocker']
-    issues = [c for kind, c in causes if kind == 'issue']
+               'matched': [key for key, _, _ in found]}
+    blockers = [(k, l) for k, kind, l in found if kind == 'blocker']
+    issues = [(k, l) for k, kind, l in found if kind == 'issue']
+    first = (blockers + issues or [(None, None)])[0]
     if not started:
-        outcome, cause = 'instance-failed', f"Its Lepton instance didn't start within {START_TIMEOUT} s."
+        outcome, (key, line) = 'instance-failed', ('not-started', None)
     elif not alive:
         outcome = 'crashes' if crash else 'quits'
-        cause = (blockers or issues or [''])[0] or (
-            _crash_reason(lines) if crash else 'It closed by itself without a recognisable error.' if log.strip()
-            else 'It closed by itself, and its instance stopped before its log could be read.')
+        if first[0]:
+            key, line = first
+        elif crash:
+            java = next((l for l in lines if 'AndroidRuntime' in l and ('Exception' in l or 'Error' in l)), None)
+            native = next((l for l in lines if re.search(r'Fatal signal|\bSIG[A-Z]{2,6}\b', l)), None)
+            key, line = ('crash-java', java) if java else ('crash-native', native) if native else ('crash', None)
+        else:
+            key, line = ('quit' if log.strip() else 'quit-no-log'), None
     elif hang:
-        outcome, cause = 'hangs', (blockers or ['It stopped responding (Android reported it not responding).'])[0]
-    elif blockers and not session:
-        outcome, cause = 'hangs', blockers[0] + ' It stayed open but never showed its VR scene.'
-    elif blockers or issues:
-        outcome, cause = 'runs-with-issues', (blockers + issues)[0]
+        outcome, (key, line) = 'hangs', (blockers[0] if blockers else ('not-responding', None))
+    elif not session:
+        # Open, but no sign of its VR scene: not enough to say it runs, nor that it hangs.
+        outcome, (key, line) = 'inconclusive', (blockers[0] if blockers else ('no-session', None))
+    elif first[0]:
+        outcome, (key, line) = 'runs-with-issues', first
     else:
-        outcome = 'runs'
-        cause = ('' if session else "Its log didn't show the VR session starting, so rendering wasn't confirmed.")
+        outcome, key, line = 'runs', None, None
+    cause = CAUSES[key] if key else ''
+    if outcome == 'inconclusive' and key != 'no-session':
+        cause += ' ' + CAUSES['no-session']
     if seconds is not None:
         signals['seconds'] = seconds
-    return {'outcome': outcome, 'result': RESULTS[outcome], 'cause': cause, 'signals': signals}
-
-
-def _crash_reason(lines):
-    for l in lines:
-        if 'AndroidRuntime' in l and ('Exception' in l or 'Error' in l):
-            return 'It crashed: ' + l.split('AndroidRuntime', 1)[1].lstrip(': ')[:200]
-    for l in lines:
-        m = re.search(r'Fatal signal.*', l)
-        if m:
-            return 'It crashed: ' + m.group(0)[:200]
-    return 'It crashed.'
+    return {'outcome': outcome, 'result': RESULTS[outcome], 'cause_key': key, 'cause': cause,
+            'detail': _excerpt(key, line), 'signals': signals}
 
 
 def collect_log(meta):
@@ -988,13 +1136,18 @@ def collect_log(meta):
 
 def run_test(pkg, wait=TEST_WAIT, app=None, report_result=True):
     """Start the game, watch it for `wait` seconds after its Lepton instance is up, then
-    read its log and classify how it went. Records the result as a compatibility report
-    (source meta-store, with the version code), which is shared only if the person chose to
-    share compatibility results. The game is left running, as Test does, unless it hangs."""
+    read its log and classify how it went. Records a clear result as a compatibility report
+    (source meta-store, with the version code), shared only if the person chose to share
+    compatibility results; an inconclusive one isn't recorded. The game is left running, as
+    Test does, unless it hangs."""
     meta = android._meta_or_fail(pkg)
     ctr = f"lepton-steamlaunch-{int(meta['instance'])}"
+    label = meta.get('label') or (app or {}).get('title') or pkg
     if quest._running(pkg):
-        quest._close(pkg)  # a fresh start gives a clean log
+        closed, why = quest._close(pkg)  # a fresh start gives a clean log
+        if not closed:
+            raise MetaError(f"{label} is open on the Frame and Frame Control couldn't close it "
+                            f"({redact(why, 200)}), so it wasn't tested. Close it from Steam, then test again.")
     android.launch(pkg)
     started = up = _wait_running(pkg)
     alive, log, seconds = False, '', 0
@@ -1014,30 +1167,39 @@ def run_test(pkg, wait=TEST_WAIT, app=None, report_result=True):
                 break
         seconds = int(round(seconds))
     verdict = classify(log, alive, up, seconds, started)
-    if verdict['outcome'] == 'hangs':
-        quest._close(pkg)
     code = meta.get('version_code') if meta.get('version_code') is not None else (app or {}).get('version_code')
-    label = meta.get('label') or (app or {}).get('title') or pkg
     verdict.update(package=pkg, version=meta.get('version'), version_code=code, label=label, source='meta-store')
     verdict['notes'] = report_notes(verdict)
     word = OUTCOME_WORDS[verdict['outcome']]
-    verdict['message'] = f'Test: {label} {word}.' + (f" {verdict['cause']}" if verdict['cause'] else '')
-    if meta.get('vr_issues') and any('platform SDK' in i for i in meta['vr_issues']) and verdict['outcome'] != 'runs':
-        verdict['message'] += ' ' + RAN_PLATFORM_SDK
-    if report_result:
+    message = f'Test: {label} {word}.' + (f" {verdict['cause']}" if verdict['cause'] else '')
+    if verdict['detail']:
+        message += f" ({verdict['detail']})"
+    if meta.get('vr_issues') and any('platform SDK' in i for i in meta['vr_issues']) and \
+            verdict['outcome'] not in ('runs', 'inconclusive'):
+        message += ' ' + RAN_PLATFORM_SDK
+    if verdict['outcome'] == 'hangs':
+        closed, why = quest._close(pkg)
+        verdict['closed'] = closed
+        message += (' Frame Control closed it.' if closed else
+                    f" Frame Control couldn't close it ({redact(why, 200)}): the game may still be running; "
+                    'close it from Steam.')
+    verdict['message'] = message
+    if report_result and verdict['result']:
         verdict['report'] = submit(verdict)
+    elif verdict['result'] is None:
+        verdict['report'] = {'id': None, 'shared': False, 'skipped': 'inconclusive results are not recorded'}
     return verdict
 
 
 def report_notes(verdict):
-    """The report's notes: the outcome, the cause and the version code. Nothing from the
-    person's account, and never a file."""
+    """The report's notes, from fixed texts only: the outcome, the cause, the version code and
+    the names of the signals matched. Never log text, nothing from the account, never a file."""
     parts = [f"Meta library test: {verdict['outcome']}"]
-    if verdict.get('cause'):
-        parts.append(verdict['cause'])
-    if verdict.get('version_code') is not None:
+    if verdict.get('cause_key'):
+        parts.append(CAUSES[verdict['cause_key']])
+    if isinstance(verdict.get('version_code'), int):
         parts.append(f"version code {verdict['version_code']}")
-    matched = verdict.get('signals', {}).get('matched')
+    matched = [k for k in verdict.get('signals', {}).get('matched', []) if k in CAUSES]
     if matched:
         parts.append('signals: ' + ', '.join(matched))
     return redact('. '.join(p.rstrip('.') for p in parts) + '.', 1000)

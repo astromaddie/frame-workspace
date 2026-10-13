@@ -26,6 +26,7 @@ OTHER_TOKEN = 'FRLAnotherToken0987654321zyxwvuts'
 APK = test_quest.apk_bytes(files=test_quest.OPENXR, version_code=100, version_name='1.0')
 OBB = b'obb data ' * 100
 PUBLIC = {'157.240.22.35'}
+REAL_SEND = meta._send  # before any test replaces it with a fake Meta
 
 
 def entitlements(apk=APK, obb=OBB, platform_sdk=False):
@@ -60,13 +61,19 @@ class FakeMeta:
         self.details = {'9100': {'data': {'node': {'id': '9100', 'package_name': 'org.example.another', 'version': '2',
                                                    'version_code': '7', 'size': 10, 'obb_binary': None,
                                                    'asset_files': {'edges': []}}}}}
-        self.addresses = {}
+        self.addresses = {}  # host -> addresses its (fake) DNS gives
         self.hold = None  # an Event the "who am I" answer waits for
         self.cdn_headers = {}
+        self.location = 'https://scontent.oculuscdn.com/v/{id}?sig=abc'
+        self.lookups = []
         for p in (patch.object(meta, '_send', side_effect=self.send),
-                  patch.object(meta, '_addresses', side_effect=lambda host: self.addresses.get(host, PUBLIC))):
+                  patch.object(meta.socket, 'getaddrinfo', side_effect=self.getaddrinfo)):
             p.start()
             test.addCleanup(p.stop)
+
+    def getaddrinfo(self, host, port, *args, **kwargs):
+        self.lookups.append(host)
+        return [(10 if ':' in a else 2, 1, 6, '', (a, port)) for a in sorted(self.addresses.get(host, PUBLIC))]
 
     def answer(self, status, body, headers=None):
         raw = body if isinstance(body, bytes) else json.dumps(body).encode()
@@ -97,8 +104,7 @@ class FakeMeta:
             if q['id'] not in self.files:
                 return self.answer(404, b'')
             if self.redirect:
-                return self.answer(302, b'', {'Location': f"https://scontent.oculuscdn.com/v/{q['id']}?sig=abc&"
-                                                          f"access_token={self.token}"})
+                return self.answer(302, b'', {'Location': self.location.format(id=q['id'], token=self.token)})
             return self.answer(200, self.files[q['id']], {'Content-Length': str(len(self.files[q['id']]))})
         if p.hostname == 'scontent.oculuscdn.com':
             body = self.files[p.path.rsplit('/', 1)[-1]]
@@ -198,14 +204,23 @@ class Redaction(unittest.TestCase):
         self.addCleanup(meta.disconnect)
 
     def test_every_form_of_the_token(self):
-        full = ''.join(f'%{ord(c):02X}' for c in TOKEN)
+        def encoded(text, fmt):
+            return ''.join(fmt % ord(c) for c in text)
         forms = [TOKEN, TOKEN.upper(), TOKEN.lower(), TOKEN.swapcase(), urllib.parse.quote(TOKEN, safe=''),
-                 urllib.parse.quote_plus(TOKEN), full, full.lower(), urllib.parse.quote(full, safe='')]
+                 urllib.parse.quote_plus(TOKEN)]
+        # Fully percent-encoded, of the token recased too, with either case of hex digits, and mixed.
+        for text in (TOKEN, TOKEN.lower(), TOKEN.upper(), TOKEN.swapcase()):
+            forms += [encoded(text, '%%%02X'), encoded(text, '%%%02x')]
+        forms.append(''.join(c if i % 2 else '%%%02x' % ord(c.lower()) for i, c in enumerate(TOKEN)))
         for form in forms:
             out = meta.redact(f'GET https://example.invalid/x?id=1&tok={form} failed')
             self.assertNotIn(form, out)
             self.assertIn(meta.REDACTED, out)
-            self.assertNotIn(TOKEN[2:12].lower(), out.lower())
+            self.assertNotIn(TOKEN[2:12].lower(), urllib.parse.unquote(out).lower())
+        # Any start of it of 8+ characters (as a cut elsewhere leaves), however written.
+        for n in (8, 12, 20):
+            for prefix in (TOKEN[:n], TOKEN[:n].lower(), encoded(TOKEN[:n].lower(), '%%%02x')):
+                self.assertNotIn(prefix, meta.redact(f'cut: {prefix}', token=TOKEN))
 
     def test_token_shaped_values_that_are_not_stored(self):
         for text in (f'access_token={OTHER_TOKEN}&x=1', f'"access_token": "{OTHER_TOKEN}"',
@@ -228,29 +243,102 @@ class Hosts(unittest.TestCase):
     def setUp(self):
         self.fake = FakeMeta(self)
 
-    def test_only_public_https(self):
+    def test_only_plain_https(self):
         for url in ('http://securecdn.oculus.com/x', 'https://user:pw@securecdn.oculus.com/x',
                     'https://securecdn.oculus.com:8443/x', 'ftp://securecdn.oculus.com/x'):
             with self.assertRaisesRegex(meta.MetaError, 'plain HTTPS'):
                 meta.check_url(url)
-        for address in ('10.0.0.5', '127.0.0.1', '169.254.169.254', '::1', 'fd00::1'):
-            self.fake.addresses['cdn.example.com'] = {'157.240.22.35', address}
-            with self.assertRaisesRegex(meta.MetaError, 'private or local'):
-                meta.check_url('https://cdn.example.com/file')
         self.assertEqual(meta.check_url('https://scontent.oculuscdn.com/v/1'), 'https://scontent.oculuscdn.com/v/1')
+        self.assertEqual(self.fake.lookups, [])  # the URL check never looks anything up
 
-    def test_redirects_drop_the_token_off_meta_hosts(self):
-        start = f'https://securecdn.oculus.com/binaries/download/?id=1&access_token={TOKEN}'
-        hop = meta.next_hop(start, f'https://scontent.oculuscdn.com/v/1?sig=x&ACCESS_TOKEN={TOKEN}')
-        self.assertNotIn(TOKEN, hop)
-        self.assertIn('sig=x', hop)
-        same = meta.next_hop(start, f'/binaries/download/?id=2&access_token={TOKEN}')
-        self.assertIn(TOKEN, same)  # still Meta's download host
+    def test_public_addresses_only(self):
+        for ip in ('10.0.0.5', '127.0.0.1', '169.254.169.254', '100.64.0.1', '192.0.0.8', '0.0.0.0',
+                   '224.0.0.1', '::1', '::', 'fd00::1', 'fe80::1', 'ff02::1', 'fec0::1', '64:ff9b::a00:1',
+                   '::ffff:10.0.0.1', '2002:a00:1::1', '2001::1', '2001:db8::1', 'not an ip'):
+            self.assertFalse(meta.public_address(ip), ip)
+        for ip in ('157.240.22.35', '8.8.8.8', '2a03:2880:f12f:83:face:b00c:0:25de'):
+            self.assertTrue(meta.public_address(ip), ip)
+        self.fake.addresses['cdn.example.com'] = {'157.240.22.35', 'ff02::1'}
+        with self.assertRaisesRegex(meta.MetaError, 'private or local'):
+            meta.resolve_public('cdn.example.com')
+        self.assertEqual(meta.resolve_public('scontent.oculuscdn.com'), [('157.240.22.35', 443)])
+
+    def test_connects_only_to_the_checked_address(self):
+        self.fake.addresses['scontent.oculuscdn.com'] = {'157.240.22.35', '157.240.22.36'}
+        tried = []
+
+        def connect(host, address, timeout, deadline):
+            tried.append((host, address, deadline))
+            if address[0].endswith('35'):
+                raise OSError('unreachable')
+            return 'connection'
+        with patch.object(meta, '_connect', side_effect=connect):
+            self.assertEqual(meta._public_connection('scontent.oculuscdn.com', 60), 'connection')
+        self.assertEqual([a for _, a, _ in tried], [('157.240.22.35', 443), ('157.240.22.36', 443)])
+        self.assertEqual(len({d for _, _, d in tried}), 1)  # one shared deadline
+        self.assertEqual(self.fake.lookups, ['scontent.oculuscdn.com'])  # resolved once
+        self.fake.addresses['evil.example'] = {'10.1.1.1'}
+        with patch.object(meta, '_connect') as never:
+            with self.assertRaises(meta.MetaError):
+                meta._public_connection('evil.example', 60)
+        never.assert_not_called()
+
+    def test_send_uses_the_checked_connection_and_closes_it(self):
+        calls = []
+
+        class Conn:
+            def request(self, method, target, body=None, headers=None):
+                calls.append((method, target, body, headers))
+
+            def getresponse(self):
+                r = Body(b'{}')
+                r.status, r.headers = 200, {}
+                return r
+
+            def close(self):
+                calls.append('closed')
+        with patch.object(meta, '_public_connection', return_value=Conn()) as connect:
+            status, _, body = REAL_SEND('https://graph.oculus.com/graphql?x=1', data=b'a=1')
+            with body:
+                self.assertEqual(body.read(), b'{}')
+        self.assertEqual(status, 200)
+        connect.assert_called_once_with('graph.oculus.com', meta.TIMEOUT)
+        self.assertEqual(calls[0][:3], ('POST', '/graphql?x=1', b'a=1'))
+        self.assertEqual(calls[-1], 'closed')
         with self.assertRaisesRegex(meta.MetaError, 'plain HTTPS'):
-            meta.next_hop(start, 'http://evil.example/steal')
-        self.fake.addresses['internal.example'] = {'192.168.1.2'}
-        with self.assertRaisesRegex(meta.MetaError, 'private'):
-            meta.next_hop(start, 'https://internal.example/')
+            REAL_SEND('http://graph.oculus.com/graphql')
+
+    def test_redirects_off_meta_never_carry_the_token(self):
+        start = f'https://securecdn.oculus.com/binaries/download/?id=1&access_token={TOKEN}'
+        self.assertEqual(meta.next_hop(start, 'https://scontent.oculuscdn.com/v/1?sig=x', TOKEN),
+                         'https://scontent.oculuscdn.com/v/1?sig=x')
+        same = meta.next_hop(start, f'/binaries/download/?id=2&access_token={TOKEN}', TOKEN)
+        self.assertIn(TOKEN, same)  # still Meta's download host
+        quoted = urllib.parse.quote(TOKEN, safe='')
+        lower_hex = ''.join('%%%02x' % ord(c) for c in TOKEN.lower())
+        for target in (f'https://cdn.example/v/1?sig={TOKEN}', f'https://cdn.example/{TOKEN}/file',
+                       f'https://cdn.example/v/1#{TOKEN}', f'https://cdn.example/v/1?sig={quoted}',
+                       f'https://cdn.example/{lower_hex}', f'https://cdn.example/v?s={TOKEN.swapcase()}',
+                       f'https://{TOKEN[:12].lower()}.cdn.example/v', f'https://cdn.example/v?x={TOKEN[:9]}',
+                       'https://cdn.example/v?ACCESS_TOKEN=other'):
+            with self.assertRaisesRegex(meta.MetaError, 'carrying your token'):
+                meta.next_hop(start, target, TOKEN)
+        self.assertEqual(self.fake.lookups, [])  # refused before any lookup (a token in a host name)
+        with self.assertRaisesRegex(meta.MetaError, 'plain HTTPS'):
+            meta.next_hop(start, 'http://evil.example/steal', TOKEN)
+
+    def test_download_redirect_with_the_token_is_refused_before_connecting(self):
+        meta.connect(TOKEN)
+        self.addCleanup(meta.disconnect)
+        token, generation = meta._session()
+        work = meta.cache_root() / 'refuse'
+        work.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: __import__('shutil').rmtree(work, ignore_errors=True))
+        self.fake.location = 'https://cdn.example/{token}/v/{id}'
+        with self.assertRaisesRegex(meta.MetaError, 'carrying your token'):
+            meta.fetch('9002', work / 'x.obb', meta.MAX_DATA_FILE, token, generation)
+        self.assertFalse([r for r in self.fake.requests if 'cdn.example' in r['url']])
+        self.assertEqual(list(work.iterdir()), [])
 
     def test_download_redirect_sends_no_token_to_the_cdn(self):
         meta.connect(TOKEN)
@@ -429,6 +517,30 @@ class Downloads(unittest.TestCase):
             meta.fetch('9002', work / 'a.obb', 10**6, token, generation)
         self.assertEqual(list(work.iterdir()), [])
 
+    def test_one_budget_for_every_file_including_unknown_sizes(self):
+        # Sizes Meta doesn't give count as they arrive: three files of unknown size that each fit
+        # the per-file limit still can't add up past the install's budget.
+        fake = connected(self)
+        node = fake.entitlements['data']['viewer']['user']['active_entitlements']['nodes'][0]['item'][
+            'latest_supported_binary']
+        node.pop('size')
+        node['obb_binary'].pop('size')
+        node['obb_binary']['file_name'] = f'main.100.{PKG}.obb'
+        node['asset_files']['nodes'][0].update(file_name=f'patch.100.{PKG}.obb')
+        node['asset_files']['nodes'][0].pop('size')
+        fake.files['9003'] = OBB
+        fake.cdn_headers = {'Content-Length': None}
+        meta.library(refresh=True)
+        budget = len(APK) + len(OBB) + len(OBB) // 2  # the second OBB overflows half way
+        with patch.object(meta, 'MAX_TOTAL', budget):
+            with self.assertRaisesRegex(meta.MetaError, 'past the'):
+                meta.download('111')
+        self.assertEqual([p for p in meta.cache_root().iterdir() if p.name.startswith(PKG)], [])  # all removed
+        with patch.object(meta, 'MAX_TOTAL', len(APK) + 2 * len(OBB)):
+            r = meta.download('111')  # exactly enough
+        self.addCleanup(lambda: __import__('shutil').rmtree(r['folder'], ignore_errors=True))
+        self.assertEqual(len(r['obb']), 2)
+
     def test_not_an_apk(self):
         connected(self, apk=b'<html>sign in</html>')
         with self.assertRaisesRegex(meta.MetaError, 'not an APK'):
@@ -540,30 +652,44 @@ LOGS = {
     'extension': 'E OpenXR: xrCreateInstance: XR_ERROR_EXTENSION_NOT_PRESENT XR_FB_passthrough\n',
     'device': 'E Unity: Failed to launch SystemActivities\n',
     'gpu-crash': 'E zink: DEVICE LOST\nF libc: Fatal signal 6 (SIGABRT) in libgallium_dri.so\n',
+    'java': ('E AndroidRuntime: FATAL EXCEPTION: main\n'
+             f'E AndroidRuntime: java.lang.IllegalStateException: bad session {TOKEN} for user 1234\n'),
+    'licence-ok': ('I Unity: ovr_Entitlement_GetIsViewerEntitled called\n'
+                   'I Unity: IsUserEntitledToApplication: true\nI Unity: entitlement check passed\n'),
 }
+LOGS['extension-session'] = LOGS['extension'] + 'I Unity: XR_SESSION_STATE_FOCUSED\n'
+LOGS['licence-ok-session'] = LOGS['licence-ok'] + LOGS['runs']
 
 
 class Classify(unittest.TestCase):
     def test_outcomes_from_logs(self):
         cases = [
-            ('runs', True, 'runs', 'runs', ''),
-            ('issues', True, 'runs-with-issues', 'runs', 'Graphics errors'),
-            ('licence', False, 'quits', 'crashes', "Meta's licence check failed"),
-            ('licence', True, 'hangs', 'crashes', 'never showed its VR scene'),
-            ('crash', False, 'crashes', 'crashes', "clipboard service"),
-            ('native', False, 'crashes', 'crashes', 'Fatal signal 11'),
-            ('anr', True, 'hangs', 'crashes', 'stopped responding'),
-            ('extension', True, 'hangs', 'crashes', '(XR_FB_passthrough)'),
-            ('device', False, 'quits', 'crashes', 'Meta Quest'),
-            ('gpu-crash', False, 'crashes', 'crashes', 'Graphics errors'),
+            ('runs', True, 'runs', 'runs', '', ''),
+            ('issues', True, 'runs-with-issues', 'runs', 'Graphics errors', ''),
+            ('licence', False, 'quits', 'crashes', "Meta's licence check failed", ''),
+            # Open with a failed check but no sign of its VR scene: not enough to call it stuck.
+            ('licence', True, 'inconclusive', None, "isn't recorded", ''),
+            ('crash', False, 'crashes', 'crashes', 'clipboard service', ''),
+            ('native', False, 'crashes', 'crashes', 'native crash signal', 'SIGSEGV'),
+            ('java', False, 'crashes', 'crashes', 'Java exception', 'java.lang.IllegalStateException'),
+            ('anr', True, 'hangs', 'crashes', 'stopped responding', ''),
+            ('extension', True, 'inconclusive', None, 'OpenXR feature', 'XR_FB_passthrough'),
+            ('extension-session', True, 'runs-with-issues', 'runs', 'OpenXR feature', 'XR_FB_passthrough'),
+            ('device', False, 'quits', 'crashes', 'Meta Quest', ''),
+            ('gpu-crash', False, 'crashes', 'crashes', 'Graphics errors', ''),
+            ('licence-ok', True, 'inconclusive', None, "can't tell whether it runs", ''),
+            ('licence-ok-session', True, 'runs', 'runs', '', ''),
         ]
-        for log, alive, outcome, result, cause in cases:
+        for log, alive, outcome, result, cause, detail in cases:
             v = meta.classify(LOGS[log], alive)
             self.assertEqual((v['outcome'], v['result']), (outcome, result), log)
             self.assertIn(cause, v['cause'], log)
+            self.assertEqual(v['detail'], detail, log)
+            # Causes are fixed texts, never log text.
+            self.assertTrue(v['cause'] == '' or v['cause'].startswith(tuple(meta.CAUSES.values())), log)
+        self.assertNotIn('licence', meta.classify(LOGS['licence-ok-session'], True)['signals']['matched'])
         quiet = meta.classify('I Unity: loading\n', True)
-        self.assertEqual(quiet['outcome'], 'runs')
-        self.assertIn("rendering wasn't confirmed", quiet['cause'])
+        self.assertEqual((quiet['outcome'], quiet['result']), ('inconclusive', None))
         gone = meta.classify('', False, instance_up=False)
         self.assertEqual(gone['outcome'], 'quits')
         self.assertIn('stopped before its log could be read', gone['cause'])
@@ -646,6 +772,49 @@ class RunTest(unittest.TestCase):
         self.assertEqual(v['outcome'], 'hangs')
         self.assertFalse(self.running)
         self.assertEqual(self.reports, [])
+
+    def test_crash_text_never_reaches_reports_or_messages(self):
+        connected(self)
+        self.alive, self.log = False, LOGS['java']
+        v = meta.run_test(PKG, wait=10)
+        self.assertEqual((v['outcome'], v['cause_key']), ('crashes', 'crash-java'))
+        self.assertIn('(java.lang.IllegalStateException)', v['message'])
+        (args, kwargs), = self.reports
+        everything = json.dumps([v, args, kwargs])
+        for fragment in (TOKEN, TOKEN[:8], 'bad session', 'user 1234'):
+            self.assertNotIn(fragment, everything)
+        self.assertNotIn('IllegalStateException', kwargs['notes'])  # reports: fixed texts only
+        self.assertIn(meta.CAUSES['crash-java'].rstrip('.'), kwargs['notes'])
+
+    def test_inconclusive_is_not_reported_or_closed(self):
+        connected(self)
+        self.log = 'I Unity: ovr_Entitlement_GetIsViewerEntitled called\nI Unity: loading\n'
+        v = meta.run_test(PKG, wait=10)
+        self.assertEqual((v['outcome'], v['result']), ('inconclusive', None))
+        self.assertEqual(self.reports, [])
+        self.assertIn('skipped', v['report'])
+        self.assertTrue(self.running)  # left open: nothing says it is stuck
+
+    def test_must_close_a_running_game_before_testing(self):
+        connected(self)
+        self.running = True
+        launched = []
+        with patch.object(quest, '_close', return_value=(False, 'it is still running')), \
+                patch.object(android, 'launch', side_effect=launched.append):
+            with self.assertRaisesRegex(meta.MetaError, "couldn't close it .*wasn't tested.*Close it from Steam"):
+                meta.run_test(PKG, wait=5)
+        self.assertEqual(launched, [])
+        self.assertEqual(self.reports, [])
+
+    def test_failed_hang_cleanup_is_said(self):
+        connected(self)
+        self.log = LOGS['anr']
+        with patch.object(quest, '_close', side_effect=[(False, 'Steam is not answering')]):
+            v = meta.run_test(PKG, wait=5)
+        self.assertEqual(v['outcome'], 'hangs')
+        self.assertFalse(v['closed'])
+        self.assertIn('the game may still be running; close it from Steam', v['message'])
+        self.assertEqual(self.reports[0][1]['result'], 'crashes')
 
     def test_sharing_follows_the_privacy_setting(self):
         sent = []
