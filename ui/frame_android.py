@@ -308,27 +308,79 @@ def resources_empty(data):
         return False
 
 
+def _zip64_sizes(extra, usize, csize):
+    """(uncompressed, compressed) with 0xffffffff fields taken from a ZIP64 extra field."""
+    at = 0
+    while at + 4 <= len(extra):
+        kind, length = struct.unpack_from('<HH', extra, at)
+        body = extra[at + 4:at + 4 + length]
+        if kind == 0x0001:
+            values, pos = [], 0
+            for field in (usize, csize):
+                if field == 0xffffffff:
+                    if pos + 8 > len(body):
+                        raise FrameError('truncated ZIP64 extra field')
+                    values.append(struct.unpack_from('<Q', body, pos)[0])
+                    pos += 8
+                else:
+                    values.append(field)
+            return tuple(values)
+        at += 4 + length
+    if 0xffffffff in (usize, csize):
+        raise FrameError('ZIP64 sizes without a ZIP64 extra field')
+    return usize, csize
+
+
 def read_member(path, member):
-    """A split member's bytes, read from its raw compressed data with output bounded by its
-    declared size: a stored member must be exactly that size, a deflated stream must end
-    exactly there, and the checksum must match. Never trusts zipfile to stop early."""
+    """A split member's bytes, read from its raw data and checked against both headers.
+
+    The local header must name the same file, with the same method and (unless a data
+    descriptor carries them, which is then checked) the same sizes and checksum as the
+    central directory; the data must end before the next member; a stored member must be
+    exactly its size and a deflated stream must end exactly at the end of its data, with
+    nothing after it. Output is bounded by the declared size: never trusts zipfile, which
+    stops early at a smaller declared size."""
     with zipfile.ZipFile(path) as z:
         info = z.getinfo(member)
+        starts = sorted({i.header_offset for i in z.infolist()} | {z.start_dir})
     name, size = f'{member} in {os.path.basename(path)}', info.file_size
     if info.flag_bits & 1 or info.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
         raise FrameError(f'{name} is encrypted or uses a compression Android does not')
     if size > MAX_SPLIT_MEMBER or info.compress_size > MAX_SPLIT_MEMBER:
         raise FrameError(f'{name} is larger than Frame Control merges ({MAX_SPLIT_MEMBER // 1024**2} MB)')
+    following = next((o for o in starts if o > info.header_offset), None)
     with open(path, 'rb') as raw:
         raw.seek(info.header_offset)
         header = raw.read(30)
         if len(header) != 30 or header[:4] != b'PK\3\4':
             raise FrameError(f'{name}: invalid local ZIP header')
-        nl, el = struct.unpack_from('<HH', header, 26)
-        raw.seek(nl + el, 1)
+        flags, method, crc, csize, usize, nl, el = struct.unpack_from('<2xHH4xIIIHH', header, 4)
+        local_name, extra = raw.read(nl), raw.read(el)
+        if local_name != info.orig_filename.encode('utf-8' if flags & 0x800 else 'cp437', 'surrogateescape'):
+            raise FrameError(f'{name}: the local header names {local_name.decode("utf-8", "replace")!r}')
+        if method != info.compress_type or (flags & 0x08) != (info.flag_bits & 0x08):
+            raise FrameError(f'{name} does not match its header (local and central entries differ)')
+        start = info.header_offset + 30 + nl + el
         compressed = raw.read(info.compress_size)
-    if len(compressed) != info.compress_size:
-        raise FrameError(f'{name} is truncated')
+        if len(compressed) != info.compress_size:
+            raise FrameError(f'{name} is truncated')
+        if flags & 0x08:
+            # Sizes and checksum follow the data: (signature,) crc, sizes (8 bytes each for ZIP64).
+            want = 20 if info.file_size >= 0xffffffff or info.compress_size >= 0xffffffff else 12
+            tail = raw.read(4 + want)
+            signed = tail[:4] == b'PK\7\x08'
+            body = tail[4:4 + want] if signed else tail[:want]
+            if len(body) < want:
+                raise FrameError(f'{name}: truncated data descriptor')
+            crc, csize, usize = struct.unpack_from('<IQQ' if want == 20 else '<III', body)
+            descriptor = want + (4 if signed else 0)
+        else:
+            usize, csize = _zip64_sizes(extra, usize, csize)
+            descriptor = 0
+    if (crc, csize, usize) != (info.CRC, info.compress_size, size):
+        raise FrameError(f'{name} does not match its header (local and central entries differ)')
+    if following is not None and start + info.compress_size + descriptor > following:
+        raise FrameError(f'{name} overlaps the next ZIP entry')
     if info.compress_type == zipfile.ZIP_STORED:
         if info.compress_size != size:
             raise FrameError(f'{name} does not match its header (stored {info.compress_size} bytes, says {size})')
@@ -339,8 +391,9 @@ def read_member(path, member):
             data = inflate.decompress(compressed, size + 1)
         except zlib.error as e:
             raise FrameError(f'{name} is corrupt: {e}') from e
-        if len(data) != size or not inflate.eof or inflate.unconsumed_tail:
-            raise FrameError(f'{name} does not match its header (it holds more or less than {size} bytes)')
+        if len(data) != size or not inflate.eof or inflate.unconsumed_tail or inflate.unused_data:
+            raise FrameError(f'{name} does not match its header (its compressed data is not exactly '
+                             f'{size} bytes with nothing after it)')
     if zlib.crc32(data) != info.CRC:
         raise FrameError(f'{name} does not match its checksum')
     return data
@@ -552,6 +605,34 @@ except (OSError, ValueError, TypeError, AttributeError):
 """
 
 
+def _apk_parser_script():
+    """Frame-side Python preamble that loads this copy's stdlib APK parser (frame_apk)."""
+    script = 'import sys, types, json, base64\n'
+    for module in ('frame_apk', 'frame_apk_vr'):
+        with open(os.path.join(ROOT, 'ui', module + '.py')) as f:
+            source = f.read()
+        script += f'm = types.ModuleType({module!r}); sys.modules[{module!r}] = m; exec({source!r}, m.__dict__)\n'
+    return script
+
+
+def installed_version_code(pkg):
+    """The version code of pkg's installed app.apk, read on the Frame (only its manifest
+    crosses the link), or None if there is no readable APK. Connection failures raise."""
+    if not PKG_RE.match(pkg or ''):
+        raise FrameError(f'bad package name {pkg!r}')
+    script = _apk_parser_script() + f"""try:
+    code = sys.modules['frame_apk'].apk_info({(APPS_DIR + '/' + pkg + '/app.apk')!r}).get('version_code')
+except Exception:
+    code = None
+print(json.dumps(code if isinstance(code, int) else None))
+"""
+    try:
+        code = json.loads(ssh('python3 -', input=script, timeout=120).strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None
+    return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+
 def art_missing(m):
     """True when a Frame Control install has no complete Steam artwork on record."""
     return set((m or {}).get('artwork') or {}) != set(frame_artwork.SLOTS)
@@ -573,13 +654,7 @@ def refresh_art(pkg=None, artwork=None, fill_only=False):
         m = _meta_or_fail(pkg)
         d = f'{APPS_DIR}/{pkg}'
         # Parse the APK on the Frame, transferring only its icon/label, not the APK.
-        modules = {}
-        for module in ('frame_apk', 'frame_apk_vr'):
-            with open(os.path.join(ROOT, 'ui', module + '.py')) as f:
-                modules[module] = f.read()
-        script = 'import sys, types, json, base64\n'
-        for module, source in modules.items():
-            script += f'm = types.ModuleType({module!r}); sys.modules[{module!r}] = m; exec({source!r}, m.__dict__)\n'
+        script = _apk_parser_script()
         script += f"info = sys.modules['frame_apk'].apk_info({(d + '/app.apk')!r})\n"
         script += "info['icon_png'] = base64.b64encode(info.get('icon_png') or b'').decode()\n"
         script += cached_art_script(d) + "info['artwork'] = cached\nprint(json.dumps(info))\n"
@@ -640,10 +715,22 @@ def _clean_meta(m):
     return m
 
 
-def running_instances():
-    """Lepton container name -> adb port, for the instances that are running now."""
-    out = ssh('podman ps --format "{{.Names}} {{.Labels.adb_port}}" 2>/dev/null || true')
-    return dict(line.split()[:2] for line in out.splitlines() if len(line.split()) >= 2)
+def running_instances(strict=False):
+    """Lepton container name -> adb port, for the instances that are running now.
+
+    strict: a failed `podman ps` raises FrameError instead of reading as "nothing running",
+    and containers without an adb port label count too (port None); for callers that must
+    not mistake an error for a stopped instance."""
+    if not strict:
+        out = ssh('podman ps --format "{{.Names}} {{.Labels.adb_port}}" 2>/dev/null || true')
+        return dict(line.split()[:2] for line in out.splitlines() if len(line.split()) >= 2)
+    out = ssh('podman ps --format "{{.Names}} {{.Labels.adb_port}}"')
+    found = {}
+    for line in out.splitlines():
+        cols = line.split()
+        if cols:
+            found[cols[0]] = cols[1] if len(cols) > 1 and cols[1] != '<no' else None
+    return found
 
 
 def list_apps():

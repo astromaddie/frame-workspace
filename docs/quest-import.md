@@ -95,9 +95,11 @@ which returns a background job (`/api/job`) with a stage and percentage.
    install (`frame_android.install`: VR detection, the launcher fix, the
    OpenXR compatibility layer, artwork), and says whether it has game data
    to add. An older Quest copy never replaces a newer version on the Frame
-   (compared by version code, which installs now record) unless you tick
-   **Allow replacing a newer version** (`--allow-downgrade`,
-   `"allowDowngrade": true`).
+   (compared by version code, which installs now record; for installs made
+   before that, it is read from the installed APK on the Frame) unless you
+   tick **Allow replacing a newer version** (`--allow-downgrade`,
+   `"allowDowngrade": true`). If the installed version can't be read at all,
+   that permission is needed too.
 6. If the game is open on the Frame (the second import): refuses unless
    Frame Control's install record is for this package, in this package's own
    instance, at the Quest's exact version code (an open game is never
@@ -109,7 +111,11 @@ which returns a background job (`/api/job`) with a stage and percentage.
    package at the same version code,
    streams the `Android/data` files in as a tar written straight into the SSH
    transfer, then closes the game so its next start reads them, and checks
-   its instance has stopped; if it hasn't, the result says so. Everything
+   its instance has stopped; if it hasn't, or the check itself fails (a
+   failed `podman ps` never reads as "stopped"), the result says so. The game
+   is closed whatever happens during the copy, including a local read error
+   or Ctrl-C, and a failed close is reported without hiding the original
+   error. Everything
    from the second check of the install record (after the pulls, which can
    be long) to closing the game holds the same lock as installs and removals.
    Other files in the OBB folder are listed as not copied.
@@ -134,10 +140,14 @@ the Frame: splits with resources (screen density or language), code
 libraries (`<service>`, `<uses-library>`...), feature splits, and splits of
 another package. The merged files are held in memory while the APK is
 repacked and signed (as for every patched APK), so a merge adds at most
-512 MB per file and 1 GB in all. Each file is read from its raw bytes: a
-stored file must be exactly its declared size, a compressed one must end
-exactly there, and its checksum must match, so a header that understates the
-size can't truncate it or fill memory. A resource table counts as empty only
+512 MB per file and 1 GB in all. Each file is read from its raw bytes and
+checked against both of its ZIP headers: the local header must name the same
+file with the same method, sizes and checksum as the central directory (or a
+data descriptor must carry them; ZIP64 sizes are understood), the data must
+end before the next entry, a stored file must be exactly its declared size, a
+compressed one must end exactly at the end of its data with nothing after it,
+and its checksum must match. So a forged header can't truncate a file or fill
+memory. A resource table counts as empty only
 if it defines nothing at all (styles and other complex entries included). A merged, re-signed APK can't update a
 copy signed by the publisher.
 

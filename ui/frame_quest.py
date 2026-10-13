@@ -413,7 +413,17 @@ def import_game(package_name, serial=None, data=False, progress=None, allow_down
 
 
 def _running(pkg):
-    return f'lepton-steamlaunch-{android.instance_id(pkg)}' in android.running_instances()
+    # strict: a failed `podman ps` raises, never reads as "not running".
+    return f'lepton-steamlaunch-{android.instance_id(pkg)}' in android.running_instances(strict=True)
+
+
+def _installed_code(pkg, meta):
+    """The installed version code: from the install record, else (installs made before
+    records kept it) read from the installed app.apk on the Frame; None if unknown."""
+    code = (meta or {}).get('version_code')
+    if isinstance(code, int) and not isinstance(code, bool):
+        return code
+    return android.installed_version_code(pkg) if meta else None
 
 
 def _version(name, code):
@@ -424,8 +434,12 @@ def _check_downgrade(existing, checked, allow):
     """Refuse to replace a newer install on the Frame with the Quest's older copy."""
     if not existing or allow:
         return
-    have, new = existing.get('version_code'), checked['version_code']
-    if have is not None and new is not None and int(new) < int(have):
+    have, new = _installed_code(existing['package'], existing), checked['version_code']
+    if have is None or new is None:
+        raise QuestError(f"Frame Control can't tell which version of {checked['label']} is on the Frame, so it "
+                         "won't replace it in case that one is newer. Allow replacing a newer version (or "
+                         "--allow-downgrade) to install your Quest's copy anyway.")
+    if int(new) < int(have):
         raise QuestError(f"The Frame has a newer {checked['label']} ({_version(existing.get('version'), have)}) than "
                          f"your Quest ({_version(checked['version'], new)}). Frame Control won't replace it with "
                          "an older version unless you allow it (Allow replacing a newer version, or "
@@ -439,7 +453,7 @@ def _check_target(pkg, meta, checked):
     if (not meta or meta.get('package') != pkg or android._int(meta.get('instance')) != android.instance_id(pkg)):
         raise QuestError(f"{label} is open on the Frame, but Frame Control has no matching install record for "
                          'it. Close it, then import again to install it.')
-    have, new = meta.get('version_code'), checked['version_code']
+    have, new = _installed_code(pkg, meta), checked['version_code']
     if have is None or new is None or int(have) != int(new):
         raise QuestError(f"{label} is open on the Frame with a different version (Frame: "
                          f"{_version(meta.get('version'), have)}; Quest: {_version(checked['version'], new)}). "
@@ -453,7 +467,9 @@ def _check_android_package(meta, code):
     container = f"lepton-steamlaunch-{int(meta['instance'])}"
     out = android.ssh(f"podman exec {container} /system/bin/sh -c 'dumpsys package {pkg}' 2>/dev/null || true",
                       timeout=60)
-    found = re.search(r'\bversionCode=(\d+)', out)
+    # Only this package's own block (dumpsys can list other packages too).
+    block = re.search(r'^\s*Package \[' + re.escape(pkg) + r'\] \(.*?(?=^\s*Package \[|\Z)', out, re.M | re.S)
+    found = re.search(r'\bversionCode=(\d+)', block.group(0)) if block else None
     if not found:
         raise QuestError(f'Android in {container} does not have {pkg} installed')
     if int(found.group(1)) != int(code):
@@ -470,7 +486,7 @@ def _close(pkg):
                 return True, None
             _sleep(2)
         return False, 'it is still running'
-    except android.FrameError as e:
+    except Exception as e:  # never replaces the error that led here; unconfirmed counts as not closed
         return False, str(e) or type(e).__name__
 
 
@@ -548,6 +564,7 @@ def _import(serial, app, data, work, report, allow_downgrade=False):
         if not _running(pkg):
             raise QuestError(f'{label} was closed on the Frame during the import. Start it, then import again.')
         meta = _check_target(pkg, android.read_meta(pkg), checked)
+        closed, why = None, None
         try:
             report('Waiting for Android on the Frame', 70)
             _wait_ready(meta)
@@ -558,10 +575,16 @@ def _import(serial, app, data, work, report, allow_downgrade=False):
             if data_folder:
                 report('Copying app files to the Frame', 92)
                 copied_files = push_data(meta, data_folder)
-        except android.FrameError as e:
+        except Exception as e:  # any failure, local (OSError) or on the Frame, is reported below
             failure = e
-        report('Closing the game on the Frame', 97)
-        closed, why = _close(pkg)
+        finally:
+            # Whatever happened, even Ctrl-C part-way through a write, the game is closed so it
+            # never runs on half-copied data. A failed close never hides the original error.
+            interrupted = sys.exc_info()[0] is not None
+            closed, why = _close(pkg)
+            if interrupted and not closed:
+                print(f"Frame Control couldn't close {meta['label']} on the Frame ({why}); close it from Steam "
+                      'before playing.', file=sys.stderr)
     if failure:
         message = f"Copying {meta['label']}'s game data failed: {failure}."
         message += (' The game was closed; start it and import again to retry.' if closed else

@@ -474,6 +474,7 @@ class Import(unittest.TestCase):
         self.installed = None
         self.stop_fails = None
         self.android_code = 100
+        self.apk_code = None  # what the installed app.apk on the Frame says (legacy records)
 
         def install(base, splits=(), source=None):
             self.order.append(('install', os.path.basename(base), [os.path.basename(s) for s in splits]))
@@ -513,6 +514,7 @@ class Import(unittest.TestCase):
                                      (quest, '_running', lambda pkg: self.running),
                                      (quest, '_sleep', lambda s: None),
                                      (quest, '_check_android_package', android_package),
+                                     (android, 'installed_version_code', lambda pkg: self.apk_code),
                                      (quest, '_wait_ready', lambda m: self.order.append(('ready',))),
                                      (quest, 'push_data', push_data)):
             p = patch.object(target, name, side_effect=effect)
@@ -557,11 +559,22 @@ class Import(unittest.TestCase):
         self.assertEqual(self.order, [])
         quest.import_game(PKG, allow_downgrade=True)
         self.assertEqual(self.order, [('install', 'base.apk', [])])
-        self.installed = dict(self.META, version_code=50)  # an upgrade, and records without a code, go ahead
+        self.installed = dict(self.META, version_code=50)  # an upgrade goes ahead
         quest.import_game(PKG)
+        self.assertEqual(len(self.order), 2)
+        # Installs made before records kept a version code: read from the installed app.apk.
         self.installed = dict(self.META, version_code=None)
+        self.apk_code = 999
+        with self.assertRaisesRegex(quest.QuestError, r'newer Quest Game \(version 1.0 code 999\)'):
+            quest.import_game(PKG)
+        self.apk_code = None  # unreadable: can't tell, so only with permission
+        with self.assertRaisesRegex(quest.QuestError, "can't tell which version"):
+            quest.import_game(PKG)
+        self.assertEqual(len(self.order), 2)
+        quest.import_game(PKG, allow_downgrade=True)
+        self.apk_code = 50
         quest.import_game(PKG)
-        self.assertEqual(len(self.order), 3)
+        self.assertEqual(len(self.order), 4)
         self.assertEqual(self.cache_left(), [])
 
     def test_second_import_with_the_game_open_copies_data_then_closes_it(self):
@@ -586,7 +599,7 @@ class Import(unittest.TestCase):
         self.game(fake, code=100, name='1.0')
         cases = [  # (install record, what the refusal says)
             (dict(version='1.0', version_code=999), 'different version'),  # same name, other code
-            (dict(version_code=None), 'different version'),  # an install record without a code
+            (dict(version_code=None), 'different version'),  # a legacy record, app.apk unreadable
             (dict(package='org.other.game'), 'no matching install record'),
             (dict(instance=android.instance_id('org.other.game')), 'no matching install record'),
         ]
@@ -799,6 +812,236 @@ class AndroidChecks(unittest.TestCase):
             self.assertEqual(quest._close(PKG), (False, 'it is still running'))
         with patch.object(android, 'stop', side_effect=android.FrameError('no Steam')):
             self.assertEqual(quest._close(PKG), (False, 'no Steam'))
+
+
+class Round3(unittest.TestCase):
+    """Strict ZIP reading, closing the game whatever happens, fail-closed listing, scoped dumpsys."""
+
+    def tmpfile(self, data):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = os.path.join(tmp.name, 'split.apk')
+        with open(path, 'wb') as f:
+            f.write(data)
+        return path
+
+    @staticmethod
+    def build_zip(entries):
+        """A ZIP from raw entries: name, method, data (the bytes after the local header), crc,
+        csize, usize, flags, tail (a data descriptor), local/central field overrides."""
+        out, central = bytearray(), bytearray()
+        for e in entries:
+            local = dict(dict(crc=e['crc'], csize=e['csize'], usize=e['usize'], name=e['name']), **e.get('local', {}))
+            cen = dict(dict(crc=e['crc'], csize=e['csize'], usize=e['usize'], name=e['name']), **e.get('central', {}))
+            offset = len(out)
+            name = local['name'].encode()
+            out += struct.pack('<IHHHHHIIIHH', 0x04034b50, 20, e.get('flags', 0), e['method'], 0, 0x21,
+                               local['crc'], local['csize'], local['usize'], len(name), 0) + name
+            out += e['data'] + e.get('tail', b'')
+            name = cen['name'].encode()
+            central += struct.pack('<IHHHHHHIIIHHHHHII', 0x02014b50, 20, 20, e.get('flags', 0), e['method'], 0, 0x21,
+                                   cen['crc'], cen['csize'], cen['usize'], len(name), 0, 0, 0, 0, 0, offset) + name
+        start = len(out)
+        out += central + struct.pack('<IHHHHIIH', 0x06054b50, 0, 0, len(entries), len(entries), len(central), start, 0)
+        return bytes(out)
+
+    def entry(self, name, content, deflate=False, **extra):
+        data = content
+        if deflate:
+            c = zlib.compressobj(6, zlib.DEFLATED, -15)
+            data = c.compress(content) + c.flush()
+        e = dict(name=name, method=8 if deflate else 0, data=data, crc=zlib.crc32(content),
+                 csize=len(data), usize=len(content))
+        e.update(extra)
+        return e
+
+    def refused(self, data, words, member='assets/x'):
+        with self.assertRaisesRegex(android.FrameError, words):
+            android.read_member(self.tmpfile(data), member)
+
+    def test_valid_formats_read(self):
+        content = bytes(range(256)) * 40
+        for deflate in (False, True):
+            self.assertEqual(android.read_member(self.tmpfile(self.build_zip([self.entry('assets/x', content, deflate)])),
+                                                 'assets/x'), content)
+            # Python's own writer: plain, ZIP64 local extra fields, and data descriptors (unseekable output).
+            method = zipfile.ZIP_DEFLATED if deflate else zipfile.ZIP_STORED
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, 'w', method) as z:
+                z.writestr('assets/plain', content)
+                with z.open('assets/zip64', 'w', force_zip64=True) as f:
+                    f.write(content)
+            path = self.tmpfile(buf.getvalue())
+            self.assertEqual(android.read_member(path, 'assets/plain'), content)
+            self.assertEqual(android.read_member(path, 'assets/zip64'), content)
+
+            class Sink:
+                def __init__(self):
+                    self.buf = io.BytesIO()
+
+                def write(self, b):
+                    return self.buf.write(b)
+
+                def flush(self):
+                    pass
+            sink = Sink()
+            with zipfile.ZipFile(sink, 'w', method) as z:
+                z.writestr('assets/streamed', content)
+            path = self.tmpfile(sink.buf.getvalue())
+            with zipfile.ZipFile(path) as z:
+                self.assertTrue(z.getinfo('assets/streamed').flag_bits & 0x08)
+            self.assertEqual(android.read_member(path, 'assets/streamed'), content)
+
+    def test_central_sizes_and_checksum_forged(self):
+        # The reviewer's case: stored 'abcdef', central sizes 3 and the prefix's checksum, local untouched.
+        forged = self.build_zip([self.entry('assets/x', b'abcdef', central=dict(csize=3, usize=3, crc=zlib.crc32(b'abc')))])
+        with zipfile.ZipFile(io.BytesIO(forged)) as z:
+            self.assertEqual(z.read('assets/x'), b'abc')  # Python's reader is fooled
+        self.refused(forged, 'local and central entries differ')
+        self.refused(self.build_zip([self.entry('assets/x', b'abcdef', deflate=True,
+                                                central=dict(usize=3, crc=zlib.crc32(b'abc')))]),
+                     'local and central entries differ')
+
+    def test_local_name_mismatch(self):
+        self.refused(self.build_zip([self.entry('assets/x', b'abcdef', local=dict(name='assets/y'))]),
+                     "local header names 'assets/y'")
+
+    def test_trailing_compressed_bytes(self):
+        e = self.entry('assets/x', b'abcdef' * 100, deflate=True)
+        e['data'] += b'\x00junk'
+        e['csize'] = len(e['data'])
+        self.refused(self.build_zip([e]), 'nothing after it')
+
+    def test_data_descriptor_checked(self):
+        content = b'abcdef' * 10
+        good = self.entry('assets/x', content, flags=0x08, local=dict(crc=0, csize=0, usize=0),
+                          tail=struct.pack('<IIII', 0x08074b50, zlib.crc32(content), len(content), len(content)))
+        self.assertEqual(android.read_member(self.tmpfile(self.build_zip([good])), 'assets/x'), content)
+        unsigned = dict(good, tail=struct.pack('<III', zlib.crc32(content), len(content), len(content)))
+        self.assertEqual(android.read_member(self.tmpfile(self.build_zip([unsigned])), 'assets/x'), content)
+        bad = dict(good, tail=struct.pack('<IIII', 0x08074b50, zlib.crc32(content), len(content), 3))
+        self.refused(self.build_zip([bad]), 'local and central entries differ')
+        # A cut-off descriptor: what follows is the central directory, which never matches.
+        self.refused(self.build_zip([dict(good, tail=b'PK')]), 'truncated data descriptor|overlaps|entries differ')
+
+    def test_overlapping_entries(self):
+        second = self.entry('assets/y', b'second')
+        probe = self.build_zip([self.entry('assets/x', b'abc'), second])
+        span = b'abc' + probe[30 + len('assets/x') + 3:30 + len('assets/x') + 3 + 30 + len('assets/y') + 6]
+        first = dict(self.entry('assets/x', b'abc'), crc=zlib.crc32(span), csize=len(span), usize=len(span))
+        forged = self.build_zip([first, second])
+        self.refused(forged, 'overlaps the next ZIP entry')
+
+    def test_listing_fails_closed(self):
+        with patch.object(android, 'ssh', return_value='') as ssh:
+            self.assertEqual(android.running_instances(strict=True), {})
+        self.assertNotIn('|| true', ssh.call_args[0][0])
+        with patch.object(android, 'ssh', return_value='lepton-steamlaunch-1 5556\nlepton-steamlaunch-2 <no value>\n'):
+            self.assertEqual(android.running_instances(strict=True),
+                             {'lepton-steamlaunch-1': '5556', 'lepton-steamlaunch-2': None})
+        with patch.object(android, 'ssh', side_effect=android.FrameError('podman: cannot connect')):
+            with self.assertRaises(android.FrameError):
+                android.running_instances(strict=True)
+            with self.assertRaises(android.FrameError):
+                quest._running(PKG)
+        with patch.object(android, 'stop'), patch.object(quest, '_sleep'), \
+                patch.object(android, 'ssh', side_effect=android.FrameError('podman: cannot connect')):
+            self.assertEqual(quest._close(PKG), (False, 'podman: cannot connect'))  # never "closed"
+        with patch.object(android, 'stop'), patch.object(android, 'ssh', return_value=''):
+            self.assertEqual(quest._close(PKG), (True, None))
+        # Other callers keep the lenient listing.
+        with patch.object(android, 'ssh', return_value='') as ssh:
+            self.assertEqual(android.running_instances(), {})
+        self.assertIn('|| true', ssh.call_args[0][0])
+
+    def test_dumpsys_scoped_to_the_package(self):
+        meta = {'package': PKG, 'instance': 2800000001}
+        dump = ('Packages:\n  Package [com.other.app] (1a):\n    versionCode=5 minSdk=21\n'
+                f'  Package [{PKG}] (2b):\n    userId=10050\n    versionCode=100 minSdk=29\n'
+                '  Package [com.third.app] (3c):\n    versionCode=7\n')
+        with patch.object(android, 'ssh', return_value=dump):
+            quest._check_android_package(meta, 100)
+            with self.assertRaisesRegex(quest.QuestError, 'version code 100'):
+                quest._check_android_package(meta, 5)
+        other_only = 'Packages:\n  Package [com.other.app] (1a):\n    versionCode=100\n'
+        with patch.object(android, 'ssh', return_value=other_only):
+            with self.assertRaisesRegex(quest.QuestError, 'does not have'):
+                quest._check_android_package(meta, 100)
+
+    def test_installed_version_code_reads_the_frame_apk(self):
+        """Runs the Frame-side script here, against an APK laid out as on the Frame."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as home:
+            app = Path(home) / android.APPS_DIR / PKG
+            app.mkdir(parents=True)
+            (app / 'app.apk').write_bytes(apk_bytes(version_code=4321))
+
+            def run_here(cmd, input=None, timeout=None):
+                self.assertEqual(cmd, 'python3 -')
+                return subprocess.run([sys.executable, '-'], input=input, cwd=home, capture_output=True,
+                                      text=True, check=True).stdout
+            with patch.object(android, 'ssh', side_effect=run_here):
+                self.assertEqual(android.installed_version_code(PKG), 4321)
+                (app / 'app.apk').write_bytes(b'not an apk')
+                self.assertIsNone(android.installed_version_code(PKG))
+                (app / 'app.apk').unlink()
+                self.assertIsNone(android.installed_version_code(PKG))
+        with self.assertRaises(android.FrameError):
+            android.installed_version_code('../x')
+
+
+class CloseInFinally(unittest.TestCase):
+    """The game is closed even when the copy fails locally or is interrupted."""
+
+    META = Import.META
+
+    def setUp(self):
+        self.order = []
+        self.stop_error = None
+
+        def stop(pkg):
+            self.order.append('stop')
+            if self.stop_error:
+                raise android.FrameError(self.stop_error)
+        self.running = True
+        for target, name, effect in ((android, 'stop', stop),
+                                     (android, 'read_meta', lambda pkg: dict(self.META)),
+                                     (android, 'install', lambda *a, **k: self.fail('no install')),
+                                     (quest, '_running', lambda pkg: 'stop' not in self.order),
+                                     (quest, '_sleep', lambda s: None),
+                                     (quest, '_check_android_package', lambda m, c: None),
+                                     (quest, '_wait_ready', lambda m: None)):
+            p = patch.object(target, name, side_effect=effect)
+            p.start()
+            self.addCleanup(p.stop)
+        fake = FakeQuest(self)
+        fake.add(PKG, [apk_bytes(files=OPENXR, version_code=100, version_name='1.0')],
+                 obb={f'main.1.{PKG}.obb': b'main'}, data={'files/save.dat': b'save'})
+
+    def test_local_oserror_closes_the_game_and_keeps_the_cause(self):
+        with patch.object(android, 'install_obb', return_value={'obb': []}), \
+                patch.object(quest, 'push_data', side_effect=OSError(5, 'Input/output error')):
+            with self.assertRaisesRegex(quest.QuestError, 'Input/output error.*The game was closed') as e:
+                quest.import_game(PKG, data=True)
+        self.assertIsInstance(e.exception.__cause__, OSError)
+        self.assertEqual(self.order, ['stop'])
+
+    def test_ctrl_c_closes_the_game_and_still_raises(self):
+        with patch.object(android, 'install_obb', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                quest.import_game(PKG)
+        self.assertEqual(self.order, ['stop'])
+        self.order.clear()
+        self.stop_error = 'Steam is not answering'
+        err = io.StringIO()
+        with patch.object(android, 'install_obb', side_effect=KeyboardInterrupt), patch.object(sys, 'stderr', err):
+            with self.assertRaises(KeyboardInterrupt):  # a failed close never hides the interrupt
+                quest.import_game(PKG)
+        self.assertEqual(self.order, ['stop'])
+        self.assertIn("couldn't close Quest Game on the Frame (Steam is not answering)", err.getvalue())
+        self.assertFalse(quest._import_lock.locked())
+        self.assertTrue(android._install_lock.acquire(blocking=False))
+        android._install_lock.release()
 
 
 class FrameSide(unittest.TestCase):
