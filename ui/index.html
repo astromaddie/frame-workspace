@@ -968,7 +968,7 @@
       <section class="panel" id="metaLib">
         <div class="shelf-head"><h2>My Meta library</h2><span class="tag">Experimental</span><span class="count" id="metaCount"></span><span class="spacer"></span>
           <button class="small" id="metaRefresh" hidden title="Read your Meta library again">Refresh</button>
-          <button class="small" id="metaDisconnect" hidden title="Forget your Meta token on this computer">Disconnect</button></div>
+          <button class="small" id="metaDisconnect" hidden title="Forget your Meta token on this computer (and sign out of Meta in Frame Control)">Disconnect</button></div>
         <div class="sub" id="metaState" role="status" aria-live="polite">Off. Nothing is sent to Meta until you connect.</div>
         <p class="hint" style="color:var(--warn)">Experimental. This uses Meta's undocumented internal API with your own Meta
           access token. It may stop working whenever Meta changes things, and using it may be against Meta's terms; your
@@ -977,11 +977,17 @@
         <div id="metaConnectBox">
           <label class="sub" style="display:block;margin-top:6px"><input type="checkbox" id="metaAck"> I understand, and want to
             use my own Meta token with Frame Control</label>
+          <div id="metaSignInRow" hidden style="display:flex;gap:8px;align-items:center;margin-top:6px">
+            <button class="small" id="metaSignIn" disabled title="Opens Meta's own login page in a Frame Control window">Sign in with Meta…</button>
+            <span class="hint" style="margin:0">or paste your token:</span><span class="spacer"></span>
+            <button class="small" id="metaSignOut" title="Clear the Meta sign-in that Frame Control's sign-in window keeps">Sign out of Meta in Frame Control</button></div>
           <div style="display:flex;gap:8px;margin-top:6px">
             <input type="password" id="metaToken" autocomplete="off" spellcheck="false" style="flex:1"
                    placeholder="Your Meta access token (starts with OC or FRL)" aria-label="Meta access token" disabled>
             <button class="small" id="metaConnect" disabled>Connect</button></div>
           <div class="hint"><a href="https://github.com/saphid/frame-control/blob/main/docs/meta-library.md#your-token" target="_blank" rel="noopener noreferrer">How to get your token</a>.
+            Sign in with Meta (desktop app) opens Meta's login page in its own Frame Control window and takes the token
+            from there; it never reads your browser.
             Frame Control checks it with Meta, then keeps it in a private file on this computer (never on the Frame, and
             never in reports). Disconnect deletes it.</div>
         </div>
@@ -3471,7 +3477,27 @@ async function loadMeta(refresh = false) {
   metaLib.apps = d.apps || [];
   renderMetaApps();
 }
-$("metaAck").onchange = e => { $("metaToken").disabled = !e.target.checked; $("metaConnect").disabled = !e.target.checked; };
+// Sign in with Meta: the desktop app only (app/meta-signin.js); a plain browser pastes the token.
+const metaSignInOk = !!(window.frameApp && window.frameApp.meta && window.frameApp.meta.signIn);
+$("metaSignInRow").hidden = !metaSignInOk;
+$("metaAck").onchange = e => {
+  $("metaToken").disabled = $("metaConnect").disabled = $("metaSignIn").disabled = !e.target.checked;
+};
+$("metaSignIn").onclick = async () => {
+  if (!$("metaAck").checked) return;
+  $("metaSignIn").disabled = true;
+  $("metaState").textContent = "Sign in to Meta in the window that opened…";
+  try {
+    const r = await window.frameApp.meta.signIn(true);
+    if (r && r.ok) { toast(r.message || "Connected"); loadMeta(); }
+    else $("metaState").textContent = (r && r.error) || "Sign-in didn't finish.";
+  } catch (e) { $("metaState").textContent = e.message; }
+  finally { $("metaSignIn").disabled = !$("metaAck").checked; }
+};
+$("metaSignOut").onclick = async () => {
+  try { await window.frameApp.meta.signOut(); toast("Signed out of Meta in Frame Control"); }
+  catch (e) { toast(e.message, true); }
+};
 $("metaConnect").onclick = async () => {
   const token = $("metaToken").value;
   $("metaConnect").disabled = true;
@@ -3484,10 +3510,14 @@ $("metaConnect").onclick = async () => {
   finally { $("metaConnect").disabled = !$("metaAck").checked; }
 };
 $("metaDisconnect").onclick = async () => {
-  if (!confirm("Disconnect your Meta account? Its token is deleted from this computer. Games already installed stay.")) return;
+  if (!confirm("Disconnect your Meta account? Its token is deleted from this computer. Games already installed stay."
+               + (metaSignInOk ? "\n\nThis also signs out of Meta in Frame Control (its Sign in with Meta window), so the next sign-in starts fresh." : ""))) return;
   try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
   catch (e) { toast(e.message, true); }
-  $("metaAck").checked = false; $("metaToken").disabled = $("metaConnect").disabled = true;
+  if (metaSignInOk) {
+    try { await window.frameApp.meta.signOut(); } catch (e) { toast(`Couldn't sign out of Meta in Frame Control: ${e.message}`, true); }
+  }
+  $("metaAck").checked = false; $("metaToken").disabled = $("metaConnect").disabled = $("metaSignIn").disabled = true;
   metaLib.results.clear(); loadMeta();
 };
 $("metaRefresh").onclick = () => loadMeta(true);

@@ -6,7 +6,8 @@
 // the headset can't be reached, and keeps the Frame menu's list of headsets up to date.
 // It also receives frame-control://install links (docs/web-install.md): only
 // what the link asked for, never an install; the page asks the user first.
-// And it passes update state both ways: see app/updater.js.
+// And it passes update state both ways: see app/updater.js. It opens the Sign in
+// with Meta window and signs out of it (app/meta-signin.js).
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("frameApp", {
@@ -38,6 +39,12 @@ contextBridge.exposeInMainWorld("frameApp", {
   onReportProblem: (cb) => {
     ipcRenderer.removeAllListeners("report:open");
     ipcRenderer.on("report:open", () => cb());
+  },
+  // Sign in with Meta (app/meta-signin.js): Meta's login page in its own window. The
+  // answer is the server's (connected, display name), never the token.
+  meta: {
+    signIn: (acknowledged) => ipcRenderer.invoke("meta:signin", acknowledged === true),
+    signOut: () => ipcRenderer.invoke("meta:signout"),
   },
   onInstallLink: (cb) => {
     ipcRenderer.removeAllListeners("install-link");

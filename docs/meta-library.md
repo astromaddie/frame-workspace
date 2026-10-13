@@ -26,9 +26,44 @@ What it will and won't do:
 
 ## Your token
 
-Frame Control doesn't sign in to Meta for you and doesn't read your browser's
-cookies. You copy your own token and paste it in. The two ways BSManager's
-guide describes
+Frame Control never reads your browser's cookies. There are two ways to give
+it your token.
+
+**Sign in with Meta** (desktop app only; a plain browser doesn't show it).
+Tick **I understand…**, then choose **Sign in with Meta…**. Meta's own login
+page (`https://secure.oculus.com`, the address BSManager's "Log in with Meta"
+opens) appears in a Frame Control window. Sign in there as usual. When Meta's
+site sets its access token cookie (`oc_ac_at`), Frame Control takes it from
+that window, connects with it exactly as if you had pasted it (below), and
+closes the window. The window:
+
+- has its own storage (the Electron session `persist:meta-signin`), separate
+  from Frame Control's main window and from every browser on your computer;
+  the cookie is read only from there, and only for `oculus.com`;
+- runs Meta's page sandboxed, with no access to Frame Control (no preload, no
+  Node, context isolation on) and every permission request (camera,
+  notifications…) refused;
+- only goes to `https://` pages on `oculus.com`, `meta.com` and `facebook.com`
+  (and their subdomains). A link anywhere else opens in your system browser; a
+  redirect anywhere else is stopped. Pop-ups on those sites open in the same
+  window;
+- sends a cookie value on only if it looks like a user token (`OC` or `FRL`,
+  mixed case, no `%`, `|` or `:`), and each value once. If the server refuses
+  it, the window stays open; close it to see why;
+- gives up after 10 minutes, as BSManager does.
+
+The page never sees the token: the desktop app hands it straight to the local
+server's connect path and tells the page only the answer (connected, and your
+Meta display name). It isn't logged anywhere.
+
+The window keeps you signed in to Meta (in `persist:meta-signin` only) until
+you **Disconnect**, which also signs out of Meta in Frame Control: it clears
+that window's cookies, storage and cache, so the next sign-in starts fresh.
+**Sign out of Meta in Frame Control** next to the sign-in button does just
+that part, for a sign-in that didn't connect.
+
+**Paste a token.** You copy your own token and paste it in. The two ways
+BSManager's guide describes
 ([How to obtain your Oculus Token](https://github.com/Zagrios/bs-manager/wiki/How-to-obtain-your-Oculus-Token)):
 
 1. **From the Meta website.** Sign in at `https://secure.oculus.com`. Open the
@@ -56,9 +91,9 @@ the redaction look for it.
 
 ## Using it
 
-1. Tick **I understand…**, paste your token and choose **Connect**. Frame
-   Control asks Meta "who am I" with it (a read-only query); only a token Meta
-   accepts is kept.
+1. Tick **I understand…**, then either choose **Sign in with Meta…** (desktop
+   app) or paste your token and choose **Connect**. Frame Control asks Meta
+   "who am I" with it (a read-only query); only a token Meta accepts is kept.
 2. Your Quest games are listed with their version, size, game data, and the
    community verdict from the compatibility database when there is one.
 3. **Install** downloads the game and installs it on the Frame, as [Import
@@ -69,8 +104,9 @@ the redaction look for it.
    it has game data to add: once to add it, once for the test), watches it for
    about 30 seconds, and records what happened. **Test again** repeats only
    the test.
-5. **Disconnect** deletes the token from your computer. Games already on the
-   Frame stay.
+5. **Disconnect** deletes the token from your computer and, in the desktop
+   app, signs out of Meta in Frame Control (clears the sign-in window's
+   storage). Games already on the Frame stay.
 
 From a terminal (the token is read from standard input, never an argument):
 
@@ -89,7 +125,9 @@ The local API: `GET /api/meta` (connected or not, never the token),
 `{"action": "connect", "token": "...", "acknowledged": true}`,
 `{"action": "disconnect"}`, `{"action": "install", "app": "APP_ID", "test": false,
 "allowDowngrade": false}` or `{"action": "test", "package": "..."}`. Install and
-test return a background job (`/api/job`).
+test return a background job (`/api/job`). Sign in with Meta uses the same
+`connect` action: the desktop app's main process (`app/meta-signin.js`) posts
+it with the cookie's value once the page's acknowledgement box is ticked.
 
 ## What an install does
 
@@ -196,7 +234,12 @@ turn that on.
   token-shaped value, before it is shortened.
 - Disconnect deletes the file and the library Frame Control holds in memory,
   and stops a download under way. A connect still being checked when you
-  disconnect is not saved.
+  disconnect is not saved. In the desktop app it also closes any open sign-in
+  window and clears the `persist:meta-signin` session (cookies, storage,
+  cache); no other session is touched.
+- With Sign in with Meta, a second copy of your Meta sign-in lives in that
+  session's storage, in Electron's per-user data folder (`Partitions/meta-signin`),
+  until you disconnect or sign out of Meta in Frame Control.
 
 ## Where the protocol comes from
 
@@ -214,6 +257,7 @@ DownQuest and Oculus-downgrader state no licence.
 | Downloads: `https://securecdn.oculus.com/binaries/download/?id=<id>&access_token=<token>`, the same for the APK, `obb_binary` and asset files; QAVS takes the OBB and required asset files | OculusGraphQLApiLib `Game/GameDownloader.cs`, [QAVS `DownloadManager.cs`](https://github.com/ComputerElite/QuestAppVersionSwitcher/blob/36bebd5a/QuestAppVersionSwitcher/DownloadManager.cs), DownQuest `DownQuest.js` |
 | Token checks (`OC`/`FRL`, no `%`, `|`, `:`, not `OC` + 15 digits) | OculusGraphQLApiLib `GraphQL/TokenTools.cs`, [BSManager `oculus.helpers.ts`](https://github.com/Zagrios/bs-manager/blob/00380c79/src/shared/helpers/oculus.helpers.ts) |
 | How users get a token (`oc_ac_at` cookie, or the PC app's `FRL` token) | [BSManager wiki](https://github.com/Zagrios/bs-manager/wiki/How-to-obtain-your-Oculus-Token) |
+| Sign in with Meta: open `https://secure.oculus.com` in an app window, and once it reaches `https://secure.oculus.com/my/profile` read the `oc_ac_at` cookie from that window's session (checked on `did-navigate`, `did-navigate-in-page`, `did-stop-loading`); 10-minute timeout | [BSManager `bs-oculus-downloader.service.ts`](https://github.com/Zagrios/bs-manager/blob/00380c79/src/main/services/bs-version-download/bs-oculus-downloader.service.ts) (`getUserTokenFromMetaAuth`) |
 
 **Assumed, not seen in those sources:** that the entitlement and binary
 answers carry the fields above in the shapes the libraries' models describe
@@ -248,7 +292,33 @@ reports carrying only fixed texts, no token, log text or file names. The
 real TLS connection code is the same as the itch.io branch's and is exercised
 here only with a fake connection.
 
-**Not verified:** a real Meta token and Meta's real answers (none was
+**Sign in with Meta, verified locally** with fake Electron windows, sessions
+and cookies (`app/test/meta-signin.test.js`): the window's options (its own
+partition, sandbox, context isolation, no Node, no preload) and Meta's login
+address; permission requests refused; the navigation allow-list (links
+elsewhere open in the system browser, redirects elsewhere are stopped,
+pop-ups never become windows); the cookie read only from
+`persist:meta-signin` and only for `oculus.com`, even when the default
+session and another partition hold one; signed-out values ignored; a value
+sent once, a refused one keeping the window open; the window closing after a
+connect, with the page getting the answer and never the token; nothing
+logged, and a server error that echoed the token scrubbed; closing the window
+or signing out ending the wait; sign-out clearing only that partition.
+
+**Differences from BSManager:** BSManager uses its app's default session (and
+clears only `.oculus.com` cookies afterwards); Frame Control uses a session of
+its own and clears all of it on disconnect. BSManager waits for
+`/my/profile`; Frame Control also reacts to the cookie changing, and to any
+`oculus.com` page, and lets the server decide whether the value is a
+working token.
+
+**Not verified:** Sign in with Meta against Meta's real login page (no real
+Meta account was used, and nothing was sent to Meta): whether Meta's login
+still goes only through `oculus.com`, `meta.com` and `facebook.com`, whether
+it uses pop-ups (they open in the same window here, which would break a
+pop-up that reports back to its opener), whether `oc_ac_at` is still set on
+`oculus.com` after login, and whether Meta accepts the window (Frame Control
+removes Electron's name from the user agent as a precaution). A real Meta token and Meta's real answers (none was
 available; nothing was sent to Meta), real downloads and their redirects,
 real Quest games installed or tested on a real Frame, and whether the log
 signatures match what real games print in Lepton.
