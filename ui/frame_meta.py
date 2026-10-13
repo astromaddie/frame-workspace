@@ -348,9 +348,11 @@ def cancel_signin(attempt):
         raise MetaError('Invalid sign-in attempt id.')
     _check_attempt(attempt)
     with _lock:
+        # Both, independently: a connect that has just saved may still be listed until
+        # its cleanup runs, and its token must go all the same.
         if attempt in _attempts:
             _attempts[attempt]['cancelled'] = True
-        elif _saved_by[0] == attempt:
+        if _saved_by[0] == attempt:
             _forget_locked()
     return status()
 

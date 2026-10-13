@@ -3492,11 +3492,13 @@ async function loadMeta(refresh = false) {
 // Sign in with Meta: the desktop app only (app/meta-signin.js); a plain browser pastes the token.
 const metaSignInOk = !!(window.frameApp && window.frameApp.meta && window.frameApp.meta.signIn);
 $("metaSignInRow").hidden = !metaSignInOk;
+let metaDisconnecting = false;  // from pressing Disconnect until the server has deleted the token
 $("metaAck").onchange = e => {
-  $("metaToken").disabled = $("metaConnect").disabled = $("metaSignIn").disabled = !e.target.checked;
+  $("metaToken").disabled = $("metaConnect").disabled = !e.target.checked;
+  $("metaSignIn").disabled = !e.target.checked || metaDisconnecting;
 };
 $("metaSignIn").onclick = async () => {
-  if (!$("metaAck").checked) return;
+  if (!$("metaAck").checked || metaDisconnecting) return;
   $("metaSignIn").disabled = true;
   $("metaState").textContent = "Sign in to Meta in the window that opened…";
   try {
@@ -3504,7 +3506,7 @@ $("metaSignIn").onclick = async () => {
     if (r && r.ok) { toast(r.message || "Connected"); loadMeta(); }
     else { await loadMeta(); $("metaState").textContent = (r && r.error) || "Sign-in didn't finish."; }
   } catch (e) { $("metaState").textContent = e.message; }
-  finally { $("metaSignIn").disabled = !$("metaAck").checked; }
+  finally { $("metaSignIn").disabled = !$("metaAck").checked || metaDisconnecting; }
 };
 $("metaSignOut").onclick = async () => {
   try { await window.frameApp.meta.signOut(); toast("Signed out of Meta in Frame Control"); }
@@ -3524,12 +3526,16 @@ $("metaConnect").onclick = async () => {
 $("metaDisconnect").onclick = async () => {
   if (!confirm("Disconnect your Meta account? Its token is deleted from this computer. Games already installed stay."
                + (metaSignInOk ? "\n\nThis also signs out of Meta in Frame Control (its Sign in with Meta window), so the next sign-in starts fresh." : ""))) return;
-  // Sign-out first: it stops the sign-in window taking a new token before the account is forgotten.
-  if (metaSignInOk) {
-    try { await window.frameApp.meta.signOut(); } catch (e) { toast(`Couldn't sign out of Meta in Frame Control: ${e.message}`, true); }
-  }
-  try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
-  catch (e) { toast(e.message, true); }
+  // No sign-in from here until the token is deleted. Sign-out first: it stops the sign-in
+  // window (and any connect it started) before the account is forgotten.
+  metaDisconnecting = true; $("metaSignIn").disabled = true;
+  try {
+    if (metaSignInOk) {
+      try { await window.frameApp.meta.signOut(); } catch (e) { toast(`Couldn't sign out of Meta in Frame Control: ${e.message}`, true); }
+    }
+    try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
+    catch (e) { toast(e.message, true); }
+  } finally { metaDisconnecting = false; }
   $("metaAck").checked = false; $("metaToken").disabled = $("metaConnect").disabled = $("metaSignIn").disabled = true;
   metaLib.results.clear(); loadMeta();
 };

@@ -492,3 +492,63 @@ test("each sign-in has its own attempt id", async () => {
   assert.notStrictEqual(f.attempts[0], f.attempts[1]);
   assert.deepStrictEqual(f.cancels, f.attempts);
 });
+
+test("no sign-in can start while a sign-out waits on an earlier connect", async () => {
+  const f = fakes();
+  let release;
+  f.setAnswer(() => new Promise((r) => { release = r; }));
+  const first = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  await settle();
+  const out = f.flow.signOut();  // Disconnect pressed while that connect is under way
+  assert.strictEqual((await first).ok, false);
+  assert.ok(f.flow.isSigningOut());
+  // The page answered, so the user tries again at once: refused, no window, nothing sent.
+  const second = await f.flow.signIn();
+  assert.deepStrictEqual(second, { ok: false, error: "Frame Control is signing out of Meta; try again in a moment." });
+  assert.strictEqual(f.windows.length, 1);
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: OTHER });
+  await settle();
+  assert.deepStrictEqual(f.calls, [TOKEN]);
+  // A second sign-out joins the first.
+  assert.strictEqual(f.flow.signOut(), out);
+  release({ status: 200, data: { connected: true } });
+  await out;
+  assert.deepStrictEqual(f.cancels, [f.attempts[0]]);
+  assert.strictEqual(f.meta().cleared.filter(([k]) => k === "storage").length, 1);
+  assert.ok(!f.flow.isSigningOut());
+  // Once it is done, signing in works again.
+  f.setAnswer(() => ({ status: 200, data: { connected: true } }));
+  const third = f.flow.signIn();
+  assert.strictEqual(f.windows.length, 2);
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: OTHER });
+  assert.strictEqual((await third).ok, true);
+});
+
+test("sign-out goes round until no window and no connect or cancel is left", async () => {
+  const f = fakes();
+  let releaseA;
+  f.setAnswer(() => new Promise((r) => { releaseA = r; }));
+  const a = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  await settle();
+  f.windows[0].close();  // window A closed; its cancel waits on its connect
+  await a;
+  // Window B is open, with its own connect under way, when sign-out starts.
+  let releaseB;
+  f.setAnswer(() => new Promise((r) => { releaseB = r; }));
+  const b = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: OTHER });
+  await settle();
+  let finished = false;
+  const out = f.flow.signOut().then(() => { finished = true; });
+  await b;
+  releaseB({ status: 400, data: { error: "no" } });
+  await settle();
+  assert.strictEqual(finished, false);  // A's connect is still under way
+  releaseA({ status: 200, data: { connected: true } });
+  await out;
+  assert.deepStrictEqual([...f.cancels].sort(), [...f.attempts].sort());
+  assert.strictEqual(f.attempts.length, 2);
+  assert.strictEqual(f.log[f.log.length - 1], "clear");
+});

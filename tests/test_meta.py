@@ -256,6 +256,44 @@ class SignInAttempts(unittest.TestCase):
         self.assertFalse(meta.cancel_signin('attempt-saved-0005')['connected'])
         self.assertFalse(meta.account_path().exists())
 
+    def test_a_cancel_between_the_save_and_the_cleanup_removes_that_token(self):
+        # The connect has saved and let go of the lock, but hasn't yet dropped its attempt
+        # from the in-flight list when the cancel arrives.
+        FakeMeta(self)
+        real_status = meta.status
+        seen = {}
+
+        def cancel_in_the_gap():
+            # status() runs after the save; put the attempt back as still listed, as it is
+            # in the moment before connect's cleanup, and cancel there.
+            if 'done' not in seen and meta._saved_by[0] == 'attempt-gap-0011':
+                seen['done'] = True
+                with meta._lock:
+                    meta._attempts['attempt-gap-0011'] = {'cancelled': False, 'running': 1}
+                meta.cancel_signin('attempt-gap-0011')
+                seen['listed'] = 'attempt-gap-0011' in meta._attempts
+                with meta._lock:
+                    del meta._attempts['attempt-gap-0011']
+            return real_status()
+        with patch.object(meta, 'status', side_effect=cancel_in_the_gap):
+            meta.connect(TOKEN, attempt='attempt-gap-0011')
+        self.assertTrue(seen.get('listed'))
+        self.assertFalse(meta.account_path().exists())
+        self.assertFalse(meta.status()['connected'])
+
+    def test_a_cancel_while_still_listed_marks_and_never_touches_another_account(self):
+        FakeMeta(self)
+        meta.connect(TOKEN)  # a pasted token owns the account
+        with meta._lock:
+            meta._attempts['attempt-listed-0012'] = {'cancelled': False, 'running': 1}
+        try:
+            meta.cancel_signin('attempt-listed-0012')
+            self.assertTrue(meta._attempts['attempt-listed-0012']['cancelled'])
+        finally:
+            with meta._lock:
+                meta._attempts.pop('attempt-listed-0012', None)
+        self.assertTrue(meta.status()['connected'])
+
     def test_a_cancel_never_removes_a_later_account(self):
         FakeMeta(self)
         meta.connect(TOKEN, attempt='attempt-first-0006')

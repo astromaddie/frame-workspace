@@ -66,7 +66,8 @@ closes the window. The window:
   gets it after the connect; with nothing sent, there is nothing to cancel.
   The server lists an attempt only while its
   connect is being checked: cancelled then, it isn't saved; cancelled just
-  after its token was saved, that token is deleted (as a disconnect). A cancel
+  after its token was saved (even before the connect has finished tidying
+  up), that token is deleted (as a disconnect). A cancel
   never removes an account a later sign-in or a pasted token saved, and one
   for an unknown attempt changes nothing.
 
@@ -259,7 +260,9 @@ turn that on.
   also stops any sign-in under way, destroys the sign-in window, waits for a
   connect still under way to finish and cancels its attempt (deleting its
   token if it was just saved), and only then clears the `persist:meta-signin` session
-  (cookies, storage, cache); no other session is touched.
+  (cookies, storage, cache); no other session is touched. Sign in with Meta
+  stays off from the moment you press Disconnect until the token is deleted,
+  and the app refuses a sign-in while it is signing out.
 - With Sign in with Meta, a second copy of your Meta sign-in lives in that
   session's storage, in Electron's per-user data folder (`Partitions/meta-signin`),
   until you disconnect or sign out of Meta in Frame Control.
@@ -333,7 +336,10 @@ connect cancelling that attempt (with its own id) after cookie intake stops
 and only after that connect settles (saved, refused or failed), and no cancel
 when nothing was sent; sign-out (Disconnect's first step) waiting for a
 connect under way, even from a window closed earlier, before it finishes;
-sign-out destroying the window before clearing only that partition. The
+sign-out destroying the window before clearing only that partition; no
+sign-in starting while a sign-out runs (it is refused: "try again in a
+moment"), a second sign-out joining the first, and a sign-out waiting for
+every window and connect started before it. The
 frame redirects held to the frame rule, the window's to Meta's sites. The
 server side (`tests/test_meta.py`): an attempt cancelled while Meta is
 answering not saved, even after 300 other cancels; a cancel just after the

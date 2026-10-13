@@ -66,12 +66,15 @@ function scrub(text, token) {
 function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, parent = () => null, timeout = TIMEOUT }) {
   let active = null;  // { win, promise, finish }
   const pending = new Set();  // cancels still to reach the server, from flows already finished
+  let signingOut = null;      // the sign-out under way; no sign-in starts while it runs
+  const SIGNING_OUT = "Frame Control is signing out of Meta; try again in a moment.";
 
   const openOutside = (target) => {
     if (/^https?:\/\//i.test(String(target))) shell.openExternal(String(target));
   };
 
   function signIn() {
+    if (signingOut) return Promise.resolve({ ok: false, error: SIGNING_OUT });
     if (active) { active.win.focus(); return active.promise; }
     const ses = session.fromPartition(PARTITION);
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
@@ -201,24 +204,37 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
   // Signs out of Meta in Frame Control: stops any sign-in under way (and has the server
 // refuse to save it), destroys the window, then clears everything
   // the sign-in session stored (cookies, storage, cache), so the next sign-in starts fresh.
-  async function signOut() {
-    if (active) {
-      const { win, finish } = active;
-      await finish({ ok: false, cancelled: true, error: "Signed out of Meta in Frame Control." });
-      // Clear only once nothing can write to the session again.
-      if (!win.isDestroyed()) throw new Error("The Sign in with Meta window didn't close; try again.");
+  // One at a time (a second call joins the first), and no sign-in can start meanwhile.
+  // It goes round until no window is open and no connect or cancel is left, so nothing
+  // started before it can set a token after it (or after the Disconnect that follows).
+  function signOut() {
+    if (!signingOut) {
+      signingOut = (async () => {
+        for (;;) {
+          if (active) {
+            const { win, finish } = active;
+            await finish({ ok: false, cancelled: true, error: "Signed out of Meta in Frame Control." });
+            // Clear only once nothing can write to the session again.
+            if (!win.isDestroyed()) throw new Error("The Sign in with Meta window didn't close; try again.");
+          } else if (pending.size) {
+            // A connect under way settles and is cancelled before the caller (Disconnect)
+            // deletes the account, so it can't be saved afterwards.
+            await Promise.all([...pending]);
+          } else {
+            break;
+          }
+        }
+        const ses = session.fromPartition(PARTITION);
+        await ses.clearStorageData();
+        await ses.clearCache();
+        if (ses.clearAuthCache) await ses.clearAuthCache();
+        return true;
+      })().finally(() => { signingOut = null; });
     }
-    // Any connect still under way settles and is cancelled before the caller (Disconnect)
-    // deletes the account, so it can't be saved afterwards.
-    await Promise.all([...pending]);
-    const ses = session.fromPartition(PARTITION);
-    await ses.clearStorageData();
-    await ses.clearCache();
-    if (ses.clearAuthCache) await ses.clearAuthCache();
-    return true;
+    return signingOut;
   }
 
-  return { signIn, signOut, isOpen: () => !!active };
+  return { signIn, signOut, isOpen: () => !!active, isSigningOut: () => !!signingOut };
 }
 
 module.exports = { createMetaSignIn, allowedUrl, allowedSubframeUrl, looksLikeUserToken, scrub, PARTITION, LOGIN_URL, COOKIE, ALLOWED };
