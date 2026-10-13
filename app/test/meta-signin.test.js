@@ -312,6 +312,35 @@ test("the window stays on Meta's sites; frames inside it may load any HTTPS page
   f.windows[0].destroy();
 });
 
+function redirect(wc, url, isMainFrame, style) {
+  let prevented = false;
+  const e = { preventDefault: () => { prevented = true; } };
+  if (style === "details") wc.emit("will-redirect", Object.assign(e, { url, isMainFrame }));
+  else wc.emit("will-redirect", e, url, false, isMainFrame);
+  return prevented;
+}
+
+test("redirects follow the same rule per frame", async () => {
+  const f = fakes();
+  f.flow.signIn();
+  const wc = f.windows[0].webContents;
+  for (const style of ["details", "positional"]) {
+    // A captcha frame redirected within HTTPS loads; a frame redirected to data: or http: doesn't.
+    assert.strictEqual(redirect(wc, "https://client-api.arkoselabs.com/v2/next", false, style), false, style);
+    assert.strictEqual(redirect(wc, "https://newassets.hcaptcha.com/x", false, style), false, style);
+    assert.strictEqual(redirect(wc, "data:text/html,<b>x</b>", false, style), true, style);
+    assert.strictEqual(redirect(wc, "http://www.facebook.com/x", false, style), true, style);
+    assert.strictEqual(redirect(wc, "javascript:alert(1)", false, style), true, style);
+    // The window: Meta's sites only.
+    assert.strictEqual(redirect(wc, "https://client-api.arkoselabs.com/v2/next", true, style), true, style);
+    assert.strictEqual(redirect(wc, "https://auth.meta.com/next", true, style), false, style);
+  }
+  // Without frame information it is treated as the window.
+  assert.strictEqual(redirect(wc, "https://client-api.arkoselabs.com/", undefined, "positional"), true);
+  assert.deepStrictEqual(f.opened, []);
+  f.windows[0].destroy();
+});
+
 test("a page's beforeunload can't keep the window open", async () => {
   const f = fakes();
   const done = f.flow.signIn();

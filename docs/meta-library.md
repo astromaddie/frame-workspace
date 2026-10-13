@@ -50,7 +50,8 @@ closes the window. The window:
   can embed captcha and CDN frames from other sites, such as Arkose Labs,
   hCaptcha, reCAPTCHA or fbcdn) or an empty frame (`about:blank`,
   `about:srcdoc`); a frame going to any other scheme (`http:`, `data:`,
-  `blob:`, `javascript:`, `file:`…) is just stopped. Frames can't reach the
+  `blob:`, `javascript:`, `file:`…) is just stopped. Redirects follow the same
+  rule for the frame they happen in. Frames can't reach the
   token: the cookie is read by Frame Control's main process, and the window
   has no IPC;
 - sends a cookie value on only if it looks like a user token (`OC` or `FRL`,
@@ -60,8 +61,11 @@ closes the window. The window:
 - when it is closed, times out or is signed out of, stops reading cookies
   first, then is destroyed (a page's "leave this page?" can't keep it open),
   and, if it had sent a token, tells the server to drop that sign-in: each
-  sign-in has a random attempt id, and a connect from a cancelled attempt is
-  never saved, even if Meta is still answering when the cancel arrives.
+  sign-in has a random attempt id. The server lists an attempt only while its
+  connect is being checked: cancelled then, it isn't saved; cancelled just
+  after its token was saved, that token is deleted (as a disconnect). A cancel
+  never removes an account a later sign-in or a pasted token saved, and one
+  for an unknown attempt changes nothing.
 
 The page never sees the token: the desktop app hands it straight to the local
 server's connect path and tells the page only the answer (connected, and your
@@ -140,7 +144,8 @@ test return a background job (`/api/job`). Sign in with Meta uses the same
 `connect` action: the desktop app's main process (`app/meta-signin.js`) posts
 it with the cookie's value and an `"attempt"` id (8 to 64 letters, digits or
 `-`) once the page's acknowledgement box is ticked. A connect whose attempt
-was cancelled answers 409 and saves nothing.
+was cancelled while it was checked answers 409 and saves nothing;
+`cancel-signin` for an attempt whose token is the saved account deletes it.
 
 ## What an install does
 
@@ -322,9 +327,12 @@ logged, and a server error that echoed the token scrubbed; closing the window
 or signing out ending the wait; closing, timing out or signing out during a
 connect cancelling that attempt (with its own id) after cookie intake stops;
 sign-out destroying the window before clearing only that partition. The
-server side (`tests/test_meta.py`): a cancelled attempt refused before
-anything is sent to Meta, and also when cancelled while Meta is answering;
-attempt ids checked; other attempts and pasted tokens unaffected.
+frame redirects held to the frame rule, the window's to Meta's sites. The
+server side (`tests/test_meta.py`): an attempt cancelled while Meta is
+answering not saved, even after 300 other cancels; a cancel just after the
+save deleting that token; a cancel never removing a later sign-in's or a
+pasted token's account; unknown attempts changing nothing; no attempt left
+listed after a connect, refused or not; attempt ids checked.
 
 **Differences from BSManager:** BSManager uses its app's default session (and
 clears only `.oculus.com` cookies afterwards); Frame Control uses a session of

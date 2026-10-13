@@ -164,7 +164,13 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
       if (e.isMainFrame ? allowedUrl(e.url) : allowedSubframeUrl(e.url)) return;
       e.preventDefault();
     });
-    wc.on("will-redirect", (e, target) => { if (!allowedUrl(target)) e.preventDefault(); });
+    // Redirects fire for frames too: the same rule per frame (details on the event in
+    // current Electron, positional arguments in older ones; unknown counts as the window).
+    wc.on("will-redirect", (e, target, _inPlace, isMainFrame) => {
+      const to = e && e.url !== undefined ? e.url : target;
+      const main = e && e.isMainFrame !== undefined ? e.isMainFrame : isMainFrame !== false;
+      if (!(main ? allowedUrl(to) : allowedSubframeUrl(to))) e.preventDefault();
+    });
     // A page's beforeunload never keeps the window open.
     wc.on("will-prevent-unload", (e) => e.preventDefault());
     wc.setWindowOpenHandler(({ url: target }) => {

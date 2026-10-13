@@ -201,31 +201,20 @@ class Tokens(unittest.TestCase):
 
 
 class SignInAttempts(unittest.TestCase):
-    """Sign in with Meta (app/meta-signin.js): an attempt the app gave up on is never saved."""
+    """Sign in with Meta (app/meta-signin.js): a token from an attempt the app gave up on is
+    never kept, whether the cancel comes while it is checked or just after it was saved."""
 
     def tearDown(self):
         meta.disconnect()
 
-    def test_a_cancelled_attempt_is_refused_before_anything_is_sent(self):
-        fake = FakeMeta(self)
-        meta.cancel_signin('attempt-before-0001')
-        with self.assertRaises(meta.SignInCancelled):
-            meta.connect(TOKEN, attempt='attempt-before-0001')
-        self.assertEqual(fake.requests, [])
-        self.assertFalse(meta.account_path().exists())
-        # Another attempt, and a pasted token (no attempt), still connect.
-        self.assertTrue(meta.connect(TOKEN, attempt='attempt-other-0002')['connected'])
-        meta.disconnect()
-        self.assertTrue(meta.connect(TOKEN)['connected'])
-
-    def test_cancelling_while_meta_answers_wins(self):
-        fake = FakeMeta(self)
+    def held_connect(self, fake, attempt):
+        """Start connect(TOKEN, attempt) and wait until Meta is answering "who am I"."""
         fake.hold = threading.Event()
         errors = []
 
         def connect():
             try:
-                meta.connect(TOKEN, attempt='attempt-during-0003')
+                meta.connect(TOKEN, attempt=attempt)
             except meta.MetaError as e:
                 errors.append(e)
         thread = threading.Thread(target=connect)
@@ -234,6 +223,12 @@ class SignInAttempts(unittest.TestCase):
             if fake.requests:
                 break
             threading.Event().wait(0.01)
+        return thread, errors
+
+    def test_cancelling_while_meta_answers_wins(self):
+        fake = FakeMeta(self)
+        thread, errors = self.held_connect(fake, 'attempt-during-0003')
+        self.assertIn('attempt-during-0003', meta._attempts)
         meta.cancel_signin('attempt-during-0003')  # the window closed while Meta was answering
         fake.hold.set()
         thread.join(10)
@@ -241,6 +236,53 @@ class SignInAttempts(unittest.TestCase):
         self.assertIsInstance(errors[0], meta.SignInCancelled)
         self.assertFalse(meta.account_path().exists())
         self.assertFalse(meta.status()['connected'])
+        self.assertEqual(meta._attempts, {})
+
+    def test_other_cancels_cant_push_out_one_in_flight(self):
+        fake = FakeMeta(self)
+        thread, errors = self.held_connect(fake, 'attempt-held-0004')
+        meta.cancel_signin('attempt-held-0004')
+        for i in range(300):
+            meta.cancel_signin(f'attempt-noise-{i:04d}')
+        fake.hold.set()
+        thread.join(10)
+        self.assertIsInstance(errors[0], meta.SignInCancelled)
+        self.assertFalse(meta.account_path().exists())
+        self.assertEqual(meta._attempts, {})  # unknown ids left nothing behind
+
+    def test_a_cancel_just_after_the_save_removes_that_token(self):
+        FakeMeta(self)
+        self.assertTrue(meta.connect(TOKEN, attempt='attempt-saved-0005')['connected'])
+        self.assertFalse(meta.cancel_signin('attempt-saved-0005')['connected'])
+        self.assertFalse(meta.account_path().exists())
+
+    def test_a_cancel_never_removes_a_later_account(self):
+        FakeMeta(self)
+        meta.connect(TOKEN, attempt='attempt-first-0006')
+        meta.connect(TOKEN, attempt='attempt-second-0007')  # a later sign-in owns the account now
+        meta.cancel_signin('attempt-first-0006')
+        self.assertTrue(meta.status()['connected'])
+        meta.connect(TOKEN)  # a pasted token
+        meta.cancel_signin('attempt-second-0007')
+        self.assertTrue(meta.status()['connected'])
+        meta.disconnect()
+        meta.connect(TOKEN, attempt='attempt-third-0008')
+        meta.disconnect()
+        meta.connect(TOKEN)
+        meta.cancel_signin('attempt-third-0008')  # its account was disconnected already
+        self.assertTrue(meta.status()['connected'])
+
+    def test_unknown_attempts_change_nothing(self):
+        FakeMeta(self)
+        meta.cancel_signin('attempt-unknown-0009')
+        self.assertTrue(meta.connect(TOKEN, attempt='attempt-unknown-0009')['connected'])
+        self.assertEqual(meta._attempts, {})
+
+    def test_a_rejected_token_leaves_no_attempt_behind(self):
+        FakeMeta(self, token=OTHER_TOKEN)
+        with self.assertRaises(meta.TokenRejected):
+            meta.connect(TOKEN, attempt='attempt-rejected-0010')
+        self.assertEqual(meta._attempts, {})
 
     def test_attempt_ids_are_checked(self):
         FakeMeta(self)
@@ -1158,7 +1200,7 @@ class Server(unittest.TestCase):
 
     def test_sign_in_attempts_through_the_server(self):
         s = self.server
-        fake = FakeMeta(self)
+        FakeMeta(self)
         self.addCleanup(meta.disconnect)
         for body in ({'action': 'cancel-signin'}, {'action': 'cancel-signin', 'attempt': 'no'},
                      {'action': 'connect', 'token': TOKEN, 'acknowledged': True, 'attempt': 5},
@@ -1166,15 +1208,19 @@ class Server(unittest.TestCase):
             with self.assertRaises(s.Failure) as e:
                 s.meta(body)
             self.assertEqual(e.exception.status, 400, body)
+        self.assertTrue(s.meta({'action': 'connect', 'token': TOKEN, 'acknowledged': True,
+                                'attempt': 'server-attempt-0001'})['connected'])
         result = s.meta({'action': 'cancel-signin', 'attempt': 'server-attempt-0001'})
         self.assertFalse(result['connected'])
-        with self.assertRaises(s.Failure) as e:
-            s.meta({'action': 'connect', 'token': TOKEN, 'acknowledged': True, 'attempt': 'server-attempt-0001'})
+        self.assertNotIn(TOKEN, json.dumps(result))
+        # A cancel caught while Meta answers is a 409, without the token.
+        with patch.object(meta, 'whoami', side_effect=lambda t: meta.cancel_signin('server-attempt-0002') or
+                          {'id': '1', 'name': 'player_one'}):
+            with self.assertRaises(s.Failure) as e:
+                s.meta({'action': 'connect', 'token': TOKEN, 'acknowledged': True, 'attempt': 'server-attempt-0002'})
         self.assertEqual(e.exception.status, 409)
         self.assertNotIn(TOKEN, str(e.exception))
-        self.assertEqual(fake.requests, [])
-        self.assertTrue(s.meta({'action': 'connect', 'token': TOKEN, 'acknowledged': True,
-                                'attempt': 'server-attempt-0002'})['connected'])
+        self.assertFalse(meta.status()['connected'])
 
 
 if __name__ == '__main__':

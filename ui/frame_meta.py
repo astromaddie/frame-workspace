@@ -26,7 +26,6 @@ Python stdlib only. CLI: python3 ui/frame_meta.py
   connect --token-stdin | status | disconnect | list [--refresh] | download APP_ID
   install APP_ID [--test] [--allow-downgrade] | test PACKAGE [--wait SECONDS] [--no-report]
 """
-import collections
 import concurrent.futures
 import hashlib
 import http.client
@@ -325,11 +324,15 @@ def status():
             'connectedAt': (account or {}).get('connected')}
 
 
-# Sign in with Meta (app/meta-signin.js) names each of its attempts; one it gave up on is
-# remembered here, so its connect is refused whether the cancel arrives before or after it.
+# Sign in with Meta (app/meta-signin.js) names each of its attempts. While a connect from an
+# attempt is being checked it is listed in _attempts (only then, so this never grows); a
+# cancel marks it, and it is then not saved. _saved_by is the attempt whose token is the
+# saved account (None for a pasted token), set together with the save, so a cancel that
+# arrives just after the save still removes that token, and never a later one.
 SIGNIN_ATTEMPT = re.compile(r'[A-Za-z0-9-]{8,64}')
 SIGNIN_CANCELLED = 'Sign in with Meta was cancelled, so that sign-in was not saved.'
-_cancelled = collections.deque(maxlen=256)
+_attempts = {}     # in-flight attempt id -> {'cancelled': bool, 'running': connects under way}
+_saved_by = [None]
 
 
 def _check_attempt(attempt):
@@ -339,13 +342,16 @@ def _check_attempt(attempt):
 
 
 def cancel_signin(attempt):
-    """Refuse to save any connect made under this Sign in with Meta attempt, now or later."""
-    _check_attempt(attempt)
+    """Never keep a token from this Sign in with Meta attempt: one still being checked isn't
+    saved, and one already saved is deleted. Unknown attempts change nothing."""
     if attempt is None:
         raise MetaError('Invalid sign-in attempt id.')
+    _check_attempt(attempt)
     with _lock:
-        if attempt not in _cancelled:
-            _cancelled.append(attempt)
+        if attempt in _attempts:
+            _attempts[attempt]['cancelled'] = True
+        elif _saved_by[0] == attempt:
+            _forget_locked()
     return status()
 
 
@@ -356,31 +362,46 @@ def connect(token, attempt=None):
     _check_attempt(attempt)
     token = check_token(token)
     with _lock:
-        if attempt is not None and attempt in _cancelled:
-            raise SignInCancelled(SIGNIN_CANCELLED)
         generation = _state['generation']
-    user = whoami(token)
-    with _lock:
-        if attempt is not None and attempt in _cancelled:
-            raise SignInCancelled(SIGNIN_CANCELLED)
-        if _state['generation'] != generation:
-            raise MetaError('The Meta account was disconnected (or another token connected) while this one '
-                            'was being checked, so it was not saved.')
-        _write_account({'token': token, 'user': user, 'connected': time.strftime('%Y-%m-%dT%H:%M:%S')})
-        _state['generation'] += 1
-        _library.update(generation=None, at=0, apps=None)
+        if attempt is not None:
+            entry = _attempts.setdefault(attempt, {'cancelled': False, 'running': 0})
+            entry['running'] += 1
+    try:
+        user = whoami(token)
+        with _lock:
+            if attempt is not None and _attempts[attempt]['cancelled']:
+                raise SignInCancelled(SIGNIN_CANCELLED)
+            if _state['generation'] != generation:
+                raise MetaError('The Meta account was disconnected (or another token connected) while this one '
+                                'was being checked, so it was not saved.')
+            _write_account({'token': token, 'user': user, 'connected': time.strftime('%Y-%m-%dT%H:%M:%S')})
+            _saved_by[0] = attempt
+            _state['generation'] += 1
+            _library.update(generation=None, at=0, apps=None)
+    finally:
+        if attempt is not None:
+            with _lock:
+                entry = _attempts[attempt]
+                entry['running'] -= 1
+                if not entry['running']:
+                    del _attempts[attempt]
     return status()
+
+
+def _forget_locked():
+    _state['generation'] += 1
+    _saved_by[0] = None
+    _library.update(generation=None, at=0, apps=None)
+    try:
+        os.remove(str(account_path()))
+    except FileNotFoundError:
+        pass
 
 
 def disconnect():
     """Forget the token: delete the file and the library in memory. Downloads under way stop."""
     with _lock:
-        _state['generation'] += 1
-        _library.update(generation=None, at=0, apps=None)
-        try:
-            os.remove(str(account_path()))
-        except FileNotFoundError:
-            pass
+        _forget_locked()
     return status()
 
 
