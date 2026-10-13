@@ -61,7 +61,10 @@ closes the window. The window:
 - when it is closed, times out or is signed out of, stops reading cookies
   first, then is destroyed (a page's "leave this page?" can't keep it open),
   and, if it had sent a token, tells the server to drop that sign-in: each
-  sign-in has a random attempt id. The server lists an attempt only while its
+  sign-in has a random attempt id. The cancel is sent only once the connect
+  under way has finished (saved, refused or failed), so the server always
+  gets it after the connect; with nothing sent, there is nothing to cancel.
+  The server lists an attempt only while its
   connect is being checked: cancelled then, it isn't saved; cancelled just
   after its token was saved, that token is deleted (as a disconnect). A cancel
   never removes an account a later sign-in or a pasted token saved, and one
@@ -253,8 +256,9 @@ turn that on.
 - Disconnect deletes the file and the library Frame Control holds in memory,
   and stops a download under way. A connect still being checked when you
   disconnect is not saved. In the desktop app, before the token is deleted, it
-  also stops any sign-in under way (cancelling its attempt), destroys the
-  sign-in window, and only then clears the `persist:meta-signin` session
+  also stops any sign-in under way, destroys the sign-in window, waits for a
+  connect still under way to finish and cancels its attempt (deleting its
+  token if it was just saved), and only then clears the `persist:meta-signin` session
   (cookies, storage, cache); no other session is touched.
 - With Sign in with Meta, a second copy of your Meta sign-in lives in that
   session's storage, in Electron's per-user data folder (`Partitions/meta-signin`),
@@ -325,7 +329,10 @@ sent once, a refused one keeping the window open; the window closing after a
 connect, with the page getting the answer and never the token; nothing
 logged, and a server error that echoed the token scrubbed; closing the window
 or signing out ending the wait; closing, timing out or signing out during a
-connect cancelling that attempt (with its own id) after cookie intake stops;
+connect cancelling that attempt (with its own id) after cookie intake stops
+and only after that connect settles (saved, refused or failed), and no cancel
+when nothing was sent; sign-out (Disconnect's first step) waiting for a
+connect under way, even from a window closed earlier, before it finishes;
 sign-out destroying the window before clearing only that partition. The
 frame redirects held to the frame rule, the window's to Meta's sites. The
 server side (`tests/test_meta.py`): an attempt cancelled while Meta is

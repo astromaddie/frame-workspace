@@ -65,6 +65,7 @@ function scrub(text, token) {
 //         cancel(attempt) -> Promise  (the server's cancel-signin: never save that attempt) }
 function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, parent = () => null, timeout = TIMEOUT }) {
   let active = null;  // { win, promise, finish }
+  const pending = new Set();  // cancels still to reach the server, from flows already finished
 
   const openOutside = (target) => {
     if (/^https?:\/\//i.test(String(target))) shell.openExternal(String(target));
@@ -102,9 +103,12 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     if (timer.unref) timer.unref();
 
     // Stops cookie intake first, then the window (destroy: a page's beforeunload can't
-    // keep it open), then, unless it connected, tells the server not to save a connect
-    // that may still be under way. Resolves once that is done.
+    // keep it open), and answers the page. Unless it connected, and if it sent a token, it
+    // then has the server drop this attempt: only once the connect under way has settled,
+    // so the server always sees the cancel after the connect (and deletes the token if
+    // that connect saved it). The returned promise settles when that is done.
     let finished = null;
+    let inflight = null;  // the last connect sent
     function finish(result) {
       if (done) return finished || Promise.resolve();  // destroy() below re-enters through "closed"
       done = true;
@@ -112,9 +116,11 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
       clearTimeout(timer);
       if (active && active.win === win) active = null;
       if (!win.isDestroyed()) win.destroy();
-      const sent = tried.size > 0;  // a connect is sent synchronously after its value is added
-      finished = (result.ok || !sent ? Promise.resolve() : Promise.resolve().then(() => cancel(attemptId)))
-        .catch(() => {}).then(() => resolve(result));
+      resolve(result);
+      if (result.ok || !inflight) return (finished = Promise.resolve());  // nothing sent: nothing to cancel
+      finished = Promise.resolve(inflight).catch(() => {}).then(() => cancel(attemptId)).catch(() => {});
+      pending.add(finished);
+      finished.then(() => pending.delete(finished));
       return finished;
     }
 
@@ -134,7 +140,8 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
           tried.add(key);
           let r;
           try {
-            r = await connect(c.value, attemptId);
+            inflight = connect(c.value, attemptId);
+            r = await inflight;
           } catch {
             lastError = "Frame Control's local server didn't answer.";
             continue;
@@ -201,6 +208,9 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
       // Clear only once nothing can write to the session again.
       if (!win.isDestroyed()) throw new Error("The Sign in with Meta window didn't close; try again.");
     }
+    // Any connect still under way settles and is cancelled before the caller (Disconnect)
+    // deletes the account, so it can't be saved afterwards.
+    await Promise.all([...pending]);
     const ses = session.fromPartition(PARTITION);
     await ses.clearStorageData();
     await ses.clearCache();

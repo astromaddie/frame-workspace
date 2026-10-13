@@ -355,35 +355,97 @@ test("a page's beforeunload can't keep the window open", async () => {
   assert.ok(w.isDestroyed());
 });
 
-test("closing the window while a connect is under way has the server drop that attempt", async () => {
+test("closing during a connect: the cancel goes to the server only after that connect settles", async () => {
+  for (const outcome of ["saved", "refused", "failed"]) {
+    const f = fakes();
+    let release, fail;
+    f.setAnswer(() => new Promise((r, j) => { release = r; fail = j; }));
+    const done = f.flow.signIn();
+    f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+    await settle();
+    assert.deepStrictEqual(f.calls, [TOKEN]);
+    f.windows[0].close();  // the user gives up while the server and Meta are answering
+    const r = await done;  // the page hears at once
+    assert.strictEqual(r.ok, false);
+    await settle();
+    assert.deepStrictEqual(f.cancels, [], outcome);  // not before the connect has settled
+    if (outcome === "saved") release({ status: 200, data: { connected: true } });
+    else if (outcome === "refused") release({ status: 400, data: { error: "no" } });
+    else fail(new Error("socket hang up"));
+    await settle();
+    // The same attempt id the connect carried, after it settled and after cookie intake stopped.
+    assert.deepStrictEqual(f.cancels, [f.attempts[0]], outcome);
+    assert.match(f.cancels[0], /^[A-Za-z0-9-]{8,64}$/);
+    assert.deepStrictEqual(f.log, ["connect", "destroyed", "cancel (cookie listeners: 0)"], outcome);
+    assert.deepStrictEqual(f.calls, [TOKEN]);
+  }
+});
+
+test("closing before any connect needs no cancel", async () => {
+  const f = fakes();
+  const done = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".evil.example", value: TOKEN });  // nothing usable
+  await settle();
+  f.windows[0].close();
+  assert.strictEqual((await done).ok, false);
+  await f.flow.signOut();
+  await settle();
+  assert.deepStrictEqual(f.calls, []);
+  assert.deepStrictEqual(f.cancels, []);
+});
+
+test("a timeout during a connect cancels after it settles", async () => {
+  const f = fakes({ timeout: 50 });
+  let release;
+  f.setAnswer(() => new Promise((r) => { release = r; }));  // Meta is slow
+  const done = f.flow.signIn();
+  f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
+  const r = await done;
+  assert.match(r.error, /timed out/);
+  assert.ok(f.windows[0].isDestroyed());
+  assert.deepStrictEqual(f.cancels, []);
+  release({ status: 400, data: { error: "no" } });
+  await settle();
+  assert.deepStrictEqual(f.cancels, [f.attempts[0]]);
+});
+
+test("disconnect during a connect waits for it, cancels it, then clears, before the page deletes the account", async () => {
   const f = fakes();
   let release;
   f.setAnswer(() => new Promise((r) => { release = r; }));
   const done = f.flow.signIn();
   f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
   await settle();
-  assert.deepStrictEqual(f.calls, [TOKEN]);
-  f.windows[0].close();  // the user gives up while Meta is answering
-  const r = await done;
-  assert.strictEqual(r.ok, false);
-  // The same attempt id the connect carried, cancelled after cookie intake stopped.
-  assert.strictEqual(f.cancels.length, 1);
-  assert.strictEqual(f.cancels[0], f.attempts[0]);
-  assert.match(f.cancels[0], /^[A-Za-z0-9-]{8,64}$/);
-  assert.deepStrictEqual(f.log, ["connect", "destroyed", "cancel (cookie listeners: 0)"]);
-  release({ status: 200, data: { connected: true } });  // the late answer changes nothing here
+  f.log.length = 0;
+  let signedOut = false;
+  const out = f.flow.signOut().then(() => { signedOut = true; });  // the page's Disconnect, step one
+  assert.strictEqual((await done).ok, false);
   await settle();
-  assert.deepStrictEqual(f.calls, [TOKEN]);
+  assert.strictEqual(signedOut, false);  // still waiting for the connect
+  assert.deepStrictEqual(f.cancels, []);
+  release({ status: 200, data: { connected: true } });  // it saved, just now
+  await out;
+  // Only now would the page post its disconnect: the cancel (which deletes what that
+  // connect saved) has reached the server, and the session is cleared.
+  assert.deepStrictEqual(f.log, ["destroyed", "cancel (cookie listeners: 0)", "clear"]);
+  assert.deepStrictEqual(f.cancels, [f.attempts[0]]);
 });
 
-test("a timeout drops the attempt too", async () => {
-  const f = fakes({ timeout: 50 });
-  f.setAnswer(() => new Promise(() => {}));  // Meta never answers
+test("a later disconnect still waits for a closed window's connect", async () => {
+  const f = fakes();
+  let release;
+  f.setAnswer(() => new Promise((r) => { release = r; }));
   const done = f.flow.signIn();
   f.meta().cookies.set({ name: COOKIE, domain: ".oculus.com", value: TOKEN });
-  const r = await done;
-  assert.match(r.error, /timed out/);
-  assert.ok(f.windows[0].isDestroyed());
+  await settle();
+  f.windows[0].close();
+  await done;
+  let signedOut = false;
+  const out = f.flow.signOut().then(() => { signedOut = true; });
+  await settle();
+  assert.strictEqual(signedOut, false);
+  release({ status: 400, data: { error: "no" } });
+  await out;
   assert.deepStrictEqual(f.cancels, [f.attempts[0]]);
 });
 
@@ -425,6 +487,7 @@ test("each sign-in has its own attempt id", async () => {
   await settle();
   f.windows[1].close();
   await b;
+  await settle();
   assert.strictEqual(f.attempts.length, 2);
   assert.notStrictEqual(f.attempts[0], f.attempts[1]);
   assert.deepStrictEqual(f.cancels, f.attempts);
