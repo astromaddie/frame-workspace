@@ -107,26 +107,33 @@ REDACTED = '<redacted>'
 # real token needs more.
 TOKEN_CHARS = r'A-Za-z0-9+/=_\-'  # a regex character-class body
 TOKEN_MIN = 20  # characters, prefix included
-# Any token-shaped value, whoever's it is: access_token=..., "access_token": "...",
-# Authorization schemes, and bare OC.../FRL... tokens of the shape check_token accepts.
+# Any token-shaped value, whoever's it is, in this order: bare OC.../FRL... tokens of the
+# shape check_token accepts first (so a token that happens to contain "access_token=" goes
+# whole, prefix and all), then access_token=... / "access_token": "..." parameters and
+# Authorization schemes.
+#
+# The token shape: the OC or FRL prefix check_token requires and its minimum length, over
+# the characters tokens are made of (TOKEN_CHARS, plus % | : of encoded and app tokens in
+# messages), digits or not. No word boundary or lookbehind: a token is found whatever comes
+# before it (_OC..., /OC..., libOC...); the run then takes every token character after the
+# prefix, so an accepted token is always inside one match. Upper-case prefix, so package
+# names (com.oculus...) are left alone. One run per match, no lookahead: linear. The stored
+# token itself is matched in any case by _clean.
+_TOKEN_SHAPE = re.compile(r'(?:OC[%s%%|:]{%d,}|FRL[%s%%|:]{%d,})'
+                          % (TOKEN_CHARS, TOKEN_MIN - 2, TOKEN_CHARS, TOKEN_MIN - 3))
 _GENERIC = [
+    _TOKEN_SHAPE,
     re.compile(r'(?i)(access[_%5f-]*token["\']?\s*(?:=|:|%3d)\s*["\']?)[^&\s"\'<>,;]+'),
     re.compile(r'(?i)\b(bearer|oauth)\s+[^\s"\'<>,;]+'),
-    # The OC or FRL prefix check_token requires and its 20-character minimum, over the
-    # characters tokens are made of (base64 and URL-safe ones, plus % | : of encoded and app
-    # tokens), digits or not. Upper-case prefix and no dots, so package names (com.oculus...)
-    # are left alone; the stored token itself is matched in any case by _clean. Matched as
-    # one run (no lookahead, so linear); see _generic for the one shape kept.
-    # (% | : too, for encoded and app tokens in messages.)
-    re.compile(r'\b(?:OC[%s%%|:]{%d,}|FRL[%s%%|:]{%d,})' % (TOKEN_CHARS, TOKEN_MIN - 2, TOKEN_CHARS, TOKEN_MIN - 3)),
 ]
-# Upper-case constants separated by underscores (OCULUS_PLATFORM_SDK_VERSION): names in
-# logs, never the mixed-case base64 a token is, so they are kept.
+# Upper-case constants separated by underscores (OCULUS_PLATFORM_SDK_VERSION) are names in
+# logs and are kept. check_token refuses any value without a lower-case letter, so a run
+# holding an accepted token (which has one) can never look like this.
 _CONSTANT = re.compile(r'[A-Z0-9]+(?:_[A-Z0-9]+)+')
 
 
 def _generic(m):
-    if m.re is _GENERIC[2]:
+    if m.re is _TOKEN_SHAPE:
         return m.group(0) if _CONSTANT.fullmatch(m.group(0)) else REDACTED
     return (m.group(1) + REDACTED) if m.groups() else REDACTED
 
@@ -204,9 +211,12 @@ def check_token(token):
         raise MetaError("That's an app token, not your account's token. See docs/meta-library.md for which one to copy.")
     if re.fullmatch(r'OC\d{15}', token) or len(token) < TOKEN_MIN:
         raise MetaError("That token is incomplete. Copy the whole value.")
-    if not re.fullmatch('[%s]+' % TOKEN_CHARS, token) or _CONSTANT.fullmatch(token):
+    if not re.fullmatch('[%s]+' % TOKEN_CHARS, token):
         raise MetaError("That doesn't look like a Meta token: it has characters a Meta token doesn't (only "
                         'letters, digits and + / = - _). Copy just the token value.')
+    if not re.search('[a-z]', token):  # real tokens are mixed case; this is a constant or a name
+        raise MetaError("That doesn't look like a Meta token: it has no lower-case letters. Copy just the "
+                        'token value.')
     return token
 
 

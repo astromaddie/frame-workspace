@@ -29,6 +29,7 @@ OBB = b'obb data ' * 100
 PUBLIC = {'157.240.22.35'}
 REAL_SEND = meta._send  # before any test replaces it with a fake Meta
 REAL_SSH = android.ssh
+PRINTABLE = ''.join(chr(c) for c in range(32, 127))
 
 
 def entitlements(apk=APK, obb=OBB, platform_sdk=False):
@@ -772,11 +773,38 @@ class Speed(unittest.TestCase):
                 continue
             accepted += 1
             for left, right in (('', ''), ('error near ', ' here'), ('library "', '.so" not found'),
-                                ('url?tok=', '&x=1'), ('(', ')')):
-                out = meta.redact(left + token + right)
-                self.assertEqual(out, left + meta.REDACTED + right, token)
+                                ('url?tok=', '&x=1'), ('(', ')'), ('', '_FLAG'), ('access_token=', '')):
+                self.assertGone(token, left, right)
+            # Random neighbours from all of printable ASCII, on either side.
+            for _ in range(5):
+                self.assertGone(token, ''.join(rng.choice(PRINTABLE) for _ in range(rng.randint(1, 3))),
+                                ''.join(rng.choice(PRINTABLE) for _ in range(rng.randint(1, 3))))
             self.assertEqual(meta._excerpt('library', f'dlopen failed: library "{token}.so" not found'), '')
-        self.assertGreater(accepted, 2500)
+        self.assertGreater(accepted, 2000)
+
+    def assertGone(self, token, left, right):
+        """redact(left + token + right) is some start of left, one <redacted>, and some end of
+        right: every character of the token is gone, whatever surrounds it."""
+        out = meta.redact(left + token + right)
+        at = out.find(meta.REDACTED)
+        self.assertGreaterEqual(at, 0, (left, token, right))
+        before, after = out[:at], out[at + len(meta.REDACTED):]
+        self.assertTrue(left.startswith(before) and right.endswith(after), (left, token, right, out))
+
+    def test_round6_gaps(self):
+        # 1. All upper case is refused, so an "OC..._FLAG" constant can't be an accepted token.
+        for bad in ('OCABCDEFGHIJKLMNOPQR', 'OCABCDEFGHIJ_KLMNOPQRS', 'FRL0123456789ABCDEFGHIJ'):
+            with self.assertRaisesRegex(meta.MetaError, "doesn't look like a Meta token"):
+                meta.check_token(bad)
+        self.assertEqual(meta.redact('OCABCDEFGHIJKLMNOPQR_FLAG'), 'OCABCDEFGHIJKLMNOPQR_FLAG')  # a name, kept
+        self.assertEqual(meta.redact('OCAbcdefGhijkLmnopQr_FLAG'), meta.REDACTED)
+        # 2. Found after any character, word characters included.
+        for left in ('https://example.invalid/_', 'x-', '=', '/', 'lib', '9', 'Z'):
+            self.assertEqual(meta.redact(left + 'OCAbcdefGhijkLmnopQr'), left + meta.REDACTED, left)
+        # 3. Whole-token redaction comes first, so no prefix survives a parameter match.
+        meta.check_token('OCaccess_token=123456')
+        self.assertEqual(meta.redact('OCaccess_token=123456'), meta.REDACTED)
+        self.assertEqual(meta.redact('x access_token=abc&y=1'), f'x access_token={meta.REDACTED}&y=1')
         # Anything with other characters is refused at connect, with a clear message.
         for bad in ('OCAbcdef.GhijkLmnopQrstUvwx', 'OCAbcdefGhijk~LmnopQrstUvwx', 'FRLAbcdef!GhijkLmnopQrstU',
                     'OCAbcdefGhijk#LmnopQrstUvwx', 'OCABCDEFGHIJ_KLMNOPQRS_TUV'):
@@ -809,7 +837,7 @@ class Speed(unittest.TestCase):
         self.assertNotIn(shape[:10], json.dumps(v))
         # Ordinary identifiers stay: upper-case constants, short words, package names, too-short runs.
         for text in ('OCULUS_PLATFORM_SDK_VERSION_NAME', 'OCULUS_EXT_HAND_TRACKING_2', 'OCR', 'OCULUS',
-                     'com.oculus.systemactivities', 'OCAbcdefGhijkLmnopQ', 'libOCAbcdefGhijkLmnopQrstUvwx.so'):
+                     'com.oculus.systemactivities', 'OCAbcdefGhijkLmnopQ', 'libOculusPlatform.so'):
             self.assertEqual(meta.redact(f'error near {text} here'), f'error near {text} here', text)
         self.assertEqual(meta._excerpt('library', 'dlopen failed: library "libOculusPlatformLoader.so" not found'),
                          'libOculusPlatformLoader.so')
