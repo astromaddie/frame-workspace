@@ -887,10 +887,19 @@ class Round3(unittest.TestCase):
             sink = Sink()
             with zipfile.ZipFile(sink, 'w', method) as z:
                 z.writestr('assets/streamed', content)
+                # Streamed with ZIP64 forced: a 64-bit data descriptor for a small file.
+                with z.open('assets/streamed64', 'w', force_zip64=True) as f:
+                    f.write(content)
+                z.writestr('assets/after', b'next entry')
             path = self.tmpfile(sink.buf.getvalue())
             with zipfile.ZipFile(path) as z:
                 self.assertTrue(z.getinfo('assets/streamed').flag_bits & 0x08)
+                self.assertTrue(z.getinfo('assets/streamed64').flag_bits & 0x08)
+                self.assertLess(z.getinfo('assets/streamed64').file_size, 0xffffffff)
+                self.assertEqual(z.read('assets/streamed64'), content)  # zipfile accepts it
             self.assertEqual(android.read_member(path, 'assets/streamed'), content)
+            self.assertEqual(android.read_member(path, 'assets/streamed64'), content)
+            self.assertEqual(android.read_member(path, 'assets/after'), b'next entry')
 
     def test_central_sizes_and_checksum_forged(self):
         # The reviewer's case: stored 'abcdef', central sizes 3 and the prefix's checksum, local untouched.

@@ -331,6 +331,16 @@ def _zip64_sizes(extra, usize, csize):
     return usize, csize
 
 
+def _has_zip64_extra(extra):
+    at = 0
+    while at + 4 <= len(extra):
+        kind, length = struct.unpack_from('<HH', extra, at)
+        if kind == 0x0001:
+            return True
+        at += 4 + length
+    return False
+
+
 def read_member(path, member):
     """A split member's bytes, read from its raw data and checked against both headers.
 
@@ -365,15 +375,35 @@ def read_member(path, member):
         if len(compressed) != info.compress_size:
             raise FrameError(f'{name} is truncated')
         if flags & 0x08:
-            # Sizes and checksum follow the data: (signature,) crc, sizes (8 bytes each for ZIP64).
-            want = 20 if info.file_size >= 0xffffffff or info.compress_size >= 0xffffffff else 12
-            tail = raw.read(4 + want)
-            signed = tail[:4] == b'PK\7\x08'
-            body = tail[4:4 + want] if signed else tail[:want]
-            if len(body) < want:
+            # Sizes and checksum follow the data: (signature,) crc, then sizes of 4 bytes each,
+            # or 8 for ZIP64. Streaming writers use the ZIP64 form even for small files when
+            # sizes weren't known up front, so the width isn't implied by the final sizes: take
+            # the layout that matches the central directory and fits before the next entry,
+            # preferring one that ends exactly there, then the width the local header implies.
+            zip64 = 0xffffffff in (csize, usize) or _has_zip64_extra(extra)
+            tail = raw.read(24)
+            if len(tail) < 12:
                 raise FrameError(f'{name}: truncated data descriptor')
-            crc, csize, usize = struct.unpack_from('<IQQ' if want == 20 else '<III', body)
-            descriptor = want + (4 if signed else 0)
+            end = start + info.compress_size
+            fits = []
+            for signed in (True, False):
+                if signed and tail[:4] != b'PK\7\x08':
+                    continue
+                for width in (20, 12):
+                    body = tail[4:4 + width] if signed else tail[:width]
+                    if len(body) < width:
+                        continue
+                    values = struct.unpack_from('<IQQ' if width == 20 else '<III', body)
+                    length = width + (4 if signed else 0)
+                    if values == (info.CRC, info.compress_size, size) and \
+                            (following is None or end + length <= following):
+                        exact = following is not None and end + length == following
+                        fits.append((not exact, (width == 20) != zip64, length))
+            if not fits:
+                raise FrameError(f'{name} does not match its header (local and central entries differ, '
+                                 'or its data descriptor is truncated)')
+            crc, csize, usize = info.CRC, info.compress_size, size
+            descriptor = min(fits)[2]
         else:
             usize, csize = _zip64_sizes(extra, usize, csize)
             descriptor = 0
