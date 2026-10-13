@@ -93,6 +93,20 @@ class ApkInfo(unittest.TestCase):
             frame_apk.MAX_MANIFEST = limit
         self.assertLess(peak, 8 * 1024**2)
 
+    def test_damaged_download_is_an_apk_error(self):
+        # Corrupt deflate data used to escape as zlib.error, which the upload path didn't catch
+        # (a 500, and no install report) and frame_android.install reported as 'other'.
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            z.writestr('AndroidManifest.xml', manifest('com.example.bad', 0x7f010000, 0x7f010001, 21) * 20)
+        data = bytearray(buf.getvalue())
+        at = data.index(b'PK\x03\x04')
+        start = at + 30 + sum(struct.unpack_from('<HH', data, at + 26))  # past the name and extra field
+        for i in range(start, start + 40):
+            data[i] ^= 0x5a
+        with self.assertRaisesRegex(frame_apk.ApkError, 'could not read the APK manifest'):
+            self.read(bytes(data))
+
     def test_refuses_compression_android_cant_read(self):
         for method in (zipfile.ZIP_BZIP2, zipfile.ZIP_LZMA):
             buf = io.BytesIO()

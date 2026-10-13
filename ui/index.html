@@ -51,6 +51,10 @@
   nav a:hover { color: var(--bright); }
   nav a.on { color: var(--blue); border-bottom-color: var(--blue); }
   .spacer { flex: 1; }
+  /* The connection pill and the buttons after it, pushed to the right: closer together than the tabs, and the
+     pill (not the buttons) gives way when the window is narrow, so nothing is pushed past the right edge. */
+  .hdr-end { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 0 1 auto; margin-left: auto; }
+  .hdr-end > :not(.pill, .devsel) { flex: none; }
   .chip { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px; border-radius: 3px;
           background: var(--btn); color: var(--text); font-size: 13px; white-space: nowrap; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); flex: none; }
@@ -60,6 +64,7 @@
   main { max-width: 1480px; margin: 0 auto; padding: 22px calc(28px + env(safe-area-inset-right)) 30px calc(28px + env(safe-area-inset-left)); display: flex; flex-direction: column; gap: 26px; }
   .grid-top { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(330px, 1fr); gap: 22px; }
   .grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 22px; }
+  @media (max-width: 1366px) { header { gap: 20px; } nav a { padding: 0 11px; } }
   @media (max-width: 1150px) { .grid-top, .grid-3 { grid-template-columns: 1fr; } header { gap: 16px; padding: env(safe-area-inset-top) calc(18px + env(safe-area-inset-right)) 0 calc(18px + env(safe-area-inset-left)); } nav a { padding: 0 10px; } }
   @media (max-width: 820px) { .brand b { display: none; } }
   nav svg { display: none; }
@@ -74,7 +79,7 @@
   .page { display: flex; flex-direction: column; gap: 26px; }
   .page:not(.on) { display: none; }
   nav kbd { font: inherit; font-size: 10.5px; color: var(--dim); margin-left: 7px; letter-spacing: 0; }
-  @media (max-width: 1150px) { nav kbd { display: none; } }
+  @media (max-width: 1366px) { nav kbd { display: none; } }  /* the tabs' titles still name the key */
 
   /* ---- offline banner ---- */
   .banner { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: 4px;
@@ -87,14 +92,14 @@
   .wait::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--dim); flex: none; }
 
   /* ---- connection pill, its details dialog, and the Devices tab (frame_link.py) ---- */
-  .pill { height: 40px; padding: 0 12px; gap: 9px; max-width: 420px; min-width: 190px; flex: 0 1 auto; background: var(--btn); }
+  .pill { height: 40px; padding: 0 12px; gap: 9px; max-width: 420px; min-width: 150px; flex: 0 1 auto; background: var(--btn); }
   .pill .dot { flex: none; }
   .pill .dot.wait { background: var(--warn); box-shadow: 0 0 6px rgba(217,162,58,.7); animation: pulse 1s ease-in-out infinite; }
   @keyframes pulse { 50% { opacity: .35; } }
   .pill .pt { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; line-height: 1.2; text-align: left; }
   .pill .pt b { font-weight: 500; font-size: 13px; color: var(--bright); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pill .pt span { font-size: 11.5px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .devsel { background: var(--btn); color: var(--text); border: 0; border-radius: 3px; height: 40px; padding: 0 8px; font: inherit; font-size: 13px; max-width: 160px; }
+  .devsel { background: var(--btn); color: var(--text); border: 0; border-radius: 3px; height: 40px; padding: 0 8px; font: inherit; font-size: 13px; max-width: 160px; min-width: 90px; }
   .dlg { background: #1e2329; color: var(--text); border: 1px solid rgba(255,255,255,.1); border-radius: 4px;
          padding: 22px; width: min(640px, 94vw); box-shadow: 0 20px 60px rgba(0,0,0,.6); }
   .dlg::backdrop { background: rgba(0,0,0,.55); }
@@ -132,7 +137,7 @@
   .dev-panel select, .dlg select { background: rgba(0,0,0,.28); color: var(--text); border: 1px solid transparent; border-radius: 3px;
                                    padding: 8px 8px; font: inherit; font-size: 13px; }
   .addr .t { overflow-wrap: anywhere; }
-  .addr .s { white-space: normal; }
+  .addr .s, .dev-problem .s { white-space: normal; }
   .addr-edit { display: grid; grid-template-columns: 2fr 1fr 1.4fr auto auto; gap: 8px; align-items: center; width: 100%; }
   .addr-add { display: grid; grid-template-columns: 2fr 1fr 1.4fr auto; gap: 8px; margin-top: 12px; }
   @media (max-width: 700px) { .dev-form, .addr-edit, .addr-add { grid-template-columns: 1fr; } }
@@ -655,7 +660,7 @@
     <a href="#tools" title="Files, clipboard, Linux apps, remote and power (4)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.2 5.2L3.5 17.5a2.1 2.1 0 0 0 3 3l6-6a4 4 0 0 0 5.2-5.2l-2.5 2.5-2.5-2.5z"/></svg>Tools<kbd>4</kbd></a>
     <a href="#devices" class="desk-only" title="Headsets, their addresses and the connection (5)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/><path d="M2 9a15 15 0 0 1 20 0"/></svg>Devices<kbd>5</kbd></a>
   </nav>
-  <div class="spacer"></div>
+  <div class="hdr-end">
   <button class="pill" id="conn" role="status" aria-live="polite" title="Connection details"><span class="dot wait"></span><span class="pt"><b>Connecting…</b><span></span></span></button>
   <select class="devsel desk-only" id="devSel" aria-label="Headset" title="Switch headset" hidden></select>
   <span class="chip" id="battChip" title="Battery">—</span>
@@ -665,6 +670,7 @@
   <button id="refreshAll" title="Refresh (R)" aria-label="Refresh">
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" aria-hidden="true"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
   </button>
+  </div>
 </header>
 
 <main>
@@ -677,7 +683,8 @@
   </div>
   <div class="notice" id="privacyNotice" hidden>
     <div class="grow">Frame Control sends anonymous usage statistics: that it was installed and opened, its version,
-      your operating system, which tabs you use, and whether installs on the Frame worked. Never file names, paths,
+      your operating system, which tabs you use, whether installs on the Frame worked, and how many headsets you use
+      (a one-way hash of each headset's machine ID, the same on every computer, so they're counted once). Never file names, paths,
       addresses or anything you've typed, and it isn't linked to you. You can also share whether Android apps
       worked and the details of errors, which helps fix problems faster.</div>
     <button class="small" id="noticeSettings">Privacy settings</button>
@@ -1191,7 +1198,8 @@
       <div class="shelf-head"><h2>Privacy &amp; updates</h2><span class="spacer"></span><span class="sub" id="appVersion"></span></div>
       <label class="popt"><input type="checkbox" id="tUsage"><b>Anonymous usage statistics</b>
         <span class="sub">Installs, opens, version, operating system, tabs used, and whether installs on the Frame
-          worked (with an error category, never the message). F-Droid package names only.</span></label>
+          worked (with an error category, never the message). F-Droid package names only. Each headset's SteamOS
+          build, a one-way hash of its machine ID (to count headsets, not just installs), and how many you've set up.</span></label>
       <label class="popt"><input type="checkbox" id="tCompat"><b>Share compatibility results</b>
         <span class="sub">Your APK reports and tests (package, version, result, your notes) go to the shared
           compatibility database, so the verdicts get better for everyone.</span></label>
@@ -1638,7 +1646,7 @@ $("vrUtilities").onclick = async e => {
   await loadUtilities();
 };
 
-// The Frame owns the clock. Poll independently of status and the selected tab.
+// The Frame owns the clock. Poll independently of the selected tab, from the first status check on.
 let comfortBusy = false, comfortSeen = new Set(), comfortSession = null, comfortHydrated = false;
 async function localNotification(message, request = false) {
   try {
@@ -1697,7 +1705,12 @@ function renderComfort(s) {
   if ($("comfortEvents").textContent !== history) $("comfortEvents").textContent = history;
 }
 async function pollComfort() {
-  if (!comfortBusy) {
+  // Not while the Frame can't be reached: each poll would be another ssh attempt waiting to
+  // time out, and the banner already says why. Status checks bring it back (setOnline).
+  if (online === false) {
+    const message = "Session status appears when the Frame is connected.";
+    if ($("comfortStatus").textContent !== message) $("comfortStatus").textContent = message;
+  } else if (!comfortBusy) {
     comfortBusy = true;
     try { renderComfort(await api("/api/comfort", {action: "status"})); }
     catch (e) {
@@ -1731,7 +1744,6 @@ $("castBtn").onclick = () => {
   // Fullscreen is a direct user gesture; iPhone falls back to its inline viewer.
   $("viewer").requestFullscreen?.().catch(() => {});
 };
-pollComfort();
 
 // ---- battery ----
 function battery(b, power) {
@@ -4727,7 +4739,7 @@ if (window.frameApp && window.frameApp.onInstallLink) {
 }
 
 setView("headset");
-refresh().then(() => loadShots());  // after status, so app names resolve
+refresh().then(() => { loadShots(); pollComfort(); });  // after status, so app names resolve and comfort knows if the Frame answers
 document.addEventListener("visibilitychange", () => { if (!document.hidden && online === false) refresh(); });
 </script>
 <script>
@@ -4756,6 +4768,20 @@ function netLabel(s) {
 }
 function viaText(v) { return v ? v.host + (v.ip && v.ip !== v.host ? ` (${v.ip})` : "") : ""; }
 
+// Why the last attempt failed, in a few words: the server's short reason, else the stage that failed.
+function failureReason(s) {
+  const err = s.error || {};
+  if (err.short) return err.short;
+  const st = (s.stages || []).find(x => x.id === err.stage);
+  return st ? `${st.label} failed` : "Not connected";
+}
+// A sentence or a label as a clause inside another sentence: no closing full stop (the sentence
+// adds its own) and a lower-case first letter, unless the first word is an abbreviation ("SSH").
+function asClause(text) {
+  const t = String(text || "").trim().replace(/[.\s]+$/, "");
+  return /^[A-Z][a-z]/.test(t) ? t[0].toLowerCase() + t.slice(1) : t;
+}
+
 // The pill in the header: always there, and says what's happening right now.
 function renderPill() {
   const s = link.s;
@@ -4767,9 +4793,8 @@ function renderPill() {
     line = `${netLabel(s)} → ${viaText(s.via)}` + (s.via && s.via.rtt_ms != null ? ` · ${s.via.rtt_ms} ms` : "");
   } else if (s.phase === "failed") {
     dot = "off";
-    const left = s.retry_at ? Math.max(0, Math.ceil(s.retry_at - serverNow())) : null;
-    const st = (s.stages || []).find(x => x.id === (s.error || {}).stage);
-    line = `Offline: ${st ? st.label.toLowerCase() : "not connected"} failed` + (left != null ? ` · retry in ${left} s` : "");
+    // The reason first, in a few words, so a narrow pill cuts the countdown rather than the reason.
+    line = failureReason(s) + (s.retry_at ? ` · retry in ${Math.max(0, Math.ceil(s.retry_at - serverNow()))} s` : "");
   } else {
     const st = activeStage(s);
     const probing = (s.probes || []).find(p => p.state === "trying" || p.state === "resolving");
@@ -4777,7 +4802,7 @@ function renderPill() {
               : "Connecting…";
   }
   $("conn").innerHTML = `<span class="dot ${dot}"></span><span class="pt"><b>${esc(dev)}</b><span>${esc(line)}</span></span>`;
-  $("conn").title = `${dev}: ${line}. Click for details.`;
+  $("conn").title = `${dev}${s.phase === "failed" ? " is offline" : ""}: ${line}. Click for details.`;
   return true;
 }
 window.connPill = renderPill;
@@ -4794,13 +4819,13 @@ function renderBanner() {
   if (s.phase === "failed" && s.error) {
     $("offline").hidden = false;
     $("offMsg").textContent = s.error.message;
-    const tried = (s.probes || []).map(p => `${p.host}: ${p.detail.toLowerCase()}`).join("; ");
+    const tried = (s.probes || []).map(p => `${p.host}: ${asClause(p.detail)}`).join("; ");
     const left = s.retry_at ? Math.max(0, Math.ceil(s.retry_at - serverNow())) : null;
     $("offDetail").textContent = `${s.device ? s.device.name : "Frame"} on ${netLabel(s)}. ${tried ? "Tried " + tried + ". " : ""}` +
       (left != null ? `Trying again in ${left} s.` : "");
   } else if (s.phase === "connecting" && online === false) {
     const st = activeStage(s);
-    $("offDetail").textContent = `Trying again: ${st ? st.label.toLowerCase() + (st.detail ? " (" + st.detail + ")" : "") : "connecting"}…`;
+    $("offDetail").textContent = `Trying again: ${st ? asClause(st.label) + (st.detail ? " (" + st.detail + ")" : "") : "connecting"}…`;
   }
 }
 window.connBanner = renderBanner;
@@ -4978,7 +5003,10 @@ async function useDevice(id) {
   if (!res) {  // refused (an install is running): show the headset still in use
     const current = dv.list.find(x => x.active);
     if (current) $("devSel").value = current.id;
+    return;
   }
+  // The Devices tab shows the headset now in use, not the one it was showing before.
+  if (dv.sel !== id) { dv.sel = id; dv.found = null; dv.editing = null; renderDevices(); }
 }
 async function devAction(label, body, btn) {
   const res = await act(label, () => api("/api/devices", body), btn);
@@ -4990,7 +5018,8 @@ function deviceStatus(d) {
   const s = link.s;
   if (d.active && s) {
     return s.phase === "connected" ? ["on", `Connected via ${viaText(s.via)}`]
-         : s.phase === "failed" ? ["off", s.error ? s.error.message : "Offline"] : ["", "Connecting…"];
+         : s.phase === "failed" ? ["off", s.error ? s.error.short || s.error.message : "Offline", s.error && s.error.message]
+         : ["", "Connecting…"];
   }
   const last = Math.max(0, ...d.addresses.map(a => a.last_ok || 0));
   return ["", d.transient ? "Not set up in Frame Control" : last ? `Last connected ${ago(last)}` : "Not connected yet"];
@@ -5000,10 +5029,10 @@ function renderDevices() {
   if (!dv.data) return;
   $("devCount").textContent = dv.list.length;
   $("devList").innerHTML = dv.list.map(d => {
-    const [dot, text] = deviceStatus(d);
+    const [dot, text, full] = deviceStatus(d);
     return `<div class="item dev-item${d.id === dv.sel ? " sel" : ""}" data-dev="${esc(d.id)}">
       <span class="dot ${dot}"></span><div class="grow"><div class="t">${esc(d.name)} ${d.active ? '<span class="tag">In use</span>' : ""}</div>
-      <div class="s">ssh ${esc(d.alias)} · ${esc(text)}</div></div>
+      <div class="s"${full ? ` title="${esc(full)}"` : ""}>ssh ${esc(d.alias)} · ${esc(text)}</div></div>
       ${d.active ? "" : `<button class="small" data-use="${esc(d.id)}">Use this headset</button>`}</div>`;
   }).join("") || `<div class="sub">No headsets yet. Add one to get started.</div>`;
   $("devList").querySelectorAll("[data-dev]").forEach(el => el.onclick = e => {
@@ -5054,10 +5083,10 @@ function renderDetail() {
       <button class="small" data-mv="1" title="Try later"${i < d.addresses.length - 1 ? "" : " disabled"}>↓</button>
       <button class="small" data-ed>Edit</button><button class="small danger" data-rm>Remove</button></div>`).join("");
   const err = d.active && link.s && link.s.phase === "failed" ? link.s.error : null;
-  const problem = err && err.hostkey ? `<div class="item" role="alert"><div class="grow"><div class="t">${err.hostkey.state === "missing"
+  const problem = err && err.hostkey ? `<div class="item dev-problem" role="alert"><div class="grow"><div class="t">${err.hostkey.state === "missing"
         ? "Its saved SSH identity is missing" : "Its SSH identity has changed"}</div>
         <div class="s">${esc(err.message)}</div></div><button class="small action" id="dvTrustNow">Check the new key…</button></div>`
-    : err && err.auth === "denied" ? `<div class="item" role="alert"><div class="grow"><div class="t">The headset didn't accept this computer's key</div>
+    : err && err.auth === "denied" ? `<div class="item dev-problem" role="alert"><div class="grow"><div class="t">The headset didn't accept this computer's key</div>
         <div class="s">Set Up Connection pairs this computer with it again. On the headset, Developer Mode must be on.</div></div>
         <button class="small action" id="dvPair">Set Up Connection…</button></div>` : "";
   el.innerHTML = `<div class="shelf-head"><h2>${esc(d.name)}</h2>${d.active ? '<span class="count">In use</span>' : ""}<span class="spacer"></span>
