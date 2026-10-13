@@ -132,26 +132,20 @@ _GENERIC = [
 _CONSTANT = re.compile(r'[A-Z0-9]+(?:_[A-Z0-9]+)+')
 
 
-def _generic(m):
-    if m.re is _TOKEN_SHAPE:
-        return m.group(0) if _CONSTANT.fullmatch(m.group(0)) else REDACTED
-    return (m.group(1) + REDACTED) if m.groups() else REDACTED
-
-
-def _clean(message, token):
-    """message without the token, or any start of it (8+ characters, as truncation leaves), in
+def _clean_spans(message, token):
+    """Where in message the token is, or any start of it (8+ characters, as truncation leaves), in
     any letter case, with any of its characters written literally, percent-encoded (%4B or
     %4b) or percent-encoded twice (%254B, %254b). Mirrors _itch_account._clean on
     feat/itch-purchases (plus the double encoding), so the two can be unified."""
     if not token:
-        return message
+        return []
     # Each character: itself, or the (once or twice) percent-encoding of either of its letter
     # cases; hex digits in any case (re.I).
     tokens = ['(?:%s)' % '|'.join([re.escape(c)] + [f % ord(v) for v in sorted({c.lower(), c.upper()})
                                                      for f in ('%%%02x', '%%25%02x')])
               for c in token]
     start, rest = re.compile(''.join(tokens[:8]), re.I), [re.compile(t, re.I) for t in tokens[8:]]
-    out, pos = [], 0
+    spans, pos = [], 0
     while True:
         found = start.search(message, pos)
         if not found:
@@ -162,9 +156,39 @@ def _clean(message, token):
             if not more:
                 break
             end = more.end()
-        out += [message[pos:found.start()], REDACTED]
+        spans.append((found.start(), end))
         pos = end
-    return ''.join(out) + message[pos:]
+    return spans
+
+
+def _clean(message, token):
+    """message without the token in any of the forms _clean_spans finds."""
+    return _replace(message, _clean_spans(message, token))
+
+
+def _replace(text, spans):
+    """text with every span replaced by REDACTED; overlapping or touching spans merge first,
+    so no part of a value found by one rule survives because another rule found the rest."""
+    out, pos = [], 0
+    for a, b in sorted(spans):
+        if out and a <= pos:  # overlaps or touches the previous span
+            pos = max(pos, b)
+            continue
+        out += [text[pos:a], REDACTED]
+        pos = b
+    return ''.join(out) + text[pos:]
+
+
+def _generic_spans(text):
+    spans = []
+    for pattern in _GENERIC:
+        for m in pattern.finditer(text):
+            if pattern is _TOKEN_SHAPE:
+                if not _CONSTANT.fullmatch(m.group(0)):
+                    spans.append(m.span())
+            else:  # keep the parameter or scheme name, redact its value
+                spans.append((m.end(1), m.end()) if m.groups() else m.span())
+    return spans
 
 
 def carries_token(url, token):
@@ -183,15 +207,12 @@ def redact(text, limit=None, token=None):
     """text without the stored token (and any other token-shaped value), then cut to limit
     characters. Redacting before cutting means a cut can't leave part of a token behind."""
     text = '' if text is None else str(text)
-    # Whole token-shaped values first, so removing a shared prefix of the known token
-    # can't leave another token's tail behind; then encoded forms of the known token;
-    # then the generic patterns again for anything that removal exposed.
-    for pattern in _GENERIC:
-        text = pattern.sub(_generic, text)
+    # Every rule finds its spans in the original text and overlapping spans merge, so one
+    # rule removing part of a value can never stop another from recognising the rest.
+    spans = _generic_spans(text)
     for t in {t for t in (token, _stored_token_quiet()) if t}:
-        text = _clean(text, t)
-    for pattern in _GENERIC:
-        text = pattern.sub(_generic, text)
+        spans += _clean_spans(text, t)
+    text = _replace(text, spans)
     if limit is not None and len(text) > limit:
         text = text[:max(0, limit - 1)] + '…'
     return text

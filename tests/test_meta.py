@@ -250,6 +250,17 @@ class Redaction(unittest.TestCase):
             self.assertNotIn('123456789012', out, text)
             self.assertNotIn('abcdef', out, text)
 
+    def test_a_known_token_with_oc_inside_its_start_is_redacted_whole(self):
+        known = 'OCaOCabcdef123456789012'
+        enc = ''.join('%%%02x' % ord(c) for c in known[:3]) + known[3:]
+        for text in (f'error near {known} here', f'error near %4fCaOCabcdef123456789012 here',
+                     f'error near oCaOCabcdef123456789012 here', f'error near {enc} here',
+                     f'error near {known.swapcase()} here', f'x {known}{known} y'):
+            out = meta.redact(text, token=known)
+            self.assertTrue(out.startswith('error near ') or out.startswith('x '), out)
+            for frag in ('Ca', '4fCa', 'abcdef', '123456789012'):
+                self.assertNotIn(frag, out.replace('error near', '').replace(meta.REDACTED, ''), (text, out))
+
     def test_redacted_before_truncation(self):
         for cut in range(1, len(TOKEN) + 1):
             text = 'x' * 50 + TOKEN + ' tail'
