@@ -751,8 +751,30 @@ class Speed(unittest.TestCase):
         self.assertEqual(meta._excerpt('crash-java', 'AndroidRuntime: java.lang.IllegalStateException: x'),
                          'java.lang.IllegalStateException')
         self.assertEqual(meta._excerpt('crash-native', 'Fatal signal 11 (SIGSEGV)'), 'SIGSEGV')
-        self.assertEqual(meta.redact('error near OC-' + 'x' * 20 + ' here'), 'error near OC-' + 'x' * 20 + ' here')
         self.assertEqual(meta.redact('error near ' + OTHER_TOKEN + ' here'), 'error near <redacted> here')
+
+    def test_digit_free_token_shapes_are_redacted(self):
+        # check_token accepts tokens without digits, so the generic pattern must not need one.
+        shape = 'OCAbcdefGhijkLmnopQrstUvwx'
+        meta.check_token(shape)
+        meta.check_token('FRLAbcdefGhijkLmnopQrs')
+        meta.check_token('OCAbcdefGhijkLmnopQr')  # 20 characters: the shortest accepted
+        with self.assertRaisesRegex(meta.MetaError, 'incomplete'):
+            meta.check_token('OCAbcdefGhijkLmnopQ')  # 19: refused, so never needs redacting
+        for text in (shape, 'FRLAbcdefGhijkLmnopQrs', 'OC-' + 'x' * 20, 'OCabcdefghijklmnopqr', 'OCAbcdefGhijkLmnopQr'):
+            out = meta.redact(f'error near {text} here')
+            self.assertEqual(out, 'error near <redacted> here', text)
+        line = f'E linker: dlopen failed: library "{shape}.so" not found'
+        self.assertEqual(meta._excerpt('library', line), '')
+        v = meta.classify(line + '\n', False)
+        self.assertEqual((v['cause_key'], v['detail']), ('library', ''))
+        self.assertNotIn(shape[:10], json.dumps(v))
+        # Ordinary identifiers stay: upper-case constants, short words, package names, too-short runs.
+        for text in ('OCULUS_PLATFORM_SDK_VERSION_NAME', 'OCULUS_EXT_HAND_TRACKING_2', 'OCR', 'OCULUS',
+                     'com.oculus.systemactivities', 'OCAbcdefGhijkLmnopQ', 'libOCAbcdefGhijkLmnopQrstUvwx.so'):
+            self.assertEqual(meta.redact(f'error near {text} here'), f'error near {text} here', text)
+        self.assertEqual(meta._excerpt('library', 'dlopen failed: library "libOculusPlatformLoader.so" not found'),
+                         'libOculusPlatformLoader.so')
         long_line = 'x' * (meta.LINE_SCAN + 10) + ' Entitlement check failed'
         self.assertNotIn('licence', meta.classify(long_line, False)['signals']['matched'])  # only the start is scanned
 

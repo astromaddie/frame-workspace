@@ -100,20 +100,25 @@ class TokenRejected(MetaError):
 
 REDACTED = '<redacted>'
 # Any token-shaped value, whoever's it is: access_token=..., "access_token": "...",
-# Authorization schemes, and bare OC.../FRL... tokens (with a digit somewhere in them).
+# Authorization schemes, and bare OC.../FRL... tokens of the shape check_token accepts.
 _GENERIC = [
     re.compile(r'(?i)(access[_%5f-]*token["\']?\s*(?:=|:|%3d)\s*["\']?)[^&\s"\'<>,;]+'),
     re.compile(r'(?i)\b(bearer|oauth)\s+[^\s"\'<>,;]+'),
-    # Upper-case prefix and no dots, so package names (com.oculus...) are left alone; the
-    # stored token itself is matched in any case by _clean.
-    # Matched as one run (no lookahead, so linear); kept unless it has a digit (_generic).
-    re.compile(r'\b(?:OC|FRL)[A-Za-z0-9%|:_\-]{16,}'),
+    # The OC or FRL prefix check_token requires and its 20-character minimum, over the
+    # characters tokens are made of (base64 and URL-safe ones, plus % | : of encoded and app
+    # tokens), digits or not. Upper-case prefix and no dots, so package names (com.oculus...)
+    # are left alone; the stored token itself is matched in any case by _clean. Matched as
+    # one run (no lookahead, so linear); see _generic for the one shape kept.
+    re.compile(r'\b(?:OC[A-Za-z0-9%|:_\-~+/=]{18,}|FRL[A-Za-z0-9%|:_\-~+/=]{17,})'),
 ]
+# Upper-case constants separated by underscores (OCULUS_PLATFORM_SDK_VERSION): names in
+# logs, never the mixed-case base64 a token is, so they are kept.
+_CONSTANT = re.compile(r'[A-Z0-9]+(?:_[A-Z0-9]+)+')
 
 
 def _generic(m):
     if m.re is _GENERIC[2]:
-        return REDACTED if any(c.isdigit() for c in m.group(0)) else m.group(0)
+        return m.group(0) if _CONSTANT.fullmatch(m.group(0)) else REDACTED
     return (m.group(1) + REDACTED) if m.groups() else REDACTED
 
 
