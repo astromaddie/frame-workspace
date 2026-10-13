@@ -7,7 +7,7 @@ in the Steam library and gets its own SteamVR panel. Nothing goes through
 Lepton Development, which wipes its apps on exit. See docs/apks.md.
 
 Python stdlib only. CLI: python3 ui/frame_android.py
-  install APK [--vr|--flat] [--no-xr-compat] | info APK | versions APK-or-PKG
+  install APK [SPLIT.apk ...] [--vr|--flat] [--no-xr-compat] | info APK | versions APK-or-PKG
   install-obb PKG OBB [OBB ...] | backup-data PKG ARCHIVE | restore-data PKG ARCHIVE
   refresh-art PKG|--all | patch SRC DST [--add NAME=PATH ...] | list | launch PKG | stop PKG | remove PKG | probe PKG
 """
@@ -18,7 +18,7 @@ import frame_artwork
 import frame_host
 import tempfile
 import zipfile
-from frame_apk_vr import add_launcher_category
+from frame_apk_vr import add_launcher_category, drop_split_required
 from frame_apk_sign import repack
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -174,7 +174,90 @@ def _write_meta(d, meta):
 install_hooks = []
 
 
-def install(apk_path, flatscreen=None, name=None, source=None, icon_png=None, xr_compat=None, artwork=None):
+# Split APK members that belong to the split itself, not the app: never merged.
+SPLIT_OWN = re.compile(r'^(AndroidManifest\.xml|resources\.arsc|stamp-cert-sha256|META-INF/.*)$')
+
+
+def _split_package(path):
+    """(package, split name) from a split APK's manifest."""
+    with zipfile.ZipFile(path) as z:
+        elements = frame_apk.manifest_elements(frame_apk._read(z, 'AndroidManifest.xml', frame_apk.MAX_MANIFEST))
+    attrs = next((a for tag, a in elements if tag == 'manifest'), {})
+    return (attrs.get('package') or (None, None, None))[2], (attrs.get('split') or (None, None, None))[2]
+
+
+def split_entries(base, splits):
+    """What merging splits into base adds: {entry name: (split path, entry name)}.
+
+    Lepton runs one APK per instance, so a split app is merged into one APK. Only splits
+    that add files work: native libraries (the arm64 ABI split) and install-time assets.
+    A split with its own resource table (screen density or language) would need the
+    tables merged, which Frame Control doesn't do, so those are refused."""
+    try:
+        with zipfile.ZipFile(base) as z:
+            taken = set(z.namelist())
+        package = apk_info(base)['package']
+        plan = {}
+        for path in splits:
+            name = os.path.basename(path)
+            split_pkg, split_name = _split_package(path)
+            if split_pkg != package:
+                raise FrameError(f'{name} is not part of {package} (it says {split_pkg or "nothing"})')
+            with zipfile.ZipFile(path) as z:
+                for member in z.infolist():
+                    entry = member.filename
+                    if entry.endswith('/') or SPLIT_OWN.match(entry):
+                        if entry == 'resources.arsc':
+                            raise FrameError(f'{name} ({split_name or "split"}) holds screen-density or language '
+                                             'resources; Frame Control can only merge splits that add native '
+                                             'libraries or assets')
+                        continue
+                    if entry.startswith('res/'):
+                        raise FrameError(f'{name} ({split_name or "split"}) holds resources; Frame Control can '
+                                         'only merge splits that add native libraries or assets')
+                    if entry in taken:
+                        raise FrameError(f'{name} and another part of the app both contain {entry}')
+                    if member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                        raise FrameError(f'{entry} in {name} uses a compression Android does not')
+                    taken.add(entry)
+                    plan[entry] = (path, entry)
+        return plan
+    except (OSError, zipfile.BadZipFile, struct.error, IndexError, frame_apk.ApkError) as e:
+        raise FrameError(f'could not read the split APKs: {e}') from e
+
+
+def merge_splits(base, splits, dst):
+    """One installable APK from a base APK and its splits (see split_entries), re-signed
+    with Frame Control's key, without the base's isSplitRequired flag."""
+    plan = split_entries(base, splits)
+    add = {}
+    try:
+        for entry, (path, member) in plan.items():
+            with zipfile.ZipFile(path) as z:
+                add[entry] = z.read(member)
+        with zipfile.ZipFile(base) as z:
+            original = frame_apk._read(z, 'AndroidManifest.xml', frame_apk.MAX_MANIFEST)
+        manifest = drop_split_required(original)
+        repack(base, dst, replace={'AndroidManifest.xml': manifest} if manifest != original else None, add=add)
+    except (OSError, ValueError, IndexError, struct.error, zipfile.BadZipFile, frame_apk.ApkError) as e:
+        raise FrameError(f'could not merge the split APKs: {e}') from e
+    return {'merged': sorted(os.path.basename(p) for p in splits), 'entries': len(plan)}
+
+
+def install(apk_path, flatscreen=None, name=None, source=None, icon_png=None, xr_compat=None, artwork=None,
+            splits=None):
+    """splits: the rest of a split APK (base first, as apk_path); merged into one APK first."""
+    if splits:
+        start = time.time()
+        with tempfile.TemporaryDirectory(prefix=f'{TMP_PREFIX}{os.getpid()}-') as tmp:
+            merged = os.path.join(tmp, 'merged.apk')
+            try:
+                merge_splits(apk_path, list(splits), merged)
+            except Exception as e:  # reported like any other failed install
+                _after_install(None, None, e, start)
+                raise
+            meta = install(merged, flatscreen, name, source or os.path.basename(apk_path), icon_png, xr_compat, artwork)
+            return meta
     start, info = time.time(), None
     try:
         info = apk_info(apk_path)
@@ -576,8 +659,11 @@ def main():
             r = frame_apk_versions.alternatives(
                 info['package'] if info else args[0], info.get('version_code') if info else None)
         elif cmd == 'install':
-            r = install(args[0], flatscreen=False if '--vr' in args else True if '--flat' in args else None,
-                        xr_compat=False if '--no-xr-compat' in args else None)
+            files = [a for a in args if not a.startswith('--')]
+            if not files:
+                raise FrameError('install requires APK [SPLIT.apk ...]')
+            r = install(files[0], flatscreen=False if '--vr' in args else True if '--flat' in args else None,
+                        xr_compat=False if '--no-xr-compat' in args else None, splits=files[1:])
         elif cmd == 'refresh-art':
             if len(args) != 1:
                 raise FrameError('usage: refresh-art PACKAGE or refresh-art --all')

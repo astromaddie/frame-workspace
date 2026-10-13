@@ -126,3 +126,46 @@ def detection(data, names):
         issues.append('Uses OpenXR (good).')
     info['vr_issues'] = issues
     return info
+
+
+IS_SPLIT_REQUIRED = 0x01010591  # android:isSplitRequired
+
+
+def drop_split_required(axml_bytes):
+    """The manifest without <application android:isSplitRequired>, for a base APK whose
+    splits were merged into it: Android refuses a lone base that still says it needs them."""
+    chunks = list(frame_apk._chunks(axml_bytes, 8, len(axml_bytes)))
+    pool = next((c for c in chunks if c[0] == 1), None)
+    if pool is None:
+        raise frame_apk.ApkError('AndroidManifest.xml has no string pool')
+    strings = frame_apk._string_pool(axml_bytes, pool[2])
+    resmap = ()
+    for kind, header_size, offset, chunk_size in chunks:
+        if kind == 0x180:
+            resmap = struct.unpack_from('<%dI' % ((chunk_size - header_size) // 4), axml_bytes, offset + header_size)
+    result, changed = bytearray(axml_bytes[:8]), False
+    for kind, hs, off, size in chunks:
+        chunk = bytearray(axml_bytes[off:off + size])
+        if kind == 0x0102 and not changed:
+            name, astart, asize, count = struct.unpack_from('<4xIHHH', chunk, hs)
+            if name < len(strings) and strings[name] == 'application':
+                for i in range(count):
+                    a = hs + astart + i * asize
+                    attr = struct.unpack_from('<I', chunk, a + 4)[0]
+                    known = resmap[attr] if attr < len(resmap) else None
+                    if known == IS_SPLIT_REQUIRED or (known is None and attr < len(strings)
+                                                      and strings[attr] == 'isSplitRequired'):
+                        del chunk[a:a + asize]
+                        struct.pack_into('<I', chunk, 4, len(chunk))
+                        struct.pack_into('<H', chunk, hs + 12, count - 1)
+                        # id/class/style attribute indexes are 1-based positions in the list.
+                        for at in (hs + 14, hs + 16, hs + 18):
+                            index = struct.unpack_from('<H', chunk, at)[0]
+                            struct.pack_into('<H', chunk, at, 0 if index == i + 1 else index - 1 if index > i + 1 else index)
+                        changed = True
+                        break
+        result += chunk
+    if not changed:
+        return axml_bytes
+    struct.pack_into('<I', result, 4, len(result))
+    return bytes(result)
