@@ -58,6 +58,7 @@ import frame_macview  # noqa: E402
 import frame_media  # noqa: E402
 import frame_panels  # noqa: E402
 import frame_quest  # noqa: E402
+import frame_meta  # noqa: E402
 import frame_report  # noqa: E402
 import frame_store  # noqa: E402
 import frame_telemetry  # noqa: E402
@@ -1352,6 +1353,82 @@ def quest(body):
                                                             allow_downgrade=older), progress=True)
 
 
+# ---- My Meta library, Experimental (frame_meta.py, docs/meta-library.md) ------
+#
+# Never echoes the token: answers come from frame_meta.status() and _public(), and every
+# error passes through frame_meta.redact().
+
+META_APP_ID = re.compile(r"^[0-9]{1,25}$")
+
+
+def _meta_failure(e):
+    status = 400 if isinstance(e, frame_meta.TokenRejected) or "token" in str(e).lower() else 502
+    return Failure(frame_meta.redact(e, 600), status)
+
+
+def meta_sharing():
+    """Whether test results reach the shared compatibility database (Privacy settings)."""
+    blocked = frame_telemetry.blocked()
+    return {"shared": bool(frame_catalog.compat_db.shared() or frame_telemetry.enabled("compat")),
+            "blocked": blocked or None}
+
+
+def meta_status(query):
+    """The connected account (never its token) and, with library=1, the Quest games it owns
+    with any community verdicts."""
+    q = parse_qs(query)
+    out = dict(frame_meta.status(), sharing=meta_sharing())
+    if out["connected"] and q.get("library") == ["1"]:
+        try:
+            apps = frame_meta.with_verdicts(frame_meta.library(refresh=q.get("refresh") == ["1"]))
+            out["apps"] = [frame_meta._public(a) for a in apps]
+        except frame_android.FrameError as e:
+            raise _meta_failure(e) from None
+    return out
+
+
+def meta(body):
+    """{"action": "connect", "token", "acknowledged": true} | {"action": "disconnect"} |
+    {"action": "install", "app", "test"?, "allowDowngrade"?} | {"action": "test", "package"}."""
+    action = body.get("action")
+    try:
+        if action == "connect":
+            if body.get("acknowledged") is not True:
+                raise Failure("My Meta library is experimental: tick that you understand the warning first", 400)
+            if not isinstance(body.get("token"), str):
+                raise Failure("paste your Meta access token", 400)
+            return dict(frame_meta.connect(body["token"]), sharing=meta_sharing(),
+                        message="Connected your Meta account (Experimental)")
+        if action == "disconnect":
+            return dict(frame_meta.disconnect(), sharing=meta_sharing(),
+                        message="Disconnected your Meta account; its token was deleted from this computer")
+        if action == "install":
+            app_id, test, older = str(body.get("app", "")), body.get("test", False), body.get("allowDowngrade", False)
+            if not META_APP_ID.match(app_id):
+                raise Failure("invalid Meta app id", 400)
+            if type(test) is not bool or type(older) is not bool:
+                raise Failure("test and allowDowngrade must be true or false", 400)
+            ensure_master()
+
+            def work(report):
+                try:
+                    return frame_meta.install(app_id, test=test, progress=report, allow_downgrade=older)
+                except frame_android.FrameError as e:
+                    raise frame_meta.MetaError(frame_meta.redact(e, 1200)) from None
+                except Exception as e:  # never let an unexpected error's text carry the token
+                    raise frame_meta.MetaError(frame_meta.redact(f"{type(e).__name__}: {e}", 600)) from None
+            return start_job(f"{'Install and test' if test else 'Install'} {app_id} from Meta", work, progress=True)
+        if action == "test":
+            pkg = str(body.get("package", ""))
+            if not frame_android.PKG_RE.match(pkg):
+                raise Failure("invalid Android package id", 400)
+            ensure_master()
+            return start_job(f"Test {pkg}", lambda: frame_meta.run_test(pkg))
+    except frame_meta.MetaError as e:
+        raise _meta_failure(e) from None
+    raise Failure("unknown action", 400)
+
+
 # Errors that are the APK's own fault, so they belong in the compatibility
 # database as install_failed. Connection trouble and the like don't.
 APK_FAULTS = {"android_installer", "apk_needs_newer_android", "apk_wrong_abi"}
@@ -2264,7 +2341,7 @@ POST = {
     "/api/agent/approval": agent_approval, "/api/assistant/chat": assistant_chat,
     "/api/input": remote_input, "/api/touch": remote_touch,
     "/api/settings/artwork": frame_steamgriddb.save_settings,
-    "/api/sources": source_manage, "/api/sources/install": source_install, "/api/android/display": android_display, "/api/android": android, "/api/quest": quest, "/api/titles": titles, "/api/launch": launch, "/api/steam": steam, "/api/volume": set_volume, "/api/clipboard": clipboard,
+    "/api/sources": source_manage, "/api/sources/install": source_install, "/api/android/display": android_display, "/api/android": android, "/api/quest": quest, "/api/meta": meta, "/api/titles": titles, "/api/launch": launch, "/api/steam": steam, "/api/volume": set_volume, "/api/clipboard": clipboard,
         "/api/flatpak": flatpak, "/api/open": open_thing, "/api/shots/save": save_shots,
         "/api/webinstall/check": webinstall_check, "/api/webinstall/start": webinstall_start,
         "/api/webinstall/cancel": webinstall_cancel,
@@ -2481,6 +2558,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"apps": apps})
             elif path == "/api/quest":
                 self.send_json(quest_status(url.query))
+            elif path == "/api/meta":
+                self.send_json(meta_status(url.query))
             elif path == "/api/titles":
                 ensure_master()
                 titles_list = frame_titles.list_titles()

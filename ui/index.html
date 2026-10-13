@@ -962,8 +962,37 @@
         <div class="hint">Copies games you own from your own Quest (developer mode on) to the Frame. A game with
           OBB data takes two imports: the first installs it; start it from the Steam library, then import again to
           copy its data in. Frame Control never starts the game itself. Games that
-          check their Meta store licence need Meta's services, which only Meta headsets have, so they are refused:
-          Frame Control won't remove that check. <a href="https://github.com/saphid/frame-control/blob/main/docs/quest-import.md" target="_blank" rel="noopener noreferrer">How it works</a></div>
+          use Meta's licence check install with a warning: on the Frame that check can't reach Meta, so they may quit,
+          hang, or run without online features. Frame Control won't remove that check. <a href="https://github.com/saphid/frame-control/blob/main/docs/quest-import.md" target="_blank" rel="noopener noreferrer">How it works</a></div>
+      </section>
+      <section class="panel" id="metaLib">
+        <div class="shelf-head"><h2>My Meta library</h2><span class="tag">Experimental</span><span class="count" id="metaCount"></span><span class="spacer"></span>
+          <button class="small" id="metaRefresh" hidden title="Read your Meta library again">Refresh</button>
+          <button class="small" id="metaDisconnect" hidden title="Forget your Meta token on this computer">Disconnect</button></div>
+        <div class="sub" id="metaState" role="status" aria-live="polite">Off. Nothing is sent to Meta until you connect.</div>
+        <p class="hint" style="color:var(--warn)">Experimental. This uses Meta's undocumented internal API with your own Meta
+          access token. It may stop working whenever Meta changes things, and using it may be against Meta's terms; your
+          account is your responsibility. It only lists and downloads games your account owns, installs them as they are,
+          and never removes a licence check.</p>
+        <div id="metaConnectBox">
+          <label class="sub" style="display:block;margin-top:6px"><input type="checkbox" id="metaAck"> I understand, and want to
+            use my own Meta token with Frame Control</label>
+          <div style="display:flex;gap:8px;margin-top:6px">
+            <input type="password" id="metaToken" autocomplete="off" spellcheck="false" style="flex:1"
+                   placeholder="Your Meta access token (starts with OC or FRL)" aria-label="Meta access token" disabled>
+            <button class="small" id="metaConnect" disabled>Connect</button></div>
+          <div class="hint"><a href="https://github.com/saphid/frame-control/blob/main/docs/meta-library.md#your-token" target="_blank" rel="noopener noreferrer">How to get your token</a>.
+            Frame Control checks it with Meta, then keeps it in a private file on this computer (never on the Frame, and
+            never in reports). Disconnect deletes it.</div>
+        </div>
+        <div class="sub" id="metaShare" hidden style="margin-top:6px"></div>
+        <label class="sub" id="metaOlderBox" hidden style="display:block;margin-top:4px"><input type="checkbox" id="metaOlder"> Allow replacing a newer version on the Frame</label>
+        <progress id="metaProgress" max="100" hidden aria-label="Install progress" style="width:100%;margin-top:8px"></progress>
+        <div class="list" id="metaApps" style="margin-top:8px"></div>
+        <div class="hint">Install downloads the game from Meta and installs it like Import from my Quest; a game with OBB
+          data takes a second Install while it is open. Install and test also starts it, adds its data, watches it for
+          about 30 seconds and records whether it ran; Test again does just the test. Results go to the compatibility
+          reports, shared only if you share compatibility results. <a href="https://github.com/saphid/frame-control/blob/main/docs/meta-library.md" target="_blank" rel="noopener noreferrer">How it works</a></div>
       </section>
       <section class="panel disp" id="display">
       <div class="shelf-head"><h2>Android display</h2><span class="count">Lepton</span><span class="spacer"></span>
@@ -1441,7 +1470,8 @@ function applyHostWording(h) {
   // The iPhone app: the server runs on the Frame, and saving goes to the phone's Photos.
   document.body.classList.toggle("mobile", !!h.mobile);
   $("shotsFolder").hidden = !!h.mobile;
-  $("quest").hidden = !!h.mobile;  // the Quest plugs into a computer; the phone app's server runs on the Frame
+  $("quest").hidden = !!h.mobile;
+  $("metaLib").hidden = !!h.mobile;  // the Quest plugs into a computer; the phone app's server runs on the Frame
   if (!h.mobile) $("shotsFolder").textContent = h.fileManager === "your file manager" ? "Open folder" : `Show in ${h.fileManager}`;
   $("shotsSaveNew").textContent = h.mobile ? `Save all to ${h.computer}` : `Save new to ${h.computer}`;
   $("clipMac").textContent = `Send ${h.computer} clipboard`;
@@ -3309,6 +3339,7 @@ async function loadAndroid() {
   try {
     androidApps = (await api("/api/android")).apps;
   } catch (e) { return failed($("andApps"), e); }
+  if (metaLib.connected) renderMetaApps();  // "On the Frame" marks in My Meta library
   $("andCount").textContent = androidApps.length ? `${androidApps.length} installed` : "";
   $("andApps").innerHTML = androidApps.length ? androidApps.map(a => {
     const c = cat.apps && cat.apps.find(x => x.p === a.package);
@@ -3349,7 +3380,7 @@ async function loadQuest() {
   quest.serial = d.quest ? d.quest.serial : null;
   $("questCount").textContent = d.quest ? `${d.apps.length} app${d.apps.length === 1 ? "" : "s"}` : "";
   if (!d.quest) { $("questState").textContent = d.guidance || "No Quest found."; return; }
-  $("questState").textContent = `${d.quest.model || "Quest"} connected (${d.quest.serial}). Games that check their Meta licence are refused when you import them.`;
+  $("questState").textContent = `${d.quest.model || "Quest"} connected (${d.quest.serial}). Games that use Meta's licence check install with a warning: they may quit or hang on the Frame.`;
   const installed = new Set(androidApps.map(a => a.package));
   $("questApps").innerHTML = d.apps.length ? d.apps.map(a => {
     const bits = [a.split ? `split APK (${a.apks.length} files)` : "single APK"];
@@ -3376,6 +3407,117 @@ $("questApps").addEventListener("click", e => {
     .then(r => { bar.hidden = true; if (r && r.app) { $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
                   else { b.disabled = false; $("questState").textContent = `${pkg} wasn't imported; the reason is in the message log below.`; } });
 });
+
+// ---- My Meta library, Experimental (frame_meta.py): the person's own token, games they own ----
+// The token is only ever in the password box until Connect sends it; the server never sends it back.
+const metaLib = { apps: [], results: new Map(), connected: false };
+const META_VERDICT = { works: ["v-works", "Works on Frame"], maybe: ["v-maybe", "Works with problems"], no: ["v-no", "Doesn't work"] };
+function metaShareNote(s) {
+  const box = $("metaShare");
+  if (!metaLib.connected || !s) { box.hidden = true; return; }
+  box.hidden = false;
+  box.innerHTML = s.shared ? "Test results are shared with the compatibility database (Privacy settings)."
+    : s.blocked ? `Test results are saved on this computer only (${esc(s.blocked)}).`
+    : `Test results are saved on this computer only. <button class="small" id="metaShareOn">Share test results</button>`;
+  const on = $("metaShareOn");
+  if (on) on.onclick = async () => {
+    if (!confirm("Share compatibility results?\n\nYour test results (package, version, whether it ran, and why not) go to "
+                 + "Frame Control's shared compatibility database, so everyone sees better verdicts. Never your token, "
+                 + "account or game files. You can turn it off in Privacy settings.")) return;
+    await setTelemetry({ compat: true });
+    loadMeta();
+  };
+}
+function renderMeta(d) {
+  metaLib.connected = !!d.connected;
+  $("metaConnectBox").hidden = metaLib.connected;
+  $("metaDisconnect").hidden = $("metaRefresh").hidden = $("metaOlderBox").hidden = !metaLib.connected;
+  $("metaState").textContent = metaLib.connected
+    ? `Connected${d.user && d.user.name ? ` as ${d.user.name}` : ""}.` : "Off. Nothing is sent to Meta until you connect.";
+  metaShareNote(d.sharing);
+}
+function renderMetaApps() {
+  $("metaCount").textContent = metaLib.connected ? `${metaLib.apps.length} game${metaLib.apps.length === 1 ? "" : "s"}` : "";
+  if (!metaLib.connected) { $("metaApps").innerHTML = ""; return; }
+  const installed = new Set(androidApps.map(a => a.package));
+  $("metaApps").innerHTML = metaLib.apps.length ? metaLib.apps.map(a => {
+    const bits = [a.package || "package unknown", a.version ? `v${a.version}${a.version_code != null ? ` (${a.version_code})` : ""}` : ""];
+    if (a.size) bits.push(questSize(a.size));
+    if (a.data_files) bits.push(`OBB ${questSize(a.data_size)}`);
+    if (a.problem) bits.push(a.problem);
+    const v = a.verdict && META_VERDICT[a.verdict.verdict];
+    const verdict = v ? `<div class="s ${v[0]}" title="${esc((a.verdict.lines || []).join("\n"))}">Community: ${v[1]}</div>` : "";
+    const r = metaLib.results.get(a.package);
+    const result = r ? `<div class="s">${esc(r)}</div>` : "";
+    const busy = installing.has("meta:" + a.id) ? " disabled" : "";
+    const on = installed.has(a.package);
+    const can = a.package && !a.problem;
+    return `<div class="item"><div class="grow"><div class="t">${esc(a.title)}</div><div class="s">${esc(bits.filter(Boolean).join(" · "))}</div>${verdict}${result}</div>
+      ${on ? `<span class="tag">On the Frame</span>` : ""}
+      ${can ? `<button class="small" data-meta-install="${esc(a.id)}"${busy}>${on ? "Install again" : "Install"}</button>
+      <button class="small" data-meta-install="${esc(a.id)}" data-test="1"${busy} title="Install, start it, watch it for about 30 s and record whether it ran">Install and test</button>` : ""}
+      ${on ? `<button class="small" data-meta-test="${esc(a.package)}"${busy} title="Start it again, watch it for about 30 s and record whether it ran">Test again</button>` : ""}</div>`;
+  }).join("") : `<div class="sub">No Quest games in this Meta account.</div>`;
+}
+async function loadMeta(refresh = false) {
+  let d;
+  try { d = await api("/api/meta"); } catch (e) { $("metaState").textContent = e.message; return; }
+  renderMeta(d);
+  if (!d.connected) { metaLib.apps = []; renderMetaApps(); return; }
+  $("metaState").textContent += " Reading your library…";
+  try { d = await api(`/api/meta?library=1${refresh ? "&refresh=1" : ""}`); }
+  catch (e) { $("metaState").textContent = e.message; return; }
+  renderMeta(d);
+  metaLib.apps = d.apps || [];
+  renderMetaApps();
+}
+$("metaAck").onchange = e => { $("metaToken").disabled = !e.target.checked; $("metaConnect").disabled = !e.target.checked; };
+$("metaConnect").onclick = async () => {
+  const token = $("metaToken").value;
+  $("metaConnect").disabled = true;
+  try {
+    const d = await api("/api/meta", { action: "connect", token, acknowledged: $("metaAck").checked });
+    $("metaToken").value = "";
+    toast(d.message || "Connected");
+    loadMeta();
+  } catch (e) { $("metaState").textContent = e.message; }
+  finally { $("metaConnect").disabled = !$("metaAck").checked; }
+};
+$("metaDisconnect").onclick = async () => {
+  if (!confirm("Disconnect your Meta account? Its token is deleted from this computer. Games already installed stay.")) return;
+  try { const d = await api("/api/meta", { action: "disconnect" }); toast(d.message || "Disconnected"); }
+  catch (e) { toast(e.message, true); }
+  $("metaAck").checked = false; $("metaToken").disabled = $("metaConnect").disabled = true;
+  metaLib.results.clear(); loadMeta();
+};
+$("metaRefresh").onclick = () => loadMeta(true);
+$("metaApps").addEventListener("click", async e => {
+  const b = e.target.closest("[data-meta-install],[data-meta-test]");
+  if (!b) return;
+  const bar = $("metaProgress");
+  if (b.dataset.metaTest) {
+    const pkg = b.dataset.metaTest, key = "meta:" + (metaLib.apps.find(a => a.package === pkg) || {}).id;
+    if (!confirm("Test it now?\n\nIt opens in the headset for about 30 seconds and records whether it stays up.")) return;
+    b.disabled = true;
+    const r = await runJob(`Test ${pkg}`, key, () => api("/api/meta", { action: "test", package: pkg }));
+    if (r && r.message) metaLib.results.set(pkg, r.message);
+    renderMetaApps(); loadReports();
+    return;
+  }
+  const app = metaLib.apps.find(a => a.id === b.dataset.metaInstall), test = !!b.dataset.test;
+  if (!app || installing.has("meta:" + app.id)) return;
+  if (test && !confirm(`Install and test ${app.title}?\n\nFrame Control starts it in the headset (twice if it has game data to add), `
+                       + "watches it for about 30 seconds and records whether it ran.")) return;
+  b.disabled = true; bar.hidden = false; bar.value = 0;
+  const r = await runJob(`${test ? "Install and test" : "Install"} ${app.title} from Meta`, "meta:" + app.id,
+    () => api("/api/meta", { action: "install", app: app.id, test, allowDowngrade: $("metaOlder").checked }),
+    j => { if (j.stage) $("metaState").textContent = `${app.title}: ${j.stage}`; if (j.percent != null) bar.value = j.percent; });
+  bar.hidden = true;
+  if (r && r.message) { $("metaState").textContent = r.message; metaLib.results.set(app.package, r.test ? r.test.message : r.message); }
+  else $("metaState").textContent = `${app.title} wasn't installed; the reason is in the message log below.`;
+  loadAndroid(); renderMetaApps(); if (test) loadReports();
+});
+loadMeta();
 
 async function loadCatalog() {
   try { cat.apps = (await api("/api/android/catalog")).apps; }
