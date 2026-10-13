@@ -32,12 +32,13 @@ PHONE = {'serial': 'R58M000PHONE', 'state': 'device', 'extra': 'usb:1-2 model:SM
          'props': {'ro.product.manufacturer': 'samsung', 'ro.product.model': 'SM-G990'}}
 
 
-def axml(package, split=None, split_required=False, resmap=False):
-    """A minimal binary AndroidManifest.xml: <manifest package split?><application label isSplitRequired?/>.
+def axml(package, split=None, split_required=False, resmap=False, feature=False, children=()):
+    """A minimal binary AndroidManifest.xml: <manifest package split? isFeatureSplit?><application label
+    isSplitRequired?>children</application>.
 
     resmap: name isSplitRequired by its android resource id (as real builds do), not only by name."""
     strings = ['isSplitRequired', 'package', 'split', 'manifest', 'application', 'label', package,
-               split or '', 'Quest Game']
+               split or '', 'Quest Game', 'isFeatureSplit', *children]
     none = 0xffffffff
 
     def start(tag, attrs):
@@ -54,19 +55,38 @@ def axml(package, split=None, split_required=False, resmap=False):
     chunks = pool(strings)
     if resmap:
         chunks += struct.pack('<HHII', 0x0180, 8, 12, frame_apk_vr.IS_SPLIT_REQUIRED)
-    mattrs = [('package', frame_apk.T_STRING, package)] + ([('split', frame_apk.T_STRING, split)] if split else [])
+    mattrs = [('package', frame_apk.T_STRING, package)] + ([('split', frame_apk.T_STRING, split)] if split else []) \
+        + ([('isFeatureSplit', 0x12, 0xffffffff)] if feature else [])
     aattrs = ([('isSplitRequired', 0x12, 0xffffffff)] if split_required else []) + [('label', frame_apk.T_STRING, 'Quest Game')]
-    chunks += start('manifest', mattrs) + start('application', aattrs) + end('application') + end('manifest')
+    inner = b''.join(start(tag, []) + end(tag) for tag in children)
+    chunks += start('manifest', mattrs) + start('application', aattrs) + inner + end('application') + end('manifest')
     return struct.pack('<HHI', 3, 8, 8 + len(chunks)) + chunks
 
 
-def apk_bytes(package=PKG, files=None, **manifest):
+def apk_bytes(package=PKG, files=None, deflate=False, **manifest):
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, 'w') as z:
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED if deflate else zipfile.ZIP_STORED) as z:
         z.writestr('AndroidManifest.xml', axml(package, **manifest))
         for name, data in (files or {}).items():
             z.writestr(name, data)
     return buf.getvalue()
+
+
+def lie_about_size(data, entry, size):
+    """The zip with entry's uncompressed size in both headers replaced by size (a forged bomb)."""
+    out = bytearray(data)
+    encoded = entry.encode()
+    for signature, at in ((b'PK\x03\x04', 22), (b'PK\x01\x02', 24)):
+        pos = 0
+        while True:
+            pos = out.find(signature, pos)
+            if pos < 0:
+                break
+            name_at = pos + (30 if signature == b'PK\x03\x04' else 46)
+            if out[name_at:name_at + len(encoded)] == encoded:
+                struct.pack_into('<I', out, pos + at, size)
+            pos += 4
+    return bytes(out)
 
 
 OPENXR = {'lib/arm64-v8a/libopenxr_loader.so': b'loader', 'lib/arm64-v8a/libgame.so': b'game'}
@@ -317,35 +337,102 @@ class SplitInstall(unittest.TestCase):
         install.assert_called_once_with('base.apk', flatscreen=False, xr_compat=None, splits=['split.apk'])
 
 
+class SplitLimits(unittest.TestCase):
+    """Only splits that add native libraries or assets are merged, and never unbounded."""
+
+    def files(self, *parts):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        paths = []
+        for i, data in enumerate(parts):
+            p = os.path.join(tmp.name, f'part{i}.apk')
+            with open(p, 'wb') as f:
+                f.write(data)
+            paths.append(p)
+        return paths
+
+    def refused(self, split, words):
+        base, part = self.files(apk_bytes(split_required=True), split)
+        with patch.object(android, '_install') as frame:
+            with self.assertRaisesRegex(android.FrameError, words):
+                android.install(base, splits=[part])
+            frame.assert_not_called()
+
+    def test_code_components_and_feature_splits_refused(self):
+        self.refused(apk_bytes(split='config.arm64_v8a', files=dict(OPENXR, **{'classes2.dex': b'dex'})),
+                     r'contains code \(classes2\.dex\)')
+        self.refused(apk_bytes(split='config.arm64_v8a', children=('service',), files=OPENXR), '<service>')
+        self.refused(apk_bytes(split='config.arm64_v8a', children=('uses-library',), files=OPENXR), '<uses-library>')
+        self.refused(apk_bytes(split='feature_vr', feature=True, files=OPENXR), 'feature split')
+        self.refused(apk_bytes(split='config.arm64_v8a', files={'kotlin/x.kotlin_builtins': b''}), 'contains kotlin/')
+        self.refused(apk_bytes(split='config.arm64_v8a', files={'lib/arm64-v8a/sub/libx.so': b''}), 'contains lib/')
+
+    def test_resource_tables(self):
+        from apk_fixtures import resources
+        self.refused(apk_bytes(split='config.en', files={'resources.arsc': resources({(1, 'en', 0): {0: 1}})}),
+                     'density or language')
+        base, empty = self.files(apk_bytes(split_required=True),
+                                 apk_bytes(split='config.arm64_v8a', files=dict(OPENXR, **{'resources.arsc': resources({})})))
+        self.assertEqual(set(android.split_entries(base, [empty])), set(OPENXR))
+
+    def test_zip_bomb_refused_by_headers_and_by_reads(self):
+        bomb = {'assets/bomb.bin': b'\0' * (8 * 1024**2)}
+        split = apk_bytes(split='install_time', files=bomb, deflate=True)
+        self.assertLess(len(split), 64 * 1024)  # tiny on disk
+        base, part = self.files(apk_bytes(split_required=True), split)
+        with patch.object(android, 'MAX_SPLIT_MEMBER', 1024**2):
+            with self.assertRaisesRegex(android.FrameError, 'more than Frame Control merges'):
+                android.split_entries(base, [part])
+        with patch.object(android, 'MAX_SPLIT_TOTAL', 4 * 1024**2):
+            with self.assertRaisesRegex(android.FrameError, 'more than 0 GB|more than Frame Control merges'):
+                android.split_entries(base, [part])
+        # Headers that understate the size: the read stops at what they promise, and the
+        # truncated member fails its checksum instead of filling memory.
+        base, forged = self.files(apk_bytes(split_required=True), lie_about_size(split, 'assets/bomb.bin', 1000))
+        self.assertEqual(android.split_size([forged]), 1000)
+        with patch.object(android, 'repack') as repack:
+            with self.assertRaises(android.FrameError):
+                android.merge_splits(base, [forged], os.path.join(os.path.dirname(base), 'out.apk'))
+            repack.assert_not_called()
+
+
 class Import(unittest.TestCase):
+    META = {'package': PKG, 'label': 'Quest Game', 'instance': 2800000001, 'vr_issues': [], 'version': ''}
+
     def setUp(self):
         self.order = []
-        meta = {'package': PKG, 'label': 'Quest Game', 'instance': 2800000001, 'vr_issues': []}
+        self.running = False
+        self.installed = None
 
         def install(base, splits=(), source=None):
             self.order.append(('install', os.path.basename(base), [os.path.basename(s) for s in splits]))
             self.assertTrue(os.path.isfile(base))
             self.assertTrue(all(os.path.isfile(s) for s in splits))
             self.assertEqual(source, 'Meta Quest (USB)')
-            return dict(meta)
+            return dict(self.META)
 
         def install_obb(pkg, paths):
             self.order.append(('obb', sorted(os.path.basename(p) for p in paths)))
             self.assertTrue(all(os.path.isfile(p) for p in paths))
             return {'obb': [{'name': os.path.basename(p)} for p in paths]}
 
-        def push_data(m, folder, work):
+        def push_data(m, folder):
             self.order.append(('data', sorted(p.relative_to(folder).as_posix() for p in Path(folder).rglob('*') if p.is_file())))
             return 1
 
         for target, name, effect in ((android, 'install', install), (android, 'install_obb', install_obb),
                                      (android, 'launch', lambda pkg: self.order.append(('launch',))),
                                      (android, 'stop', lambda pkg: self.order.append(('stop',))),
+                                     (android, 'read_meta', lambda pkg: self.installed),
+                                     (quest, '_running', lambda pkg: self.running),
                                      (quest, '_wait_ready', lambda m: self.order.append(('ready',))),
                                      (quest, 'push_data', push_data)):
             p = patch.object(target, name, side_effect=effect)
             p.start()
             self.addCleanup(p.stop)
+
+    def open_on_frame(self, version=''):
+        self.running, self.installed = True, dict(self.META, version=version)
 
     def cache_left(self):
         root = quest.cache_root()
@@ -354,30 +441,60 @@ class Import(unittest.TestCase):
     def pulls(self, fake):
         return [c[3] for c in fake.calls() if c[2:3] == ['pull']]
 
-    def test_single_apk_with_obb_and_data(self):
-        fake = FakeQuest(self)
+    def game(self, fake):
         fake.add(PKG, [apk_bytes(files=OPENXR)],
                  obb={f'main.12.{PKG}.obb': b'main', f'patch.12.{PKG}.obb': b'patch', 'notes.txt': b'?'},
                  data={'files/save.dat': b'save'})
+
+    def test_first_import_installs_and_never_starts_the_game(self):
+        fake = FakeQuest(self)
+        self.game(fake)
         stages = []
         result = quest.import_game(PKG, data=True, progress=lambda stage, percent=None: stages.append(percent))
-        self.assertEqual(self.order, [('install', 'base.apk', []), ('launch',), ('ready',),
-                                      ('obb', [f'main.12.{PKG}.obb', f'patch.12.{PKG}.obb']),
-                                      ('data', ['files/save.dat']), ('stop',)])
+        self.assertEqual(self.order, [('install', 'base.apk', [])])
+        self.assertTrue(result['needs_game_data'])
+        self.assertIn('start Quest Game from the Steam library', result['message'])
+        self.assertIn('OBB game data and its Android/data files', result['message'])
+        self.assertEqual(len(self.pulls(fake)), 1)  # the game data waits for the second import
+        self.assertEqual(stages, sorted(stages))
+        self.assertEqual(stages[-1], 100)
+        self.assertEqual(self.cache_left(), [])
+
+    def test_second_import_with_the_game_open_copies_data_then_closes_it(self):
+        fake = FakeQuest(self)
+        self.game(fake)
+        self.open_on_frame()
+        result = quest.import_game(PKG, data=True)
+        self.assertEqual(self.order, [('ready',), ('obb', [f'main.12.{PKG}.obb', f'patch.12.{PKG}.obb']),
+                                      ('data', ['files/save.dat']), ('stop',)])  # no install, no launch
         pulls = self.pulls(fake)
         self.assertTrue(pulls[0].endswith('/base.apk'))  # the APK is checked before the OBB is copied
         self.assertEqual(pulls[1:], [f'/sdcard/Android/obb/{PKG}', f'/sdcard/Android/data/{PKG}'])
         self.assertIn('notes.txt', ' '.join(result['warnings']))
         self.assertEqual(len(result['obb']), 2)
-        self.assertEqual(stages, sorted(stages))
-        self.assertEqual(stages[-1], 100)
+        self.assertFalse(result['needs_game_data'])
         self.assertEqual(self.cache_left(), [])
 
-    def test_data_only_copied_when_asked_and_no_launch_without_data(self):
+    def test_open_game_is_never_replaced(self):
+        fake = FakeQuest(self)
+        self.game(fake)
+        self.open_on_frame(version='9.9')
+        with self.assertRaisesRegex(quest.QuestError, 'open on the Frame with a different version'):
+            quest.import_game(PKG)
+        fake.add('org.example.plain', [apk_bytes('org.example.plain', files=OPENXR)])
+        self.installed = dict(self.META, package='org.example.plain')
+        with self.assertRaisesRegex(quest.QuestError, 'no game data to add'):
+            quest.import_game('org.example.plain')
+        self.assertEqual(self.order, [])
+        self.assertFalse([p for p in self.pulls(fake) if '/sdcard/' in p])
+        self.assertEqual(self.cache_left(), [])
+
+    def test_data_only_copied_when_asked(self):
         fake = FakeQuest(self)
         fake.add(PKG, [apk_bytes(files=OPENXR)], data={'files/save.dat': b'save'})
-        quest.import_game(PKG)
+        result = quest.import_game(PKG)
         self.assertEqual(self.order, [('install', 'base.apk', [])])
+        self.assertFalse(result['needs_game_data'])
         self.assertEqual(len(self.pulls(fake)), 1)
 
     def test_split_apk(self):
@@ -393,8 +510,10 @@ class Import(unittest.TestCase):
         fake = FakeQuest(self)
         fake.add(PKG, [apk_bytes(files=dict(OPENXR, **{'lib/arm64-v8a/libovrplatformloader.so': b''}))],
                  obb={f'main.1.{PKG}.obb': b'big'})
+        self.open_on_frame()
         with self.assertRaisesRegex(quest.QuestError, 'licence'):
             quest.import_game(PKG)
+        self.running = False
         fake.add('org.example.old', [apk_bytes('org.example.old', files={'lib/armeabi-v7a/libgame.so': b''})],
                  obb={'main.1.org.example.old.obb': b'big'})
         with self.assertRaisesRegex(quest.QuestError, '32-bit'):
@@ -403,9 +522,10 @@ class Import(unittest.TestCase):
         self.assertFalse([p for p in self.pulls(fake) if '/obb/' in p])
         self.assertEqual(self.cache_left(), [])
 
-    def test_failures_clean_up(self):
+    def test_failures_clean_up_and_close_the_game(self):
         fake = FakeQuest(self)
         fake.add(PKG, [apk_bytes(files=OPENXR)], obb={f'main.1.{PKG}.obb': b'main'})
+        self.open_on_frame()
         fake.state['fail_pull'] = f'/sdcard/Android/obb/{PKG}'
         fake.save()
         with self.assertRaisesRegex(quest.QuestError, 'Connection reset'):
@@ -414,9 +534,10 @@ class Import(unittest.TestCase):
         fake.state.pop('fail_pull')
         fake.save()
         android.install_obb.side_effect = android.FrameError('checksum mismatch')
-        with self.assertRaisesRegex(quest.QuestError, 'Installed Quest Game, but copying its game data failed'):
+        with self.assertRaisesRegex(quest.QuestError, "Copying Quest Game's game data failed: checksum mismatch"):
             quest.import_game(PKG)
         self.assertEqual(self.order[-1], ('stop',))  # never left running half-set-up
+        self.assertNotIn(('launch',), self.order)
         self.assertEqual(self.cache_left(), [])
 
     def test_not_on_quest_bad_names_and_one_at_a_time(self):
@@ -429,12 +550,26 @@ class Import(unittest.TestCase):
             with self.assertRaisesRegex(quest.QuestError, 'Another Quest import'):
                 quest.import_game(PKG)
 
-    def test_not_enough_space(self):
+    def test_space_estimate(self):
+        # APKs as copied, merged + patched copies, OBB, and Android/data once (streamed, not staged).
+        self.assertEqual(quest.space_needed(10, 30, 100, 1000), 10 + 60 + 100 + 1000)
         fake = FakeQuest(self)
         fake.add(PKG, [apk_bytes(files=OPENXR)])
         with patch.object(quest.shutil, 'disk_usage', return_value=SimpleNamespace(total=0, used=0, free=10)):
             with self.assertRaisesRegex(quest.QuestError, 'GB free'):
                 quest.import_game(PKG)
+        self.assertEqual(self.cache_left(), [])
+
+    def test_space_counts_splits_uncompressed(self):
+        fake = FakeQuest(self)
+        fake.add(PKG, [apk_bytes(split_required=True),
+                       apk_bytes(split='install_time', deflate=True, files={'assets/level.pak': b'\0' * (4 * 1024**2)})])
+        # Enough for the compressed copies, not for merging the 4 MB the split inflates to.
+        with patch.object(quest.shutil, 'disk_usage', return_value=SimpleNamespace(total=0, used=0, free=1024**2)):
+            with self.assertRaisesRegex(quest.QuestError, 'GB free'):
+                quest.import_game(PKG)
+        self.assertEqual(self.order, [])
+        self.assertEqual(len(self.pulls(fake)), 2)
         self.assertEqual(self.cache_left(), [])
 
     def test_leftovers_from_a_crash_are_swept(self):
@@ -453,26 +588,36 @@ class FrameSide(unittest.TestCase):
     META = {'package': PKG, 'label': 'Quest Game', 'instance': 2800000001}
 
     @unittest.skipUnless(os.name == 'posix', 'symlinks')
-    def test_push_data_streams_regular_files_into_the_instance(self):
+    def test_push_data_streams_regular_files_without_staging(self):
         import frame_android_data
         import tarfile
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp) / PKG
             (folder / 'files').mkdir(parents=True)
-            (folder / 'files/save.dat').write_bytes(b'save')
+            (folder / 'files/save.dat').write_bytes(b'save' * 100000)
             os.symlink('/etc/passwd', str(folder / 'files/link'))
             got = {}
 
             def stream(command, src=None, dst=None):
                 got['command'] = command
+                got['staged'] = sorted(p.name for p in Path(tmp).iterdir())
                 with tarfile.open(fileobj=io.BytesIO(src.read())) as tar:
                     got['members'] = {m.name: (m.type, m.uid) for m in tar.getmembers()}
             with patch.object(frame_android_data, '_stream', side_effect=stream):
-                self.assertEqual(quest.push_data(self.META, folder, tmp), 1)
+                self.assertEqual(quest.push_data(self.META, folder), 1)
+        self.assertEqual(got['staged'], [PKG])  # nothing written beside the pulled folder
         self.assertIn('podman exec -i lepton-steamlaunch-2800000001 /system/bin/sh -c', got['command'])
         self.assertIn(f'cd /sdcard/Android/data/{PKG}', got['command'])
         self.assertEqual(set(got['members']), {'files', 'files/save.dat'})
         self.assertEqual(got['members']['files/save.dat'], (tarfile.REGTYPE, 0))
+
+    def test_push_data_transfer_failure(self):
+        import frame_android_data
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / 'big.bin').write_bytes(b'x' * (4 * 1024**2))  # more than a pipe holds
+            with patch.object(frame_android_data, '_stream', side_effect=android.FrameError('ssh died')):
+                with self.assertRaisesRegex(android.FrameError, 'ssh died'):
+                    quest.push_data(self.META, tmp)
 
     def test_wait_ready(self):
         answers = iter(['', '0\n', '1\n'])

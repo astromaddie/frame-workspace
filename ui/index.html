@@ -958,7 +958,9 @@
         <label class="sub" style="display:block;margin-top:8px"><input type="checkbox" id="questData"> Also copy each game's files in Android/data (some games keep saves there)</label>
         <progress id="questProgress" max="100" hidden aria-label="Import progress" style="width:100%;margin-top:8px"></progress>
         <div class="list" id="questApps" style="margin-top:8px"></div>
-        <div class="hint">Copies games you own from your own Quest (developer mode on) to the Frame. Games that
+        <div class="hint">Copies games you own from your own Quest (developer mode on) to the Frame. A game with
+          OBB data takes two imports: the first installs it; start it from the Steam library, then import again to
+          copy its data in. Frame Control never starts the game itself. Games that
           check their Meta store licence need Meta's services, which only Meta headsets have, so they are refused:
           Frame Control won't remove that check. <a href="https://github.com/saphid/frame-control/blob/main/docs/quest-import.md" target="_blank" rel="noopener noreferrer">How it works</a></div>
       </section>
@@ -3331,7 +3333,12 @@ async function loadAndroid() {
 
 // ---- Import from my Quest (frame_quest.py): adb on this computer, never on the Frame ----
 const quest = { serial: null };
-function questSize(bytes) { return bytes == null ? "" : bytes >= 1073741824 ? `${(bytes / 1073741824).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1048576))} MB`; }
+function questSize(bytes) {
+  if (bytes == null) return "";
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
+  if (bytes >= 1048576) return `${Math.round(bytes / 1048576)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
 async function loadQuest() {
   $("questScan").disabled = true; $("questState").textContent = "Looking for your Quest…"; $("questApps").innerHTML = "";
   let d;

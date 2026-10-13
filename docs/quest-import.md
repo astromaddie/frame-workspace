@@ -42,6 +42,18 @@ files in Android/data** to bring the game's external files too (some games
 keep saves there). Progress shows in the panel; the result and any reason it
 stopped appear in the message log.
 
+A game with game data (an OBB folder, or Android/data when ticked) takes two
+imports, because Android can only take that data while the game's Lepton
+instance is running, and there is no way to start the instance without the
+game. Frame Control never starts the game itself:
+
+1. **Import** installs the game and says it has data to add.
+2. Start the game from the Steam library and leave it on its first screen.
+3. **Import** again. Frame Control sees the game open with the same version,
+   copies the data in, and closes the game. Start it again to play.
+
+A game that quits straight away without its data can't take it this way.
+
 From a terminal:
 
 ```sh
@@ -66,7 +78,9 @@ which returns a background job (`/api/job`) with a stage and percentage.
    line is a single APK, several a split APK) and the size of
    `/sdcard/Android/obb/<package>` and `/sdcard/Android/data/<package>`.
    Labels aren't shown before import: reading them means copying the APK.
-3. Checks there is room on the computer, then copies the APK and its splits
+3. Checks there is room on the computer (the APKs, a merged and a patched copy
+   of them counted uncompressed, the OBB folder and the Android/data folder
+   once, since that is streamed to the Frame), then copies the APK and its splits
    into a per-user cache folder (`Frame Control/quest-import` under the
    system's cache folder).
 4. **Checks the APK before anything else is copied**, refusing:
@@ -77,20 +91,24 @@ which returns a background job (`/api/job`) with a stage and percentage.
    - split APKs Frame Control can't merge (below).
    VrApi-only builds (`libvrapi.so`, no OpenXR loader) are flagged, as for any
    APK: they install, but won't run.
-5. Copies the OBB folder (and `Android/data` if ticked).
-6. Installs through the normal APK install (`frame_android.install`): VR
-   detection, the launcher fix, the OpenXR compatibility layer, artwork.
-7. With game data to add, starts the game's Lepton instance, waits for Android
-   to finish booting, copies standard `main|patch.<version>.<package>.obb`
-   files with the existing OBB helper (checked by SHA-256 inside Android,
-   [sidequest.md](sidequest.md#obb-files)), streams the `Android/data` files
-   in, then stops the game so its next start reads them. Other files in the
-   OBB folder are listed as not copied.
-8. Deletes the cache folder, whether the import worked or not. A folder left
+5. If the game isn't open on the Frame: installs it through the normal APK
+   install (`frame_android.install`: VR detection, the launcher fix, the
+   OpenXR compatibility layer, artwork), and says whether it has game data
+   to add.
+6. If the game is open on the Frame (the second import): refuses if the
+   installed version differs from the Quest's (an open game is never
+   replaced), otherwise copies the OBB folder (and `Android/data` if ticked)
+   from the Quest, waits for Android to have finished booting, copies standard
+   `main|patch.<version>.<package>.obb` files with the existing OBB helper
+   (checked by SHA-256 inside Android, [sidequest.md](sidequest.md#obb-files)),
+   streams the `Android/data` files in as a tar written straight into the SSH
+   transfer, then closes the game so its next start reads them. Other files in
+   the OBB folder are listed as not copied.
+7. Deletes the cache folder, whether the import worked or not. A folder left
    by a crash is removed by a later import after six hours.
 
-Only one import runs at a time. If copying game data fails after the install,
-the game stays installed and the message says so; run Import again.
+Only one import runs at a time. If copying game data fails, the game is
+closed and the message says so; start it and import again.
 
 ### Split APKs
 
@@ -99,10 +117,17 @@ split APK into one (`frame_android.install(base, splits=[...])`, or
 `python3 ui/frame_android.py install base.apk split1.apk ...`). Merging copies
 each split's native libraries and assets into the base, drops the base
 manifest's `isSplitRequired` flag, and re-signs with Frame Control's key, as
-the launcher fix already does. Splits with their own resource table (screen
-density or language splits) would need the tables merged, which Frame Control
-doesn't do; those are refused with that reason before anything reaches the
-Frame. A merged, re-signed APK can't update a copy signed by the publisher.
+the launcher fix already does. Only splits that hold nothing but
+`lib/<abi>/*.so`, `assets/` and their own signature, manifest and an empty
+resource table are merged. Refused, with the reason, before anything reaches
+the Frame: splits with resources (screen density or language), code
+(`classes*.dex`), any other file, a manifest that declares components or
+libraries (`<service>`, `<uses-library>`...), feature splits, and splits of
+another package. The merged files are held in memory while the APK is
+repacked and signed (as for every patched APK), so a merge adds at most
+512 MB per file and 1 GB in all, checked from the headers and again while
+reading, with each file's checksum. A merged, re-signed APK can't update a
+copy signed by the publisher.
 
 ## What won't run, and why
 
@@ -133,12 +158,16 @@ Only import games you own, for your own use.
 device detection (Quest, the Frame's tunnel, the Frame over USB, other
 Android devices, unauthorised, no permissions, offline, none, several),
 package listing and split detection, the refusals, the order of copies
-(APK checked before the OBB is copied), the install, OBB and data sequencing,
-split merging and signing, and cache clean-up after success and failure.
+(APK checked before the OBB is copied), the two-step install then data copy
+(the game is never started by Frame Control, never replaced while open, and
+closed after its data is copied), split merging and signing, the split
+refusals and size limits (including a forged zip bomb), the space estimate,
+and cache clean-up after success and failure.
 
 **Not verified:** a real Quest (none was available), Quest system apps in
 `pm list packages -3`, real split APKs from the Meta Store, OBB and
 `Android/data` writes into a running Lepton instance on a real Frame
-(the OBB helper itself is also unverified there), and the Linux udev rule.
+(the OBB helper itself is also unverified there), whether games stay open
+without their OBB long enough for the second import, and the Linux udev rule.
 Large games are copied into memory while being merged or patched, as every
 patched APK already is.

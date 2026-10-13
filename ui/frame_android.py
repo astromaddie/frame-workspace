@@ -175,52 +175,87 @@ install_hooks = []
 
 
 # Split APK members that belong to the split itself, not the app: never merged.
-SPLIT_OWN = re.compile(r'^(AndroidManifest\.xml|resources\.arsc|stamp-cert-sha256|META-INF/.*)$')
+SPLIT_OWN = re.compile(r'^(AndroidManifest\.xml|stamp-cert-sha256|META-INF/.*)$')
+# What a mergeable split may add: native libraries and assets, nothing else.
+SPLIT_ADDS = re.compile(r'^(lib/[^/]+/[^/]+\.so|assets/.*[^/])$')
+# Manifest elements a config or install-time asset split carries. Anything else (an
+# activity, service, uses-library...) belongs to a feature split, which needs its manifest.
+SPLIT_TAGS = {'manifest', 'application', 'uses-sdk', 'module', 'delivery', 'install-time', 'fusing'}
+# Every merged byte is held in memory while the APK is repacked and signed (as for every
+# patched APK), so splits are bounded by what's actually inflated, not only the headers.
+MAX_SPLIT_MEMBER = 512 * 1024**2
+MAX_SPLIT_TOTAL = 1024**3
 
 
-def _split_package(path):
-    """(package, split name) from a split APK's manifest."""
+def _split_manifest(path, name):
+    """(package, split name) from a split APK's manifest, refusing splits that declare
+    anything the merged app would lose with that manifest."""
     with zipfile.ZipFile(path) as z:
         elements = frame_apk.manifest_elements(frame_apk._read(z, 'AndroidManifest.xml', frame_apk.MAX_MANIFEST))
     attrs = next((a for tag, a in elements if tag == 'manifest'), {})
-    return (attrs.get('package') or (None, None, None))[2], (attrs.get('split') or (None, None, None))[2]
+    split = (attrs.get('split') or (None, None, None))[2]
+    feature = attrs.get('isFeatureSplit')
+    if feature and feature[1]:
+        raise FrameError(f'{name} ({split or "split"}) is a feature split with its own code and manifest; '
+                         'Frame Control can only merge splits that add native libraries or assets')
+    extra = sorted({tag for tag, _ in elements if tag not in SPLIT_TAGS})
+    if extra:
+        raise FrameError(f'{name} ({split or "split"}) declares <{">, <".join(extra)}> in its manifest; '
+                         'Frame Control can only merge splits that add native libraries or assets')
+    return (attrs.get('package') or (None, None, None))[2], split
 
 
 def split_entries(base, splits):
-    """What merging splits into base adds: {entry name: (split path, entry name)}.
+    """What merging splits into base adds: {entry name: (split path, entry name, size)}.
 
     Lepton runs one APK per instance, so a split app is merged into one APK. Only splits
-    that add files work: native libraries (the arm64 ABI split) and install-time assets.
-    A split with its own resource table (screen density or language) would need the
-    tables merged, which Frame Control doesn't do, so those are refused."""
+    that add native libraries (the arm64 ABI split) or install-time assets can be: a split
+    with code, components or resources (screen density, language) needs its own manifest
+    or resource table, which Frame Control doesn't merge, so those are refused."""
     try:
         with zipfile.ZipFile(base) as z:
             taken = set(z.namelist())
         package = apk_info(base)['package']
-        plan = {}
+        plan, total = {}, 0
         for path in splits:
             name = os.path.basename(path)
-            split_pkg, split_name = _split_package(path)
+            split_pkg, split_name = _split_manifest(path, name)
+            label = f'{name} ({split_name or "split"})'
             if split_pkg != package:
                 raise FrameError(f'{name} is not part of {package} (it says {split_pkg or "nothing"})')
             with zipfile.ZipFile(path) as z:
                 for member in z.infolist():
                     entry = member.filename
                     if entry.endswith('/') or SPLIT_OWN.match(entry):
-                        if entry == 'resources.arsc':
-                            raise FrameError(f'{name} ({split_name or "split"}) holds screen-density or language '
-                                             'resources; Frame Control can only merge splits that add native '
-                                             'libraries or assets')
+                        continue
+                    if entry == 'resources.arsc':
+                        # A config split for native code may carry an empty table; any resource needs merging.
+                        if frame_apk.Resources(frame_apk._read(z, entry, frame_apk.MAX_ARSC)).entries:
+                            raise FrameError(f'{label} holds screen-density or language resources; Frame Control '
+                                             'can only merge splits that add native libraries or assets')
                         continue
                     if entry.startswith('res/'):
-                        raise FrameError(f'{name} ({split_name or "split"}) holds resources; Frame Control can '
-                                         'only merge splits that add native libraries or assets')
+                        raise FrameError(f'{label} holds screen-density or language resources ({entry}); Frame '
+                                         'Control can only merge splits that add native libraries or assets')
+                    if re.match(r'^classes\d*\.dex$', entry):
+                        raise FrameError(f'{label} contains code ({entry}); Frame Control can only merge splits '
+                                         'that add native libraries or assets')
+                    if not SPLIT_ADDS.match(entry):
+                        raise FrameError(f'{label} contains {entry}; Frame Control can only merge splits that '
+                                         'add native libraries or assets')
                     if entry in taken:
                         raise FrameError(f'{name} and another part of the app both contain {entry}')
                     if member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
                         raise FrameError(f'{entry} in {name} uses a compression Android does not')
+                    if member.file_size > MAX_SPLIT_MEMBER:
+                        raise FrameError(f'{entry} in {name} is {member.file_size / 1024**2:.0f} MB, more than '
+                                         f'Frame Control merges ({MAX_SPLIT_MEMBER // 1024**2} MB)')
+                    total += member.file_size
+                    if total > MAX_SPLIT_TOTAL:
+                        raise FrameError(f'the split APKs add more than {MAX_SPLIT_TOTAL // 1024**3} GB, more than '
+                                         'Frame Control merges')
                     taken.add(entry)
-                    plan[entry] = (path, entry)
+                    plan[entry] = (path, entry, member.file_size)
         return plan
     except (OSError, zipfile.BadZipFile, struct.error, IndexError, frame_apk.ApkError) as e:
         raise FrameError(f'could not read the split APKs: {e}') from e
@@ -230,11 +265,19 @@ def merge_splits(base, splits, dst):
     """One installable APK from a base APK and its splits (see split_entries), re-signed
     with Frame Control's key, without the base's isSplitRequired flag."""
     plan = split_entries(base, splits)
-    add = {}
+    add, total = {}, 0
     try:
-        for entry, (path, member) in plan.items():
-            with zipfile.ZipFile(path) as z:
-                add[entry] = z.read(member)
+        for entry, (path, member, size) in plan.items():
+            with zipfile.ZipFile(path) as z, z.open(member) as f:
+                # Never more than the header promised, whatever the compressed stream holds;
+                # a header that understates the size then fails the checksum.
+                crc, data = z.getinfo(member).CRC, f.read(size + 1)
+            if len(data) != size or zlib.crc32(data) != crc:
+                raise FrameError(f'{member} in {os.path.basename(path)} does not match its header')
+            total += len(data)
+            if total > MAX_SPLIT_TOTAL:
+                raise FrameError(f'the split APKs add more than {MAX_SPLIT_TOTAL // 1024**3} GB')
+            add[entry] = data
         with zipfile.ZipFile(base) as z:
             original = frame_apk._read(z, 'AndroidManifest.xml', frame_apk.MAX_MANIFEST)
         manifest = drop_split_required(original)
@@ -242,6 +285,15 @@ def merge_splits(base, splits, dst):
     except (OSError, ValueError, IndexError, struct.error, zipfile.BadZipFile, frame_apk.ApkError) as e:
         raise FrameError(f'could not merge the split APKs: {e}') from e
     return {'merged': sorted(os.path.basename(p) for p in splits), 'entries': len(plan)}
+
+
+def split_size(splits):
+    """Bytes a merge adds, from the split headers (merge_splits enforces the real sizes)."""
+    total = 0
+    for path in splits:
+        with zipfile.ZipFile(path) as z:
+            total += sum(m.file_size for m in z.infolist() if SPLIT_ADDS.match(m.filename))
+    return total
 
 
 def install(apk_path, flatscreen=None, name=None, source=None, icon_png=None, xr_compat=None, artwork=None,

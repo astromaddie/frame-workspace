@@ -1,10 +1,12 @@
 """Import from my Quest: copy games you own off your own Meta Quest onto the Frame.
 
 The Quest is plugged into this computer by USB with developer mode on; its own
-adb copies the APK (and split APKs), the OBB folder and, if asked, the external
-app-data folder into a per-user cache. The APK is checked before anything goes
-to the Frame, then installed through frame_android.install like any other APK,
-and the cache is removed. Games that check their Meta store licence
+adb copies the APK (and split APKs) into a per-user cache. The APK is checked
+before anything goes to the Frame, then installed through frame_android.install
+like any other APK. Game data (the OBB folder and, if asked, the external
+app-data folder) is copied by a second import while the person has the game
+open, since only a running Lepton instance can take it; Frame Control never
+starts the game itself. The cache is always removed. Games that check their Meta store licence
 (libovrplatformloader.so) are refused: that check needs Meta's services, and
 Frame Control does not remove it or work around it. See docs/quest-import.md.
 
@@ -324,35 +326,69 @@ def _wait_ready(meta):
                      "game data couldn't be added. Check it opens from the Steam library, then import again.")
 
 
-def push_data(meta, folder, work):
-    """Copy a pulled /sdcard/Android/data/<package> folder into the running instance."""
+def push_data(meta, folder):
+    """Stream a pulled /sdcard/Android/data/<package> folder into the running instance as a
+    tar, written straight into the SSH transfer: nothing is staged on this computer."""
     import frame_android_data
     pkg = meta['package']
-    archive = Path(work) / 'data.tar'
-    count = 0
-    with tarfile.open(str(archive), 'w', format=tarfile.GNU_FORMAT) as tar:
-        for path in sorted(Path(folder).rglob('*')):
-            if path.is_symlink() or not (path.is_file() or path.is_dir()):
-                continue  # regular files and folders only
-            info = tar.gettarinfo(str(path), arcname=path.relative_to(folder).as_posix())
-            info.uid = info.gid = 0
-            info.uname = info.gname = ''
-            if path.is_file():
-                with path.open('rb') as f:
-                    tar.addfile(info, f)
-                count += 1
-            else:
-                tar.addfile(info)
     container = f"lepton-steamlaunch-{int(meta['instance'])}"
     script = f'set -eu; mkdir -p {DATA}/{pkg}; cd {DATA}/{pkg}; tar -x -o -f -'
-    with archive.open('rb') as src:
-        frame_android_data._stream(shlex.join(['podman', 'exec', '-i', container, '/system/bin/sh', '-c', script]),
-                                   src=src)
-    return count
+    read_end, write_end = os.pipe()
+    state = {'count': 0, 'error': None}
+
+    def write():
+        try:
+            with os.fdopen(write_end, 'wb') as out, \
+                    tarfile.open(fileobj=out, mode='w|', format=tarfile.GNU_FORMAT) as tar:
+                for path in sorted(Path(folder).rglob('*')):
+                    if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                        continue  # regular files and folders only
+                    info = tar.gettarinfo(str(path), arcname=path.relative_to(folder).as_posix())
+                    info.uid = info.gid = 0
+                    info.uname = info.gname = ''
+                    if path.is_file():
+                        with path.open('rb') as f:
+                            tar.addfile(info, f)
+                        state['count'] += 1
+                    else:
+                        tar.addfile(info)
+        except (OSError, tarfile.TarError, ValueError) as e:  # ValueError: the reader closed first
+            state['error'] = e
+
+    writer = threading.Thread(target=write, daemon=True)
+    writer.start()
+    try:
+        with os.fdopen(read_end, 'rb') as src:
+            frame_android_data._stream(shlex.join(['podman', 'exec', '-i', container, '/system/bin/sh', '-c', script]),
+                                       src=src)
+    finally:
+        writer.join(60)
+    if state['error']:
+        raise QuestError(f'could not read the app files copied from the Quest: {state["error"]}')
+    return state['count']
+
+
+def space_needed(apk_bytes, merged_bytes, obb_bytes, data_bytes):
+    """Bytes an import needs free on this computer: the APKs as copied, a merged APK and the
+    install's patched copy of it (each up to merged_bytes), the OBB folder and the
+    Android/data folder (streamed to the Frame, never staged twice)."""
+    return apk_bytes + 2 * merged_bytes + obb_bytes + data_bytes
+
+
+def _check_space(work, need, pkg):
+    free = shutil.disk_usage(str(work)).free
+    if need > free:
+        raise QuestError(f'Importing {pkg} needs about {need / 1024**3:.1f} GB free on this computer '
+                         f'({free / 1024**3:.1f} GB available in {work.parent})')
 
 
 def import_game(package_name, serial=None, data=False, progress=None):
-    """Copy package_name from the Quest to the Frame. progress(stage, percent)."""
+    """Copy package_name from the Quest to the Frame. progress(stage, percent).
+
+    Frame Control never starts the game itself. Its game data (OBB, and Android/data if
+    asked) can only be written into a running Lepton instance, and there is no way to
+    boot one without its game, so that's a second import: the person starts the game,
+    imports again, and Frame Control copies the data in and closes the game."""
     if not android.PKG_RE.match(package_name or ''):
         raise QuestError('invalid package name')
     report = progress or (lambda stage, percent=None: None)
@@ -373,14 +409,16 @@ def import_game(package_name, serial=None, data=False, progress=None):
         _import_lock.release()
 
 
+def _running(pkg):
+    return f'lepton-steamlaunch-{android.instance_id(pkg)}' in android.running_instances()
+
+
 def _import(serial, app, data, work, report):
     pkg = app['package']
-    # The APKs, a merged copy of a split APK and the install's patched copy, then the data.
-    need = _remote_sizes(serial, app['apks']) * 3 + (app['obb'] or 0) + ((app['data'] or 0) if data else 0)
-    free = shutil.disk_usage(str(work)).free
-    if need > free:
-        raise QuestError(f'Importing {pkg} needs about {need / 1024**3:.1f} GB free on this computer '
-                         f'({free / 1024**3:.1f} GB available in {work.parent})')
+    obb_bytes = app['obb'] or 0
+    data_bytes = (app['data'] or 0) if data else 0
+    apk_bytes = _remote_sizes(serial, app['apks'])
+    _check_space(work, space_needed(apk_bytes, apk_bytes, obb_bytes, data_bytes), pkg)
     # 1. The APK (and its splits), checked before anything else is copied.
     local = []
     for i, remote in enumerate(app['apks']):
@@ -395,7 +433,33 @@ def _import(serial, app, data, work, report):
     report('Checking it can run on the Frame', 27)
     checked = inspect(pkg, str(base), [str(p) for p in splits])
     warnings = list(checked['warnings'])
-    # 2. Game data.
+    label = checked['label']
+    # A merge stores what splits compressed: count it uncompressed, now the files are here.
+    merged = base.stat().st_size + android.split_size([str(p) for p in splits])
+    _check_space(work, space_needed(0, merged, obb_bytes, data_bytes), pkg)
+    wants_data = app['obb'] is not None or bool(data and app['data'] is not None)
+    if not _running(pkg):
+        # 2a. Install. The game is never started here: see import_game.
+        report('Installing on the Frame', 60)
+        meta = android.install(str(base), splits=[str(p) for p in splits], source='Meta Quest (USB)')
+        report('Done', 100)
+        message = f"Imported {meta['label']} from your Quest. It's in the Steam library."
+        if wants_data:
+            what = ' and '.join(x for x in ('its OBB game data' if app['obb'] is not None else '',
+                                            'its Android/data files' if data and app['data'] is not None else '') if x)
+            message += (f" To add {what}, start {meta['label']} from the Steam library, leave it on its first "
+                        "screen, then import it again here: Frame Control copies the data in and closes the game.")
+        note = android.layer_note(meta)
+        return {'message': ' '.join([message, *warnings, *([note] if note else [])]), 'app': meta, 'obb': [],
+                'files': 0, 'warnings': warnings, 'split': bool(splits), 'needs_game_data': wants_data}
+    # 2b. The game is open on the Frame: add its data, but never replace the APK under it.
+    meta = android.read_meta(pkg)
+    if not meta or meta.get('version') != checked['version']:
+        raise QuestError(f"{label} is open on the Frame{' with a different version' if meta else ''}. Close it, "
+                         'then import again to install this version.')
+    if not wants_data:
+        raise QuestError(f"{label} is already installed and open on the Frame, and has no game data to add. "
+                         'Close it first to install it again.')
     obb_files = []
     if app['obb'] is not None:
         report('Copying game data (OBB) from your Quest', 30)
@@ -413,38 +477,32 @@ def _import(serial, app, data, work, report):
         (work / 'data').mkdir()
         _pull(serial, f'{DATA}/{pkg}', work / 'data')
         data_folder = work / 'data' / pkg if (work / 'data' / pkg).is_dir() else None
-    # 3. The Frame.
-    report('Installing on the Frame', 60)
-    meta = android.install(str(base), splits=[str(p) for p in splits], source='Meta Quest (USB)')
     copied_obb, copied_files = [], 0
-    if obb_files or data_folder:
-        report('Starting it on the Frame to add its game data', 75)
-        android.launch(pkg)
+    try:
+        report('Waiting for Android on the Frame', 70)
+        _wait_ready(meta)
+        if obb_files:
+            report('Copying game data (OBB) to the Frame', 80)
+            copied_obb = android.install_obb(pkg, [str(p) for p in obb_files])['obb']
+        if data_folder:
+            report('Copying app files to the Frame', 92)
+            copied_files = push_data(meta, data_folder)
+    except android.FrameError as e:
+        raise QuestError(f"Copying {meta['label']}'s game data failed: {e}. Start it again and import again "
+                         'to retry.') from e
+    finally:
         try:
-            _wait_ready(meta)
-            if obb_files:
-                report('Copying game data (OBB) to the Frame', 80)
-                copied_obb = android.install_obb(pkg, [str(p) for p in obb_files])['obb']
-            if data_folder:
-                report('Copying app files to the Frame', 92)
-                copied_files = push_data(meta, data_folder, work)
-        except android.FrameError as e:
-            raise QuestError(f"Installed {meta['label']}, but copying its game data failed: {e}. "
-                             "Run Import again to retry.") from e
-        finally:
-            try:
-                android.stop(pkg)  # the next start reads the new data from the beginning
-            except android.FrameError:
-                pass
+            android.stop(pkg)  # the next start reads the new data from the beginning
+        except android.FrameError:
+            pass
     report('Done', 100)
-    message = f"Imported {meta['label']} from your Quest. It's in the Steam library."
+    message = f"Added {meta['label']}'s game data from your Quest and closed it; start it again from the Steam library."
     if copied_obb:
         message += f' Added {len(copied_obb)} OBB file{"s" if len(copied_obb) != 1 else ""}.'
     if copied_files:
         message += f' Copied {copied_files} app file{"s" if copied_files != 1 else ""}.'
-    note = android.layer_note(meta)
-    return {'message': ' '.join([message, *warnings, *([note] if note else [])]), 'app': meta,
-            'obb': copied_obb, 'files': copied_files, 'warnings': warnings, 'split': bool(splits)}
+    return {'message': ' '.join([message, *warnings]), 'app': meta, 'obb': copied_obb, 'files': copied_files,
+            'warnings': warnings, 'split': bool(splits), 'needs_game_data': False}
 
 
 def main():
