@@ -5,6 +5,7 @@ import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import io
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import threading
@@ -21,7 +22,7 @@ import frame_telemetry  # noqa: E402
 import test_quest  # noqa: E402  (its APK builder; importing a module adds no tests here)
 
 PKG = test_quest.PKG
-TOKEN = 'OCAtestToken1234567890abcdefGHIJ-_.~xyz'
+TOKEN = 'OCAtestToken1234567890abcdefGHIJ-_xyz'
 OTHER_TOKEN = 'FRLAnotherToken0987654321zyxwvuts'
 APK = test_quest.apk_bytes(files=test_quest.OPENXR, version_code=100, version_name='1.0')
 OBB = b'obb data ' * 100
@@ -752,6 +753,43 @@ class Speed(unittest.TestCase):
                          'java.lang.IllegalStateException')
         self.assertEqual(meta._excerpt('crash-native', 'Fatal signal 11 (SIGSEGV)'), 'SIGSEGV')
         self.assertEqual(meta.redact('error near ' + OTHER_TOKEN + ' here'), 'error near <redacted> here')
+
+    def test_every_accepted_token_is_redacted(self):
+        # Property: whatever check_token accepts, the generic pattern redacts in full, wherever
+        # it appears, without knowing the stored token.
+        import random
+        rng = random.Random(20261013)
+        allowed = ''.join(chr(c) for c in range(33, 127)
+                                         if re.fullmatch('[%s]' % meta.TOKEN_CHARS, chr(c)))
+        self.assertEqual(set(allowed), set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=_-'))
+        accepted = 0
+        for _ in range(3000):
+            prefix = rng.choice(('OC', 'FRL'))
+            body = ''.join(rng.choice(allowed) for _ in range(rng.randint(meta.TOKEN_MIN - len(prefix), 60)))
+            try:
+                token = meta.check_token(prefix + body)
+            except meta.MetaError:
+                continue
+            accepted += 1
+            for left, right in (('', ''), ('error near ', ' here'), ('library "', '.so" not found'),
+                                ('url?tok=', '&x=1'), ('(', ')')):
+                out = meta.redact(left + token + right)
+                self.assertEqual(out, left + meta.REDACTED + right, token)
+            self.assertEqual(meta._excerpt('library', f'dlopen failed: library "{token}.so" not found'), '')
+        self.assertGreater(accepted, 2500)
+        # Anything with other characters is refused at connect, with a clear message.
+        for bad in ('OCAbcdef.GhijkLmnopQrstUvwx', 'OCAbcdefGhijk~LmnopQrstUvwx', 'FRLAbcdef!GhijkLmnopQrstU',
+                    'OCAbcdefGhijk#LmnopQrstUvwx', 'OCABCDEFGHIJ_KLMNOPQRS_TUV'):
+            with self.assertRaisesRegex(meta.MetaError, "doesn't look like a Meta token"):
+                meta.check_token(bad)
+
+    def test_dotted_value_regression(self):
+        # Accepted before (dots allowed) but not redacted, so it showed as a library name.
+        line = 'E linker: dlopen failed: library "OCAbcdef.GhijkLmnopQrstUvwx.so" not found'
+        with self.assertRaises(meta.MetaError):
+            meta.check_token('OCAbcdef.GhijkLmnopQrstUvwx')
+        # It can't be a connected token now; as a stored token it would be redacted by _clean too.
+        self.assertNotIn('OCAbcdef', meta.redact(line, token='OCAbcdef.GhijkLmnopQrstUvwx'))
 
     def test_digit_free_token_shapes_are_redacted(self):
         # check_token accepts tokens without digits, so the generic pattern must not need one.

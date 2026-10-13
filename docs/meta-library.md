@@ -46,7 +46,12 @@ one.
 
 Frame Control refuses values that can't be a user token before sending them
 anywhere: anything not starting with `OC` or `FRL`, URL-encoded copies (with
-`%`), app tokens (with `|` or `:`), and cut-off values.
+`%`), app tokens (with `|` or `:`), cut-off values (under 20 characters), and
+anything with characters other than letters, digits and `+ / = - _` (the
+base64 and URL-safe base64 sets). The public tools only describe tokens made
+of letters and digits; if a real token needs another character, it has to be
+added in one place (`TOKEN_CHARS` in `ui/frame_meta.py`), which also makes
+the redaction look for it.
 
 ## Using it
 

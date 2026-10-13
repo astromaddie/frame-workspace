@@ -99,6 +99,14 @@ class TokenRejected(MetaError):
 # ---- Keeping the token out of everything ---------------------------------------
 
 REDACTED = '<redacted>'
+# What a Meta user token may be made of, used both to accept one (check_token) and to find
+# token-shaped values to redact (_GENERIC), so anything accepted is always redacted. The
+# public tools only check the OC/FRL prefix and refuse % | : (docs/meta-library.md); the
+# tokens they describe are letters and digits, so this allows those plus the base64 and
+# URL-safe base64 characters (+ / = - _) and nothing else. Widen it here, in one place, if a
+# real token needs more.
+TOKEN_CHARS = r'A-Za-z0-9+/=_\-'  # a regex character-class body
+TOKEN_MIN = 20  # characters, prefix included
 # Any token-shaped value, whoever's it is: access_token=..., "access_token": "...",
 # Authorization schemes, and bare OC.../FRL... tokens of the shape check_token accepts.
 _GENERIC = [
@@ -109,7 +117,8 @@ _GENERIC = [
     # tokens), digits or not. Upper-case prefix and no dots, so package names (com.oculus...)
     # are left alone; the stored token itself is matched in any case by _clean. Matched as
     # one run (no lookahead, so linear); see _generic for the one shape kept.
-    re.compile(r'\b(?:OC[A-Za-z0-9%|:_\-~+/=]{18,}|FRL[A-Za-z0-9%|:_\-~+/=]{17,})'),
+    # (% | : too, for encoded and app tokens in messages.)
+    re.compile(r'\b(?:OC[%s%%|:]{%d,}|FRL[%s%%|:]{%d,})' % (TOKEN_CHARS, TOKEN_MIN - 2, TOKEN_CHARS, TOKEN_MIN - 3)),
 ]
 # Upper-case constants separated by underscores (OCULUS_PLATFORM_SDK_VERSION): names in
 # logs, never the mixed-case base64 a token is, so they are kept.
@@ -193,8 +202,11 @@ def check_token(token):
                         'payload itself, not from an address.')
     if '|' in token or ':' in token:
         raise MetaError("That's an app token, not your account's token. See docs/meta-library.md for which one to copy.")
-    if re.fullmatch(r'OC\d{15}', token) or len(token) < 20:
+    if re.fullmatch(r'OC\d{15}', token) or len(token) < TOKEN_MIN:
         raise MetaError("That token is incomplete. Copy the whole value.")
+    if not re.fullmatch('[%s]+' % TOKEN_CHARS, token) or _CONSTANT.fullmatch(token):
+        raise MetaError("That doesn't look like a Meta token: it has characters a Meta token doesn't (only "
+                        'letters, digits and + / = - _). Copy just the token value.')
     return token
 
 
