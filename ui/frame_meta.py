@@ -183,6 +183,11 @@ def redact(text, limit=None, token=None):
     """text without the stored token (and any other token-shaped value), then cut to limit
     characters. Redacting before cutting means a cut can't leave part of a token behind."""
     text = '' if text is None else str(text)
+    # Whole token-shaped values first, so removing a shared prefix of the known token
+    # can't leave another token's tail behind; then encoded forms of the known token;
+    # then the generic patterns again for anything that removal exposed.
+    for pattern in _GENERIC:
+        text = pattern.sub(_generic, text)
     for t in {t for t in (token, _stored_token_quiet()) if t}:
         text = _clean(text, t)
     for pattern in _GENERIC:

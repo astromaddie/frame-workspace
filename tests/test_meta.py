@@ -243,6 +243,13 @@ class Redaction(unittest.TestCase):
         self.assertEqual(meta.redact('com.oculus.systemactivities is missing'), 'com.oculus.systemactivities is missing')
         self.assertEqual(meta.redact(None), '')
 
+    def test_a_token_sharing_the_known_tokens_start_is_redacted_whole(self):
+        known, other = 'OCabcdefX123456789012', 'OCabcdefY123456789012'
+        for text in (other, f'see {other} here', f'{other}{known}', f'{known} {other}'):
+            out = meta.redact(text, token=known)
+            self.assertNotIn('123456789012', out, text)
+            self.assertNotIn('abcdef', out, text)
+
     def test_redacted_before_truncation(self):
         for cut in range(1, len(TOKEN) + 1):
             text = 'x' * 50 + TOKEN + ' tail'
