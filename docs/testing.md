@@ -15,6 +15,29 @@ A fourth, a SteamOS VM, may come later ([issue #6](https://github.com/saphid/ste
 python3 -m unittest discover -s tests
 ```
 
+The Control Center is covered by `tests/test_control_center.py` and its Node
+behavior suite `tests/control_center.cjs` (also run by unittest discovery).
+They exercise production search, metrics, navigation and action handlers with
+mocked API/DOM boundaries: volume Apply/mute/readback, offline and failed reads,
+stale samples, selected-headset capture, duplicate actions and validation before
+SSH. Integration regressions run the production shared refresh, Home renderer,
+host callback and Control Center bootstrap: a pre-command status request must be
+drained before audio readback starts, and delayed startup retains sample receipt
+age, failed-read state and early host capabilities. The actual Flatpak install
+redraw cannot revive a failed sample; a new successful poll restores metrics and
+audio after either redraw or delayed mount. Draft regressions cover a pending headset
+switch and mute followed by Apply. Static asset HTTP tests and desktop/iPhone bundle checks catch missing CSS
+or JavaScript. A focused run is:
+
+```sh
+python3 -m unittest discover -s tests -p test_control_center.py -v
+node --test tests/control_center.cjs
+node --check ui/control-center.js
+```
+
+Responsive layout, actual browser rendering and keyboard/touch behavior still
+need browser verification. No Control Center test connects to a real headset.
+
 About 120 tests, a few seconds, on Python 3.9 and newer. GitHub Actions runs
 them on macOS, Windows and Linux. They don't pick up `tests/e2e`.
 

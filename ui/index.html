@@ -454,6 +454,12 @@
              backdrop-filter: none; background: rgb(23, 29, 37); }
     .brand svg { width: 26px; height: 26px; }
     header .chip { height: 30px; padding: 0 10px; }
+    /* Let connection text yield before battery and header actions. */
+    .hdr-end { flex: 1; gap: 6px; }
+    .hdr-end .pill, .hdr-end .devsel { min-width: 0; }
+    .hdr-end .pill { padding: 0 8px; gap: 6px; }
+    .hdr-end .pill > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    #reportBtn, #refreshAll { width: 38px; padding: 0; justify-content: center; }
     nav { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; gap: 0;
           height: calc(58px + env(safe-area-inset-bottom)); padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
           background: rgba(23,29,37,.97); backdrop-filter: blur(12px); box-shadow: 0 -1px 0 rgba(255,255,255,.07); }
@@ -480,6 +486,9 @@
     .and-btns { padding-left: 0; }
     .banner { flex-wrap: wrap; }
     .banner .s { white-space: normal; }
+    /* Reserve the message row; connection actions wrap below it. */
+    #offline { align-items: flex-start; }
+    #offline > .grow { flex: 1 0 calc(100% - 36px); overflow-wrap: anywhere; }
     button { height: 38px; }
     button.small { height: 32px; }
     .actions button { height: 46px; }
@@ -641,6 +650,7 @@
   @media(prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } .store-card, .source-toggle::after { transition:none; } .store-skeleton { animation:none; } }
 
 </style>
+<link rel="stylesheet" href="/control-center.css">
 </head>
 <body>
 <header>
@@ -659,6 +669,7 @@
     <a href="#android" title="Android apps and their display (3)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="9" width="14" height="11" rx="2"/><path d="M8 9a4 4 0 0 1 8 0M8 5l1.5 2M16 5l-1.5 2M9.5 13h.01M14.5 13h.01"/></svg>Android<kbd>3</kbd></a>
     <a href="#tools" title="Files, clipboard, Linux apps, remote and power (4)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0-5.2 5.2L3.5 17.5a2.1 2.1 0 0 0 3 3l6-6a4 4 0 0 0 5.2-5.2l-2.5 2.5-2.5-2.5z"/></svg>Tools<kbd>4</kbd></a>
     <a href="#devices" class="desk-only" title="Headsets, their addresses and the connection (5)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0"/><circle cx="12" cy="19.5" r="1"/><path d="M2 9a15 15 0 0 1 20 0"/></svg>Devices<kbd>5</kbd></a>
+    <a href="#control" title="Search controls, settings and live metrics (6)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18M8 3v6M16 9v6M10 15v6"/></svg>Control<kbd>6</kbd></a>
   </nav>
   <div class="hdr-end">
   <button class="pill" id="conn" role="status" aria-live="polite" title="Connection details"><span class="dot wait"></span><span class="pt"><b>Connecting…</b><span></span></span></button>
@@ -710,6 +721,42 @@
     <button class="small desk-only" id="offTrust" hidden>Check the new key…</button>
     <button class="small" id="offSetup" hidden>Set Up Connection…</button>
     <button class="action small" id="offRetry">Retry now</button>
+  </div>
+
+  <div class="page cc" data-page="control" id="controlCenter">
+    <section class="cc-hero" aria-labelledby="ccTitle">
+      <div><div class="cc-eyebrow">Your Frame, at a glance</div><h1 id="ccTitle">Control Center</h1><p>Everything you can see, change and configure. Find a setting, check your headset, or pick up where you left off.</p></div>
+      <svg class="cc-hero-mark" viewBox="0 0 120 84" fill="none" aria-hidden="true"><path d="M14 28C14 15 106 15 106 28v23c0 18-33 23-39 11h-14c-6 12-39 7-39-11z" stroke="currentColor" stroke-width="1.5"/><path d="M26 32c0-6 25-6 25 0v15c0 11-25 11-25 0zM69 32c0-6 25-6 25 0v15c0 11-25 11-25 0z" stroke="currentColor" stroke-opacity=".4"/><path d="M7 33h7m92 0h7M48 18l4-7h16l4 7" stroke="currentColor" stroke-width="1.5"/><circle cx="60" cy="38" r="2" fill="currentColor"/></svg>
+    </section>
+    <section aria-labelledby="ccDeviceName">
+      <div class="cc-topline"><h2 id="ccDeviceName">Steam Frame</h2><span class="cc-sample" id="ccSampleState" role="status">Connect your Frame to read live metrics</span><button class="small" id="ccRefresh">Refresh metrics</button></div>
+      <div class="cc-summary">
+        <div class="cc-metric"><span>Battery</span><strong data-cc-metric="battery">Unavailable</strong><small data-cc-metric="batteryDetail">Connect to read charge and power</small></div>
+        <div class="cc-metric"><span>Storage free</span><strong data-cc-metric="storage">Unavailable</strong><small data-cc-metric="storageDetail">User storage unavailable</small></div>
+        <div class="cc-metric"><span>Memory used</span><strong data-cc-metric="memory">Unavailable</strong><small data-cc-metric="memoryDetail">Memory sensor unavailable</small></div>
+        <div class="cc-metric"><span>Compositor FPS</span><strong data-cc-metric="fps">Unavailable</strong><small data-cc-metric="fpsDetail">Compositor FPS · not game FPS</small></div>
+      </div>
+      <details class="cc-device-facts"><summary id="ccBuild">System information unavailable</summary>
+        <dl class="cc-readings">
+          <div><dt>Wi-Fi network</dt><dd data-cc-metric="wifi">Unavailable</dd></div><div><dt>Wi-Fi signal</dt><dd data-cc-metric="signal">Unavailable</dd></div>
+          <div><dt>IP address</dt><dd data-cc-metric="ip">Unavailable</dd></div><div><dt>Uptime</dt><dd data-cc-metric="uptime">Unavailable</dd></div>
+          <div><dt>Battery power · signed</dt><dd data-cc-metric="power">Unavailable</dd></div><div><dt>Charger</dt><dd data-cc-metric="charger">Unavailable</dd></div>
+          <div><dt>Battery temperature</dt><dd data-cc-metric="batteryTemp">Unavailable</dd></div><div><dt>Battery health</dt><dd data-cc-metric="batteryHealth">Unavailable</dd></div>
+          <div><dt>Battery estimate</dt><dd data-cc-metric="estimate">Unavailable</dd></div>
+        </dl><p class="cc-note">Positive battery watts mean charging; negative means discharge. Estimates are reported by the battery and may be unavailable.</p>
+        <div class="cc-services" id="ccServices"></div>
+      </details>
+    </section>
+    <div class="cc-workspace">
+      <aside class="cc-sidebar" aria-label="Control Center categories"><p>Browse controls</p><div class="cc-categories" id="ccCategories"></div>
+        <div class="cc-status"><div><i class="dot" id="ccStatusDot"></i><span id="ccStatusLabel">No live sample</span></div><p id="ccStatusNote">Read-only status over SSH. Controls run only when you use them.</p></div>
+      </aside>
+      <div>
+        <div class="cc-search-row"><div class="cc-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="10" cy="10" r="6.5"/><path d="m15 15 6 6"/></svg><input id="ccSearch" type="search" placeholder="Search settings, controls and guides…" aria-label="Search Control Center" autocomplete="off"><button id="ccClear" type="button" aria-label="Clear search" hidden>×</button></div><span class="cc-results" id="ccResultCount" role="status" aria-live="polite"></span></div>
+        <div class="cc-cards" id="ccCards"></div>
+        <div class="cc-empty" id="ccEmpty" hidden><h2>No matching controls</h2><p>Try a different word or browse all categories.</p><button class="small" id="ccResetFilter">Reset search &amp; category</button></div>
+      </div>
+    </div>
   </div>
 
   <div class="page on" data-page="home">
@@ -1394,7 +1441,7 @@ const HINTS = {
   flat: "The app panel in use in the headset, flat and still: it doesn't move as the wearer looks around. Pick another panel to watch it. Control lets you tap or click right where you want on it.",
 };
 const SOURCE_LABEL = { steamvr: "Headset view", gamescope: "Desktop panel", panel: "Desktop", shot: "Screenshot" };
-let state = null, view = "headset", eye = "left", live = false, liveTimer = null, volTimer = null;
+let state = null, stateReceivedAt = null, stateRead = {valid: false, error: null}, view = "headset", eye = "left", live = false, liveTimer = null, volTimer = null;
 let lastImg = null, lastSource = null, lastShot = null, viewGen = 0;
 
 function esc(s) { return String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -1432,6 +1479,7 @@ $("bottombar").onclick = () => {
 const HOST = { computer: "computer" };
 function applyHostWording(h) {
   Object.assign(HOST, h);
+  window.frameControlCenter?.host(h);
   // The iPhone app: the server runs on the Frame, and saving goes to the phone's Photos.
   document.body.classList.toggle("mobile", !!h.mobile);
   $("shotsFolder").hidden = !!h.mobile;
@@ -1462,6 +1510,13 @@ let devGen = 0;
 const HEADSET_FREE = /^\/api\/(devices|connection|host|job|titles\/job|webinstall\/job|apk-versions|android\/(catalog|reports)|steam\/search)\b/;
 async function api(path, body, device = window.connDevice) {
   const gen = devGen;
+  const checkGeneration = () => {
+    if (gen !== devGen && !HEADSET_FREE.test(path)) {
+      const err = new Error("Switched headsets");
+      err.offline = err.stale = true;  // leave the panel for the new headset's answer
+      throw err;
+    }
+  };
   // Changes name the headset the page was showing, so the server refuses one meant
   // for a headset it has since switched away from.
   const dev = device ? { "X-Frame-Device": device } : {};
@@ -1470,15 +1525,12 @@ async function api(path, body, device = window.connDevice) {
   let r;
   try { r = await fetch(path, opts); }
   catch {
+    checkGeneration();  // a late transport failure belongs to the old headset too
     throw new Error(window.frameApp?.platform === "ios" ? "Lost the connection to the Frame. The app reconnects on its own."
                                                          : "Frame Control's local server isn't running. Restart the app (Frame → Restart Server).");
   }
   const data = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
-  if (gen !== devGen && !HEADSET_FREE.test(path)) {
-    const err = new Error("Switched headsets");
-    err.offline = err.stale = true;  // failed() leaves the panel alone: the new headset's answer fills it
-    throw err;
-  }
+  checkGeneration();
   if (!r.ok) {
     const err = new Error(data.error || `HTTP ${r.status}`);
     err.offline = !!data.offline;
@@ -1517,6 +1569,7 @@ let online = null;
 function setOnline(ok, why) {
   const was = online;
   online = ok;
+  window.frameControlCenter?.connection(ok);
   $("offline").hidden = ok;
   if (!ok) {
     $("offMsg").textContent = why || "Can't reach the Frame";
@@ -1548,11 +1601,15 @@ function refresh() {
   refreshing = (async () => {
     try {
       state = await api("/api/status");
+      stateReceivedAt = Date.now();
+      stateRead = {valid: true, error: null};
       render(state);
       setConn(true, state.hostname);
       setOnline(true);
     } catch (e) {
       renderPerformance(null);
+      if (!e.stale) stateRead = {valid: false, error: e};
+      window.frameControlCenter?.unavailable(e);
       if (!e.offline) { setConn(false, "Error"); log("Status failed: " + e.message, "e"); }
       if (!state) ["games", "flatpaks"].forEach(id => failed($(id), e));
     } finally {
@@ -1561,6 +1618,12 @@ function refresh() {
     }
   })();
   return refreshing;
+}
+async function refreshAfterAudio() {
+  // A request already underway may contain pre-command audio. Preserve normal
+  // poll deduplication, but drain it before requesting the command's readback.
+  if (refreshing) await refreshing;
+  return refresh();
 }
 
 // ---- our VR HUD and optional third-party catalogue ----
@@ -1739,6 +1802,7 @@ function battery(b, power) {
 
 function render(s) {
   renderPerformance(s);
+  window.frameControlCenter?.status(s, stateReceivedAt, stateRead);
   battery(s.battery, s.power);
   $("devName").textContent = `${s.hostname} · ${s.ip ?? "no IP"}`;
   $("updated").textContent = new Date(s.time * 1000).toLocaleTimeString();
@@ -3294,7 +3358,19 @@ async function addSource(body) {
 $("addSource").onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);addSource({action:'add',url:f.get('url'),fingerprint:f.get('fingerprint')});};
 document.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>$(b.dataset.close).close());
 $('appDetail').addEventListener('close',()=>{sourceState.detailRequest++;});
-document.querySelectorAll('[data-store-tab]').forEach(b=>b.onclick=()=>{const browse=b.dataset.storeTab==='browse';$('appStore').hidden=!browse;$('androidLibrary').hidden=browse;$('repNew').hidden=browse;$('sourcesOpen').hidden=!browse;document.querySelectorAll('[data-store-tab]').forEach(t=>{t.classList.toggle('on',t===b);t.setAttribute('aria-pressed',t===b);});if(!browse)loadAndroid();});
+function showAndroidTab(tab) {
+  const browse = tab === 'browse';
+  $('appStore').hidden = !browse; $('androidLibrary').hidden = browse;
+  $('repNew').hidden = browse; $('sourcesOpen').hidden = !browse;
+  document.querySelectorAll('[data-store-tab]').forEach(button => {
+    const selected = button.dataset.storeTab === tab;
+    button.classList.toggle('on', selected); button.setAttribute('aria-pressed', String(selected));
+  });
+}
+document.querySelectorAll('[data-store-tab]').forEach(button => button.onclick = () => {
+  showAndroidTab(button.dataset.storeTab);
+  if (button.dataset.storeTab === 'library') loadAndroid();
+});
 loadSources().then(()=>searchSources());
 
 // ---- Android apps (own Lepton instance each) + catalogue ----
@@ -3928,8 +4004,8 @@ $("macview").onclick = async e => {
 
 // ---- pages: #home, #games, #android, #tools (older section links still work) ----
 const PAGES = ["home", "games", "android", "tools"];
-const SECTION_PAGE = { view: "home", device: "home", shots: "home", library: "games", sideloaded: "games", getgames: "games",
-                       display: "android", transfer: "tools", apps: "tools", power: "tools", macview: "tools", privacy: "tools", panels: "tools" };
+const SECTION_PAGE = { view: "home", device: "home", shots: "home", vrTools: "home", comfort: "home", pad: "home", library: "games", sideloaded: "games", getgames: "games",
+                       display: "android", androidLibrary: "android", appStore: "android", transfer: "tools", media: "tools", artworkSettings: "tools", apps: "tools", power: "tools", macview: "tools", privacy: "tools", panels: "tools" };
 let page = "home";
 function showPage() {
   const id = location.hash.slice(1);
@@ -3939,6 +4015,8 @@ function showPage() {
   document.querySelectorAll(".page").forEach(p => p.classList.toggle("on", p.dataset.page === page));
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("on", a.getAttribute("href") === "#" + page));
   document.title = page === "home" ? "Frame Control" : `${page[0].toUpperCase() + page.slice(1)} · Frame Control`;
+  if (id === "display" || id === "androidLibrary") showAndroidTab("library");
+  else if (id === "appStore") showAndroidTab("browse");
   const section = !PAGES.includes(id) && id && $(id);
   if (section) section.scrollIntoView(); else window.scrollTo(0, 0);
   if (page === "tools") { loadMacView(); loadPanelSwitcher(); }
@@ -4636,8 +4714,11 @@ function onConnection(s) {
   if (link.device !== null && devId !== link.device) {
     log(`Now using ${s.device.name}`, "ok");
     state = null;
+    stateReceivedAt = null;
+    stateRead = {valid: false, error: null};
     online = null;
     devGen++;               // answers still on their way are about the other headset
+    window.frameControlCenter?.reset();
     refreshing = null;      // and the next status check must be a new one
     if (live) toggleLive(false);  // the other headset's video or captures
     clearTimeout(volTimer); volTimer = null;  // a volume change still waiting to be sent
@@ -4744,7 +4825,7 @@ function setUpActive() {
 $("connSetup").onclick = setUpActive;
 
 // ---- Devices tab ----
-PAGES.push("devices");
+PAGES.push("devices", "control");
 let devicesSeq = 0;  // an older answer arriving late mustn't bring back the old selection
 async function loadDevices() {
   if (!link.live) return;
@@ -5052,11 +5133,23 @@ if (window.frameApp && window.frameApp.onUseDevice) window.frameApp.onUseDevice(
 window.addEventListener("hashchange", () => { if (location.hash === "#devices") loadDevices(); });
 showPage();  // #devices is a page now
 api("/api/host").then(h => {
+  Object.assign(HOST, h);
+  window.frameControlCenter?.host(h);
   if (h.mobile) return;
   $("offSetup").hidden = false; $("offSetup").onclick = setUpActive;  // the server opens it in a terminal
   watchConnection();
 }).catch(() => watchConnection());
 </script>
 <script src="/artwork-settings.js"></script>
+<script src="/control-center.js"></script>
+<script>
+window.frameControlCenter = FrameControlCenter.mount({document, api, refresh, refreshAudio: refreshAfterAudio,
+  getContext: () => ({sample: state, online, generation: devGen, device: window.connDevice}),
+  openConnection: () => $("conn").click(), platform: window.frameApp?.platform || ""});
+window.frameControlCenter.host(HOST);
+if (state) window.frameControlCenter.status(state, stateReceivedAt, stateRead);
+else if (stateRead.error) window.frameControlCenter.unavailable(stateRead.error);
+if (online === false) window.frameControlCenter.connection(false);
+</script>
 </body>
 </html>

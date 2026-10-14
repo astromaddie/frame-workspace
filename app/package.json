@@ -50,6 +50,7 @@
           "*.py",
           "*.html",
           "*.js",
+          "*.css",
           "telemetry.json"
         ]
       },
