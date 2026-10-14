@@ -19,8 +19,8 @@ same project whatever is chosen here.
 
 Events are identified by a random id made on first run, not by the person or
 computer, and sent without person profiles or GeoIP. Opens, installs and updates
-carry the computer's time zone setting (e.g. Europe/Berlin) instead, to see
-roughly where Frame Control is used. Nothing is sent without a
+carry a country instead, worked out on this computer from its time zone setting
+(frame_timezones.py), to see roughly where Frame Control is used. Nothing is sent without a
 project key (ui/telemetry.json or $FRAME_CONTROL_POSTHOG_KEY), from a source
 checkout unless $FRAME_CONTROL_TELEMETRY=1, or when $DO_NOT_TRACK=1 or
 $FRAME_CONTROL_TELEMETRY=0.
@@ -45,6 +45,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import frame_host
+import frame_timezones
 
 HERE = Path(__file__).resolve().parent
 STATE = frame_host.data_dir('telemetry')
@@ -67,7 +68,7 @@ EXPECTED_CATEGORIES = ('frame_unreachable', 'frame_not_set_up', 'frame_auth')
 DEFAULT_HOST = 'https://us.i.posthog.com'
 
 LEVELS = ('usage', 'compat', 'diagnostics')
-NOTICE_VERSION = 2  # raise when the notice lists something new: it's shown again (2: time zone)
+NOTICE_VERSION = 2  # raise when the notice lists something new: it's shown again (2: country)
 # Events the page may send through /api/telemetry, and the properties each may carry.
 PAGE_EVENTS = {'tab_viewed': {'tab'}, 'update_offered': {'to_version'},
                'update_started': {'to_version'}, 'update_failed': {'to_version', 'error_category'}}
@@ -155,7 +156,7 @@ def update_settings(changes):
         for level in LEVELS:
             if level in changes:
                 s[level] = bool(changes[level])
-                s['notice_shown'], s['notice_version'] = True, NOTICE_VERSION
+                s['notice_shown'] = True  # only the notice itself moves notice_version on
         _save(s)
         _drop_unwanted(s)
     if changes.get('compat'):
@@ -381,29 +382,29 @@ def page_event(body):
     return {'queued': capture(name, props)}
 
 
-def timezone():
-    """The computer's time zone name (e.g. Europe/Berlin), or None. The app passes it from
-    Electron, which knows it on every OS; from a checkout it's read from /etc/localtime."""
+def country():
+    """The two-letter country of the computer's time zone setting, or None. Only names in the
+    tz database's table count, so nothing else in the setting can be sent. The app passes the
+    zone from Electron, which knows it on every OS; from a checkout it's read from /etc/localtime."""
     tz = os.environ.get('FRAME_CONTROL_TIMEZONE') or os.environ.get('TZ', '').lstrip(':')
     if not tz:
         try:
-            tz = os.path.realpath('/etc/localtime').split('zoneinfo/', 1)[1]
+            tz = os.path.realpath('/etc/localtime').split('/zoneinfo/', 1)[1]
         except (OSError, IndexError):
             return None
-    return tz if len(tz) <= 40 and re.fullmatch(r'[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}', tz) else None
+    return frame_timezones.COUNTRY.get(tz)
 
 
 def app_started():
-    """Once per server start: first install, an update, and one open a day. They carry the time
-    zone, unless the notice this person saw came before it was sent; a first run's events wait
-    for the current notice anyway (flush)."""
+    """Once per server start: first install, an update, and one open a day, with the country
+    (left out when sending if the notice this person saw came before it: flush)."""
     if blocked():
         return
     with _lock:
         s = settings()
         version, today = app_version(), time.strftime('%Y-%m-%d')
-        tz = timezone() if _notice_current(s) or not s['notice_shown'] else None
-        where = {'timezone': tz} if tz else {}
+        cc = country()
+        where = {'country': cc} if cc else {}
         if not s['installed_sent']:
             capture('app_installed', where)
             s['installed_sent'] = True
@@ -605,10 +606,14 @@ def flush(timeout=20):
         if blocked() or not settings()['notice_shown']:
             return 0
         with _lock:
-            _drop_unwanted(settings())
+            s = settings()
+            _drop_unwanted(s)
             batch = _read_lines(OUTBOX)[:100]
         if not batch:
             return 0
+        if not _notice_current(s):  # what a newer notice added stays here until it's been seen
+            for e in batch:
+                e['properties'].pop('country', None)
         try:
             post(batch, timeout)
         except SendError:

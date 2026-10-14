@@ -159,33 +159,37 @@ class Lifecycle(Base):
         e = self.queued()[-1]
         self.assertEqual((e["event"], e["properties"]["from_version"]), ("app_updated", "9.9.9"))
 
-    def test_opens_installs_and_updates_carry_the_time_zone(self):
+    def test_opens_installs_and_updates_carry_the_country(self):
         with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "Europe/Berlin"}):
             tm.app_started()
             with mock.patch.dict(os.environ, {"FRAME_CONTROL_VERSION": "10.0.0"}):
                 tm.app_started()
-        self.assertEqual([(e["event"], e["properties"].get("timezone")) for e in self.queued()],
-                         [("app_installed", "Europe/Berlin"), ("app_opened", "Europe/Berlin"),
-                          ("app_updated", "Europe/Berlin")])
+        self.assertEqual([(e["event"], e["properties"].get("country")) for e in self.queued()],
+                         [("app_installed", "DE"), ("app_opened", "DE"), ("app_updated", "DE")])
+        self.assertNotIn("Europe/Berlin", tm.OUTBOX.read_text())
 
-    def test_time_zone_names_only(self):
-        for tz, want in (("America/Argentina/Buenos_Aires", "America/Argentina/Buenos_Aires"), ("Etc/GMT+10", "Etc/GMT+10"),
-                         ("UTC", "UTC"), ("../etc/passwd", None), ("/home/alex/tz", None), ("A/" + "b" * 40, None)):
+    def test_only_zones_in_the_tz_table_give_a_country(self):
+        for tz, want in (("America/Argentina/Buenos_Aires", "AR"), ("Asia/Calcutta", "IN"), ("US/Pacific", "US"),
+                         ("Europe/Vaduz", "LI"), ("Etc/GMT+10", None), ("UTC", None), ("alice", None),
+                         ("home/alex/private", None), ("America/alex", None), ("../etc/passwd", None)):
             with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": tz}):
-                self.assertEqual(tm.timezone(), want, tz)
+                self.assertEqual(tm.country(), want, tz)
 
-    def test_an_older_notice_is_shown_again_and_holds_back_the_time_zone(self):
-        tm.SETTINGS.write_text(json.dumps({"id": "x", "notice_shown": True, "installed_sent": True,
-                                           "last_version": "9.9.9"}))  # as 0.4.5 saved it
+    def test_country_from_tz_or_localtime_in_a_checkout(self):
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "", "TZ": ":Asia/Tokyo"}):
+            self.assertEqual(tm.country(), "JP")
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "", "TZ": ""}):
+            for target, want in (("/usr/share/zoneinfo/Europe/Paris", "FR"),
+                                 ("/var/db/timezone/zoneinfo/Australia/Sydney", "AU"),
+                                 ("/home/alex/zoneinfo/alex/private", None), ("/etc/mytime", None)):
+                with mock.patch.object(tm.os.path, "realpath", return_value=target):
+                    self.assertEqual(tm.country(), want, target)
+
+    def test_a_new_user_who_opens_settings_first_still_gets_the_notice(self):
+        tm.update_settings({"compat": True})
         self.assertFalse(tm.state()["noticeShown"])
-        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "Europe/Berlin"}):
-            tm.app_started()
-            self.assertEqual([(e["event"], e["properties"].get("timezone")) for e in self.queued()], [("app_opened", None)])
-            tm.update_settings({"noticeShown": True})
-            self.assertTrue(tm.state()["noticeShown"])
-            tm._save({**tm.settings(), "last_open_day": None})  # the next day
-            tm.app_started()
-        self.assertEqual(self.queued()[-1]["properties"]["timezone"], "Europe/Berlin")
+        tm.update_settings({"noticeShown": True})
+        self.assertTrue(tm.state()["noticeShown"])
 
     def test_frame_build_once(self):
         tm.frame_seen("20260922.1", "3.8")
@@ -264,6 +268,32 @@ class Sending(Base):
         tm.capture("app_opened")
         self.assertEqual(tm.flush(), 1)
         self.assertEqual(len(got), 1)
+
+    def test_an_older_notice_is_shown_again_and_holds_back_the_country(self):
+        got = self.serve()
+        tm.SETTINGS.write_text(json.dumps({"id": "x", "notice_shown": True, "installed_sent": True,
+                                           "last_version": "9.9.9"}))  # as 0.4.5 saved it
+        self.assertFalse(tm.state()["noticeShown"])
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "Europe/Berlin"}):
+            tm.app_started()
+            self.assertEqual(tm.flush(), 1)  # the usual statistics still go
+            tm.update_settings({"noticeShown": True})
+            self.assertTrue(tm.state()["noticeShown"])
+            tm._save({**tm.settings(), "last_open_day": None})  # the next day
+            tm.app_started()
+            self.assertEqual(tm.flush(), 1)
+        self.assertEqual([b["batch"][0]["properties"].get("country") for _, b in got], [None, "DE"])
+
+    def test_turning_usage_on_still_waits_for_the_new_notice(self):
+        got = self.serve()
+        tm.SETTINGS.write_text(json.dumps({"id": "x", "usage": False, "notice_shown": True, "installed_sent": True,
+                                           "last_version": "9.9.9"}))  # 0.4.5, usage off
+        tm.update_settings({"usage": True})
+        self.assertFalse(tm.state()["noticeShown"])  # so the page shows it
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "Europe/Berlin"}):
+            tm.app_started()
+        self.assertEqual(tm.flush(), 1)
+        self.assertNotIn("country", got[0][1]["batch"][0]["properties"])
 
     def test_a_failed_send_keeps_the_events(self):
         self.serve(status=500)
