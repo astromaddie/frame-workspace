@@ -159,6 +159,34 @@ class Lifecycle(Base):
         e = self.queued()[-1]
         self.assertEqual((e["event"], e["properties"]["from_version"]), ("app_updated", "9.9.9"))
 
+    def test_opens_installs_and_updates_carry_the_time_zone(self):
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "Europe/Berlin"}):
+            tm.app_started()
+            with mock.patch.dict(os.environ, {"FRAME_CONTROL_VERSION": "10.0.0"}):
+                tm.app_started()
+        self.assertEqual([(e["event"], e["properties"].get("timezone")) for e in self.queued()],
+                         [("app_installed", "Europe/Berlin"), ("app_opened", "Europe/Berlin"),
+                          ("app_updated", "Europe/Berlin")])
+
+    def test_time_zone_names_only(self):
+        for tz, want in (("America/Argentina/Buenos_Aires", "America/Argentina/Buenos_Aires"), ("Etc/GMT+10", "Etc/GMT+10"),
+                         ("UTC", "UTC"), ("../etc/passwd", None), ("/home/alex/tz", None), ("A/" + "b" * 40, None)):
+            with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": tz}):
+                self.assertEqual(tm.timezone(), want, tz)
+
+    def test_an_older_notice_is_shown_again_and_holds_back_the_time_zone(self):
+        tm.SETTINGS.write_text(json.dumps({"id": "x", "notice_shown": True, "installed_sent": True,
+                                           "last_version": "9.9.9"}))  # as 0.4.5 saved it
+        self.assertFalse(tm.state()["noticeShown"])
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": "Europe/Berlin"}):
+            tm.app_started()
+            self.assertEqual([(e["event"], e["properties"].get("timezone")) for e in self.queued()], [("app_opened", None)])
+            tm.update_settings({"noticeShown": True})
+            self.assertTrue(tm.state()["noticeShown"])
+            tm._save({**tm.settings(), "last_open_day": None})  # the next day
+            tm.app_started()
+        self.assertEqual(self.queued()[-1]["properties"]["timezone"], "Europe/Berlin")
+
     def test_frame_build_once(self):
         tm.frame_seen("20260922.1", "3.8")
         tm.frame_seen("20260922.1", "3.8")
@@ -229,6 +257,13 @@ class Sending(Base):
         self.assertEqual((path, body["api_key"], body["batch"][0]["event"]), ("/batch/", "phc_test", "app_opened"))
         self.assertEqual(self.queued(), [])
         self.assertEqual([e["event"] for e in tm.state()["sent"]], ["app_opened"])
+
+    def test_an_older_notice_still_sends(self):
+        got = self.serve()
+        tm._save({**tm._defaults(), "notice_shown": True, "notice_version": 1})
+        tm.capture("app_opened")
+        self.assertEqual(tm.flush(), 1)
+        self.assertEqual(len(got), 1)
 
     def test_a_failed_send_keeps_the_events(self):
         self.serve(status=500)

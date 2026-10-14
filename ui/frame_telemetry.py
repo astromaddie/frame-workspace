@@ -18,7 +18,9 @@ Report a problem dialog (frame_report.py) sends bug reports privately to the
 same project whatever is chosen here.
 
 Events are identified by a random id made on first run, not by the person or
-computer, and sent without person profiles or GeoIP. Nothing is sent without a
+computer, and sent without person profiles or GeoIP. Opens, installs and updates
+carry the computer's time zone setting (e.g. Europe/Berlin) instead, to see
+roughly where Frame Control is used. Nothing is sent without a
 project key (ui/telemetry.json or $FRAME_CONTROL_POSTHOG_KEY), from a source
 checkout unless $FRAME_CONTROL_TELEMETRY=1, or when $DO_NOT_TRACK=1 or
 $FRAME_CONTROL_TELEMETRY=0.
@@ -65,6 +67,7 @@ EXPECTED_CATEGORIES = ('frame_unreachable', 'frame_not_set_up', 'frame_auth')
 DEFAULT_HOST = 'https://us.i.posthog.com'
 
 LEVELS = ('usage', 'compat', 'diagnostics')
+NOTICE_VERSION = 2  # raise when the notice lists something new: it's shown again (2: time zone)
 # Events the page may send through /api/telemetry, and the properties each may carry.
 PAGE_EVENTS = {'tab_viewed': {'tab'}, 'update_offered': {'to_version'},
                'update_started': {'to_version'}, 'update_failed': {'to_version', 'error_category'}}
@@ -105,7 +108,7 @@ def blocked():
 
 def _defaults():
     return {'id': str(uuid.uuid4()), 'usage': True, 'compat': False, 'diagnostics': False,
-            'notice_shown': False, 'installed_sent': False, 'last_version': None, 'last_open_day': None,
+            'notice_shown': False, 'notice_version': 0, 'installed_sent': False, 'last_version': None, 'last_open_day': None,
             'frames_seen': [], 'compat_sent': []}
 
 
@@ -147,12 +150,12 @@ def update_settings(changes):
     under way finishes first, so nothing leaves after this returns."""
     with _send_lock, _lock:
         s = settings()
-        if 'noticeShown' in changes:
-            s['notice_shown'] = bool(changes['noticeShown']) or s['notice_shown']
+        if changes.get('noticeShown'):
+            s['notice_shown'], s['notice_version'] = True, NOTICE_VERSION
         for level in LEVELS:
             if level in changes:
                 s[level] = bool(changes[level])
-                s['notice_shown'] = True
+                s['notice_shown'], s['notice_version'] = True, NOTICE_VERSION
         _save(s)
         _drop_unwanted(s)
     if changes.get('compat'):
@@ -161,10 +164,16 @@ def update_settings(changes):
     return state()
 
 
+def _notice_current(s):
+    """Whether the notice this person saw lists everything that's sent now. If not, the page
+    shows it again, and what it added waits until it has been seen."""
+    return s['notice_shown'] and s['notice_version'] >= NOTICE_VERSION
+
+
 def state():
     """What the page shows: the choices, why sending is blocked, and what was sent."""
     s = settings()
-    return {'usage': s['usage'], 'compat': s['compat'], 'noticeShown': s['notice_shown'],
+    return {'usage': s['usage'], 'compat': s['compat'], 'noticeShown': _notice_current(s),
             'diagnostics': s['diagnostics'],
             'blocked': blocked(), 'id': s['id'], 'queued': len(_read_lines(OUTBOX)),
             'sent': list(reversed(_read_lines(SENT)))[:50]}
@@ -372,20 +381,36 @@ def page_event(body):
     return {'queued': capture(name, props)}
 
 
+def timezone():
+    """The computer's time zone name (e.g. Europe/Berlin), or None. The app passes it from
+    Electron, which knows it on every OS; from a checkout it's read from /etc/localtime."""
+    tz = os.environ.get('FRAME_CONTROL_TIMEZONE') or os.environ.get('TZ', '').lstrip(':')
+    if not tz:
+        try:
+            tz = os.path.realpath('/etc/localtime').split('zoneinfo/', 1)[1]
+        except (OSError, IndexError):
+            return None
+    return tz if len(tz) <= 40 and re.fullmatch(r'[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}', tz) else None
+
+
 def app_started():
-    """Once per server start: first install, an update, and one open a day."""
+    """Once per server start: first install, an update, and one open a day. They carry the time
+    zone, unless the notice this person saw came before it was sent; a first run's events wait
+    for the current notice anyway (flush)."""
     if blocked():
         return
     with _lock:
         s = settings()
         version, today = app_version(), time.strftime('%Y-%m-%d')
+        tz = timezone() if _notice_current(s) or not s['notice_shown'] else None
+        where = {'timezone': tz} if tz else {}
         if not s['installed_sent']:
-            capture('app_installed')
+            capture('app_installed', where)
             s['installed_sent'] = True
         elif s['last_version'] and s['last_version'] != version:
-            capture('app_updated', {'from_version': s['last_version']})
+            capture('app_updated', {'from_version': s['last_version'], **where})
         if s['last_open_day'] != today:
-            capture('app_opened')
+            capture('app_opened', where)
             s['last_open_day'] = today
         s['last_version'] = version
         _save(s)
