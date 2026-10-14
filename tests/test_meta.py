@@ -1224,7 +1224,7 @@ class Server(unittest.TestCase):
         self.assertEqual({a['id'] for a in status['apps']}, {'111', '222'})
         self.assertIn('sharing', status)
         self.assertNotIn(TOKEN, json.dumps([result, status]))
-        with patch.object(s, 'ensure_master'), patch.object(s, 'start_job', return_value={'job': 'j'}) as job:
+        with patch.object(s, 'ensure_master'), patch.object(s, 'queue_job', return_value={'job': 'j'}) as job:
             self.assertEqual(s.meta({'action': 'install', 'app': '111', 'test': True}), {'job': 'j'})
             work = job.call_args.args[1]
             with patch.object(meta, 'install', side_effect=KeyError(f'access_token={TOKEN}')):

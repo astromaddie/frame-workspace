@@ -137,7 +137,7 @@ LINK = None  # the connector (frame_link.Link); None on the Frame itself
 # install's clean-up) to the other headset.
 _work_lock = threading.Lock()
 _work = [0]
-NOT_HEADSET_WORK = {"/api/devices", "/api/contact", "/api/contact/prompt"}
+NOT_HEADSET_WORK = {"/api/devices", "/api/contact", "/api/contact/prompt", "/api/queue"}
 
 
 @contextlib.contextmanager
@@ -286,38 +286,118 @@ def backfill_art(apps=(), titles=()):
     return True
 
 
-def start_job(label, work, progress=False):
-    """Run work() in the background. It returns a dict with a "message"."""
+def _new_job_locked(label, **fields):
     now = time.time()
-    with _jobs_lock:
-        for j in [j for j, v in _jobs.items() if v["done"] and now - v["time"] > JOB_TTL]:
-            del _jobs[j]
-        job = secrets.token_hex(8)
-        _jobs[job] = {"label": label, "done": False, "error": None, "message": None, "result": None, "time": now}
+    for j in [j for j, v in _jobs.items() if v["done"] and now - v["time"] > JOB_TTL]:
+        del _jobs[j]
+    job = secrets.token_hex(8)
+    _jobs[job] = {"label": label, "done": False, "error": None, "message": None, "result": None, "time": now, **fields}
+    return job
 
+
+def _run_job(job, label, work, progress):
     def report(stage, percent=None):
         with _jobs_lock:
             _jobs[job].update(stage=stage, percent=percent)
 
-    def run():
-        fields = {}
-        try:
-            result = work(report) if progress else work()
-            fields = {"message": result.get("message") or f"{label}: done", "result": result}
-        except (Failure, frame_android.FrameError) as e:
-            fields = {"error": unreachable(str(e)) or str(e)}
-            frame_telemetry.diagnostic(f"job {label.split()[0]}", e)
-        except SourceError as e:  # already user-readable, and about a store, not the Frame
-            fields = {"error": str(e)}
-        except Exception as e:
-            fields = {"error": f"{type(e).__name__}: {e}"}
-            frame_telemetry.diagnostic(f"job {label.split()[0]}", e)
-        finally:
-            with _jobs_lock:
-                _jobs[job].update(fields, done=True, time=time.time())
+    fields = {}
+    try:
+        result = work(report) if progress else work()
+        fields = {"message": result.get("message") or f"{label}: done", "result": result}
+    except (Failure, frame_android.FrameError) as e:
+        fields = {"error": unreachable(str(e)) or str(e)}
+        frame_telemetry.diagnostic(f"job {label.split()[0]}", e)
+    except SourceError as e:  # already user-readable, and about a store, not the Frame
+        fields = {"error": str(e)}
+    except Exception as e:
+        fields = {"error": f"{type(e).__name__}: {e}"}
+        frame_telemetry.diagnostic(f"job {label.split()[0]}", e)
+    finally:
+        with _jobs_lock:
+            _jobs[job].update(fields, done=True, time=time.time())
 
-    busy_thread(run).start()
+
+def start_job(label, work, progress=False):
+    """Run work() in the background. It returns a dict with a "message"."""
+    with _jobs_lock:
+        job = _new_job_locked(label)
+    busy_thread(_run_job, job, label, work, progress).start()
     return {"message": f"{label}…", "job": job}
+
+
+# ---- The install queue: Android games and apps, one after another ----------
+#
+# Installs from the Android store, Import from my Quest and My Meta library each copy
+# a game into a Lepton instance, and each refuses to start while another is running.
+# Queued, the page can line up several: one worker runs them in order, each as a
+# normal job (/api/job) that reads "queued" until its turn. A queued install can be
+# removed until it starts; each runs on the headset it was queued for, or not at all.
+
+_queue = []  # [job, label, work, progress, headset id], in order; the running one is not here
+_queue_state = {"worker": False, "running": None}
+
+
+def _restage_locked():
+    ahead = 1 if _queue_state["running"] else 0
+    for i, (job, *_) in enumerate(_queue):
+        n = ahead + i
+        _jobs[job]["stage"] = f"Queued: {n} install{'' if n == 1 else 's'} before it" if n else "Queued: next"
+
+
+def queue_job(label, work, progress=False):
+    """Like start_job, but runs after every install queued before it."""
+    device = LINK.active_device()["id"] if LINK else None
+    with _jobs_lock:
+        job = _new_job_locked(label, queued=True, stage=None, percent=None)
+        _queue.append([job, label, work, progress, device])
+        _restage_locked()
+        ahead = len(_queue) - 1 + (1 if _queue_state["running"] else 0)
+        start, _queue_state["worker"] = not _queue_state["worker"], True
+    if start:
+        threading.Thread(target=_drain_queue, daemon=True).start()
+    return {"message": f"{label}: queued, {ahead} before it" if ahead else f"{label}…", "job": job, "queued": ahead}
+
+
+def _drain_queue():
+    while True:
+        with _jobs_lock:
+            if not _queue:
+                _queue_state.update(worker=False, running=None)
+                return
+            job, label, work, progress, device = _queue.pop(0)
+            _queue_state["running"] = job
+            _jobs[job].update(queued=False, stage=None)
+            _restage_locked()
+
+        def guarded(*report, work=work, device=device):
+            with working(device):  # refused if the app switched headsets since it was queued
+                return work(*report)
+        _run_job(job, label, guarded, progress)
+
+
+def install_queue():
+    """The running install and those waiting, in order."""
+    with _jobs_lock:
+        ids = ([_queue_state["running"]] if _queue_state["running"] else []) + [q[0] for q in _queue]
+        return {"jobs": [{"job": j, "label": _jobs[j]["label"], "queued": bool(_jobs[j].get("queued")),
+                          "stage": _jobs[j].get("stage"), "percent": _jobs[j].get("percent")}
+                         for j in ids if j in _jobs]}
+
+
+def queue_action(body):
+    """{"action": "remove", "job"}: take a waiting install out of the queue."""
+    if body.get("action") != "remove":
+        raise Failure("unknown action", 400)
+    job = body.get("job")
+    with _jobs_lock:
+        for i, q in enumerate(_queue):
+            if q[0] == job:
+                del _queue[i]
+                _jobs[job].update(done=True, queued=False, cancelled=True, stage=None, time=time.time(),
+                                  error="Removed from the install queue")
+                _restage_locked()
+                return {"message": f"Removed {_jobs[job]['label']} from the install queue"}
+    raise Failure("that install isn't waiting in the queue (it may have started or finished)", 409)
 
 
 def job_status(query):
@@ -1293,7 +1373,7 @@ def android(body):
                 m = frame_apk_versions.install(pkg, url) if url else frame_catalog.install(pkg)
                 message = f"Installed {m['label']}. It's in the Steam library; launching it opens its own panel."
                 return {"message": f"{message} {frame_android.layer_note(m)}".strip(), "app": m}
-            return start_job(f"Install {pkg}", work)
+            return queue_job(f"Install {pkg}", work)
         if action == "refresh-art":
             if not pkg and not body.get("all"):
                 raise Failure('choose a package or all apps', 400)
@@ -1364,7 +1444,7 @@ def quest(body):
     if type(data) is not bool or type(older) is not bool:
         raise Failure("data and allowDowngrade must be true or false", 400)
     ensure_master()
-    return start_job(f"Import {pkg} from Quest",
+    return queue_job(f"Import {pkg} from Quest",
                      lambda report: frame_quest.import_game(pkg, serial, data=data, progress=report,
                                                             allow_downgrade=older), progress=True)
 
@@ -1445,7 +1525,7 @@ def meta(body):
                     raise frame_meta.MetaError(frame_meta.redact(e, 1200)) from None
                 except Exception as e:  # never let an unexpected error's text carry the token
                     raise frame_meta.MetaError(frame_meta.redact(f"{type(e).__name__}: {e}", 600)) from None
-            return start_job(f"{'Install and test' if test else 'Install'} {app_id} from Meta", work, progress=True)
+            return queue_job(f"{'Install and test' if test else 'Install'} {app_id} from Meta", work, progress=True)
         if action == "test":
             pkg = str(body.get("package", ""))
             if not frame_android.PKG_RE.match(pkg):
@@ -2339,7 +2419,7 @@ def source_install(body):
             raise SourceError('This source is disabled')
     except SourceError as e:
         raise Failure(str(e), 400)
-    return start_job('Install ' + entry, lambda report: apk_search.install(source, entry, version, report), progress=True)
+    return queue_job('Install ' + entry, lambda report: apk_search.install(source, entry, version, report), progress=True)
 
 
 def source_manage(body):
@@ -2382,7 +2462,7 @@ POST = {
     "/api/agent/approval": agent_approval, "/api/assistant/chat": assistant_chat,
     "/api/input": remote_input, "/api/touch": remote_touch,
     "/api/settings/artwork": frame_steamgriddb.save_settings,
-    "/api/sources": source_manage, "/api/sources/install": source_install, "/api/android/display": android_display, "/api/android": android, "/api/quest": quest, "/api/meta": meta, "/api/titles": titles, "/api/launch": launch, "/api/steam": steam, "/api/volume": set_volume, "/api/clipboard": clipboard,
+    "/api/sources": source_manage, "/api/sources/install": source_install, "/api/android/display": android_display, "/api/android": android, "/api/quest": quest, "/api/meta": meta, "/api/queue": queue_action, "/api/titles": titles, "/api/launch": launch, "/api/steam": steam, "/api/volume": set_volume, "/api/clipboard": clipboard,
         "/api/flatpak": flatpak, "/api/open": open_thing, "/api/shots/save": save_shots,
         "/api/webinstall/check": webinstall_check, "/api/webinstall/start": webinstall_start,
         "/api/webinstall/cancel": webinstall_cancel,
@@ -2622,6 +2702,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(_input.send([]) if parse_qs(url.query).get("start") == ["1"] else dict(_input.status))
             elif path == "/api/job":
                 self.send_json(job_status(url.query))
+            elif path == "/api/queue":
+                self.send_json(install_queue())
             elif path == "/api/android/displays":
                 self.send_json(android_displays())
             elif path == "/api/android/reports":
