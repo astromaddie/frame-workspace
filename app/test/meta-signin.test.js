@@ -91,7 +91,8 @@ function navigate(wc, event, target) {
 
 test("only plain HTTPS addresses on Meta's login sites are allowed", () => {
   for (const ok of ["https://secure.oculus.com", "https://secure.oculus.com/my/profile", "https://auth.meta.com/login/",
-                    "https://www.meta.com/", "https://www.facebook.com/login.php", "https://oculus.com:443/"]) {
+                    "https://www.meta.com/", "https://www.facebook.com/login.php", "https://oculus.com:443/",
+                    "https://www.instagram.com/accounts/login/"]) {
     assert.ok(allowedUrl(ok), ok);
   }
   for (const bad of ["http://secure.oculus.com/", "https://oculus.com.evil.example/", "https://evil-oculus.com/",
@@ -339,6 +340,29 @@ test("redirects follow the same rule per frame", async () => {
   assert.strictEqual(redirect(wc, "https://client-api.arkoselabs.com/", undefined, "positional"), true);
   assert.deepStrictEqual(f.opened, []);
   f.windows[0].destroy();
+});
+
+test("a redirect the window stops is named when the window is closed", async () => {
+  const f = fakes();
+  const p = f.flow.signIn();
+  const wc = f.windows[0].webContents;
+  assert.strictEqual(redirect(wc, "https://www.instagram.com/x?next=1", true, "details"), false);  // Meta's login goes here
+  assert.strictEqual(redirect(wc, "https://login.evil.example/cb?code=SECRET", true, "details"), true);
+  f.windows[0].close();
+  const r = await p;
+  assert.strictEqual(r.ok, false);
+  assert.match(r.error, /went to login\.evil\.example, which Frame Control doesn't allow/);
+  assert.doesNotMatch(r.error, /SECRET|code=/);
+});
+
+test("a stopped redirect is forgotten once the window loads a page again", async () => {
+  const f = fakes();
+  const p = f.flow.signIn();
+  const wc = f.windows[0].webContents;
+  assert.strictEqual(redirect(wc, "https://login.evil.example/cb", true, "details"), true);
+  wc.emit("did-navigate", {}, "https://auth.meta.com/login/");  // the user carried on
+  f.windows[0].close();
+  assert.deepStrictEqual(await p, { ok: false, cancelled: true, error: "The sign-in window was closed before you signed in." });
 });
 
 test("a page's beforeunload can't keep the window open", async () => {

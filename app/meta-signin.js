@@ -15,8 +15,9 @@ const PARTITION = "persist:meta-signin";
 // BSManager's loginUrl (src/main/services/bs-version-download/bs-oculus-downloader.service.ts).
 const LOGIN_URL = "https://secure.oculus.com";
 const COOKIE = "oc_ac_at";
-// Sites the login can go through: the Oculus store web, Meta accounts, Facebook login.
-const ALLOWED = ["oculus.com", "meta.com", "facebook.com"];
+// Sites the login can go through: the Oculus store web, Meta accounts, Facebook login,
+// and Instagram (Meta's login passes through www.instagram.com: seen live, 2026-10-14).
+const ALLOWED = ["oculus.com", "meta.com", "facebook.com", "instagram.com"];
 const TIMEOUT = 10 * 60 * 1000;  // as BSManager
 
 const underDomain = (host, domains) => {
@@ -94,7 +95,7 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
 
     let resolve;
     const promise = new Promise((r) => { resolve = r; });
-    let done = false, busy = false, again = false, lastError = null;
+    let done = false, busy = false, again = false, lastError = null, blocked = null;
     const tried = new Set();  // fingerprints of values already sent, so each goes once
     // The server refuses to save a connect from an attempt this window gave up on.
     const attemptId = crypto.randomUUID();
@@ -170,16 +171,26 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     // Every frame: the window itself stays on the list; frames inside it may load any
     // HTTPS page (captchas), and one going anywhere else is just stopped.
     wc.on("will-navigate", (e, target) => { if (!allowedUrl(target)) { e.preventDefault(); openOutside(target); } });
+    // A stopped page change in the window itself says where it went (the host only), so
+    // closing the stuck window explains why instead of "closed before you signed in".
+    const stopped = (to) => {
+      let host = "";
+      try { host = new URL(String(to)).hostname; } catch { /* not an address */ }
+      blocked = `Meta's sign-in went to ${scrub(host || "an address", null).slice(0, 80)}, which Frame Control doesn't allow.`;
+    };
     wc.on("will-frame-navigate", (e) => {
       if (e.isMainFrame ? allowedUrl(e.url) : allowedSubframeUrl(e.url)) return;
       e.preventDefault();
+      if (e.isMainFrame) stopped(e.url);
     });
     // Redirects fire for frames too: the same rule per frame (details on the event in
     // current Electron, positional arguments in older ones; unknown counts as the window).
     wc.on("will-redirect", (e, target, _inPlace, isMainFrame) => {
       const to = e && e.url !== undefined ? e.url : target;
       const main = e && e.isMainFrame !== undefined ? e.isMainFrame : isMainFrame !== false;
-      if (!(main ? allowedUrl(to) : allowedSubframeUrl(to))) e.preventDefault();
+      if (main ? allowedUrl(to) : allowedSubframeUrl(to)) return;
+      e.preventDefault();
+      if (main) stopped(to);
     });
     // A page's beforeunload never keeps the window open.
     wc.on("will-prevent-unload", (e) => e.preventDefault());
@@ -190,11 +201,12 @@ function createMetaSignIn({ BrowserWindow, session, shell, connect, cancel, pare
     });
     // Signed in: the cookie changes, or the window lands back on Meta's store site.
     ses.cookies.on("changed", onCookie);
-    wc.on("did-navigate", (_e, target) => { if (onOculus(target)) attempt(); });
+    wc.on("did-navigate", (_e, target) => { blocked = null; if (onOculus(target)) attempt(); });  // it recovered
     wc.on("did-navigate-in-page", (_e, target) => { if (onOculus(target)) attempt(); });
     win.on("closed", () => finish({ ok: false, cancelled: true,
       error: lastError ? `The sign-in window closed before Frame Control could connect. ${lastError}`
-                       : "The sign-in window was closed before you signed in." }));
+           : blocked ? `The sign-in window was closed before you signed in. ${blocked}`
+                     : "The sign-in window was closed before you signed in." }));
 
     active = { win, promise, finish };
     wc.loadURL(LOGIN_URL).catch(() => {});

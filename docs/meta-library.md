@@ -43,9 +43,10 @@ closes the window. The window:
 - runs Meta's page sandboxed, with no access to Frame Control (no preload, no
   Node, context isolation on, no developer tools) and every permission request
   or check (camera, notifications…) refused;
-- only goes to `https://` pages on `oculus.com`, `meta.com` and `facebook.com`
-  (and their subdomains). A link anywhere else opens in your system browser; a
-  redirect anywhere else is stopped. Pop-ups on those sites open in the same
+- only goes to `https://` pages on `oculus.com`, `meta.com`, `facebook.com` and
+  `instagram.com` (and their subdomains; Meta's login passes through Instagram).
+  A link anywhere else opens in your system browser; a redirect anywhere else
+  is stopped, and closing the window then says where it went. Pop-ups on those sites open in the same
   window. Frames inside the page may load any `https://` page (Meta's login
   can embed captcha and CDN frames from other sites, such as Arkose Labs,
   hCaptcha, reCAPTCHA or fbcdn) or an empty frame (`about:blank`,
