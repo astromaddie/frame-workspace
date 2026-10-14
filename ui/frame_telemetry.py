@@ -72,7 +72,7 @@ NOTICE_VERSION = 2  # raise when the notice lists something new: it's shown agai
 # Events the page may send through /api/telemetry, and the properties each may carry.
 PAGE_EVENTS = {'tab_viewed': {'tab'}, 'update_offered': {'to_version'},
                'update_started': {'to_version'}, 'update_failed': {'to_version', 'error_category'}}
-TABS = {'home', 'games', 'android', 'tools'}
+TABS = {'home', 'games', 'android', 'tools', 'devices', 'control'}
 
 _lock = threading.RLock()
 _send_lock = threading.Lock()  # held while sending; consent changes wait for it
