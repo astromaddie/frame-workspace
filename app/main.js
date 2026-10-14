@@ -115,10 +115,11 @@ function ping(target) {
 }
 
 async function startServer() {
-  // The version and whether this is a built app go to ui/frame_telemetry.py, which
-  // sends nothing from a source checkout.
+  // The version, the time zone and whether this is a built app go to ui/frame_telemetry.py,
+  // which sends nothing from a source checkout.
   const env = { ...process.env, PATH: await loginPath(), FRAME_CONTROL_APP: "1",
                 FRAME_CONTROL_VERSION: app.getVersion(), FRAME_CONTROL_LOG: LOG,
+                FRAME_CONTROL_TIMEZONE: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
                 ...(app.isPackaged ? { FRAME_CONTROL_PACKAGED: "1" } : {}),
                 ...(fs.existsSync(TOOLS) ? { FRAME_CONTROL_TOOLS: TOOLS } : {}) };
   python = await findPython(env);

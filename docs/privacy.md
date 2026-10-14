@@ -33,6 +33,13 @@ computer, exactly as they were sent.
   yours.
 - Every event includes the app version, OS name (macOS, Windows or Linux),
   CPU architecture and Python version.
+- `app_installed`, `app_updated` and `app_opened` carry `country`: a
+  two-letter code such as `DE`, worked out on your computer from its time zone
+  setting (`Europe/Berlin` becomes `DE`), so we can see roughly where Frame
+  Control is used without knowing your address. The time zone itself isn't
+  sent, and a setting that isn't a country's zone (such as UTC) sends nothing.
+  Copies that showed the first-run notice before it mentioned this (before
+  0.4.6) show it again, and don't send a country until it has been seen.
 - `frame_connected` carries `headset_id`: the first 16 hex digits of a
   SHA-256 hash of the headset's `/etc/machine-id`, worked out on the headset,
   so the machine-id itself never leaves it. It is the same for one headset on
@@ -44,9 +51,9 @@ computer, exactly as they were sent.
 
 | Event | When | Properties besides the common ones |
 |---|---|---|
-| `app_installed` | First run | |
-| `app_updated` | First run of a new version | `from_version` |
-| `app_opened` | At most once a day | |
+| `app_installed` | First run | `country` |
+| `app_updated` | First run of a new version | `from_version`, `country` |
+| `app_opened` | At most once a day | `country` |
 | `frame_connected` | The first time a SteamOS build is seen on each headset | `steamos_build`, `steamos_version`, `headset_id`, `headsets_saved` |
 | `tab_viewed` | The first click on each tab in a session | `tab` |
 | `install_finished` | Any install finishes, working or not | `kind` (apk, flatpak, steam, title, web), `ok`, `seconds`, `error_category` (only when `ok` is false), `installer_code`, `xr_layer_missing`, and see below |
