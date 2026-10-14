@@ -34,9 +34,16 @@ def resolve(z):
 countries_of = {}
 for zone, cc in country.items():
     countries_of.setdefault(resolve(zone), set()).add(cc)
+# Clock rules rather than places (EET links to Athens, WET to Lisbon): no country.
+GENERIC = {'CET', 'EET', 'MET', 'WET', 'EST', 'MST', 'HST', 'CST6CDT', 'EST5EDT', 'MST7MDT', 'PST8PDT'}
+# Places that have left zone.tab, so their target's group looks like another country's.
+PLACES = {'Pacific/Johnston': 'UM'}
 dropped = []
 for alias in links:
-    if alias in country:
+    if alias in country or alias in GENERIC or alias.startswith('Etc/'):
+        continue
+    if alias in PLACES:
+        country[alias] = PLACES[alias]
         continue
     ccs = countries_of.get(resolve(alias), set())
     if len(ccs) == 1:

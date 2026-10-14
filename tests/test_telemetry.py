@@ -172,7 +172,9 @@ class Lifecycle(Base):
         for tz, want in (("America/Argentina/Buenos_Aires", "AR"), ("Asia/Calcutta", "IN"), ("US/Pacific", "US"),
                          ("Europe/Vaduz", "LI"), ("Africa/Asmera", "ER"), ("Africa/Asmara", "ER"), ("Pacific/Truk", "FM"),
                          ("Pacific/Ponape", "FM"), ("America/Montreal", "CA"), ("America/Nassau", "BS"),
-                         ("Europe/Amsterdam", "NL"), ("Etc/GMT+10", None), ("CET", None), ("UTC", None), ("alice", None),
+                         ("Europe/Amsterdam", "NL"), ("Etc/GMT+10", None), ("CET", None),
+                         ("EET", None), ("WET", None), ("PST8PDT", None), ("HST", None), ("Pacific/Johnston", "UM"),
+                         ("Japan", "JP"), ("UTC", None), ("alice", None),
                          ("home/alex/private", None), ("America/alex", None), ("../etc/passwd", None)):
             with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": tz}):
                 self.assertEqual(tm.country(), want, tz)
