@@ -3462,9 +3462,9 @@ $("questApps").addEventListener("click", e => {
   // Several can be queued: the bar and the status line follow whichever is installing.
   runJob(`Import ${pkg} from Quest`, key,
          () => api("/api/quest", { action: "import", package: pkg, serial: quest.serial, data: $("questData").checked, allowDowngrade: $("questOlder").checked }),
-         j => { if (j.queued || j.done) return; b.textContent = "Importing…"; bar.hidden = false;
+         j => { if (j.queued || j.done) return; b.textContent = "Importing…"; bar.hidden = false; bar.dataset.owner = key;
                 if (j.stage) $("questState").textContent = `${pkg}: ${j.stage}`; bar.value = j.percent ?? 0; })
-    .then(r => { bar.hidden = true; if (r && r.app) { b.textContent = "Imported"; $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
+    .then(r => { if (bar.dataset.owner === key) bar.hidden = true; if (r && r.app) { b.textContent = "Imported"; $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
                   else { b.disabled = false; b.textContent = "Import";
                          if (r !== null) $("questState").textContent = `${pkg} wasn't imported; the reason is in the message log below.`; } });
 });
@@ -3616,9 +3616,9 @@ $("metaApps").addEventListener("click", async e => {
   // Several can be queued: the bar and the status line follow whichever is installing.
   const r = await runJob(`${test ? "Install and test" : "Install"} ${app.title} from Meta`, "meta:" + app.id,
     () => api("/api/meta", { action: "install", app: app.id, test, allowDowngrade: $("metaOlder").checked }),
-    j => { renderMetaApps(); if (j.queued || j.done) return; bar.hidden = false;
+    j => { renderMetaApps(); if (j.queued || j.done) return; bar.hidden = false; bar.dataset.owner = "meta:" + app.id;
            if (j.stage) $("metaState").textContent = `${app.title}: ${j.stage}`; bar.value = j.percent ?? 0; });
-  bar.hidden = true;
+  if (bar.dataset.owner === "meta:" + app.id) bar.hidden = true;  // not while another install still shows its progress
   if (r && r.message) { $("metaState").textContent = r.message; metaLib.results.set(app.package, r.test ? r.test.message : r.message); }
   else if (r !== null) $("metaState").textContent = `${app.title} wasn't installed; the reason is in the message log below.`;
   loadAndroid(); renderMetaApps(); if (test) loadReports();
