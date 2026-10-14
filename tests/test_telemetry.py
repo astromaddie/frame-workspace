@@ -170,7 +170,9 @@ class Lifecycle(Base):
 
     def test_only_zones_in_the_tz_table_give_a_country(self):
         for tz, want in (("America/Argentina/Buenos_Aires", "AR"), ("Asia/Calcutta", "IN"), ("US/Pacific", "US"),
-                         ("Europe/Vaduz", "LI"), ("Etc/GMT+10", None), ("UTC", None), ("alice", None),
+                         ("Europe/Vaduz", "LI"), ("Africa/Asmera", "ER"), ("Africa/Asmara", "ER"), ("Pacific/Truk", "FM"),
+                         ("Pacific/Ponape", "FM"), ("America/Montreal", "CA"), ("America/Nassau", "BS"),
+                         ("Europe/Amsterdam", "NL"), ("Etc/GMT+10", None), ("CET", None), ("UTC", None), ("alice", None),
                          ("home/alex/private", None), ("America/alex", None), ("../etc/passwd", None)):
             with mock.patch.dict(os.environ, {"FRAME_CONTROL_TIMEZONE": tz}):
                 self.assertEqual(tm.country(), want, tz)

@@ -2,7 +2,9 @@
 """Regenerate ui/frame_timezones.py, the time zone -> country table usage statistics use.
 
 From the IANA tz database's zone.tab (each zone's country) and tzdata.zi (the old
-names that link to them), as installed on macOS and most Linux systems.
+names that link to them), as installed on macOS and most Linux systems. It prints the
+old names left out because their zone is shared by several countries: check any new
+one, and add it to OLD_SPELLINGS if it's just an old spelling of a zone.tab zone.
 
 Run: python3 scripts/timezones.py [/usr/share/zoneinfo]
 """
@@ -20,12 +22,41 @@ for line in (src / 'tzdata.zi').read_text().splitlines():
     if line.startswith('L '):
         _, target, alias = line.split()
         links[alias] = target
-for alias in links:
-    target = alias
+def resolve(z):
     for _ in range(5):
-        target = links.get(target, target)
-    if alias not in country and target in country:
-        country[alias] = country[target]
+        z = links.get(z, z)
+    return z
+
+
+# An old name links to a zone with the same clocks, which can be in another country
+# (Africa/Asmera, Eritrea, links to Africa/Nairobi), so it only gets a country when every
+# zone.tab zone sharing that target is in one country.
+countries_of = {}
+for zone, cc in country.items():
+    countries_of.setdefault(resolve(zone), set()).add(cc)
+dropped = []
+for alias in links:
+    if alias in country:
+        continue
+    ccs = countries_of.get(resolve(alias), set())
+    if len(ccs) == 1:
+        country[alias] = next(iter(ccs))
+    else:
+        dropped.append(alias)
+# Old names for a place in a zone.tab zone whose target is shared, checked by hand.
+OLD_SPELLINGS = {
+    'Africa/Asmera': 'Africa/Asmara', 'Africa/Timbuktu': 'Africa/Bamako', 'America/Coral_Harbour': 'America/Atikokan',
+    'America/Montreal': 'America/Toronto', 'America/Nipigon': 'America/Toronto', 'America/Thunder_Bay': 'America/Toronto',
+    'Canada/Eastern': 'America/Toronto', 'America/Virgin': 'America/St_Thomas', 'Antarctica/South_Pole': 'Antarctica/McMurdo',
+    'Asia/Rangoon': 'Asia/Yangon', 'Atlantic/Jan_Mayen': 'Arctic/Longyearbyen', 'Europe/Belfast': 'Europe/London',
+    'GB': 'Europe/London', 'GB-Eire': 'Europe/London', 'Iceland': 'Atlantic/Reykjavik', 'NZ': 'Pacific/Auckland',
+    'Pacific/Samoa': 'Pacific/Pago_Pago', 'US/Samoa': 'Pacific/Pago_Pago', 'Singapore': 'Asia/Singapore',
+    'US/Arizona': 'America/Phoenix', 'Pacific/Truk': 'Pacific/Chuuk', 'Pacific/Ponape': 'Pacific/Pohnpei',
+    'Pacific/Yap': 'Pacific/Chuuk'}
+for alias, zone in OLD_SPELLINGS.items():
+    if alias in links and zone in country:
+        country[alias] = country[zone]
+        dropped.remove(alias)
 version = (src / '+VERSION').read_text().strip() if (src / '+VERSION').exists() else 'unknown'
 rows = ''.join(f'    {z!r}: {c!r},\n' for z, c in sorted(country.items()))
 out = Path(__file__).resolve().parent.parent / 'ui' / 'frame_timezones.py'
@@ -36,3 +67,4 @@ COUNTRY = {{
 {rows}}}
 ''')
 print(f'{len(country)} zones, tz {version} -> {out}')
+print('no country (shared by several):', ' '.join(sorted(dropped)) or 'none')
