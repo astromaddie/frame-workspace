@@ -59,6 +59,9 @@ DOC_VIEWER = '4149322231793299'        # data.viewer.user {id, alias}
 DOC_ENTITLEMENTS = '4850747515044496'  # data.viewer.user.active_entitlements.nodes[].item
 DOC_BINARY = '4734929166632773'        # one binary: package, version, size, OBB and asset files
 QUEST_PLATFORMS = frozenset({'ANDROID_6DOF'})  # Quest apps; Rift (PC) and Go (3DOF) are left out
+# Entitlement states that mean the account owns the app. A real account's purchases all
+# came back PERMANENT (2026-10-14); ACTIVE, which this was first written for, is kept too.
+OWNED_STATES = frozenset({'ACTIVE', 'PERMANENT'})
 UA = 'FrameControl/1 (My Meta library)'
 ACCOUNT_FILE = 'meta-account.json'
 
@@ -707,7 +710,7 @@ def parse_entitlements(data, now=None):
         state = str(node.get('active_state') or 'ACTIVE').upper()
         expires = _int(node.get('expiration_time'))
         item = node.get('item')
-        if state != 'ACTIVE' or (expires and expires < now) or not isinstance(item, dict):
+        if state not in OWNED_STATES or (expires and expires < now) or not isinstance(item, dict):
             continue
         app_id = str(item.get('id') or '')
         platform = str(item.get('platform') or '').upper()

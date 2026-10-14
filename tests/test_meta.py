@@ -41,8 +41,9 @@ def entitlements(apk=APK, obb=OBB, platform_sdk=False):
         {'active_state': 'ACTIVE', 'grant_reason': 'PURCHASE',
          'item': {'id': '111', 'display_name': 'Quest Game', 'platform': 'ANDROID_6DOF', 'latest_supported_binary': binary}},
         # Details come from a second query (only the binary id in the list).
-        {'active_state': 'ACTIVE', 'item': {'id': '222', 'display_name': 'Another Game', 'platform': 'ANDROID_6DOF',
-                                            'latest_supported_binary': {'id': '9100'}}},
+        # A real account's purchases come back PERMANENT.
+        {'active_state': 'PERMANENT', 'item': {'id': '222', 'display_name': 'Another Game', 'platform': 'ANDROID_6DOF',
+                                               'latest_supported_binary': {'id': '9100'}}},
         {'active_state': 'ACTIVE', 'item': {'id': '333', 'display_name': 'A Rift Game', 'platform': 'PC'}},
         {'active_state': 'ACTIVE', 'expiration_time': 1000, 'item': {'id': '444', 'display_name': 'Expired',
                                                                        'platform': 'ANDROID_6DOF'}},
