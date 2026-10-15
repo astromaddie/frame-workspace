@@ -90,12 +90,20 @@ SteamOS and Lepton builds. Before sending:
 
 - the notes, app name and version are scrubbed like error messages (see
   below)
-- the APK's source is kept only if it's `F-Droid` or the public host name of
-  a download link (`https://example.com/…`). File names, user names,
+- the APK's source is kept only if it's `F-Droid`, `meta-store` (a test
+  from [My Meta library](meta-library.md)) or the public host name of a
+  download link (`https://example.com/…`). File names, user names,
   passwords, ports, paths, IP addresses and local host names are dropped
 
 When you turn this on, reports you made earlier on this computer are shared
 too.
+
+My Meta library (Experimental) keeps your Meta access token in
+`meta-account.json` in this data folder, owner-only, and sends it only to
+Meta's API and download hosts. It is never in analytics, reports, error
+details or logs; its test reports carry the package, version, version code,
+title, result and the reason, nothing from your account. See
+[meta-library.md](meta-library.md#your-token-and-privacy).
 
 The maintainer's `python3 ui/frame_compat_db.py sync` copies these events
 into the compatibility database, marked `via=community…`. It takes at most

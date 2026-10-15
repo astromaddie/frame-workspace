@@ -6,9 +6,10 @@ before anything goes to the Frame, then installed through frame_android.install
 like any other APK. Game data (the OBB folder and, if asked, the external
 app-data folder) is copied by a second import while the person has the game
 open, since only a running Lepton instance can take it; Frame Control never
-starts the game itself. The cache is always removed. Games that check their Meta store licence
-(libovrplatformloader.so) are refused: that check needs Meta's services, and
-Frame Control does not remove it or work around it. See docs/quest-import.md.
+starts the game itself. The cache is always removed. Games that link Meta's Platform SDK
+(libovrplatformloader.so) install with a warning: linking it doesn't mean the game
+enforces a licence check, but if it does the game may quit or hang on the Frame, and
+Frame Control does not remove the check or work around it. See docs/quest-import.md.
 
 Python stdlib only. CLI: python3 ui/frame_quest.py
   devices | list [--serial SERIAL] | import PACKAGE [--serial SERIAL] [--data] [--allow-downgrade]
@@ -44,10 +45,11 @@ PULL_TIMEOUT = 3 * 3600
 READY_TIMEOUT = 150
 BATCH = 15  # packages per adb shell command while listing
 
-ENTITLEMENT = ("{label} checks your Meta Quest store licence with Meta's Platform SDK "
-               "(libovrplatformloader.so). That check needs Meta's services, which only exist on Meta "
-               "headsets, so the game would quit on the Frame. Frame Control won't remove or work around "
-               "the check. Ask the developer for a build without it, or look for the game on Steam or itch.io.")
+# Linking the Platform SDK doesn't mean a game enforces the licence check (Meta's
+# VRC.Quest.Security.1 has only been Recommended since 2021), so it's a warning, not a refusal.
+ENTITLEMENT = ("Uses Meta's licence check (Platform SDK, libovrplatformloader.so); it may quit, hang, or run "
+               "without online features on the Frame. Frame Control won't remove the check.")
+VRAPI = ("Uses Meta's legacy VrApi and no OpenXR loader. The Frame doesn't have VrApi, so it may not run.")
 NO_DEVICE = ("No Quest found on this computer's USB. Connect the Quest with a cable that carries data, "
              "put the headset on and allow USB debugging. Developer mode must be on first: it needs a Meta "
              "developer organisation on a verified Meta account (developers.meta.com), then Developer Mode "
@@ -246,7 +248,8 @@ def status(serial=None, with_apps=True):
 # ---- Checking what was copied ---------------------------------------------------
 
 def inspect(package_name, base, splits=()):
-    """Refuse what can't or mustn't run on the Frame, before anything is copied to it."""
+    """Refuse what can't run on the Frame (32-bit only, Android newer than Lepton's, splits
+    that can't be merged), before anything is copied to it; warn about what may not run."""
     names = set()
     for path in [base, *splits]:
         try:
@@ -258,8 +261,7 @@ def inspect(package_name, base, splits=()):
     label = info['label']
     if info['package'] != package_name:
         raise QuestError(f"The APK copied for {package_name} says it is {info['package']}; not importing it")
-    if any(n.rsplit('/', 1)[-1] == 'libovrplatformloader.so' for n in names):
-        raise QuestError(ENTITLEMENT.format(label=label))
+    platform_sdk = any(n.rsplit('/', 1)[-1] == 'libovrplatformloader.so' for n in names)
     abis = sorted({n.split('/')[1] for n in names if n.startswith('lib/') and n.count('/') >= 2})
     if abis and 'arm64-v8a' not in abis:
         raise QuestError(f"{label} is a 32-bit-only build ({', '.join(abis)}). The Frame runs 64-bit ARM "
@@ -268,14 +270,13 @@ def inspect(package_name, base, splits=()):
     android.check_installable(dict(info, abis=abis))  # Android version
     if splits:
         android.split_entries(base, splits)  # a split APK Frame Control can't merge fails now
-    warnings = []
+    warnings = [ENTITLEMENT] if platform_sdk else []
     openxr = 'lib/arm64-v8a/libopenxr_loader.so' in names
     if 'lib/arm64-v8a/libvrapi.so' in names and not openxr:
-        warnings.append("Uses Meta's legacy VrApi and no OpenXR. The Frame doesn't have VrApi, so it "
-                        "will install but won't run.")
+        warnings.append(VRAPI)
     return {'package': info['package'], 'label': label, 'version': info['version'],
             'version_code': info.get('version_code'), 'abis': abis,
-            'vr': bool(info.get('vr') or openxr), 'warnings': warnings}
+            'vr': bool(info.get('vr') or openxr), 'platform_sdk': platform_sdk, 'warnings': warnings}
 
 
 # ---- Importing ------------------------------------------------------------------
@@ -557,9 +558,22 @@ def _import(serial, app, data, work, report, allow_downgrade=False):
         (work / 'data').mkdir()
         _pull(serial, f'{DATA}/{pkg}', work / 'data')
         data_folder = work / 'data' / pkg if (work / 'data' / pkg).is_dir() else None
+    result = add_game_data(pkg, checked, [str(p) for p in obb_files], data_folder, report, warnings)
+    result['split'] = bool(splits)
+    return result
+
+
+def add_game_data(pkg, checked, obb_files, data_folder, report, warnings=(), source='your Quest'):
+    """Copy game data into the game open on the Frame, then close it: the second step of a
+    two-step install (Import from my Quest, and My Meta library). checked is inspect()'s
+    result for the APK the data belongs to; obb_files are local OBB paths, data_folder a
+    local Android/data/<package> folder or None. Raises QuestError, after closing the game,
+    if anything fails."""
+    warnings = list(warnings)
+    label = checked['label']
     copied_obb, copied_files, failure = [], 0, None
-    # The pulls can take a long time: check the target again, and hold the shared install
-    # lock (install, remove and install_obb take it too) until the game is closed.
+    # Fetching the data can take a long time: check the target again, and hold the shared
+    # install lock (install, remove and install_obb take it too) until the game is closed.
     with android._install_lock:
         if not _running(pkg):
             raise QuestError(f'{label} was closed on the Frame during the import. Start it, then import again.')
@@ -592,7 +606,7 @@ def _import(serial, app, data, work, report, allow_downgrade=False):
                     'and import again.')
         raise QuestError(message) from failure
     report('Done', 100)
-    message = f"Added {meta['label']}'s game data from your Quest"
+    message = f"Added {meta['label']}'s game data from {source}"
     message += ('; the game is closed, start it again from the Steam library.' if closed else
                 f", but Frame Control couldn't close the game ({why}). Close it from Steam before playing, so it "
                 'starts with the new data.')
@@ -601,7 +615,7 @@ def _import(serial, app, data, work, report, allow_downgrade=False):
     if copied_files:
         message += f' Copied {copied_files} app file{"s" if copied_files != 1 else ""}.'
     return {'message': ' '.join([message, *warnings]), 'app': meta, 'obb': copied_obb, 'files': copied_files,
-            'warnings': warnings, 'split': bool(splits), 'needs_game_data': False, 'closed': closed}
+            'warnings': warnings, 'split': False, 'needs_game_data': False, 'closed': closed}
 
 
 def main():

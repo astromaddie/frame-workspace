@@ -6,9 +6,12 @@ adb, checks it can run in Lepton, and installs it on the Frame like any other
 APK, with its own Lepton instance and Steam library entry
 ([apks.md](apks.md), [vr-apks.md](vr-apks.md)).
 
-There is no licence-check bypass, and there won't be. A game that checks its
-Meta store licence is refused, with the reason. See
-[What won't run](#what-wont-run-and-why) below.
+There is no licence-check bypass, and there won't be. A game that uses Meta's
+licence check installs with a warning: on the Frame that check can't reach
+Meta, so the game may quit, hang, or run without online features. See
+[What won't run](#what-wont-run-and-why) below. To install games you own
+straight from Meta instead, without a Quest, see [My Meta library
+(Experimental)](meta-library.md).
 
 ## Before you start: developer mode on the Quest
 
@@ -84,13 +87,19 @@ which returns a background job (`/api/job`) with a stage and percentage.
    into a per-user cache folder (`Frame Control/quest-import` under the
    system's cache folder).
 4. **Checks the APK before anything else is copied**, refusing:
-   - Meta's Platform SDK licence check (`libovrplatformloader.so`, in the base
-     or any split);
    - 32-bit-only builds (native code but no `arm64-v8a`);
    - apps that need an Android newer than Lepton's (API 30);
    - split APKs Frame Control can't merge (below).
-   VrApi-only builds (`libvrapi.so`, no OpenXR loader) are flagged, as for any
-   APK: they install, but won't run.
+   Installed with a warning:
+   - games that use Meta's licence check (Meta's Platform SDK,
+     `libovrplatformloader.so`, in the base or any split): "uses Meta's
+     licence check; it may quit, hang, or run without online features on the
+     Frame. Frame Control won't remove the check." Linking the SDK doesn't
+     mean a game enforces the check: Meta's store requirement for it
+     (VRC.Quest.Security.1) has only been *Recommended* since 2021, and what
+     a game does when the check fails is up to the game;
+   - VrApi-only builds (`libvrapi.so`, no OpenXR loader), flagged as for any
+     APK: the Frame has no VrApi, so they may not run.
 5. If the game isn't open on the Frame: installs it through the normal APK
    install (`frame_android.install`: VR detection, the launcher fix, the
    OpenXR compatibility layer, artwork), and says whether it has game data
@@ -153,16 +162,20 @@ copy signed by the publisher.
 
 ## What won't run, and why
 
-- **Games that check their Meta store licence.** Store games call Meta's
-  Platform SDK (`libovrplatformloader.so`) to confirm you bought them. That
-  needs Meta's services, which only exist on Meta headsets, so on the Frame
-  the game quits. Frame Control refuses these and **won't remove or work
-  around the check**, and doesn't bundle, call or link to any tool that does.
-  Ask the developer for a build without it, or get the game from Steam or
-  itch.io. Most Meta Store games have it; most SideQuest, itch.io and
-  open-source games don't.
-- **32-bit games** (Quest 1 era): the Frame runs 64-bit ARM only.
-- **VrApi-only games**: the Frame has OpenXR, not Meta's older VrApi.
+- **Games that enforce their Meta store licence.** Many store games link
+  Meta's Platform SDK (`libovrplatformloader.so`), for the licence check and
+  for user ids, achievements, multiplayer, cloud saves or DLC. On the Frame the
+  SDK can't reach Meta's services, which only exist on Meta headsets. A game
+  that enforces the check then quits or hangs; one that doesn't may run
+  without its online features. Frame Control can't tell which from the APK, so
+  it installs these with a warning and **won't remove or work around the
+  check**, and doesn't bundle, call or link to any tool that does. If yours
+  quits, ask the developer for a build without the check, or get the game from
+  Steam or itch.io. Most SideQuest, itch.io and open-source games don't link
+  the SDK.
+- **32-bit games** (Quest 1 era): the Frame runs 64-bit ARM only. Refused.
+- **VrApi-only games**: the Frame has OpenXR, not Meta's older VrApi. They
+  install with a warning, but may not run.
 - **Anything else that needs Meta**: avatars, Quest-only device checks,
   passthrough and other `XR_FB_*` features SteamVR lacks
   ([vr-apks.md](vr-apks.md#what-steamvrs-android-runtime-supports-verified)).
@@ -179,7 +192,7 @@ Only import games you own, for your own use.
 **Verified locally** with a fake adb (`tests/fakeadb.py`, `tests/test_quest.py`):
 device detection (Quest, the Frame's tunnel, the Frame over USB, other
 Android devices, unauthorised, no permissions, offline, none, several),
-package listing and split detection, the refusals, the order of copies
+package listing and split detection, the refusals and the licence-check warning, the order of copies
 (APK checked before the OBB is copied), the two-step install then data copy
 (the game is never started by Frame Control, never replaced while open, and
 closed after its data is copied), split merging and signing, the split

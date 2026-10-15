@@ -1,7 +1,7 @@
 // Frame Control as a desktop app (macOS, Windows, Linux): starts ui/server.py on
 // a free loopback port and shows it in a native window. The server does all the
 // work over the `frame` SSH alias; this file only hosts it.
-const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, shell } = require("electron");
+const { app, BrowserWindow, Menu, Notification, clipboard, dialog, ipcMain, nativeImage, session, shell } = require("electron");
 const { execFile, spawn } = require("child_process");
 const { promisify } = require("util");
 const fs = require("fs");
@@ -11,6 +11,7 @@ const os = require("os");
 const path = require("path");
 const { SCHEME, parseInstallLink, linkFromArgv } = require("./install-link");
 const updater = require("./updater");
+const { createMetaSignIn } = require("./meta-signin");
 
 const run = promisify(execFile);
 
@@ -347,6 +348,47 @@ ipcMain.handle("comfort:notify", (e, message) => {
     notification.show();
   });
 });
+
+// ---- Sign in with Meta (app/meta-signin.js, docs/meta-library.md) ----
+// The token goes from the sign-in window's own session straight to the server's
+// connect path; the page asks for it and only hears the server's answer.
+function postApi(apiPath, body) {
+  return new Promise((resolve, reject) => {
+    if (!url) return reject(new Error("Frame Control's server isn't running."));
+    const data = JSON.stringify(body);
+    const req = http.request(new URL(apiPath, url), {
+      method: "POST", timeout: 60000,
+      headers: { "Content-Type": "application/json", "X-Frame-UI": process.env.FRAME_UI_KEY || "1",
+                 "Content-Length": Buffer.byteLength(data) },
+    }, (res) => {
+      let text = "";
+      res.setEncoding("utf8");
+      res.on("data", (c) => { text += c; });
+      res.on("end", () => {
+        let parsed = {};
+        try { parsed = JSON.parse(text); } catch {}
+        resolve({ status: res.statusCode, data: parsed });
+      });
+    });
+    req.on("error", reject);
+    req.on("timeout", () => req.destroy(new Error("the server didn't answer")));
+    req.end(data);
+  });
+}
+
+let metaSignIn = null;
+const meta = () => (metaSignIn ||= createMetaSignIn({
+  BrowserWindow, session, shell, parent: () => win,
+  // The page only offers sign-in after its "I understand" box is ticked (checked again below).
+  connect: (token, attempt) => postApi("/api/meta", { action: "connect", token, acknowledged: true, attempt }),
+  cancel: (attempt) => postApi("/api/meta", { action: "cancel-signin", attempt }),
+}));
+ipcMain.handle("meta:signin", (e, acknowledged) => {
+  if (!fromUi(e)) return null;
+  if (acknowledged !== true) return { ok: false, error: "My Meta library is experimental: tick that you understand the warning first." };
+  return meta().signIn();
+});
+ipcMain.handle("meta:signout", (e) => fromUi(e) ? meta().signOut() : false);
 
 // frame-control://install links from websites (docs/web-install.md). They can
 // arrive before the window or server exists (macOS open-url on a cold launch),

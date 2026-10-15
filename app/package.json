@@ -39,6 +39,7 @@
       "preload.js",
       "install-link.js",
       "updater.js",
+      "meta-signin.js",
       "package.json",
       "build/icon.png"
     ],

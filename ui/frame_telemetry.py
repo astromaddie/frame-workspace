@@ -512,7 +512,7 @@ def compat_report(report):
         if k in p:
             p[k] = scrub(p[k], n)
     src = str(p.pop('source', '') or '')
-    if src == 'F-Droid':
+    if src in ('F-Droid', 'meta-store'):  # fixed source tags, never a person's file name
         p['source'] = src
     elif src.startswith(('http://', 'https://')) and _scrub_url(src) != '<url>':
         p['source'] = _scrub_url(src)
