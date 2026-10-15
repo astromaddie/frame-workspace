@@ -39,6 +39,12 @@ section below), instead of going into Lepton Development:
    run at once alongside Lepton Development, each in its own container
    (`lepton-steamlaunch-<id>`, ADB on 5556, 5557, …).
 
+Split APKs (a base plus `split_*.apk` files) install as one app:
+`python3 ui/frame_android.py install base.apk split1.apk …`. Lepton runs one
+APK, so splits that add native libraries or assets are merged into the base
+and re-signed; density and language splits are refused. See
+[quest-import.md](quest-import.md#split-apks). Not yet tried on a real Frame.
+
 Verified with AntennaPod and Tabletop Tools: installed in about 7 s, launched
 from the shortcut, stopped, and relaunched with their data intact. ADB and
 Lepton Development aren't involved.

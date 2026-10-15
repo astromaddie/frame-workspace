@@ -214,7 +214,8 @@ source-search endpoint remain unverified (the public install seam is tested).
 
 - **Meta entitlement.** Apps that call the Oculus Platform SDK
   (`libovrplatformloader.so`) to check the Quest store licence need Meta's
-  services. Frame Control won't work around that.
+  services. Frame Control won't work around that. [Import from my
+  Quest](quest-import.md) refuses these before copying anything to the Frame.
 - **VrApi-era apps** (`libvrapi.so`, before OpenXR) need an API translator,
   not a patch.
 

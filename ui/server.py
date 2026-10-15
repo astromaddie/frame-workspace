@@ -57,6 +57,7 @@ import frame_link  # noqa: E402
 import frame_macview  # noqa: E402
 import frame_media  # noqa: E402
 import frame_panels  # noqa: E402
+import frame_quest  # noqa: E402
 import frame_report  # noqa: E402
 import frame_store  # noqa: E402
 import frame_telemetry  # noqa: E402
@@ -1330,6 +1331,48 @@ def android(body):
     raise Failure("unknown action", 400)
 
 
+# ---- Import from my Quest (frame_quest.py, docs/quest-import.md) --------------
+
+QUEST_ON_FRAME = "Import from my Quest runs on your computer, with the Quest plugged into it by USB."
+QUEST_SERIAL = re.compile(r"^[A-Za-z0-9._:\[\]-]{1,128}$")
+
+
+def quest_serial(value):
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or not QUEST_SERIAL.match(value):
+        raise Failure("invalid Quest serial", 400)
+    return value
+
+
+def quest_status(query):
+    """The Quest on this computer's USB (or what to do), and the apps on it."""
+    if LOCAL:
+        return {"quest": None, "devices": [], "guidance": QUEST_ON_FRAME, "apps": []}
+    try:
+        return frame_quest.status(quest_serial((parse_qs(query).get("serial") or [None])[0]))
+    except frame_android.FrameError as e:
+        raise Failure(str(e)) from e
+
+
+def quest(body):
+    """{"action": "import", "package", "serial"?, "data"?}: a background job with progress."""
+    if LOCAL:
+        raise Failure(QUEST_ON_FRAME, 400)
+    if body.get("action") != "import":
+        raise Failure("unknown action", 400)
+    pkg = str(body.get("package", ""))
+    if not frame_android.PKG_RE.match(pkg):
+        raise Failure("invalid Android package id", 400)
+    serial, data, older = quest_serial(body.get("serial")), body.get("data", False), body.get("allowDowngrade", False)
+    if type(data) is not bool or type(older) is not bool:
+        raise Failure("data and allowDowngrade must be true or false", 400)
+    ensure_master()
+    return start_job(f"Import {pkg} from Quest",
+                     lambda report: frame_quest.import_game(pkg, serial, data=data, progress=report,
+                                                            allow_downgrade=older), progress=True)
+
+
 # Errors that are the APK's own fault, so they belong in the compatibility
 # database as install_failed. Connection trouble and the like don't.
 APK_FAULTS = {"android_installer", "apk_needs_newer_android", "apk_wrong_abi"}
@@ -2242,7 +2285,7 @@ POST = {
     "/api/agent/approval": agent_approval, "/api/assistant/chat": assistant_chat,
     "/api/input": remote_input, "/api/touch": remote_touch,
     "/api/settings/artwork": frame_steamgriddb.save_settings,
-    "/api/sources": source_manage, "/api/sources/install": source_install, "/api/android/display": android_display, "/api/android": android, "/api/titles": titles, "/api/launch": launch, "/api/steam": steam, "/api/volume": set_volume, "/api/clipboard": clipboard,
+    "/api/sources": source_manage, "/api/sources/install": source_install, "/api/android/display": android_display, "/api/android": android, "/api/quest": quest, "/api/titles": titles, "/api/launch": launch, "/api/steam": steam, "/api/volume": set_volume, "/api/clipboard": clipboard,
         "/api/flatpak": flatpak, "/api/open": open_thing, "/api/shots/save": save_shots,
         "/api/webinstall/check": webinstall_check, "/api/webinstall/start": webinstall_start,
         "/api/webinstall/cancel": webinstall_cancel,
@@ -2465,6 +2508,8 @@ class Handler(BaseHTTPRequestHandler):
                 apps = frame_android.list_apps()
                 backfill_art(apps=apps)
                 self.send_json({"apps": apps})
+            elif path == "/api/quest":
+                self.send_json(quest_status(url.query))
             elif path == "/api/titles":
                 ensure_master()
                 titles_list = frame_titles.list_titles()

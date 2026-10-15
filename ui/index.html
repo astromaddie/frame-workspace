@@ -1005,6 +1005,20 @@
           library under its own name and opens in its own panel. Test launches it and records
           whether it stays up; Report records how it worked for you.</div>
       </div>
+      <section class="panel" id="quest">
+        <div class="shelf-head"><h2>Import from my Quest</h2><span class="count" id="questCount"></span><span class="spacer"></span>
+          <button class="small" id="questScan" title="Look for a Meta Quest plugged into this computer by USB">Look for my Quest</button></div>
+        <div class="sub" id="questState" role="status" aria-live="polite">Plug your Quest into this computer by USB, put it on, then Look for my Quest.</div>
+        <label class="sub" style="display:block;margin-top:8px"><input type="checkbox" id="questData"> Also copy each game's files in Android/data (some games keep saves there)</label>
+        <label class="sub" style="display:block;margin-top:4px"><input type="checkbox" id="questOlder"> Allow replacing a newer version on the Frame with the Quest's older one</label>
+        <progress id="questProgress" max="100" hidden aria-label="Import progress" style="width:100%;margin-top:8px"></progress>
+        <div class="list" id="questApps" style="margin-top:8px"></div>
+        <div class="hint">Copies games you own from your own Quest (developer mode on) to the Frame. A game with
+          OBB data takes two imports: the first installs it; start it from the Steam library, then import again to
+          copy its data in. Frame Control never starts the game itself. Games that
+          check their Meta store licence need Meta's services, which only Meta headsets have, so they are refused:
+          Frame Control won't remove that check. <a href="https://github.com/saphid/frame-control/blob/main/docs/quest-import.md" target="_blank" rel="noopener noreferrer">How it works</a></div>
+      </section>
       <section class="panel disp" id="display">
       <div class="shelf-head"><h2>Android display</h2><span class="count">Lepton</span><span class="spacer"></span>
         <button class="small" id="dispReload" title="Read the current values again">Refresh</button></div>
@@ -1483,6 +1497,7 @@ function applyHostWording(h) {
   // The iPhone app: the server runs on the Frame, and saving goes to the phone's Photos.
   document.body.classList.toggle("mobile", !!h.mobile);
   $("shotsFolder").hidden = !!h.mobile;
+  $("quest").hidden = !!h.mobile;  // the Quest plugs into a computer; the phone app's server runs on the Frame
   if (!h.mobile) $("shotsFolder").textContent = h.fileManager === "your file manager" ? "Open folder" : `Show in ${h.fileManager}`;
   $("shotsSaveNew").textContent = h.mobile ? `Save all to ${h.computer}` : `Save new to ${h.computer}`;
   $("clipMac").textContent = `Send ${h.computer} clipboard`;
@@ -3404,6 +3419,51 @@ async function loadAndroid() {
     if (installed.has(b.dataset.pkg)) b.outerHTML = `<span class="tag">Installed</span>`;
   });
 }
+
+// ---- Import from my Quest (frame_quest.py): adb on this computer, never on the Frame ----
+const quest = { serial: null };
+function questSize(bytes) {
+  if (bytes == null) return "";
+  if (bytes >= 1073741824) return `${(bytes / 1073741824).toFixed(1)} GB`;
+  if (bytes >= 1048576) return `${Math.round(bytes / 1048576)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+async function loadQuest() {
+  $("questScan").disabled = true; $("questState").textContent = "Looking for your Quest…"; $("questApps").innerHTML = "";
+  let d;
+  try { d = await api("/api/quest"); }
+  catch (e) { $("questState").textContent = e.message; return; }
+  finally { $("questScan").disabled = false; }
+  quest.serial = d.quest ? d.quest.serial : null;
+  $("questCount").textContent = d.quest ? `${d.apps.length} app${d.apps.length === 1 ? "" : "s"}` : "";
+  if (!d.quest) { $("questState").textContent = d.guidance || "No Quest found."; return; }
+  $("questState").textContent = `${d.quest.model || "Quest"} connected (${d.quest.serial}). Games that check their Meta licence are refused when you import them.`;
+  const installed = new Set(androidApps.map(a => a.package));
+  $("questApps").innerHTML = d.apps.length ? d.apps.map(a => {
+    const bits = [a.split ? `split APK (${a.apks.length} files)` : "single APK"];
+    if (a.obb != null) bits.push(`OBB ${questSize(a.obb)}`);
+    if (a.data != null) bits.push(`Android/data ${questSize(a.data)}`);
+    if (a.meta) bits.push("Meta app: needs Meta's services");
+    return `<div class="item"><div class="grow"><div class="t">${esc(a.package)}</div><div class="s">${esc(bits.join(" · "))}</div></div>
+      ${installed.has(a.package) ? `<span class="tag">On the Frame</span>` : ""}
+      <button class="small" data-quest-import="${esc(a.package)}"${installing.has("quest:" + a.package) ? " disabled" : ""}>${installed.has(a.package) ? "Import again" : "Import"}</button></div>`;
+  }).join("") : `<div class="sub">No games or apps you installed are on this Quest.</div>`;
+}
+$("questScan").onclick = loadQuest;
+$("questApps").addEventListener("click", e => {
+  const b = e.target.closest("[data-quest-import]");
+  if (!b) return;
+  const pkg = b.dataset.questImport, key = "quest:" + pkg;
+  if (installing.has(key)) return;
+  b.disabled = true;
+  const bar = $("questProgress");
+  bar.hidden = false; bar.value = 0;
+  runJob(`Import ${pkg} from Quest`, key,
+         () => api("/api/quest", { action: "import", package: pkg, serial: quest.serial, data: $("questData").checked, allowDowngrade: $("questOlder").checked }),
+         j => { if (j.stage) $("questState").textContent = `${pkg}: ${j.stage}`; if (j.percent != null) bar.value = j.percent; })
+    .then(r => { bar.hidden = true; if (r && r.app) { $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
+                  else { b.disabled = false; $("questState").textContent = `${pkg} wasn't imported; the reason is in the message log below.`; } });
+});
 
 async function loadCatalog() {
   try { cat.apps = (await api("/api/android/catalog")).apps; }
