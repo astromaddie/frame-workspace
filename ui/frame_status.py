@@ -302,6 +302,7 @@ def status():
         "disk": {"root": disk("/"), "home": disk("/home")},
         "memory": memory(),
         "temp": max_temp(),
+        "thermalAlerts": thermal_alerts(),
         "wifi": wifi(),
         "ip": ip_addr(),
         "volume": volume(),

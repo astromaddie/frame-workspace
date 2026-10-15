@@ -79,6 +79,15 @@ class ServerGuards(unittest.TestCase):
         self.assertEqual(headers["X-Frame-Options"], "DENY")
         self.assertIn(b"<html", payload.lower())
 
+    def test_control_center_assets_served_with_correct_types(self):
+        for path, mime, marker in (('/control-center.js', 'text/javascript', b'createController'),
+                                   ('/control-center.css', 'text/css', b'.cc-workspace')):
+            with self.subTest(path=path):
+                status, headers, payload = self.request('GET', path)
+                self.assertEqual(status, 200)
+                self.assertIn(mime, headers['Content-Type'])
+                self.assertIn(marker, payload)
+
     def test_foreign_host_rejected(self):
         # DNS rebinding: a hostile name pointed at 127.0.0.1.
         for path in ("/", "/api/status"):

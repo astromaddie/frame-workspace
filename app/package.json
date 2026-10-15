@@ -1,7 +1,7 @@
 {
   "name": "frame-control",
   "productName": "Frame Control",
-  "version": "0.4.5",
+  "version": "0.4.7",
   "description": "Desktop app for managing a Valve Steam Frame over SSH",
   "private": true,
   "main": "main.js",
@@ -51,6 +51,7 @@
           "*.py",
           "*.html",
           "*.js",
+          "*.css",
           "telemetry.json"
         ]
       },

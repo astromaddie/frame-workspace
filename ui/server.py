@@ -781,9 +781,14 @@ def set_volume(body):
     # Validate everything before touching the headset.
     level = None
     if "level" in body:
-        level = float(body["level"])
-        if not 0 <= level <= 1:
+        value = body["level"]
+        if type(value) not in (int, float) or not 0 <= value <= 1:
             raise Failure("level must be 0..1", 400)
+        level = float(value)
+    if not body or set(body) - {"level", "muted"}:
+        raise Failure("Provide level or muted", 400)
+    if "muted" in body and type(body["muted"]) is not bool:
+        raise Failure("muted must be true or false", 400)
     if "muted" in body:
         ssh(f"wpctl set-mute @DEFAULT_AUDIO_SINK@ {1 if body['muted'] else 0}")
     if level is not None:
@@ -2639,6 +2644,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(frame_steamgriddb.settings())
             elif path == "/artwork-settings.js":
                 self.send_bytes((HERE / 'artwork-settings.js').read_bytes(), 'text/javascript; charset=utf-8')
+            elif path == "/control-center.js":
+                self.send_bytes((HERE / 'control-center.js').read_bytes(), 'text/javascript; charset=utf-8')
+            elif path == "/control-center.css":
+                self.send_bytes((HERE / 'control-center.css').read_bytes(), 'text/css; charset=utf-8')
             elif path == "/assistant":
                 page = (HERE / "assistant.html").read_text().replace("__FRAME_KEY__", json.dumps(UI_KEY).replace("<", "\\u003c"))
                 self.send_bytes(page.encode(), "text/html; charset=utf-8")
