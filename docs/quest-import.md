@@ -45,6 +45,13 @@ files in Android/data** to bring the game's external files too (some games
 keep saves there). Progress shows in the panel; the result and any reason it
 stopped appear in the message log.
 
+You can choose **Import** on several games at once: they wait in the **Install
+queue** (above the Quest panel) and import one after another, together with
+installs from the Android store and My Meta library. **Remove** takes a game
+out of the queue before it starts. Each queued import runs on the headset that
+was selected when you queued it; if you switch headsets first, it stops with a
+message instead.
+
 A game with game data (an OBB folder, or Android/data when ticked) takes two
 imports, because Android can only take that data while the game's Lepton
 instance is running, and there is no way to start the instance without the
@@ -69,7 +76,11 @@ python3 ui/frame_quest.py import com.example.game --data --serial 1WMHH000XXXXXX
 The API is `GET /api/quest` (the Quest, or guidance when there isn't one, and
 its apps) and `POST /api/quest` with
 `{"action": "import", "package": "...", "serial": "...", "data": false}`,
-which returns a background job (`/api/job`) with a stage and percentage.
+which returns a background job (`/api/job`) with a stage and percentage. The
+job waits in the install queue first (`"queued": true`, stage `Queued: N
+installs before it`). `GET /api/queue` lists the running install and those
+waiting; `POST /api/queue` with `{"action": "remove", "job": "..."}` removes a
+waiting one (409 once it has started).
 
 ## What an import does
 

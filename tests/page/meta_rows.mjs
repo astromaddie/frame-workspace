@@ -23,9 +23,9 @@ const metaLib = { connected: true, results: new Map(), apps: [
     data_files: 0, skipped_files: ["main.com.crytek.climb.obb"] },
   { id: "2", title: "Beat Saber", package: "com.beatgames.beatsaber", problem: "Meta's API said HTTP 500", skipped_files: [] },
 ] };
-const render = new Function("$", "metaLib", "androidApps", "installing",
+const render = new Function("$", "metaLib", "androidApps", "installing", "queued",
   grab("esc") + grab("questSize") + "const META_VERDICT = {};\n" + grab("renderMetaApps") + "renderMetaApps();");
-render(id => els[id], metaLib, [], new Set());
+render(id => els[id], metaLib, [], new Set(["meta:1"]), new Set(["meta:1"]));
 const html = els.metaApps.innerHTML;
 if (els.metaCount.textContent !== "2 apps") fail("count: " + els.metaCount.textContent);
 const climb = html.split('class="item"')[1];
@@ -34,7 +34,10 @@ if (!/Not installed: 1 required data file \(main\.com\.crytek\.climb\.obb\)/.tes
 const saber = html.split('class="item"')[2];
 if (!/<div class="s v-no"[^>]*>Meta&#39;s API said HTTP 500</.test(saber)) fail("problem not on its own line: " + saber);
 if (/Not installed/.test(saber)) fail("warning without skipped files");
+// Waiting in the install queue: marked, and not offered again.
+if (!/<span class="tag">Queued<\/span>/.test(climb) || !/data-meta-install="1" disabled/.test(climb)) fail("queued not shown: " + climb);
+if (/Queued|disabled/.test(saber)) fail("queued on the wrong row: " + saber);
 metaLib.apps = metaLib.apps.slice(0, 1);
-render(id => els[id], metaLib, [], new Set());
+render(id => els[id], metaLib, [], new Set(), new Set());
 if (els.metaCount.textContent !== "1 app") fail("singular count: " + els.metaCount.textContent);
 console.log("ok");

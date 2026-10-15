@@ -1006,6 +1006,12 @@
           library under its own name and opens in its own panel. Test launches it and records
           whether it stays up; Report records how it worked for you.</div>
       </div>
+      <section class="panel" id="installQueue" hidden>
+        <div class="shelf-head"><h2>Install queue</h2><span class="count" id="queueCount"></span></div>
+        <div class="list" id="queueList"></div>
+        <div class="hint">Games from the store, your Quest and your Meta library install one after another.
+          Remove takes a game out before it starts.</div>
+      </section>
       <section class="panel" id="quest">
         <div class="shelf-head"><h2>Import from my Quest</h2><span class="count" id="questCount"></span><span class="spacer"></span>
           <button class="small" id="questScan" title="Look for a Meta Quest plugged into this computer by USB">Look for my Quest</button></div>
@@ -2687,32 +2693,65 @@ document.body.addEventListener("click", async (e) => {
 // Installs run as server jobs: start one, then poll until it's done. The
 // bottom bar counts what's running; `installing` keeps re-rendered lists from
 // offering Install again for something already on its way.
-const installing = new Set();
+// Android installs wait their turn in the server's install queue (queue_job in
+// server.py); `queued` holds the ones still waiting.
+const installing = new Set(), queued = new Set();
 let jobsRunning = 0;
 function showJobs() {
+  const waiting = queued.size, running = jobsRunning - waiting;
   $("jobs").hidden = !jobsRunning;
-  $("jobsText").textContent = `${jobsRunning} install${jobsRunning === 1 ? "" : "s"} running`;
+  $("jobsText").textContent = [running ? `${running} install${running === 1 ? "" : "s"} running` : "",
+                               waiting ? `${waiting} queued` : ""].filter(Boolean).join(", ");
 }
 async function runJob(label, key, start, onProgress = () => {}) {
   installing.add(key); jobsRunning++; showJobs();
-  log(label + "…");
   try {
-    const { job } = await start();
+    const started = await start();
+    const { job } = started;
+    log(started.queued ? started.message : label + "…");
+    if (started.queued) { queued.add(key); showJobs(); }
+    if (started.queued != null) loadQueue();
     for (let misses = 0; ;) {
       await new Promise(ok => setTimeout(ok, 1500));
       let j;
       try { j = await api(`/api/job?id=${encodeURIComponent(job)}`); misses = 0; }
       catch (e) { if (++misses >= 20 || /no such job/.test(e.message)) throw e; continue; }
+      if (j.queued !== queued.has(key)) { j.queued ? queued.add(key) : queued.delete(key); showJobs(); }
       onProgress(j);
       if (!j.done) continue;
+      if (j.cancelled) { log(`${label}: removed from the install queue`); return null; }
       if (j.error) throw new Error(j.error);
       log(j.message, "ok"); toast(j.message);
       return j.result || {};
     }
   } catch (e) {
     log(`${label} failed: ${e.message}`, "e"); toast(`${label} failed: ${e.message}`, true);
-  } finally { installing.delete(key); jobsRunning--; showJobs(); }
+  } finally { installing.delete(key); queued.delete(key); jobsRunning--; showJobs(); }
 }
+// The install queue as the server has it: also what an earlier visit to this page queued.
+let queueTimer;
+async function loadQueue() {
+  clearTimeout(queueTimer);
+  let jobs;
+  try { ({ jobs } = await api("/api/queue")); } catch { jobs = null; }
+  if (jobs) {
+    $("installQueue").hidden = !jobs.length;
+    $("queueCount").textContent = jobs.length ? `${jobs.length}` : "";
+    $("queueList").innerHTML = jobs.map(j => `<div class="item"><div class="grow"><div class="t">${esc(j.label)}</div>
+        <div class="s">${esc(j.queued ? j.stage || "Queued" : `${j.stage || "Starting"}${j.percent != null ? ` · ${Math.round(j.percent)}%` : ""}`)}</div></div>
+        ${j.queued ? `<button class="small" data-unqueue="${esc(j.job)}">Remove</button>` : `<span class="tag">Installing</span>`}</div>`).join("");
+  }
+  if (!jobs || jobs.length) queueTimer = setTimeout(loadQueue, 2000);
+}
+$("queueList").addEventListener("click", async e => {
+  const b = e.target.closest("[data-unqueue]");
+  if (!b) return;
+  b.disabled = true;
+  try { const d = await api("/api/queue", { action: "remove", job: b.dataset.unqueue }); toast(d.message); }
+  catch (err) { toast(err.message, true); }
+  loadQueue();
+});
+loadQueue();
 const POWER = { suspend: ["Put the Frame to sleep?", "Sleep"], reboot: ["Restart the Frame?", "Restart"],
                 poweroff: ["Shut the Frame down?", "Shut down"] };
 function askPower(what) {
@@ -3381,6 +3420,7 @@ async function installStoreApp() {
   if(existing&&!existing.done)return;
   const state={stage:'Downloading',percent:null,done:false};sourceState.jobs.set(key,state);updateInstall();
   const result=await runJob(`Install ${o.name}`,key,()=>api('/api/sources/install',{source:o.source,id:o.id,version_code:o.version_code??null}),j=>{Object.assign(state,{stage:j.stage||'Downloading',percent:j.percent??null,error:j.error});updateInstall();});
+  if(result===null){sourceState.jobs.delete(key);updateInstall();return;}  // removed from the install queue
   Object.assign(state,{done:true,result,error:result?null:state.error||"We couldn't finish the installation. Try again."});updateInstall();
   if(result)loadAndroid();
 }
@@ -3484,7 +3524,7 @@ async function loadQuest() {
     if (a.meta) bits.push("Meta app: needs Meta's services");
     return `<div class="item"><div class="grow"><div class="t">${esc(a.package)}</div><div class="s">${esc(bits.join(" · "))}</div></div>
       ${installed.has(a.package) ? `<span class="tag">On the Frame</span>` : ""}
-      <button class="small" data-quest-import="${esc(a.package)}"${installing.has("quest:" + a.package) ? " disabled" : ""}>${installed.has(a.package) ? "Import again" : "Import"}</button></div>`;
+      <button class="small" data-quest-import="${esc(a.package)}"${installing.has("quest:" + a.package) ? " disabled" : ""}>${queued.has("quest:" + a.package) ? "Queued" : installed.has(a.package) ? "Import again" : "Import"}</button></div>`;
   }).join("") : `<div class="sub">No games or apps you installed are on this Quest.</div>`;
 }
 $("questScan").onclick = loadQuest;
@@ -3493,14 +3533,16 @@ $("questApps").addEventListener("click", e => {
   if (!b) return;
   const pkg = b.dataset.questImport, key = "quest:" + pkg;
   if (installing.has(key)) return;
-  b.disabled = true;
+  b.disabled = true; b.textContent = "Queued";
   const bar = $("questProgress");
-  bar.hidden = false; bar.value = 0;
+  // Several can be queued: the bar and the status line follow whichever is installing.
   runJob(`Import ${pkg} from Quest`, key,
          () => api("/api/quest", { action: "import", package: pkg, serial: quest.serial, data: $("questData").checked, allowDowngrade: $("questOlder").checked }),
-         j => { if (j.stage) $("questState").textContent = `${pkg}: ${j.stage}`; if (j.percent != null) bar.value = j.percent; })
-    .then(r => { bar.hidden = true; if (r && r.app) { $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
-                  else { b.disabled = false; $("questState").textContent = `${pkg} wasn't imported; the reason is in the message log below.`; } });
+         j => { if (j.queued || j.done) return; b.textContent = "Importing…"; bar.hidden = false; bar.dataset.owner = key;
+                if (j.stage) $("questState").textContent = `${pkg}: ${j.stage}`; bar.value = j.percent ?? 0; })
+    .then(r => { if (bar.dataset.owner === key) bar.hidden = true; if (r && r.app) { b.textContent = "Imported"; $("questState").textContent = r.message || `Imported ${pkg}`; loadAndroid(); }
+                  else { b.disabled = false; b.textContent = "Import";
+                         if (r !== null) $("questState").textContent = `${pkg} wasn't imported; the reason is in the message log below.`; } });
 });
 
 // ---- My Meta library, Experimental (frame_meta.py): the person's own token, games they own ----
@@ -3549,11 +3591,12 @@ function renderMetaApps() {
     const verdict = v ? `<div class="s ${v[0]}" title="${esc((a.verdict.lines || []).join("\n"))}">Community: ${v[1]}</div>` : "";
     const r = metaLib.results.get(a.package);
     const result = r ? `<div class="s">${esc(r)}</div>` : "";
-    const busy = installing.has("meta:" + a.id) ? " disabled" : "";
+    const busy = installing.has("meta:" + a.id) ? " disabled" : "", waits = queued.has("meta:" + a.id);
     const on = installed.has(a.package);
     const can = a.package && !a.problem;
     return `<div class="item"><div class="grow"><div class="t">${esc(a.title)}</div><div class="s" title="${esc(line)}">${esc(line)}</div>${problem}${skipped}${verdict}${result}</div>
       ${on ? `<span class="tag">On the Frame</span>` : ""}
+      ${waits ? `<span class="tag">Queued</span>` : ""}
       ${can ? `<button class="small" data-meta-install="${esc(a.id)}"${busy}>${on ? "Install again" : "Install"}</button>
       <button class="small" data-meta-install="${esc(a.id)}" data-test="1"${busy} title="Install, start it, watch it for about 30 s and record whether it ran">Install and test</button>` : ""}
       ${on ? `<button class="small" data-meta-test="${esc(a.package)}"${busy} title="Start it again, watch it for about 30 s and record whether it ran">Test again</button>` : ""}</div>`;
@@ -3645,13 +3688,15 @@ $("metaApps").addEventListener("click", async e => {
   if (!app || installing.has("meta:" + app.id)) return;
   if (test && !confirm(`Install and test ${app.title}?\n\nFrame Control starts it in the headset (twice if it has game data to add), `
                        + "watches it for about 30 seconds and records whether it ran.")) return;
-  b.disabled = true; bar.hidden = false; bar.value = 0;
+  b.disabled = true;
+  // Several can be queued: the bar and the status line follow whichever is installing.
   const r = await runJob(`${test ? "Install and test" : "Install"} ${app.title} from Meta`, "meta:" + app.id,
     () => api("/api/meta", { action: "install", app: app.id, test, allowDowngrade: $("metaOlder").checked }),
-    j => { if (j.stage) $("metaState").textContent = `${app.title}: ${j.stage}`; if (j.percent != null) bar.value = j.percent; });
-  bar.hidden = true;
+    j => { renderMetaApps(); if (j.queued || j.done) return; bar.hidden = false; bar.dataset.owner = "meta:" + app.id;
+           if (j.stage) $("metaState").textContent = `${app.title}: ${j.stage}`; bar.value = j.percent ?? 0; });
+  if (bar.dataset.owner === "meta:" + app.id) bar.hidden = true;  // not while another install still shows its progress
   if (r && r.message) { $("metaState").textContent = r.message; metaLib.results.set(app.package, r.test ? r.test.message : r.message); }
-  else $("metaState").textContent = `${app.title} wasn't installed; the reason is in the message log below.`;
+  else if (r !== null) $("metaState").textContent = `${app.title} wasn't installed; the reason is in the message log below.`;
   loadAndroid(); renderMetaApps(); if (test) loadReports();
 });
 loadMeta();

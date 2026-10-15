@@ -124,7 +124,10 @@ the redaction look for it.
    it has game data to add: once to add it, once for the test), watches it for
    about 30 seconds, and records what happened. **Test again** repeats only
    the test.
-5. **Disconnect** deletes the token from your computer and, in the desktop
+5. Choose **Install** on as many games as you like: they wait in the
+   **Install queue** and install one after another, with Quest imports and
+   Android store installs. **Remove** takes one out before it starts.
+6. **Disconnect** deletes the token from your computer and, in the desktop
    app, signs out of Meta in Frame Control (clears the sign-in window's
    storage). Games already on the Frame stay.
 
@@ -145,7 +148,8 @@ The local API: `GET /api/meta` (connected or not, never the token),
 `{"action": "connect", "token": "...", "acknowledged": true}`,
 `{"action": "disconnect"}`, `{"action": "cancel-signin", "attempt": "..."}`, `{"action": "install", "app": "APP_ID", "test": false,
 "allowDowngrade": false}` or `{"action": "test", "package": "..."}`. Install and
-test return a background job (`/api/job`). Sign in with Meta uses the same
+test return a background job (`/api/job`); an install waits its turn in the
+install queue (`/api/queue`, see [Import from my Quest](quest-import.md#using-it)). Sign in with Meta uses the same
 `connect` action: the desktop app's main process (`app/meta-signin.js`) posts
 it with the cookie's value and an `"attempt"` id (8 to 64 letters, digits or
 `-`) once the page's acknowledgement box is ticked. A connect whose attempt

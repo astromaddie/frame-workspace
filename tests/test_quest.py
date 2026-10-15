@@ -1130,7 +1130,7 @@ class Server(unittest.TestCase):
             with self.assertRaises(s.Failure) as e:
                 s.quest(body)
             self.assertEqual(e.exception.status, 400, body)
-        with patch.object(s, 'ensure_master'), patch.object(s, 'start_job', return_value={'job': 'j'}) as job:
+        with patch.object(s, 'ensure_master'), patch.object(s, 'queue_job', return_value={'job': 'j'}) as job:
             self.assertEqual(s.quest({'action': 'import', 'package': PKG, 'serial': QUEST['serial'], 'data': True}),
                              {'job': 'j'})
         self.assertTrue(job.call_args.kwargs['progress'])
