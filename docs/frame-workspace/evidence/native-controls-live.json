@@ -155,5 +155,23 @@
       "git diff --check passed"
     ],
     "inputFix": "Previous commit60c680a actual-page input regression suite passed39 tests; unchanged by this integration"
+  },
+  "finalHealth": {
+    "ready": true,
+    "connected": true,
+    "textureWidth": 2880,
+    "textureHeight": 2560,
+    "decoderActive": "v4l2",
+    "conversionActive": "cpu",
+    "errors": 0,
+    "curvature": {
+      "readable": true,
+      "value": 0.0,
+      "errorCode": 0
+    },
+    "oneMacStream": true,
+    "CodingPresentAfterTemporaryDataRemoval": true,
+    "ownedFixturesRemoved": true,
+    "macBinarySha256": "d6bccf857ff48e2de99400e16e15e82b981bb340bc903644460b96b3aa969edc"
   }
 }

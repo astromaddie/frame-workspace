@@ -32,12 +32,165 @@
   "frame_focused_repair_build_allocated_kib_removed": 2828,
   "preserved": [
     "source and compact verification reports",
-    "current native Frame binary/metadata and latest98f5 rollback",
+    "current native Frame binary/metadata and latest controls rollback",
     "active companion and Coding profile",
     "Frame pose",
     "requested Mac awake assertion"
   ],
   "measurement_limits": "Logical file sizes, allocated worktree sizes and container writable-layer sizes are different accounting measures and must not be summed as physical disk recovery. Sparse VM physical reclamation was not measured.",
   "fullscreen_followup_logical_bytes_removed": 83200630,
-  "compacted_duplicate_reports_and_python_cache_logical_bytes_removed": 3420754
+  "compacted_duplicate_reports_and_python_cache_logical_bytes_removed": 3420754,
+  "remainingIssuesIntegration": {
+    "sourceCommit": "dec3a20",
+    "hostFreeBytesBefore": 23803047936,
+    "removed": [
+      {
+        "path": "/tmp/Frame Workspace Fullscreen Probe.app",
+        "allocatedKiB": 364
+      },
+      {
+        "path": "/tmp/frame-workspace-fullscreen-probe",
+        "allocatedKiB": 360
+      },
+      {
+        "path": "/tmp/frame-workspace-swift-module-cache",
+        "allocatedKiB": 80296
+      },
+      {
+        "path": "/tmp/frame-workspace-chrome-fullscreen",
+        "allocatedKiB": 164588
+      },
+      {
+        "path": "/tmp/frame-workspace-safari-fullscreen",
+        "allocatedKiB": 208
+      },
+      {
+        "path": "/tmp/frame-workspace-controls-native.dSYM",
+        "allocatedKiB": 2504
+      },
+      {
+        "path": "/tmp/frame-workspace-controls-source.tgz",
+        "allocatedKiB": 108
+      },
+      {
+        "path": "/tmp/frame-workspace-companion-data",
+        "allocatedKiB": 16
+      },
+      {
+        "path": "/tmp/frame-workspace-companion.log",
+        "allocatedKiB": 388
+      },
+      {
+        "path": "/tmp/frame-workspace-gpu-companion.log",
+        "allocatedKiB": 68
+      },
+      {
+        "path": "/tmp/frame-workspace-control-watch-diagnostic.log",
+        "allocatedKiB": 4
+      },
+      {
+        "path": "/tmp/frame-workspace-controls-stream-test.log",
+        "allocatedKiB": 4
+      },
+      {
+        "path": "/tmp/frame-workspace-final-host-unittest.log",
+        "allocatedKiB": 4
+      },
+      {
+        "path": "/tmp/frame-workspace-integration-review.diff",
+        "allocatedKiB": 20
+      },
+      {
+        "path": "/tmp/frame-workspace-priority-off.json",
+        "allocatedKiB": 24
+      },
+      {
+        "path": "/tmp/frame-workspace-priority-on.json",
+        "allocatedKiB": 24
+      },
+      {
+        "path": "/tmp/frame-workspace-root-cleanup.json",
+        "allocatedKiB": 4
+      },
+      {
+        "path": "/tmp/frame-workspace-space-fixture.jsonl",
+        "allocatedKiB": 324
+      },
+      {
+        "path": "/tmp/frame-workspace-space-fixture.log",
+        "allocatedKiB": 0
+      },
+      {
+        "path": "/tmp/frame-workspace-space-fixture.pid",
+        "allocatedKiB": 4
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/ui/__pycache__",
+        "allocatedKiB": 1360
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/native/__pycache__",
+        "allocatedKiB": 20
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/tests/__pycache__",
+        "allocatedKiB": 332
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/scripts/__pycache__",
+        "allocatedKiB": 80
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/apk-catalog/__pycache__",
+        "allocatedKiB": 24
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/ios/scripts/__pycache__",
+        "allocatedKiB": 8
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/frame/android/__pycache__",
+        "allocatedKiB": 28
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace/ui/apk_sources/__pycache__",
+        "allocatedKiB": 136
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace-controls",
+        "allocatedKiB": 28568,
+        "reason": "Exact integrated files matched; remaining root corrections reviewed; source retained in dec3a20."
+      },
+      {
+        "path": "/Users/mads/code/frame-workspace-priority",
+        "allocatedKiB": 28532,
+        "reason": "Exact integrated files matched; remaining root corrections reviewed; source retained in dec3a20."
+      }
+    ],
+    "preserved": [
+      "running preview companion and its current log/pid/runner",
+      "persistent Coding profile",
+      "current Mac helper",
+      "installed Frame binary/metadata/pose and latest controls rollback",
+      "awake assertion",
+      "source and compact evidence"
+    ],
+    "hostFreeBytesAfter": 24136171520,
+    "hostObservedFreeBytesDelta": 333123584,
+    "hostAllocatedKiBRemoved": 308400,
+    "measurementLimit": "du allocation counts and observed filesystem free-space change are distinct. APFS sharing and concurrent activity prevent attributing global free-space change solely to this cleanup.",
+    "frameAllocatedKiBRemoved": 5768,
+    "frameRemoved": [
+      "controls build/source archive",
+      "temporary stream-test scripts and failure log",
+      "superseded overflow-recovery rollback"
+    ],
+    "latestPreservedFrameRollback": "/tmp/frame-workspace-controls-rollback-20261019",
+    "awakeAssertion": {
+      "command": "caffeinate -diu -t28800",
+      "renewedForHours": 8,
+      "expiresAtUtc": "2026-10-19T06:10:37.588977+00:00",
+      "persistentSecuritySettingsChanged": false
+    }
+  }
 }
