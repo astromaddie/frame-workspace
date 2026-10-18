@@ -27,7 +27,29 @@ Two real limits were found and handled:
 
 The launcher verifies nested window dimensions and overlay registration before reporting ready. Stop checks unit state and MainPID, with bounded TERM/KILL scoped to this service and a three-second timeout. A static service description and redacted diagnostics avoid logging viewer URLs. Explicit orphan recovery retains the live-owner lease check; unused Stop all does not start a display-recovery helper.
 
-Checks: affected MacView suite passed 34 tests with one permission-dependent skip; subsequent lifecycle/idle-shutdown regressions, launcher checks and four benchmark tests passed. Swift build passed. Sustained 4096-wide streaming at 60 fps remains unverified.
+Checks: affected MacView suite passed 34 tests with one permission-dependent skip; subsequent lifecycle/idle-shutdown regressions, launcher checks and four benchmark tests passed. Swift build passed. The subsequent live 60 fps trial below did not meet the sustained full-resolution target.
+
+### Live 60 fps trial
+
+Start the companion with `FRAME_WORKSPACE_FPS=60` to request 60 fps for **Sharp Workspace only**, at the same 4096-pixel long-edge limit. The default is 30; other quality choices and ordinary window panels retain their settings. Only 30 and 60 are accepted, with invalid values rejected before creating a display. The running controls report the requested rate separately from actual frame updates. Changing this startup setting requires reopening the viewer; it is not applied to an active worn session automatically.
+
+The user explicitly took the Frame off for the switch. Three serial 30-second probes used the same repository `bench/pages/scroll.html` self-scrolling Chrome fixture in a fresh owned temporary profile, on the 5120×1440 Workspace at x=1800, y=0. Its content area was 5120×1410 and its title reported approximately 59–61 source fps. No legacy viewer, bandwidth relay or concurrent unit tests were running. These are short diagnostic samples over live Wi-Fi, not an interleaved network-controlled benchmark or optical presentation measurement. Rates below are browser decoded-and-drawn counter deltas divided by browser elapsed time.
+
+| Requested mode | Decoded/drawn average | Observed decoded canvas | Result |
+|---|---:|---|---|
+| 60 fps, adaptive | 29.38 fps over 30.67 s | 2048×576 to 3072×864 | Rate and resolution fell; target failed |
+| 60 fps, adaptation disabled temporarily | 28.11 fps over 30.39 s | 4096×1152 throughout | Backlog grew; target failed |
+| 30 fps, adaptive restored | 27.76 fps over 30.40 s | Mostly 4096×1152; also 2048×576 | Rate recovered near 30; resolution still adapted under motion |
+
+All three reported zero decoder errors and no viewer-declared drops. That does not rule out capture/gate skips or queued frames. During the fixed-resolution trial a sampled two-second latency window reached p50 **1782.5 ms** / p95 **1795.1 ms**; later recent-frame summaries had no settled latency records because frames were too far behind. Do not treat their displayed zero recent shown rate as zero total decoded frames. Forcing this mode is unsuitable for use. Neither 60 fps nor sustained full 4096-pixel detail during motion is accepted.
+
+The final session was reopened at the normal **30 fps Sharp target with adaptation enabled**, without remote browser debugging or the fixture. Initial canvas/window dimensions and prior worn clarity feedback remain valid; this new motion test shows their limits. Temporary fixture processes/profiles and the local diagnostics tunnel were closed. The original Gamescope PID 1099227 remained running.
+
+Native-viewer feasibility: read-only device inspection found `/dev/video-dec0` → `/dev/video22`, named `qcom-iris-decoder`, bound to `qcom-iris`, advertising compressed H.264, HEVC and VP9 input. The installed FFmpeg exposes `h264_v4l2m2m` and `hevc_v4l2m2m`. This establishes available interfaces, not successful decoding, GPU texture import, low latency or 60 fps throughput. A native ARM64 receiver using the [V4L2 stateful decoder interface](https://cdn.kernel.org/doc/html/latest/userspace-api/media/v4l/dev-decoder.html) and direct VR rendering is a credible next spike while retaining the Mac companion.
+
+The browser's `h264 software` diagnostic is inferred from a WebCodecs capability probe with `prefer-hardware`; it does not instrument the active decoder. The [WebCodecs specification](https://www.w3.org/TR/webcodecs/#hardware-acceleration) makes hardware preferences advisory. Report this as a browser capability signal rather than definitive decoder identity. Native acceleration must be measured on-device before promising improvement.
+
+Reproduce the viewer with `FRAME_WORKSPACE_FPS=60` on companion startup and Sharp Workspace, preserving the shared Frame lock and fresh off-head consent before reopening. Use only `scripts/macview-bench.py`'s `chrome_window` fixture helper with a disposable profile; the complete benchmark command launches a legacy viewer and should not be used concurrently with this native Workspace route. Counter and timing observations were read through a temporary loopback-only browser diagnostics tunnel. Local integration tests cover the 60 fps URL, preserved dimensions, unaffected ordinary panels/default, and invalid-value rejection before display creation. Final local checks ran 37 MacView tests (one permission-dependent skip), four benchmark tests, Python compilation, all three inline JavaScript syntax checks and `git diff --check`; all applicable checks passed. Socket ResourceWarnings were observed in the test harness.
 
 ## Initial environment and baseline method
 
@@ -141,3 +163,5 @@ Full Python suite: 946 tests passed, one permission-dependent skip. App Node tes
 ## Cleanup
 
 Preserved source, the current compiled helper, this compact report and three inspected screenshots. Removed the clean baseline worktree, obsolete temporary Swift helpers/fixture, temporary Mac Chrome profiles, raw test JSON/logs and superseded captures after summarizing their results: **95,895,552 allocated bytes (about 91.5 MiB)** measured with `du`. The original installed app, user files and existing Frame browser profile were preserved. The fork's current browser profile and small live prototype state are retained for the pending human test.
+
+Follow-up cleanup: removed a further **89,153,536 allocated bytes (85.02 MiB)** of task-only geometry and motion probes, raw measurement JSON, superseded screenshots, logs and module caches after recording their findings above. The generated Frame Gamescope core is 1,495,024 bytes and remains system-managed: unprivileged removal was denied and scoped `sudo -n` required a password. No other coredumps were removed. Current helper, live companion state and its browser profile are retained.

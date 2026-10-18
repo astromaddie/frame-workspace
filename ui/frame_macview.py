@@ -59,7 +59,13 @@ WORKSPACE_QUALITY = {"sharp": {"max": 4096, "fps": 30, "bpp": 0.14, "codec": "h2
 
 
 def quality_settings(name, workspace=False):
-    return (WORKSPACE_QUALITY.get(name) if workspace else None) or QUALITY.get(name) or QUALITY["balanced"]
+    settings = (WORKSPACE_QUALITY.get(name) if workspace else None) or QUALITY.get(name) or QUALITY["balanced"]
+    if workspace and name == "sharp":
+        fps = os.environ.get("FRAME_WORKSPACE_FPS", "30")
+        if fps not in ("30", "60"):
+            raise MacViewError("FRAME_WORKSPACE_FPS must be 30 or 60.")
+        return {**settings, "fps": int(fps)}
+    return settings
 # Extra Chromium flags for viewers (see docs/mac-in-headset.md, "Measuring").
 BROWSER_FLAGS = []
 # Viewer windows are fitted inside a panel's size. gamescope made a 1280x720
@@ -167,6 +173,7 @@ class WorkspaceDisplayManager:
             raise MacViewError("Workspace scale must be 1 or 2.")
         if not isinstance(quality, str) or quality not in QUALITY:
             raise MacViewError("Choose a supported Mac stream quality.")
+        quality_settings(quality, workspace=True)  # reject invalid mode before creating a display
         width, height = WorkspaceDisplayManager.PRESETS[preset]
         if width * height * scale * scale > 67_108_864:
             raise MacViewError("That Workspace buffer exceeds the safe size limit.")

@@ -44,6 +44,10 @@ The approved inline controls offer the three desktop presets and 1×/2× scale, 
 
 The API and lifecycle tests use a fake helper for process ownership and rollback; Swift build and parser-only checks do not create a monitor. The integrated API and UI have not yet been tested against the live Frame companion while the FW-02 baseline is active. This does not establish worn readability, panel sharpness, or coding-session acceptance.
 
+### Readable viewer and 60 fps follow-up
+
+The dedicated Workspace OpenVR viewer now uses an aspect-matched fullscreen Chrome surface at **4096×1152** for the default 5120×1440 logical desktop. This removes the old browser letterbox; the user confirmed the new view is much more readable and clear. Sharp Workspace defaults to 30 fps, with an opt-in `FRAME_WORKSPACE_FPS=60` target. Initial encoder compatibility at 60 fps passed, but the live 60 fps scrolling trial did not sustain that rate at full resolution. Requested dimensions/rate, decoded canvas dimensions and physical headset presentation are separate evidence. See [VALIDATION.md](VALIDATION.md) for measurements and limits. FW-02/FW-04 still need the real coding, keyboard/trackpad/IME and sustained-use acceptance.
+
 ## Milestones and stop/go gates
 
 1. **M0 — Verify reality:** FW-01, FW-02, FW-03, FW-06, FW-10. Produce live-device proof and architecture decisions before building a UI around uncertain capabilities.

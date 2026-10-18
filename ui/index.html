@@ -4294,12 +4294,12 @@ function renderMvWorkspace(s) {
   start.setAttribute("aria-label", running ? "Show Workspace in the Frame again" : "Start Workspace and show it in the Frame");
 
   if (running) {
-    const route = stream ? "Stream target " + size(v.width, v.height) + " (" + esc(quality) + ")" : "Display ready; no active stream";
+    const route = stream ? "Stream target " + size(v.width, v.height) + " (" + esc(quality) + ", " + esc(v.fps) + " fps target)" : "Display ready; no active stream";
     const restore = ws.windowRestoreAvailable === false ? " Window restoration needs Accessibility permission." : "";
     status.innerHTML = '<span class="mv-ws-state">' + (stream ? "Streaming" : "Running") + "</span> · Desktop " +
       size(d.logicalWidth, d.logicalHeight) + " logical / " + size(d.bufferWidth, d.bufferHeight) +
       " backing px · " + route + (stream ? mvHealth(stream) : "") + restore +
-      '<br><span class="sub">Workspace uses its own ultrawide OpenVR panel; Sharp targets a 4096-pixel long edge at 30 fps. Streaming may adapt detail or rate to conditions, and logical desktop size is not headset pixel resolution. Move windows onto Frame Workspace in macOS. Stop restores eligible moved windows; after a crash macOS rehomes them.</span>';
+      '<br><span class="sub">Workspace uses its own ultrawide OpenVR panel; Sharp targets a 4096-pixel long edge. Streaming may adapt detail or rate to conditions, and logical desktop size is not headset pixel resolution. Move windows onto Frame Workspace in macOS. Stop restores eligible moved windows; after a crash macOS rehomes them.</span>';
   } else if (ws.state === "owner_unknown") {
     status.textContent = "A Workspace display exists outside this companion. Stop attempts recovery only after its owner exits.";
   } else if (ws.state === "starting") {
@@ -4309,7 +4309,7 @@ function renderMvWorkspace(s) {
       (ws.removed === false ? " Removal is unconfirmed; use Stop to retry safe recovery." : "");
   } else {
     status.textContent = s.screen
-      ? "Start opens an extended Mac desktop in its own ultrawide OpenVR panel. Sharp targets a 4096-pixel long edge at 30 fps; streaming can adapt to conditions. Logical size is not headset pixel resolution."
+      ? "Start opens an extended Mac desktop in its own ultrawide OpenVR panel. Sharp targets a 4096-pixel long edge; the frame-rate target appears here while streaming. Logical size is not headset pixel resolution."
       : "Allow Screen Recording above before starting a Workspace.";
   }
   status.dataset.state = ws.state || "stopped";

@@ -14,6 +14,7 @@ import json
 import io
 import os
 import re
+import shlex
 import shutil
 import socket
 import struct
@@ -25,6 +26,7 @@ import threading
 import unittest
 from unittest import mock
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "ui"))
@@ -622,6 +624,43 @@ class WorkspaceLifecycle(unittest.TestCase):
             self.assertEqual(mv.stop(), {"closed": 0})
         popen.assert_not_called()
         mv.workspace_manager.recover_orphan.assert_not_called()
+
+    def test_workspace_60_fps_reaches_viewer_without_changing_resolution(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_FPS": "60"}):
+            manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.remote_port = 47900
+            mv.ensure_tunnel = lambda **kwargs: None
+            mv.call = lambda path, **kw: {"screen": True, "streams": [], "finished": []} if path == "/status" else {"ticket": "one-use"}
+            requests = []
+            def launch(remote, **kwargs):
+                args = shlex.split(remote)
+                requests.append(args)
+                return f"registered OpenVR key com.frame-control.workspace.1000.{args[-1]}"
+            mv.run = launch
+            try:
+                state, _ = manager.start()
+                self.assertEqual(state["display"]["logicalWidth"], 5120)
+                self.assertEqual(state["stream"], {"width": 4096, "height": 1152, "maxLong": 4096,
+                                                 "fps": 60, "codec": "h264"})
+                mv.show("workspace", quality="sharp")
+                query = parse_qs(urlsplit(requests[0][4]).query)
+                self.assertEqual(query["fps"], ["60"])
+                self.assertEqual(query["max"], ["4096"])
+                self.assertEqual(requests[0][5:7], ["4096", "1152"])
+                self.assertEqual(frame_macview.quality_settings("sharp"), frame_macview.QUALITY["sharp"])
+                self.assertEqual(frame_macview.WORKSPACE_QUALITY["sharp"]["fps"], 30)
+            finally:
+                manager.stop()
+
+    def test_invalid_workspace_fps_fails_before_display_creation(self):
+        manager = frame_macview.WorkspaceDisplayManager("/does/not/matter")
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_FPS": "120"}), \
+                mock.patch.object(frame_macview.subprocess, "Popen") as popen:
+            with self.assertRaisesRegex(frame_macview.MacViewError, "must be 30 or 60"):
+                manager.start()
+        popen.assert_not_called()
 
     def test_helper_build_failure_precedes_display_creation(self):
         with tempfile.TemporaryDirectory() as temp:
