@@ -1,8 +1,10 @@
 > **Frame Workspace experimental fork:** this repository builds on
 > [saphid/frame-control](https://github.com/saphid/frame-control) and preserves
 > its MIT attribution and existing management features. The first Workspace
-> proof is a Mac virtual ultrawide display; see the [commands and verified
-> results](docs/frame-workspace/ROADMAP.md#mac-only-virtual-display-proof-fw-03--fw-04-first-slice).
+> prototype now has companion Start/Stop controls for a real Mac virtual
+> ultrawide display. See the [commands, device measurements and remaining
+> acceptance checks](docs/frame-workspace/VALIDATION.md). Worn coding/readability
+> validation is still required before FW-02 through FW-04 can be called complete.
 > The Frame Control documentation below describes the inherited app. Workspace
 > installers are not released yet; upstream updates and release packaging are
 > disabled for this prototype.

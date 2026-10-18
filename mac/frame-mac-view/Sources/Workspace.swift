@@ -2,7 +2,9 @@
 // the existing CGVirtualDisplay wrapper while keeping workspace displays
 // visible to the normal display picker.
 import AppKit
+import ApplicationServices
 import CoreGraphics
+import Darwin
 import Foundation
 import IOKit.pwr_mgt
 import ScreenCaptureKit
@@ -14,11 +16,12 @@ struct WorkspaceOptions {
     let duration: TimeInterval?
     let exitOnStdinEOF: Bool
     let captureProbe: Bool
+    let recoverOrphan: Bool
 
     static let defaultWidth = 5120
     static let defaultHeight = 1440
     static let name = "Frame Workspace"
-    static let usage = "usage: frame-mac-view workspace [--width 5120] [--height 1440] [--scale 1|2] [--duration seconds] [--exit-on-stdin-eof] [--capture-probe]"
+    static let usage = "usage: frame-mac-view workspace [--width 5120] [--height 1440] [--scale 1|2] [--duration seconds] [--exit-on-stdin-eof] [--capture-probe] [--recover-orphan]"
     private static let maxBufferPixels = 67_108_864
 
     init(arguments: [String]) throws {
@@ -28,6 +31,7 @@ struct WorkspaceOptions {
         var duration: TimeInterval?
         var exitOnStdinEOF = false
         var captureProbe = false
+        var recoverOrphan = false
         var seen = Set<String>()
         var i = 0
         while i < arguments.count {
@@ -62,15 +66,24 @@ struct WorkspaceOptions {
             case "--capture-probe":
                 captureProbe = true
                 i += 1
+            case "--recover-orphan":
+                recoverOrphan = true
+                i += 1
             default:
                 throw WorkspaceOptionsError("unknown workspace option \(flag)")
             }
         }
-        guard (1280...7680).contains(width) else { throw WorkspaceOptionsError("width must be between 1280 and 7680 logical points") }
-        guard (720...4320).contains(height) else { throw WorkspaceOptionsError("height must be between 720 and 4320 logical points") }
-        guard scale == 1 || scale == 2 else { throw WorkspaceOptionsError("scale must be 1 or 2") }
-        guard width * height * scale * scale <= Self.maxBufferPixels else {
-            throw WorkspaceOptionsError("requested buffer exceeds the 67,108,864-pixel safety limit")
+        if recoverOrphan {
+            guard seen.isSubset(of: ["--recover-orphan", "--exit-on-stdin-eof"]) else {
+                throw WorkspaceOptionsError("--recover-orphan cannot be combined with display options")
+            }
+        } else {
+            guard (1280...7680).contains(width) else { throw WorkspaceOptionsError("width must be between 1280 and 7680 logical points") }
+            guard (720...4320).contains(height) else { throw WorkspaceOptionsError("height must be between 720 and 4320 logical points") }
+            guard scale == 1 || scale == 2 else { throw WorkspaceOptionsError("scale must be 1 or 2") }
+            guard width * height * scale * scale <= Self.maxBufferPixels else {
+                throw WorkspaceOptionsError("requested buffer exceeds the 67,108,864-pixel safety limit")
+            }
         }
         self.width = width
         self.height = height
@@ -78,6 +91,7 @@ struct WorkspaceOptions {
         self.duration = duration
         self.exitOnStdinEOF = exitOnStdinEOF
         self.captureProbe = captureProbe
+        self.recoverOrphan = recoverOrphan
     }
 }
 
@@ -98,6 +112,12 @@ private struct DisplayLayout: Equatable {
             lhs.mode?.height == rhs.mode?.height && lhs.mode?.pixelWidth == rhs.mode?.pixelWidth &&
             lhs.mode?.pixelHeight == rhs.mode?.pixelHeight && lhs.mirroredDisplay == rhs.mirroredDisplay && lhs.main == rhs.main
     }
+}
+
+private struct WorkspaceWindowSnapshot {
+    let id: CGWindowID
+    let pid: pid_t
+    let frame: CGRect
 }
 
 private func onlineDisplayIDs() -> [CGDirectDisplayID] {
@@ -137,6 +157,7 @@ final class WorkspaceCommand {
     private var displaySleepAssertion: IOPMAssertionID = 0
     private var wakeProcess: Process?
     private var originalLayout: [DisplayLayout] = []
+    private var originalWindows: [WorkspaceWindowSnapshot] = []
     private var probe: SCKSource?
     private var probeTimer: DispatchSourceTimer?
     private var stopTimer: DispatchSourceTimer?
@@ -144,6 +165,11 @@ final class WorkspaceCommand {
     private var readyEmitted = false
     private var probeGotFrame = false
     private var retriedModeAfterRegistration = false
+    private var workspaceLease: Int32 = -1
+    private var recoveryAttempt = 0
+    private var recoveredOrphan = false
+    private var sawPriorWorkspace = false
+    private var restoredWindowCount = 0
     private(set) var exitStatus: Int32 = 0
 
     init(options: WorkspaceOptions, app: NSApplication) {
@@ -152,9 +178,10 @@ final class WorkspaceCommand {
     }
 
     func start() {
-        guard !onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace) else {
-            return fail("a Frame Workspace display is already online; close its owning command first")
+        guard acquireWorkspaceLease() else {
+            return fail("another live Frame Workspace owner holds the per-user lease; its display was left untouched")
         }
+        sawPriorWorkspace = onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace)
         guard IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                                           IOPMAssertionLevel(kIOPMAssertionLevelOn),
                                           "Frame Workspace virtual display is active" as CFString,
@@ -179,15 +206,77 @@ final class WorkspaceCommand {
             guard let self else { return }
             self.wakeProcess = nil
             guard !self.stopRequested else { return }
-            self.createDisplay()
+            self.recoverOrWaitForExistingWorkspace()
         }
     }
 
-    private func createDisplay() {
-        guard !onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace) else {
-            return fail("a Frame Workspace display appeared during startup; close its owning command first")
+    /// A held lease proves no other command using this implementation owns an
+    /// online workspace. A leftover display may be waiting for WindowServer to
+    /// wake; request a brief wake and wait for macOS itself to unregister it.
+    /// Never search for or release another process's CGVirtualDisplay object.
+    private func recoverOrWaitForExistingWorkspace() {
+        let existing = onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace)
+        recoveredOrphan = sawPriorWorkspace || existing
+        guard existing else {
+            if options.recoverOrphan { return finishRecovery(recovered: recoveredOrphan) }
+            return createDisplay()
         }
+        recoveryAttempt = 0
+        waitForExistingWorkspaceToDisappear()
+    }
+
+    private func waitForExistingWorkspaceToDisappear() {
+        guard !stopRequested else { return }
+        guard onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace) else {
+            if options.recoverOrphan { return finishRecovery(recovered: true) }
+            return createDisplay()
+        }
+        if recoveryAttempt >= 50 {
+            return fail("a Frame Workspace display is still registered after wake; it may have another owner or macOS may be deferring removal. It was left untouched")
+        }
+        recoveryAttempt += 1
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now() + 0.1)
+        timer.setEventHandler { [weak self] in
+            self?.stopTimer?.cancel()
+            self?.stopTimer = nil
+            self?.waitForExistingWorkspaceToDisappear()
+        }
+        timer.resume()
+        stopTimer = timer
+    }
+
+    private func finishRecovery(recovered: Bool) {
+        releaseDisplaySleepAssertion()
+        releaseWorkspaceLease()
+        wakeProcess = nil
+        printJSONLine(["state": "stopped", "recoveredOrphan": recovered, "removed": true,
+                   "physicalLayoutUnchanged": true])
+        finishApplicationRunLoop()
+    }
+
+    private func acquireWorkspaceLease() -> Bool {
+        let path = "/tmp/frame-workspace-\(getuid()).lock"
+        let fd = open(path, O_CREAT | O_RDWR | O_NOFOLLOW, mode_t(S_IRUSR | S_IWUSR))
+        guard fd >= 0 else { return false }
+        guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
+            close(fd)
+            return false
+        }
+        workspaceLease = fd
+        return true
+    }
+
+    private func releaseWorkspaceLease() {
+        guard workspaceLease >= 0 else { return }
+        _ = flock(workspaceLease, LOCK_UN)
+        close(workspaceLease)
+        workspaceLease = -1
+    }
+
+    private func createDisplay() {
         originalLayout = currentLayout()
+        originalWindows = windowSnapshots()
         guard let created = VirtualDisplay(name: WorkspaceOptions.name, width: options.width, height: options.height,
                                            pixelScale: options.scale, purpose: .workspace) else {
             return fail("macOS did not create the virtual display")
@@ -287,12 +376,14 @@ final class WorkspaceCommand {
                        "scale": Double(mode.pixelWidth) / Double(mode.width)],
             "bounds": rectJSON(bounds), "mirrored": false, "mirrorDisplayID": NSNull(),
             "main": false, "physicalLayoutUnchanged": currentLayout() == originalLayout,
+            "recoveredOrphan": recoveredOrphan,
+            "windowRestoreAvailable": AXIsProcessTrusted(), "snapshottedWindows": originalWindows.count,
             "captureProbe": capturable.map { $0 as Any } ?? NSNull()
         ]
         if let duration = options.duration {
             record["durationSeconds"] = duration
         }
-        printJSON(record)
+        printJSONLine(record)
         if let duration = options.duration {
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) { [weak self] in self?.stop(reason: "duration") }
         }
@@ -306,9 +397,21 @@ final class WorkspaceCommand {
         probe?.stop()
         probe = nil
         guard let id = displayID else {
+            releaseWorkspaceLease()
+            if options.recoverOrphan || recoveredOrphan {
+                if onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace) {
+                    return emitError(reason: reason, message: "Workspace removal is still deferred; the previously registered display was left untouched",
+                                     removed: false)
+                }
+                printJSONLine(["state": "stopped", "reason": reason, "removed": true,
+                               "recoveredOrphan": recoveredOrphan, "physicalLayoutUnchanged": true])
+                finishApplicationRunLoop()
+                return
+            }
             emitError(reason: reason, message: "stopped before a display was created", removed: true)
             return
         }
+        restoreWindowsStillOnWorkspace()
         display?.release()
         display = nil
         awaitRemoval(id, reason: reason, attempt: 0)
@@ -327,9 +430,10 @@ final class WorkspaceCommand {
                 return emitError(reason: reason, message: "display was removed, but an existing display layout changed", removed: true)
             }
             releaseDisplaySleepAssertion()
-            printJSON(["state": "stopped", "displayID": id, "reason": reason, "removed": true,
-                       "physicalLayoutUnchanged": true])
-            app.stop(nil)
+            printJSONLine(["state": "stopped", "displayID": id, "reason": reason, "removed": true,
+                       "physicalLayoutUnchanged": true, "windowsRestored": restoredWindowCount])
+            releaseWorkspaceLease()
+            finishApplicationRunLoop()
             return
         }
         if attempt >= 50 {
@@ -352,9 +456,12 @@ final class WorkspaceCommand {
         guard !stopRequested else { return }
         if displayID == nil {
             releaseDisplaySleepAssertion()
+            releaseWorkspaceLease()
             exitStatus = 1
-            printJSON(["state": "error", "error": message])
-            app.stop(nil)
+            let existing = onlineDisplayIDs().contains(where: VirtualDisplay.isWorkspace)
+            printJSONLine(["state": "error", "error": message, "removed": !existing,
+                           "physicalLayoutUnchanged": true])
+            finishApplicationRunLoop()
             return
         }
         // A failed verification must relinquish only this command's display.
@@ -367,6 +474,7 @@ final class WorkspaceCommand {
 
     private func emitError(reason: String, message: String, removed: Bool) {
         releaseDisplaySleepAssertion()
+        releaseWorkspaceLease()
         if let wakeProcess, wakeProcess.isRunning { wakeProcess.terminate() }
         wakeProcess = nil
         exitStatus = 1
@@ -374,8 +482,48 @@ final class WorkspaceCommand {
                                    "physicalLayoutUnchanged": currentLayout() == originalLayout]
         if let displayID { event["displayID"] = displayID }
         if let stoppingForFailure { event["startupError"] = stoppingForFailure }
-        printJSON(event)
+        printJSONLine(event)
+        finishApplicationRunLoop()
+    }
+
+    /// NSApplication.stop() alone can leave a prohibited, windowless app
+    /// blocked in nextEventMatchingMask when no display notification arrives.
+    /// Posting an application-defined event wakes that wait so the stop request
+    /// is observed and the process can release its lease.
+    private func finishApplicationRunLoop() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { [weak self] in self?.finishApplicationRunLoop() }
+            return
+        }
+        if let wakeEvent = NSEvent.otherEvent(with: .applicationDefined, location: .zero,
+                                              modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                              windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0) {
+            app.postEvent(wakeEvent, atStart: true)
+        }
         app.stop(nil)
+    }
+
+    private func windowSnapshots() -> [WorkspaceWindowSnapshot] {
+        guard AXIsProcessTrusted() else { return [] }
+        return WindowInfo.all().filter { $0.layer == 0 && $0.pid != ProcessInfo.processInfo.processIdentifier }
+            .compactMap { info in
+                guard let frame = AXWindow(windowID: info.id, pid: info.pid)?.frame else { return nil }
+                return WorkspaceWindowSnapshot(id: info.id, pid: info.pid, frame: frame)
+            }
+    }
+
+    /// Restore only windows that existed before Workspace started and are
+    /// still centered on the display this command owns. Other windows are
+    /// never moved, even if their app or display layout changed meanwhile.
+    private func restoreWindowsStillOnWorkspace() {
+        guard AXIsProcessTrusted(), let bounds = display?.bounds else { return }
+        for saved in originalWindows {
+            guard let current = WindowInfo.find(saved.id),
+                  bounds.contains(CGPoint(x: current.bounds.midX, y: current.bounds.midY)),
+                  let window = AXWindow(windowID: saved.id, pid: saved.pid) else { continue }
+            window.setFrame(saved.frame)
+            restoredWindowCount += 1
+        }
     }
 
     private func releaseDisplaySleepAssertion() {

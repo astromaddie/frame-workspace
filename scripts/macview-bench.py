@@ -43,7 +43,10 @@ Stdlib only.
 import argparse
 import asyncio
 import datetime
-import fcntl
+try:
+    import fcntl
+except ImportError:  # compare/report helpers remain importable on Windows
+    fcntl = None
 import json
 import os
 import platform
@@ -488,10 +491,12 @@ def run_scenario(args, scenario, agent_port, token, frame_ssh):
         result["route"] = mv.route
         return result
     finally:
+        cleanup_error = None
         try:
             mv.stop(src)
-        except Exception:  # noqa: BLE001 - best effort
-            pass
+            mv.finish_browser_cleanup()
+        except Exception as e:  # noqa: BLE001 - still release local resources
+            cleanup_error = e
         mv.closing = True  # or its supervisor reopens the tunnel
         if mv.tunnel and mv.tunnel.poll() is None:
             mv.tunnel.terminate()
@@ -507,7 +512,8 @@ def run_scenario(args, scenario, agent_port, token, frame_ssh):
                 chrome.wait(timeout=5)
         if chrome_profile:
             chrome_profile.cleanup()
-        time.sleep(3)  # Stop ends the Frame's viewer browser 2 s later
+        if cleanup_error:
+            raise frame_macview.MacViewError(f"Benchmark cleanup failed: {cleanup_error}") from cleanup_error
 
 
 def composited(f):
@@ -756,6 +762,8 @@ def frame_ssh_for(args):
 def run_suite(args, frame_ssh, quiet=False):
     # A second run would close/relaunch the first run's viewer and corrupt both
     # measurements. Keep the lease open until all scenario cleanup finishes.
+    if fcntl is None:
+        raise SystemExit("Running the MacView benchmark requires macOS; compare can run on other platforms.")
     with open(Path(tempfile.gettempdir()) / f"frame-macview-bench-{os.getuid()}.lock", "a") as lease:
         try:
             fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)

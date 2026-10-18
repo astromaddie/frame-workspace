@@ -87,6 +87,57 @@ class Helpers(unittest.TestCase):
         r = subprocess.run(["bash", "-n"], input=frame_macview.LAUNCH, text=True, capture_output=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
+    def test_frame_browser_profile_and_cleanup_are_fork_scoped(self):
+        for profile in (
+            "$HOME/.local/share/frame-workspace/mac-view",
+            "$HOME/.var/app/org.chromium.Chromium/data/frame-workspace/mac-view",
+            "$HOME/.var/app/com.google.Chrome/data/frame-workspace/mac-view",
+        ):
+            with self.subTest(profile=profile):
+                self.assertIn(profile, frame_macview.LAUNCH)
+        self.assertNotIn("frame-control/mac-view", frame_macview.LAUNCH)
+        self.assertNotIn("data/frame-mac-view", frame_macview.LAUNCH)
+
+        # Exercise the production cleanup script with fake process-table tools.
+        # The first 15 checks simulate a browser that ignores TERM; after KILL,
+        # pgrep reports that the fork-owned profile processes have exited.
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bindir = root / "bin"
+            bindir.mkdir()
+            state, log = root / "pgrep-count", root / "signals"
+            pgrep = bindir / "pgrep"
+            pgrep.write_text(
+                "#!/bin/sh\n"
+                "state=$FRAME_TEST_STATE\n"
+                "n=$(cat \"$state\" 2>/dev/null || echo 0)\n"
+                "n=$((n + 1))\n"
+                "echo \"$n\" > \"$state\"\n"
+                "[ \"$n\" -le 15 ]\n",
+                encoding="utf-8")
+            pgrep.chmod(0o755)
+            pkill = bindir / "pkill"
+            pkill.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >> \"$FRAME_TEST_LOG\"\n",
+                encoding="utf-8")
+            pkill.chmod(0o755)
+            env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                   "FRAME_TEST_STATE": str(state), "FRAME_TEST_LOG": str(log)}
+            result = subprocess.run(["bash", "-s"], input=frame_macview.CLOSE_BROWSER, text=True,
+                                    capture_output=True, env=env, timeout=5)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            signals = log.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(signals), 2, signals)
+            self.assertTrue(signals[0].startswith("-TERM -f "), signals)
+            self.assertTrue(signals[1].startswith("-KILL -f "), signals)
+            for command in signals:
+                self.assertIn("frame-workspace/mac-view", command)
+                self.assertNotIn("frame-control/mac-view", command)
+                self.assertNotIn("data/frame-mac-view", command)
+
     def test_show_checks_the_source_before_anything_else(self):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: self.fail("no ssh"), "frame")
         with self.assertRaises(frame_macview.MacViewError):
@@ -135,7 +186,7 @@ class Helpers(unittest.TestCase):
             mv.shown.clear()
             mv._end_viewer_browser(gen)
             self.assertEqual(len(calls), 1)
-            self.assertIn("pkill -f '[f]rame-control/mac-view", calls[0])
+            self.assertEqual(calls[0], "bash -s")
             mv.shows += 1  # Show pressed during the wait: leave the new viewer alone
             mv._end_viewer_browser(gen)
             self.assertEqual(len(calls), 1)
@@ -147,10 +198,18 @@ class Helpers(unittest.TestCase):
         in_pkill, release, entered = threading.Event(), threading.Event(), threading.Event()
 
         def blocking_pkill(remote, **kw):
-            in_pkill.set()
-            release.wait(5)
+            if kw.get("stdin") == frame_macview.CLOSE_BROWSER:
+                in_pkill.set()
+                release.wait(5)
+                return ""
+            entered.set()
+            return "panel opened"
         mv.run = blocking_pkill
-        mv._show = lambda *a: entered.set() or "shown"
+        mv.remote_port = 47900
+        mv.call = lambda path, **kw: (
+            {"screen": True, "streams": [], "finished": []} if path == "/status"
+            else {"ticket": "one-use"} if path == "/ticket" else {"closed": 1})
+        mv.ensure_tunnel = lambda **kw: None
         with mock.patch.object(frame_macview.time, "sleep"):
             cleanup = threading.Thread(target=mv._end_viewer_browser, args=(mv.shows,))
             cleanup.start()
@@ -162,6 +221,26 @@ class Helpers(unittest.TestCase):
             self.assertTrue(entered.wait(2))
             cleanup.join()
             shower.join()
+
+    def test_shutdown_waits_for_browser_cleanup_before_returning(self):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        def run(remote, stdin=None, **kwargs):
+            self.assertEqual(stdin, frame_macview.CLOSE_BROWSER)
+            entered.set()
+            self.assertTrue(release.wait(3))
+            finished.set()
+            return ""
+        mv = frame_macview.MacView(["ssh"], run, "frame")
+        with mock.patch.object(frame_macview.time, "sleep"):
+            thread = threading.Thread(target=mv.shutdown)
+            thread.start()
+            self.assertTrue(entered.wait(2))
+            self.assertTrue(thread.is_alive())
+            self.assertFalse(finished.is_set())
+            release.set()
+            thread.join(3)
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(finished.is_set())
 
     def test_tunnel_prefers_the_usb_c_network_when_plugged_in(self):
         mv = frame_macview.MacView(["ssh"], lambda remote, **kw: "13: usb0 inet 10.86.200.233/29 scope global", "frame")
@@ -195,6 +274,152 @@ class Helpers(unittest.TestCase):
         mv.ensure_tunnel()
         self.assertEqual(tried, [["-o", "HostName=10.86.200.233"], []])
         self.assertEqual(mv.route, "network")
+
+
+class WorkspaceLifecycle(unittest.TestCase):
+    @staticmethod
+    def fake_helper(path):
+        path.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "print(json.dumps({'state':'ready','name':'Frame Workspace','src':'display:4242','displayID':4242,"
+            "'requested':{'logicalWidth':5120,'logicalHeight':1440,'scale':1},"
+            "'actual':{'logicalWidth':5120,'logicalHeight':1440,'bufferWidth':5120,'bufferHeight':1440,'scale':1.0},"
+            "'bounds':{'x':1800,'y':0,'width':5120,'height':1440},'mirrored':False,'mirrorDisplayID':None,"
+            "'main':False,'physicalLayoutUnchanged':True,'windowRestoreAvailable':True,'snapshottedWindows':3}), flush=True)\n"
+            "sys.stdin.read()\n"
+            "print(json.dumps({'state':'stopped','displayID':4242,'reason':'stdin_eof','removed':True,"
+            "'physicalLayoutUnchanged':True,'windowsRestored':1}), flush=True)\n",
+            encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def test_manager_supervises_stable_workspace_key_and_fresh_display_source(self):
+        with tempfile.TemporaryDirectory() as temp:
+            executable = self.fake_helper(Path(temp) / "fake-frame-mac-view")
+            tracked = []
+            manager = frame_macview.WorkspaceDisplayManager(executable, track=tracked.append)
+            state, created = manager.start()
+            self.assertTrue(created)
+            self.assertEqual(state["id"], "workspace")
+            self.assertEqual(state["captureSrc"], "display:4242")
+            self.assertEqual(state["display"], {"logicalWidth": 5120, "logicalHeight": 1440,
+                                                "bufferWidth": 5120, "bufferHeight": 1440})
+            self.assertEqual(state["stream"], {"width": 2560, "height": 720, "maxLong": 2560,
+                                                "fps": 60, "codec": "h264"})
+            again, created = manager.start()
+            self.assertFalse(created)
+            self.assertEqual(again["id"], "workspace")
+            self.assertEqual(len(tracked), 1)
+            balanced, created = manager.start(quality="balanced")
+            self.assertFalse(created)
+            self.assertEqual(balanced["captureSrc"], state["captureSrc"])
+            self.assertEqual(balanced["stream"]["width"], 1920)
+            self.assertEqual(len(tracked), 1)
+            stopped = manager.stop()
+            self.assertTrue(stopped["removed"])
+            self.assertEqual(stopped["windowsRestored"], 1)
+            self.assertEqual(manager.state()["state"], "stopped")
+
+    def test_start_rolls_back_display_when_frame_panel_cannot_open(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.build = lambda: None
+            mv.remote_port = 47900
+            mv.call = lambda path, method="GET", **query: (
+                {"screen": True, "accessibility": True, "streams": [], "finished": []}
+                if path == "/status" else {"ticket": "one-use"} if path == "/ticket" else {"closed": 1})
+            mv.ensure_tunnel = lambda **kwargs: None
+            def fail_launch(*args, **kwargs):
+                error = RuntimeError("panel launch failed")
+                error.stdout = ""
+                raise error
+            mv.run = fail_launch
+            mv._end_viewer_browser = lambda *args: None
+            with self.assertRaises(frame_macview.MacViewError) as cm:
+                mv.start_workspace()
+            self.assertIn("rolled back", str(cm.exception))
+            self.assertEqual(manager.state()["state"], "stopped")
+            self.assertNotIn("display:4242", mv.shown)
+
+    def test_start_and_stop_use_workspace_key_but_close_only_its_display_stream(self):
+        with tempfile.TemporaryDirectory() as temp:
+            manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.build = lambda: None
+            mv.remote_port = 47900
+            mv.agent = mock.Mock(poll=lambda: None)
+            closes = []
+            def call(path, method="GET", **query):
+                if path == "/status":
+                    return {"screen": True, "accessibility": True, "streams": [], "finished": []}
+                if path == "/ticket":
+                    return {"ticket": "one-use"}
+                if path == "/close":
+                    closes.append(query.get("src"))
+                    return {"closed": 1}
+                return {"displays": []}
+            mv.call = call
+            mv.ensure_tunnel = lambda **kwargs: None
+            mv.run = lambda *args, **kwargs: "panel opened"
+            mv._end_viewer_browser = lambda *args: None
+            shown = mv.start_workspace()
+            self.assertEqual(shown["src"], "workspace")
+            self.assertEqual(shown["captureSrc"], "display:4242")
+            self.assertEqual(shown["workspace"]["id"], "workspace")
+            changed = mv.start_workspace(quality="balanced")
+            self.assertEqual(changed["workspace"]["quality"], "balanced")
+            self.assertEqual(closes, ["display:4242"])
+            stopped = mv.stop_workspace()
+            self.assertTrue(stopped["removed"])
+            self.assertEqual(stopped["panelClosed"], 1)
+            self.assertEqual(closes, ["display:4242", "display:4242"])
+            self.assertFalse(mv.shown)
+
+    def test_orphan_stop_recovers_without_a_live_capture_agent(self):
+        with tempfile.TemporaryDirectory() as temp:
+            helper = Path(temp) / "fake-frame-mac-view"
+            helper.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "if sys.argv[1:] == ['workspace', '--recover-orphan']:\n"
+                " print(json.dumps({'state':'stopped','removed':True,'recoveredOrphan':True,'physicalLayoutUnchanged':True}))\n"
+                " sys.exit(0)\n"
+                "sys.exit(2)\n",
+                encoding="utf-8")
+            helper.chmod(0o755)
+            manager = frame_macview.WorkspaceDisplayManager(helper)
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: self.fail("recovery must not need the capture agent"), "frame")
+            mv.workspace_manager = manager
+            stopped = mv.stop_workspace()
+            self.assertTrue(stopped["removed"])
+            self.assertTrue(stopped["recoveredOrphan"])
+            self.assertFalse(stopped["owned"])
+
+    def test_helper_build_failure_precedes_display_creation(self):
+        with tempfile.TemporaryDirectory() as temp:
+            helper = self.fake_helper(Path(temp) / "fake-frame-mac-view")
+            manager = frame_macview.WorkspaceDisplayManager(helper)
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.build = mock.Mock(side_effect=frame_macview.MacViewError("build failed"))
+            with mock.patch.object(frame_macview.subprocess, "Popen") as popen:
+                with self.assertRaisesRegex(frame_macview.MacViewError, "build failed"):
+                    mv.start_workspace()
+            popen.assert_not_called()
+            self.assertEqual(manager.state()["state"], "stopped")
+
+    def test_invalid_workspace_request_fails_before_starting_a_process(self):
+        manager = frame_macview.WorkspaceDisplayManager("/does/not/matter")
+        for args in (("2560x1440", 1, "sharp"), ("5120x1440", True, "sharp"),
+                     ("5120x1440", 1, "unknown")):
+            with self.subTest(args=args), self.assertRaises(frame_macview.MacViewError), \
+                    mock.patch.object(frame_macview.subprocess, "Popen") as popen:
+                manager.start(*args)
+                popen.assert_not_called()
 
 
 class WS:

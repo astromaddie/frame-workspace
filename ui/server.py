@@ -2346,7 +2346,7 @@ def macview_state(query=None):
 
 
 def macview_action(body):
-    """{action: show|stop|permissions, src, quality, w, h}."""
+    """{action: show|stop|permissions|workspace_start|workspace_stop, ...}."""
     if LOCAL:
         raise Failure("Runs on your computer, not the headset.", 400)
     action = body.get("action")
@@ -2355,6 +2355,11 @@ def macview_action(body):
             w, h = body.get("w"), body.get("h")
             return macview.show(str(body.get("src") or ""), str(body.get("quality") or "balanced"),
                                 int(w) if w else None, int(h) if h else None)
+        if action == "workspace_start":
+            return macview.start_workspace(str(body.get("preset") or "5120x1440"),
+                                           body.get("scale", 1), str(body.get("quality") or "sharp"))
+        if action == "workspace_stop":
+            return macview.stop_workspace()
         if action == "stop":
             return macview.stop(body.get("src") or None)
         if action == "permissions":

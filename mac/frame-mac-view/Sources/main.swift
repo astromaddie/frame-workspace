@@ -68,6 +68,13 @@ func printJSON(_ obj: Any) {
     FileHandle.standardOutput.write(d + Data("\n".utf8))
 }
 
+/// Lifecycle records are consumed while the Workspace process remains alive,
+/// so each record must be a single parseable line.
+func printJSONLine(_ obj: Any) {
+    let d = (try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])) ?? Data()
+    FileHandle.standardOutput.write(d + Data("\n".utf8))
+}
+
 /// A number from a JSON message, whatever its JSON type.
 func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
 
@@ -720,7 +727,7 @@ case "workspace":
     do {
         options = try WorkspaceOptions(arguments: workspaceArgs)
     } catch {
-        printJSON(["state": "error", "error": String(describing: error), "usage": WorkspaceOptions.usage])
+        printJSONLine(["state": "error", "error": String(describing: error), "usage": WorkspaceOptions.usage])
         exit(2)
     }
     let app = NSApplication.shared

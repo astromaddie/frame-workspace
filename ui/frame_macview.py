@@ -73,13 +73,13 @@ common=(--ozone-platform=x11 --force-device-scale-factor=1 --no-first-run --no-d
   --disable-features=Translate,MediaRouter --autoplay-policy=no-user-gesture-required
   "--window-size=$w,$h" "$@" "--app=$url")
 if [ -x "$HOME/chromium-xr/chrome" ]; then
-  cmd=("$HOME/chromium-xr/chrome" "--user-data-dir=$HOME/.local/share/frame-control/mac-view" "${common[@]}")
+  cmd=("$HOME/chromium-xr/chrome" "--user-data-dir=$HOME/.local/share/frame-workspace/mac-view" "${common[@]}")
 elif flatpak info org.chromium.Chromium >/dev/null 2>&1; then
   cmd=(flatpak run org.chromium.Chromium
-    "--user-data-dir=$HOME/.var/app/org.chromium.Chromium/data/frame-mac-view" "${common[@]}")
+    "--user-data-dir=$HOME/.var/app/org.chromium.Chromium/data/frame-workspace/mac-view" "${common[@]}")
 elif flatpak --user info com.google.Chrome >/dev/null 2>&1; then
   cmd=(flatpak run --user com.google.Chrome
-    "--user-data-dir=$HOME/.var/app/com.google.Chrome/data/frame-mac-view" "${common[@]}")
+    "--user-data-dir=$HOME/.var/app/com.google.Chrome/data/frame-workspace/mac-view" "${common[@]}")
 else
   echo "NO_BROWSER"
   exit 3
@@ -103,9 +103,300 @@ tail -n 15 "$log" >&2
 exit 1
 """
 
+# Only the fork's browser profile is terminated when its last viewer closes.
+# Wait for Chromium's profile lock to be released before another launch.
+CLOSE_BROWSER = r"""set -eu
+pattern='[f]rame-workspace/mac-view|[d]ata/frame-workspace/mac-view'
+pkill -TERM -f "$pattern" >/dev/null 2>&1 || true
+for _ in $(seq 1 15); do
+  if ! pgrep -f "$pattern" >/dev/null 2>&1; then exit 0; fi
+  sleep 0.2
+done
+pkill -KILL -f "$pattern" >/dev/null 2>&1 || true
+for _ in $(seq 1 50); do
+  if ! pgrep -f "$pattern" >/dev/null 2>&1; then exit 0; fi
+  sleep 0.2
+done
+echo "Frame Workspace viewer browser did not exit" >&2
+exit 1
+"""
+
 
 class MacViewError(Exception):
     pass
+
+
+class WorkspaceDisplayManager:
+    """Own the foreground Swift workspace process for one MacView server.
+
+    `workspace` is the stable API identity. The display ID in the helper's
+    ready record is kept only in memory and refreshed each time it starts.
+    """
+
+    KEY = "workspace"
+    PRESETS = {
+        "5120x1440": (5120, 1440),
+        "5120x2160": (5120, 2160),
+        "3440x1440": (3440, 1440),
+    }
+
+    def __init__(self, executable=AGENT, track=None, on_unexpected_stop=None):
+        self.executable = Path(executable)
+        self.track = track or (lambda proc: None)
+        self.on_unexpected_stop = on_unexpected_stop
+        self._operation_lock = threading.RLock()
+        self._state_lock = threading.Lock()
+        self._owner = None
+
+    @staticmethod
+    def _validate_request(preset, scale, quality):
+        if not isinstance(preset, str) or preset not in WorkspaceDisplayManager.PRESETS:
+            raise MacViewError("Choose a supported Workspace size: 5120x1440, 5120x2160, or 3440x1440.")
+        if type(scale) is not int or scale not in (1, 2):
+            raise MacViewError("Workspace scale must be 1 or 2.")
+        if not isinstance(quality, str) or quality not in QUALITY:
+            raise MacViewError("Choose a supported Mac stream quality.")
+        width, height = WorkspaceDisplayManager.PRESETS[preset]
+        if width * height * scale * scale > 67_108_864:
+            raise MacViewError("That Workspace buffer exceeds the safe size limit.")
+        return {"preset": preset, "width": width, "height": height, "scale": scale, "quality": quality}
+
+    @staticmethod
+    def _validate_ready(record, config):
+        source = record.get("src")
+        display_id = record.get("displayID")
+        if (record.get("state") != "ready" or not isinstance(display_id, int) or isinstance(display_id, bool)
+                or source != f"display:{display_id}"):
+            raise MacViewError("The Workspace helper returned an invalid display identity.")
+        actual = record.get("actual") or {}
+        expected = (config["width"], config["height"], config["width"] * config["scale"], config["height"] * config["scale"])
+        got = tuple(actual.get(k) for k in ("logicalWidth", "logicalHeight", "bufferWidth", "bufferHeight"))
+        if got != expected:
+            raise MacViewError(f"macOS created {got[0]}×{got[1]} logical / {got[2]}×{got[3]} pixels, "
+                               f"not the requested {expected[0]}×{expected[1]} @{config['scale']}x mode.")
+        if record.get("mirrored") is not False or record.get("main") is not False or record.get("physicalLayoutUnchanged") is not True:
+            raise MacViewError("macOS changed the physical display layout or mirrored Workspace; the helper is rolling it back.")
+
+    def _read_output(self, owner):
+        try:
+            for line in owner["proc"].stdout:
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except ValueError:
+                    owner["diagnostic"] = raw[-500:]
+                    continue
+                with self._state_lock:
+                    if owner["record"] is None and event.get("state") == "ready":
+                        try:
+                            self._validate_ready(event, owner["config"])
+                            owner["record"] = event
+                        except MacViewError as e:
+                            owner["error"] = str(e)
+                        owner["ready"].set()
+                    elif owner["record"] is None and event.get("state") == "error":
+                        owner["error"] = event.get("error") or event.get("startupError") or "Workspace creation failed."
+                        owner["terminal"] = event
+                        owner["ready"].set()
+                    elif event.get("state") in ("stopped", "error"):
+                        owner["terminal"] = event
+                        if event.get("state") == "error":
+                            owner["error"] = event.get("error") or event.get("startupError") or owner["error"]
+        except (OSError, ValueError) as e:
+            with self._state_lock:
+                owner["diagnostic"] = str(e)
+        finally:
+            try:
+                owner["proc"].stdout.close()
+            except (AttributeError, OSError):
+                pass
+            with self._state_lock:
+                if not owner["ready"].is_set():
+                    owner["error"] = owner["diagnostic"] or "The Workspace helper exited before creating a display."
+                    owner["ready"].set()
+                if owner["terminal"] is None and owner["proc"].poll() is not None:
+                    owner["terminal"] = {"state": "error", "removed": False,
+                                          "error": owner["diagnostic"] or "The Workspace helper exited unexpectedly."}
+                    owner["error"] = owner["terminal"]["error"]
+                unexpected = bool(owner["record"] and owner["terminal"] and not owner.get("stopping")
+                                  and not owner.get("on_end_called"))
+                if unexpected:
+                    owner["on_end_called"] = True
+                    ended_src = owner["record"]["src"]
+                owner["output_done"].set()
+            if unexpected and self.on_unexpected_stop:
+                try:
+                    self.on_unexpected_stop(ended_src)
+                except Exception:
+                    pass
+
+    def start(self, preset="5120x1440", scale=1, quality="sharp"):
+        config = self._validate_request(preset, scale, quality)
+        with self._operation_lock:
+            with self._state_lock:
+                owner = self._owner
+                if owner and owner["proc"].poll() is None and owner["record"]:
+                    if owner["terminal"] is not None:
+                        raise MacViewError("The Workspace helper is stopping; wait for it to finish before starting again.")
+                    display_keys = ("preset", "width", "height", "scale")
+                    if any(owner["config"][key] != config[key] for key in display_keys):
+                        raise MacViewError("A Workspace is already running with different settings; stop it before changing size or scale.")
+                    owner["config"] = config  # stream quality can change without replacing the display
+                    return self._public_state(owner), False
+                if owner and owner["proc"].poll() is None:
+                    raise MacViewError("The Workspace helper is still starting; try again shortly.")
+            if not self.executable.exists():
+                raise MacViewError("The Mac streaming helper is missing; rebuild Frame Control first.")
+            width, height = config["width"], config["height"]
+            args = [str(self.executable), "workspace", "--width", str(width), "--height", str(height),
+                    "--scale", str(scale), "--exit-on-stdin-eof"]
+            try:
+                proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
+            except OSError as e:
+                raise MacViewError(f"Couldn't start the Workspace helper: {e}")
+            owner = {"proc": proc, "config": config, "record": None, "error": None,
+                     "terminal": None, "diagnostic": "", "ready": threading.Event(),
+                     "output_done": threading.Event(), "stopping": False, "on_end_called": False}
+            with self._state_lock:
+                self._owner = owner
+            self.track(proc)
+            threading.Thread(target=self._read_output, args=(owner,), daemon=True,
+                             name="frame-workspace-output").start()
+            if not owner["ready"].wait(25):
+                self._stop_owner(owner)
+                raise MacViewError("macOS did not report a ready Workspace display within 25 seconds.")
+            with self._state_lock:
+                error, record = owner["error"], owner["record"]
+            if error or not record:
+                cleanup = self._stop_owner(owner)
+                detail = error or "The Workspace helper did not report a display."
+                if cleanup.get("removed") is False:
+                    detail += " Display removal is still pending; retry Stop after the Mac wakes."
+                raise MacViewError(detail)
+            return self._public_state(owner), True
+
+    def _public_state(self, owner):
+        record, config = owner["record"], owner["config"]
+        actual = record["actual"]
+        q = QUALITY[config["quality"]]
+        factor = min(1.0, q["max"] / max(actual["bufferWidth"], actual["bufferHeight"], 1))
+        stream_w = max(16, round(actual["bufferWidth"] * factor / 2) * 2)
+        stream_h = max(16, round(actual["bufferHeight"] * factor / 2) * 2)
+        return {
+            "id": self.KEY, "state": "running", "name": record["name"],
+            "displayID": record["displayID"], "captureSrc": record["src"],
+            "preset": config["preset"], "scale": config["scale"], "quality": config["quality"],
+            "display": {"logicalWidth": actual["logicalWidth"], "logicalHeight": actual["logicalHeight"],
+                        "bufferWidth": actual["bufferWidth"], "bufferHeight": actual["bufferHeight"]},
+            "stream": {"width": stream_w, "height": stream_h, "maxLong": q["max"],
+                       "fps": q["fps"], "codec": q["codec"]},
+            "bounds": record.get("bounds"), "mirrored": False, "main": False,
+            "physicalLayoutUnchanged": True, "windowRestoreAvailable": record.get("windowRestoreAvailable", False),
+            "snapshottedWindows": record.get("snapshottedWindows", 0),
+        }
+
+    def state(self):
+        with self._state_lock:
+            owner = self._owner
+            if owner is None:
+                return {"id": self.KEY, "state": "stopped"}
+            if owner["terminal"] is not None:
+                terminal = owner["terminal"]
+                if terminal.get("state") == "stopped" and terminal.get("removed") is True:
+                    return {"id": self.KEY, "state": "stopped", "removed": True}
+                state = {"id": self.KEY, "state": "error", "error": owner["error"] or terminal.get("error") or
+                         "The Workspace helper exited unexpectedly.", "removed": terminal.get("removed", False)}
+                if owner["record"]:
+                    state.update({"displayID": owner["record"]["displayID"], "captureSrc": owner["record"]["src"]})
+                return state
+            if owner["proc"].poll() is not None:
+                terminal = owner["terminal"] or {}
+                if terminal.get("state") == "stopped" and terminal.get("removed") is True:
+                    return {"id": self.KEY, "state": "stopped", "removed": True}
+                state = {"id": self.KEY, "state": "error", "error": owner["error"] or terminal.get("error") or
+                         "The Workspace helper exited unexpectedly.", "removed": terminal.get("removed", False)}
+                if owner["record"]:
+                    state.update({"displayID": owner["record"]["displayID"], "captureSrc": owner["record"]["src"]})
+                return state
+            if not owner["record"]:
+                return {"id": self.KEY, "state": "starting"}
+            return self._public_state(owner)
+
+    def _stop_owner(self, owner):
+        with self._state_lock:
+            owner["stopping"] = True
+        proc = owner["proc"]
+        if proc.poll() is None:
+            try:
+                if proc.stdin and not proc.stdin.closed:
+                    proc.stdin.close()  # the Swift owner treats EOF as graceful Stop
+                proc.wait(timeout=8)
+            except (OSError, subprocess.TimeoutExpired):
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        try:
+                            proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            pass
+        owner["output_done"].wait(1)
+        with self._state_lock:
+            terminal = owner["terminal"]
+            if terminal is None:
+                result = {"id": self.KEY, "state": "error", "removed": False,
+                          "error": "The Workspace helper exited without confirming display removal."}
+            else:
+                result = {**terminal, "id": self.KEY}
+            if self._owner is owner:
+                self._owner = None
+        return result
+
+    def stop(self):
+        with self._operation_lock:
+            with self._state_lock:
+                owner = self._owner
+            if owner is None:
+                return {"id": self.KEY, "state": "stopped", "removed": True, "owned": False}
+            return self._stop_owner(owner)
+
+    def recover_orphan(self):
+        """Ask a short-lived Swift owner to wake and wait for stale removal.
+
+        The Swift command takes the same advisory lease as a normal owner. If
+        another live Workspace owns the display, it reports that fact without
+        changing or releasing that display.
+        """
+        with self._operation_lock:
+            with self._state_lock:
+                owner = self._owner
+                if owner and owner["proc"].poll() is None:
+                    raise MacViewError("A live Workspace process is already owned by this companion.")
+            try:
+                proc = subprocess.Popen([str(self.executable), "workspace", "--recover-orphan"],
+                                        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True)
+                self.track(proc)
+                out, _ = proc.communicate(timeout=12)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, _ = proc.communicate()
+                raise MacViewError("macOS did not finish Workspace orphan recovery within 12 seconds.")
+            except OSError as e:
+                raise MacViewError(f"Couldn't start Workspace recovery: {e}")
+            lines = [line for line in (out or "").splitlines() if line.strip()]
+            try:
+                event = json.loads(lines[-1]) if lines else {}
+            except ValueError:
+                event = {}
+            if proc.returncode != 0 or event.get("state") != "stopped" or event.get("removed") is not True:
+                raise MacViewError(event.get("error") or "Workspace is still registered; macOS did not confirm removal.")
+            return {"id": self.KEY, "owned": False, **event}
 
 
 def panel_id(src):
@@ -128,6 +419,8 @@ class MacView:
         # change the headset together (self.lock is held while a tunnel is being opened).
         self.route_lock = threading.Lock()
         self.track = track or (lambda proc: None)  # the server ends these on exit
+        self.workspace_manager = WorkspaceDisplayManager(track=self.track, on_unexpected_stop=self._workspace_ended)
+        self.workspace_lock = threading.RLock()
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(24)
         self.agent = None
@@ -147,6 +440,8 @@ class MacView:
         self.route = "network"
         self.shown = set()  # sources with a viewer out there, connected or retrying
         self.browser_flags = list(BROWSER_FLAGS)
+        self.browser_lock = threading.Lock()
+        self.browser_cleanup_error = None
 
     # ---- the agent on this Mac ----
 
@@ -374,14 +669,22 @@ class MacView:
         with self.viewer_lock:
             self.launching += 1
         try:
+            if src == WorkspaceDisplayManager.KEY:
+                workspace = self.workspace_manager.state()
+                if workspace.get("state") != "running":
+                    raise MacViewError("Start the Workspace display before showing it.")
+                return self._show(workspace["captureSrc"], quality, width, height,
+                                  panel_key=WorkspaceDisplayManager.KEY, public_src=WorkspaceDisplayManager.KEY)
             return self._show(src, quality, width, height)
         finally:
             with self.viewer_lock:
                 self.launching -= 1
 
-    def _show(self, src, quality, width, height):
+    def _show(self, src, quality, width, height, panel_key=None, public_src=None):
         if src != "test" and not src.startswith(("window:", "display:", "separate:")):
             raise MacViewError("Pick a window or display to show.")
+        panel_key = panel_key or src
+        public_src = public_src or src
         self.shows += 1
         q = QUALITY.get(quality) or QUALITY["balanced"]
         state = self.call("/status")
@@ -399,7 +702,7 @@ class MacView:
         # the agent no longer counts them, so only move when none are out there.
         others = self.shown - {src}
         self.ensure_tunnel(allow_new_port=not others)
-        appid = panel_id(src)
+        appid = panel_id(panel_key)
         # Unique per launch, so a new window is never confused with an old one.
         tag = "fc" + secrets.token_hex(4)
         # A single-use ticket for this source, not Frame Control's key: the URL
@@ -410,15 +713,109 @@ class MacView:
         url = f"http://127.0.0.1:{self.remote_port}/view?{urlencode(params)}"
         w, h = fit(width or 1280, height or 720)
         args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
-        try:
-            out = self.run("bash -s -- " + args, stdin=LAUNCH, timeout=60)
-        except Exception as e:  # noqa: BLE001 - the server's Failure carries the Frame's words
-            if "NO_BROWSER" in (getattr(e, "stdout", "") or ""):
-                raise MacViewError("The Frame needs Chromium, Chromium XR, or the Google Chrome Flatpak "
-                                   "(com.google.Chrome) for this.")
-            raise MacViewError(str(e))
+        with self.browser_lock:
+            if self.browser_cleanup_error:
+                raise MacViewError("The previous Frame Workspace browser did not confirm shutdown. Stop all viewers and retry.")
+            try:
+                out = self.run("bash -s -- " + args, stdin=LAUNCH, timeout=60)
+            except Exception as e:  # noqa: BLE001 - the server's Failure carries the Frame's words
+                if "NO_BROWSER" in (getattr(e, "stdout", "") or ""):
+                    raise MacViewError("The Frame needs Chromium, Chromium XR, or the Google Chrome Flatpak "
+                                       "(com.google.Chrome) for this.")
+                raise MacViewError(str(e))
         self.shown.add(src)
-        return {"panel": f"valve.steam.desktopgame.{appid}", "src": src, "detail": out.strip()}
+        return {"panel": f"valve.steam.desktopgame.{appid}", "src": public_src,
+                "captureSrc": src, "detail": out.strip()}
+
+    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp"):
+        """Create/reuse the owned display and show its stable workspace panel."""
+        with self.workspace_lock:
+            prior = self.workspace_manager.state()
+            prior_quality = prior.get("quality") if prior.get("state") == "running" else None
+            if prior.get("state") not in ("running", "starting"):
+                # Workspace uses a newer CLI command than the original helper;
+                # verify/rebuild the binary before creating any display.
+                self.build()
+            if prior.get("state") == "error" and prior.get("captureSrc"):
+                try:
+                    self.stop(prior["captureSrc"])
+                except MacViewError:
+                    pass
+            workspace, created = self.workspace_manager.start(preset, scale, quality)
+            capture_src = workspace["captureSrc"]
+            if not created and prior_quality == quality and capture_src in self.shown:
+                status = self.call("/status")
+                if any(s.get("src") == capture_src for s in status.get("streams", [])):
+                    return {"id": WorkspaceDisplayManager.KEY, "state": "running",
+                            "panel": f"valve.steam.desktopgame.{panel_id(WorkspaceDisplayManager.KEY)}",
+                            "workspace": workspace, "alreadyRunning": True}
+            if not created and prior_quality != quality and capture_src in self.shown:
+                self.stop(capture_src)
+            try:
+                panel = self.show(WorkspaceDisplayManager.KEY, quality=quality,
+                                  width=workspace["stream"]["width"], height=workspace["stream"]["height"])
+            except Exception as e:
+                try:
+                    self.stop(capture_src)
+                except MacViewError:
+                    pass
+                cleanup = self.workspace_manager.stop()
+                detail = str(e)
+                if cleanup.get("removed") is False:
+                    detail += " Workspace display removal is pending; retry Stop after the Mac wakes."
+                raise MacViewError(f"Couldn't show Workspace in the Frame; its display was rolled back. {detail}") from e
+            return {"id": WorkspaceDisplayManager.KEY, "state": "running", "workspace": self.workspace_manager.state(),
+                    **panel}
+
+    def _workspace_ended(self, capture_src):
+        """Close an old display stream if its independent owner exits/crashes."""
+        if self.closing:
+            return
+        try:
+            self.stop(capture_src)
+        except MacViewError:
+            pass  # it is already gone or the agent is restarting; no stale ID is retained
+
+    def stop_workspace(self):
+        """Close only the workspace panel/stream, then release its owned display."""
+        with self.workspace_lock:
+            workspace = self.workspace_manager.state()
+            capture_src = workspace.get("captureSrc")
+            panel_result = {"closed": 0}
+            panel_error = None
+            if capture_src:
+                try:
+                    panel_result = self.stop(capture_src)
+                except MacViewError as e:
+                    panel_error = str(e)
+
+            if workspace.get("state") in ("running", "starting", "error"):
+                removal = self.workspace_manager.stop()
+            else:
+                # After a companion crash there is no retained display ID or
+                # process handle. Let the Swift owner query WindowServer even
+                # when the capture agent is unavailable; its lease prevents it
+                # from changing a display owned by another live process.
+                removal = self.workspace_manager.recover_orphan()
+
+            if removal.get("removed") is False:
+                # The owner's normal release can be deferred while the built-in
+                # screen sleeps. Retry via the safe orphan path, which waits for
+                # WindowServer removal and never calls CGVirtualDisplay.release
+                # on an object it does not own.
+                try:
+                    removal = self.workspace_manager.recover_orphan()
+                except MacViewError as e:
+                    removal["recoveryError"] = str(e)
+            if removal.get("removed") is False:
+                raise MacViewError(removal.get("recoveryError") or removal.get("error") or
+                                   "macOS has not confirmed Workspace display removal; the display was not falsely reported as stopped.")
+            result = {"id": WorkspaceDisplayManager.KEY, "state": "stopped", "removed": True,
+                      "panelClosed": panel_result.get("closed", 0), "windowsRestored": removal.get("windowsRestored", 0),
+                      "recoveredOrphan": removal.get("recoveredOrphan", False), "owned": removal.get("owned", True)}
+            if panel_error:
+                result["panelError"] = panel_error
+            return result
 
     def stop(self, src=None):
         if src:
@@ -437,13 +834,21 @@ class MacView:
         2026-09-28), so once nothing is shown, end it. It runs with a profile
         of its own, so nothing else is touched."""
         time.sleep(2)  # the viewers close their windows first
-        with self.viewer_lock:
-            if self.shown or self.shows != shows or self.launching:
-                return
+        with self.browser_lock:
+            with self.viewer_lock:
+                if self.shown or self.shows != shows or self.launching:
+                    return
             try:
-                self.run("pkill -f '[f]rame-control/mac-view|[d]ata/frame-mac-view' || true", timeout=10)
-            except Exception:
-                pass
+                self.run("bash -s", stdin=CLOSE_BROWSER, timeout=15)
+                self.browser_cleanup_error = None
+            except Exception as e:
+                self.browser_cleanup_error = str(e)
+
+    def finish_browser_cleanup(self):
+        """Wait for last-viewer cleanup before a short-lived parent exits."""
+        self._end_viewer_browser(self.shows)
+        if self.browser_cleanup_error:
+            raise MacViewError("Frame Workspace browser cleanup was not confirmed: " + self.browser_cleanup_error)
 
     def state(self):
         reason = self.unavailable()
@@ -452,9 +857,18 @@ class MacView:
         status = self.call("/status")
         windows = self.call("/windows").get("windows", []) if status.get("screen") else []
         displays = self.call("/displays").get("displays", [])
+        workspace = self.workspace_manager.state()
+        if workspace.get("state") == "stopped":
+            registered = next((d for d in displays if d.get("name") == "Frame Workspace"), None)
+            if registered:
+                workspace = {"id": WorkspaceDisplayManager.KEY, "state": "owner_unknown",
+                             "displayID": registered.get("id"), "captureSrc": registered.get("src"),
+                             "display": {"logicalWidth": registered.get("w"), "logicalHeight": registered.get("h"),
+                                         "bufferWidth": registered.get("pixelW"), "bufferHeight": registered.get("pixelH")},
+                             "error": "A Frame Workspace display is registered, but this companion does not own its process. Stop checks the live-owner lease before recovery."}
         return {"available": True, "screen": status.get("screen", False),
                 "accessibility": status.get("accessibility", False), "streams": status.get("streams", []),
-                "windows": windows, "displays": displays, "tunnel": self.tunnel_up(),
+                "windows": windows, "displays": displays, "workspace": workspace, "tunnel": self.tunnel_up(),
                 "route": self.route}
 
     def restart_agent(self):
@@ -474,8 +888,17 @@ class MacView:
 
     def shutdown(self):
         self.closing = True
+        workspace = self.workspace_manager.state()
+        if workspace.get("state") != "stopped" or (self.agent and self.agent.poll() is None):
+            try:
+                self.stop_workspace()
+            except MacViewError:
+                # The Swift owner also exits on stdin EOF. Keep shutdown bounded
+                # and never claim removal if WindowServer deferred it.
+                self.workspace_manager.stop()
         try:
             self.stop()
+            self.finish_browser_cleanup()
         except MacViewError:
             pass
         for proc in (self.tunnel, self.agent):

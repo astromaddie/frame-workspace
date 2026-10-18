@@ -29,6 +29,7 @@ class DisplaySelectionTests(unittest.TestCase):
             bench.select_display([self.workspace, dict(self.workspace, src="display:10")], "workspace")
 
 
+@unittest.skipUnless(bench.fcntl is not None, "benchmark execution requires a POSIX Mac host")
 class BenchmarkOwnershipTests(unittest.TestCase):
     def test_overlapping_run_is_rejected_before_any_device_action(self):
         with bench.tempfile.TemporaryDirectory() as directory, \

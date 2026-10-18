@@ -415,6 +415,15 @@
   /* ---- Android display ---- */
   #mvQuality { background: rgba(0,0,0,.28); color: var(--text); border: 1px solid transparent; border-radius: 3px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .mv-windows { max-height: 420px; overflow-y: auto; }
+  .mv-workspace { border-bottom: 1px solid rgba(255,255,255,.08); margin: 0 0 10px; padding: 0 0 10px; }
+  .mv-workspace-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mv-workspace-controls > strong { color: var(--bright); font-size: 13px; margin-right: 2px; }
+  .mv-workspace-controls label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+  .mv-workspace-controls select { max-width: 190px; background: rgba(0,0,0,.28); color: var(--text); border: 1px solid transparent; border-radius: 3px; padding: 4px 6px; font: inherit; font-size: 12px; }
+  .mv-workspace-controls select:disabled { opacity: .6; }
+  .mv-workspace-status { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 7px; }
+  .mv-workspace-status[data-state="running"] { color: var(--text); }
+  .mv-workspace-status .mv-ws-state { color: var(--green, #7fd67f); }
   .mv-perm { background: rgba(255,190,60,.08); border: 1px solid rgba(255,190,60,.25); border-radius: 4px; padding: 10px 12px; margin-bottom: 12px; font-size: 13px; }
   .mv-perm .row { margin-top: 8px; }
   .mv-live { color: var(--green, #7fd67f); font-size: 12px; }
@@ -481,6 +490,8 @@
     .view-actions button { justify-content: center; padding: 0 4px; }
     #panelPick { flex: 1 1 100%; max-width: none; }
     .shelf-head { flex-wrap: wrap; row-gap: 8px; }
+    .mv-workspace-controls label { flex: 1 1 150px; }
+    .mv-workspace-controls select { flex: 1; max-width: none; min-width: 0; }
     .shelf { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 10px; }
     .cat-grid { grid-template-columns: 1fr; }
     .shot-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
@@ -1234,6 +1245,25 @@
           <option value="light">Light</option><option value="compatible">Compatible (JPEG)</option>
         </select>
         <button class="small" id="mvRefresh">Refresh</button></div>
+      <div class="mv-workspace" id="mvWorkspace">
+        <div class="mv-workspace-controls">
+          <strong>Workspace</strong>
+          <label>Desktop<select id="mvWorkspacePreset" aria-label="Workspace desktop size">
+            <option value="5120x1440">Wide · 5120 × 1440</option>
+            <option value="5120x2160">Tall · 5120 × 2160</option>
+            <option value="3440x1440">Compact · 3440 × 1440</option>
+          </select></label>
+          <label>Scale<select id="mvWorkspaceScale" aria-label="Workspace display scale">
+            <option value="1">1× · Standard</option>
+            <option value="2">2× · HiDPI</option>
+          </select></label>
+          <button class="small action" id="mvWorkspaceStart" data-mv="workspace-start">Start Workspace</button>
+          <button class="small danger" id="mvWorkspaceStop" data-mv="workspace-stop" hidden>Stop Workspace</button>
+        </div>
+        <div class="mv-workspace-status" id="mvWorkspaceStatus" role="status" aria-live="polite">
+          Start creates an extended Mac desktop and opens its panel in the Frame.
+        </div>
+      </div>
       <label class="mv-opt"><input type="checkbox" id="mvSeparate" checked> Give each window its own display
         <span class="sub">its menus and sheets come along, nothing covers it, and it goes back when you stop</span></label>
       <div class="mv-perm" id="mvPerm" hidden></div>
@@ -4244,6 +4274,47 @@ function mvRow(src, title, sub, w, h, streaming, st) {
                 : `<button class="small action" data-mv="show" data-src="${esc(src)}" data-title="${esc(title)}" data-w="${w}" data-h="${h}">Show</button>`}
   </div>`;
 }
+function renderMvWorkspace(s) {
+  const ws = s.workspace || {state: "stopped"}, running = ws.state === "running";
+  const stream = running && (s.streams || []).find(x => x.src === ws.captureSrc);
+  const status = $("mvWorkspaceStatus"), start = $("mvWorkspaceStart"), stop = $("mvWorkspaceStop");
+  const preset = $("mvWorkspacePreset"), scale = $("mvWorkspaceScale");
+  const size = (w, h) => esc(w) + "×" + esc(h);
+  const quality = {sharp: "Sharp", balanced: "Balanced", light: "Light", compatible: "Compatible"}[ws.quality] || ws.quality || "selected quality";
+  const d = ws.display || {}, v = ws.stream || {};
+  const pending = ws.state === "starting" || ws.state === "owner_unknown" || (ws.state === "error" && ws.removed === false);
+  const needsStop = ws.state !== "stopped" && !(ws.state === "error" && ws.removed === true);
+  if (running && Array.from(preset.options).some(option => option.value === ws.preset)) preset.value = ws.preset;
+  if (running && (ws.scale === 1 || ws.scale === 2)) scale.value = String(ws.scale);
+  start.disabled = pending || !s.screen;
+  preset.disabled = running || pending;
+  scale.disabled = running || pending;
+  stop.hidden = !needsStop;
+  start.textContent = running ? "Show again" : "Start Workspace";
+  start.setAttribute("aria-label", running ? "Show Workspace in the Frame again" : "Start Workspace and show it in the Frame");
+
+  if (running) {
+    const route = stream ? "Stream target " + size(v.width, v.height) + " (" + esc(quality) + ")" : "Display ready; no active stream";
+    const restore = ws.windowRestoreAvailable === false ? " Window restoration needs Accessibility permission." : "";
+    status.innerHTML = '<span class="mv-ws-state">' + (stream ? "Streaming" : "Running") + "</span> · Desktop " +
+      size(d.logicalWidth, d.logicalHeight) + " logical / " + size(d.bufferWidth, d.bufferHeight) +
+      " backing px · " + route + (stream ? mvHealth(stream) : "") + restore +
+      '<br><span class="sub">The viewer fits within 1920 × 1080; logical desktop size is not headset pixel resolution. Move windows onto Frame Workspace in macOS. Stop restores eligible moved windows; after a crash macOS rehomes them.</span>';
+  } else if (ws.state === "owner_unknown") {
+    status.textContent = "A Workspace display exists outside this companion. Stop attempts recovery only after its owner exits.";
+  } else if (ws.state === "starting") {
+    status.textContent = "Starting the Workspace display…";
+  } else if (ws.state === "error") {
+    status.textContent = (ws.error || "Workspace stopped unexpectedly.") +
+      (ws.removed === false ? " Removal is unconfirmed; use Stop to retry safe recovery." : "");
+  } else {
+    status.textContent = s.screen
+      ? "Start opens an extended Mac desktop as one Frame panel. Stream quality limits detail; logical size is not headset pixel resolution."
+      : "Allow Screen Recording above before starting a Workspace.";
+  }
+  status.dataset.state = ws.state || "stopped";
+}
+
 async function loadMacView(restart) {
   const seq = ++mvSeq;
   let s, err;
@@ -4262,8 +4333,9 @@ async function loadMacView(restart) {
   $("mvPerm").hidden = !perm.length;
   $("mvPerm").innerHTML = perm.join(" ") + `<div class="row"><button class="small action" data-mv="perm">Allow…</button>
     <span class="sub">Then press Refresh. macOS may ask you to reopen Frame Control.</span></div>`;
+  renderMvWorkspace(s);
   const liveAs = src => live.has(src) ? src : src.startsWith("window:") && live.has("separate:" + src.slice(7)) ? "separate:" + src.slice(7) : "";
-  $("mvDisplays").innerHTML = (s.displays || []).map(d =>
+  $("mvDisplays").innerHTML = (s.displays || []).filter(d => d.name !== "Frame Workspace").map(d =>
     mvRow(d.src, `Whole screen: ${d.name}`, `${d.w}×${d.h}${d.main ? " · main display" : ""}`, d.w, d.h, liveAs(d.src), byStream(liveAs(d.src)))).join("");
   const wins = s.windows || [];
   $("mvWinCount").textContent = wins.length ? `${wins.length}` : "";
@@ -4273,7 +4345,7 @@ async function loadMacView(restart) {
   // Keep the numbers fresh while something is in the headset and the card is on screen.
   clearTimeout(mvTimer);
   const tick = () => { mvTimer = document.hidden || !box.offsetParent ? setTimeout(tick, 3000) : (loadMacView(), 0); };
-  if (live.size) mvTimer = setTimeout(tick, 3000);
+  if (live.size || (s.workspace && s.workspace.state !== "stopped")) mvTimer = setTimeout(tick, 3000);
 }
 $("mvRefresh").onclick = () => loadMacView(true);
 $("mvSeparate").checked = localStorage.getItem("mvSeparate") !== "0";
@@ -4294,6 +4366,20 @@ $("macview").onclick = async e => {
     await act("Stop everything in the headset", () => api("/api/macview", { action: "stop" }), b);
   } else if (b.dataset.mv === "perm") {
     await act("Ask macOS for permission", () => api("/api/macview", { action: "permissions" }), b);
+  } else if (b.dataset.mv === "workspace-start") {
+    await act(b.textContent === "Show again" ? "Show Workspace again" : "Start Workspace", async () => {
+      const result = await api("/api/macview", {action: "workspace_start", preset: $("mvWorkspacePreset").value,
+                                                  scale: Number($("mvWorkspaceScale").value), quality: $("mvQuality").value});
+      return {...result, message: result.alreadyRunning ? "Workspace is already open in the Frame."
+        : "Workspace is running as a Frame panel."};
+    }, b);
+    setTimeout(loadMacView, 300);
+  } else if (b.dataset.mv === "workspace-stop") {
+    await act("Stop Workspace", async () => {
+      const result = await api("/api/macview", {action: "workspace_stop"});
+      return {...result, message: "Workspace stopped and macOS confirmed display removal."};
+    }, b);
+    setTimeout(loadMacView, 300);
   }
   setTimeout(loadMacView, 800);
 };
