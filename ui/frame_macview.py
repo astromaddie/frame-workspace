@@ -38,6 +38,7 @@ ROOT = HERE.parent
 PAGE = HERE / "mac-view.html"
 SOURCES = ROOT / "mac" / "frame-mac-view"
 WORKSPACE_VIEWER_SCRIPT = ROOT / "scripts" / "workspace-viewer-on-frame.sh"
+WORKSPACE_NATIVE_SCRIPT = ROOT / "scripts" / "workspace-native-on-frame.sh"
 FRAME_VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
 AGENT = Path(os.environ.get("FRAME_MAC_VIEW") or ROOT / "mac" / "bin" / "frame-mac-view")
 REMOTE_PORTS = range(47900, 47920)
@@ -60,12 +61,34 @@ WORKSPACE_QUALITY = {"sharp": {"max": 4096, "fps": 30, "bpp": 0.14, "codec": "h2
 
 def quality_settings(name, workspace=False):
     settings = (WORKSPACE_QUALITY.get(name) if workspace else None) or QUALITY.get(name) or QUALITY["balanced"]
+    if workspace:
+        backend = workspace_viewer_backend()
+        if backend == "native":
+            workspace_decoder()  # fail before creating the owned display
+        if backend == "native" and settings["codec"] != "h264":
+            raise MacViewError("The native Workspace viewer needs H.264. Choose Sharp, Balanced or Light.")
     if workspace and name == "sharp":
         fps = os.environ.get("FRAME_WORKSPACE_FPS", "30")
         if fps not in ("30", "60"):
             raise MacViewError("FRAME_WORKSPACE_FPS must be 30 or 60.")
         return {**settings, "fps": int(fps)}
     return settings
+
+
+def workspace_viewer_backend():
+    backend = os.environ.get("FRAME_WORKSPACE_VIEWER", "browser")
+    if backend not in ("browser", "native"):
+        raise MacViewError("FRAME_WORKSPACE_VIEWER must be browser or native.")
+    return backend
+
+
+def workspace_decoder():
+    decoder = os.environ.get("FRAME_WORKSPACE_DECODER", "software")
+    if decoder not in ("software", "v4l2"):
+        raise MacViewError("FRAME_WORKSPACE_DECODER must be software or v4l2.")
+    return decoder
+
+
 # Extra Chromium flags for viewers (see docs/mac-in-headset.md, "Measuring").
 BROWSER_FLAGS = []
 # Viewer windows are fitted inside a panel's size. gamescope made a 1280x720
@@ -739,10 +762,13 @@ class MacView:
             workspace = self.workspace_manager.state()
             stream = workspace.get("stream", {})
             w, h = int(width or stream.get("width") or 1280), int(height or stream.get("height") or 720)
-            script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *self.browser_flags))
-            out = self.run("bash -s -- " + script_args, stdin=WORKSPACE_VIEWER_SCRIPT.read_text(encoding="utf-8"),
+            native = workspace_viewer_backend() == "native"
+            script = WORKSPACE_NATIVE_SCRIPT if native else WORKSPACE_VIEWER_SCRIPT
+            flags = [workspace_decoder()] if native else self.browser_flags
+            script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *flags))
+            out = self.run("bash -s -- " + script_args, stdin=script.read_text(encoding="utf-8"),
                            timeout=60)
-            match = re.search(r"registered OpenVR key (com\.frame-control\.workspace\.\d+\.fc[0-9a-f]{8})\b", out)
+            match = re.search(r"registered OpenVR key (com\.(?:frame-control\.workspace\.\d+\.fc[0-9a-f]{8}|frame-workspace\.native\.\d+\.workspace))\b", out)
             if not match:
                 raise MacViewError("The dedicated Workspace launcher did not report its registered OpenVR panel key.")
             self.workspace_panel_key = match.group(1)
@@ -775,7 +801,10 @@ class MacView:
         if not key:
             raise MacViewError("The Workspace OpenVR panel key is unknown; use Show Workspace again to replace it safely.")
         try:
-            out = self.run(f"{_quote(FRAME_VRCMD)} --showdashboard {_quote(key)}", timeout=10)
+            if key.startswith("com.frame-workspace.native."):
+                out = self.run("bash -s -- focus", stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=10)
+            else:
+                out = self.run(f"{_quote(FRAME_VRCMD)} --showdashboard {_quote(key)}", timeout=10)
         except Exception as e:  # noqa: BLE001 - preserve the headset tool's diagnostic
             raise MacViewError(f"Could not focus the Workspace OpenVR panel: {e}") from e
         return out.strip()

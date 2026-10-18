@@ -87,7 +87,8 @@ class Helpers(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
     def test_launch_script_parses(self):
-        for script in (frame_macview.LAUNCH, frame_macview.WORKSPACE_VIEWER_SCRIPT.read_text(encoding="utf-8")):
+        for script in (frame_macview.LAUNCH, frame_macview.WORKSPACE_VIEWER_SCRIPT.read_text(encoding="utf-8"),
+                       frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8")):
             with self.subTest(script=script[:40]):
                 r = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
                 self.assertEqual(r.returncode, 0, r.stderr)
@@ -896,6 +897,50 @@ class WorkspaceLifecycle(unittest.TestCase):
             with self.assertRaisesRegex(frame_macview.MacViewError, "must be 30 or 60"):
                 manager.start()
         popen.assert_not_called()
+
+    def test_native_workspace_preserves_stream_auth_resolution_and_owns_focus(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2"}):
+            manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.remote_port = 47900
+            mv.ensure_tunnel = lambda **kwargs: None
+            mv.call = lambda path, **kw: {"screen": True, "streams": [], "finished": []} if path == "/status" else {"ticket": "one-use"}
+            mv.browser_flags = ["--remote-debugging-port=9999"]
+            calls = []
+            def run(remote, **kwargs):
+                calls.append((remote, kwargs))
+                return "registered OpenVR key com.frame-workspace.native.1000.workspace"
+            mv.run = run
+            try:
+                manager.start("3840x2160")
+                shown = mv.show("workspace", quality="sharp")
+                args = shlex.split(calls[0][0])
+                query = parse_qs(urlsplit(args[4]).query)
+                self.assertEqual(query["src"], ["display:4242"])
+                self.assertEqual(query["t"], ["one-use"])
+                self.assertEqual(query["max"], ["4096"])
+                self.assertEqual(args[5:7], ["3840", "2160"])
+                self.assertEqual(args[-1], "v4l2")
+                self.assertNotIn("--remote-debugging-port=9999", args)
+                self.assertEqual(calls[0][1]["stdin"], frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text())
+                self.assertEqual(shown["panel"], "com.frame-workspace.native.1000.workspace")
+                mv._focus_workspace_viewer()
+                self.assertEqual(calls[-1][0], "bash -s -- focus")
+                self.assertNotIn("--showdashboard", calls[-1][0])
+            finally:
+                manager.stop()
+
+    def test_native_configuration_errors_precede_display_creation(self):
+        manager = frame_macview.WorkspaceDisplayManager("/does/not/matter")
+        for env, quality, message in [({"FRAME_WORKSPACE_VIEWER": "wrong"}, "sharp", "browser or native"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native"}, "compatible", "needs H.264"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "auto"}, "sharp", "software or v4l2")]:
+            with self.subTest(env=env, quality=quality), mock.patch.dict(os.environ, env), \
+                    mock.patch.object(frame_macview.subprocess, "Popen") as popen:
+                with self.assertRaisesRegex(frame_macview.MacViewError, message):
+                    manager.start(quality=quality)
+                popen.assert_not_called()
 
     def test_helper_build_failure_precedes_display_creation(self):
         with tempfile.TemporaryDirectory() as temp:

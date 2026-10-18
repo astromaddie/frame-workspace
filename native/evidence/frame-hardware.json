@@ -1,0 +1,88 @@
+{
+  "validation": "synthetic H.264 file stream over localhost reverse SSH to isolated native Frame viewer; no Mac virtual display or user-app input",
+  "binary": {
+    "path": "~/.local/share/frame-workspace/native/frame-workspace-native",
+    "sha256": "9108842a9fafe942588198ee9721792740b5cfc4323969591f9357bfad477f00"
+  },
+  "source_files_sha256": {
+    "native/main.cpp": "2272a59898d33c13e989777ff86b856e7ee0356eafd89994e7244670b6ebc3ec",
+    "native/video.hpp": "417551fad19613cf2ac3ded0aa6c1224b2d7569dbe9fb22df34deeca2360c9d2",
+    "native/overlay.hpp": "c3f055be3efa01524ea805e9b349392fcdebb07d0af92c2bd6d86a7fa59c195a",
+    "native/protocol.hpp": "6d4f76cfa4de919de5277798420930b922131bd91f550bee98bca88ce9c1a40b",
+    "native/websocket.hpp": "f5d514755413a2704767c1330f0c31eafc7d864268dad310fe010b8cce3f50d7"
+  },
+  "fixture": {
+    "sha256": "6e56de7a825e222ac953714019c4d9fdea081b8d53e5ec1b023ee021bd63d108",
+    "bytes": 11427462,
+    "access_units": 180,
+    "idr_access_units": 15,
+    "dimensions": "3840x2160",
+    "codec": "H.264 High, Annex B"
+  },
+  "run30": {
+    "target_fps": 30,
+    "frames_sent": 450,
+    "bytes_sent": 28715919,
+    "server_elapsed_s": 14.967208542046137,
+    "achieved_send_fps": 30.06572660064516,
+    "send_interval_ms": {
+      "p50": 33.32954098004848,
+      "p95": 33.81837496999651,
+      "max": 36.12320905085653
+    },
+    "received": 450,
+    "decoded": 420,
+    "uploaded": 402,
+    "dropped_encoded": 22,
+    "dropped_decoded": 18,
+    "errors": 0,
+    "decoder_active": "v4l2",
+    "decoder_codec": "h264_v4l2m2m",
+    "decoder_format": "NV12 (V4L2 format 23; journal configure)",
+    "exit_reason": "server-close",
+    "final_window_decode_fps": 29.956476,
+    "final_window_upload_fps": 27.959377,
+    "final_window_queue_age_ms": 75.75167,
+    "max_sampled_queue_age_ms": 265.427475,
+    "max_sampled_convert_ms": 12.936387
+  },
+  "run60_retry": {
+    "target_fps": 60,
+    "frames_sent": 900,
+    "bytes_sent": 57152610,
+    "server_elapsed_s": 16.476801542099565,
+    "achieved_send_fps": 54.62225163666789,
+    "send_interval_ms": {
+      "p50": 17.169457976706326,
+      "p95": 19.527707947418094,
+      "max": 100.22437502630055
+    },
+    "received": 900,
+    "decoded": 322,
+    "uploaded": 309,
+    "dropped_encoded": 492,
+    "dropped_decoded": 13,
+    "errors": 0,
+    "decoder_active": "v4l2",
+    "decoder_codec": "h264_v4l2m2m",
+    "decoder_format": "NV12 (V4L2 format 23; journal configure)",
+    "exit_reason": "server-close",
+    "final_window_decode_fps": 20.923641,
+    "final_window_upload_fps": 18.930913,
+    "final_window_queue_age_ms": 112.619397,
+    "max_sampled_queue_age_ms": 212.736973,
+    "max_sampled_convert_ms": 24.779845
+  },
+  "process_cleanup": {
+    "assigned_user_unit": "frame-workspace-viewer-1000.service",
+    "state_after_test": "inactive",
+    "remaining_native_process": false,
+    "private_url_state_pose_files_removed": true
+  },
+  "limits": [
+    "OpenVR texture submissions were exercised, but no claim about compositor frame rate, headset visibility, optical quality, or worn acceptance.",
+    "The 60 fps arm sent all 900 AUs but only achieved 54.62 sends/s; 492 encoded drops and 309 uploads. This does not establish steady 60 fps decode/upload.",
+    "The 30 fps arm achieved 30.07 sends/s and 27.96 upload fps in the final sampled window; cumulative uploaded count was 402/450."
+  ],
+  "date": "2026-10-19 JST"
+}

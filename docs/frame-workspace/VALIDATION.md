@@ -2,6 +2,10 @@
 
 ## Acceptance status
 
+The newer [native viewer record](NATIVE.md) separates native build/device evidence
+from the earlier browser viewer results below. Native head-motion acceptance is
+still pending. The [full-screen feasibility record](FULLSCREEN.md) covers FW-06.
+
 The first delivery scope is **FW-01 through FW-04**. FW-01 is complete. The Mac display, companion controls and off-head Frame transport now have device evidence. **FW-02 and FW-04 remain open for the user's worn readability, keyboard/trackpad/IME and 30-minute real coding session.** USB-C, physical lid closure and Stage Manager remain unverified. Do not describe the first four issues as fully accepted yet.
 
 ## Ultrawide viewer follow-up
@@ -51,7 +55,7 @@ The measurements support correctly ordered content dimensions, with no cropping 
 
 ### Conventional 16:9 Landscape
 
-The Desktop selector labels the existing 2880×2560 mode **9:8**, and adds **Landscape · 3840 × 2160** as confirmed by the user. The exact existing 9:8 coordinates and running display are preserved. At 1× and Sharp the new preset targets a 3840×2160 stream at the normal 30 fps target. The initial width remains 3.0 m, giving a clearly wider 16:9 content rectangle. The launcher keeps the nested client at 3840×2160 and the backing at 1920×1080. Lifecycle regression covers wide → portrait → 9:8 → 16:9 → 9:8 → portrait → wide with confirmed removal before every replacement. Activating the new backend preset awaits a companion restart with fresh off-head confirmation; no active wearer session was interrupted to load it. Local checks passed: 39 MacView tests ran with one skip, three inline JavaScript syntax checks, Python compilation, launcher shell syntax and `git diff --check`. Existing test socket ResourceWarnings were observed.
+The Desktop selector labels the existing 2880×2560 mode **9:8**, and adds **Landscape · 3840 × 2160** as confirmed by the user. The exact existing 9:8 coordinates and running display are preserved. At 1× and Sharp the new preset targets a 3840×2160 stream at the normal 30 fps target. The initial width remains 3.0 m, giving a clearly wider 16:9 content rectangle. The launcher keeps the nested client at 3840×2160 and the backing at 1920×1080. Lifecycle regression covers wide → portrait → 9:8 → 16:9 → 9:8 → portrait → wide with confirmed removal before every replacement. The user confirmed off-head availability, and the companion was restarted to load the preset. Live inspection verified **3840×2160 Chrome viewport and decoded canvas**, device scale 1, H.264 `avc1.640c33`, 42 observed decoded frames and zero decoder errors. Read-only OpenVR getter calls all succeeded: mouse scale 1920×1080, nominal width setting 3.0 m, and mouse-coordinate corner distances 1.1070 m × 0.6227 m at the current dashboard transform, ratio **1.777778** (16:9). Thus both decoded image and physical content geometry have the requested aspect. Current dashboard scaling affects the measured world size; the launcher width argument is not by itself that world-space measurement. Static-frame counts do not prove sustained fps or worn comfort. A subsequent attempt to reopen without browser diagnostics returned HTTP 502 and left the owned viewer stopped; that final restart is not verified. The successful decoded-image and geometry observations above belong to the preceding diagnostic session. The user subsequently confirmed worn sharpness/readability but reported head-turn judder, and authorized a native replacement with off-head overnight tests. Local checks passed: 39 MacView tests ran with one skip, three inline JavaScript syntax checks, Python compilation, launcher shell syntax and `git diff --check`. Existing test socket ResourceWarnings were observed.
 
 ### Live 60 fps trial
 

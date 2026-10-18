@@ -1,0 +1,108 @@
+{
+  "schema": 1,
+  "evidence_level": "local ARM64 Linux Mesa llvmpipe; no headset",
+  "binary_sha256": "1524c217012d67c834d6543d73c2396bf23cd1d46330927ba3a266e5a4fd4c30",
+  "binary_retained": false,
+  "self_test": "passed",
+  "pattern": {
+    "dimensions": [
+      1920,
+      1080
+    ],
+    "GPU_readback": "visually inspected",
+    "image": "host-pattern.png"
+  },
+  "stream_test": {
+    "decoded": 72,
+    "uploaded": 72,
+    "errors": 0,
+    "dimensions": [
+      320,
+      180
+    ],
+    "max_RGB_difference_vs_FFmpeg": 2,
+    "ack": 1,
+    "rx": 72,
+    "clock": 2,
+    "fd": 71,
+    "focus": 1,
+    "note": "Earlier software build; retained as initial GPU readback evidence."
+  },
+  "reconnect_and_restart_test": {
+    "decoded": 52,
+    "uploaded": 52,
+    "expected_disconnect_errors": 1,
+    "ack": 2,
+    "rx": 52,
+    "clock": 2,
+    "fd": 51,
+    "focus": 1,
+    "original_ticket_absent_from_reconnect": true,
+    "pose_preserved": true,
+    "max_RGB_difference_vs_FFmpeg": 2
+  },
+  "source_sha256": {
+    "native/overlay.hpp": "c3f055be3efa01524ea805e9b349392fcdebb07d0af92c2bd6d86a7fa59c195a",
+    "native/protocol.hpp": "6d4f76cfa4de919de5277798420930b922131bd91f550bee98bca88ce9c1a40b",
+    "native/video.hpp": "417551fad19613cf2ac3ded0aa6c1224b2d7569dbe9fb22df34deeca2360c9d2",
+    "native/websocket.hpp": "f5d514755413a2704767c1330f0c31eafc7d864268dad310fe010b8cce3f50d7",
+    "native/main.cpp": "2272a59898d33c13e989777ff86b856e7ee0356eafd89994e7244670b6ebc3ec",
+    "native/tests_decoder.py": "5e78c425ab643492fabfe0b67e403630fe0b03e827519f3067234de32cefabff",
+    "native/tests_stream.py": "6f7a05765e1be015be7e23c36ef977d39cf83a36dcea0c2cb7c931a403bc6af0",
+    "scripts/build-workspace-native.sh": "b3ef89129531e5e50773c57be6339ae18d6cd9d7b133fa2ee8fee6aa30da5a86"
+  },
+  "commands": [
+    "scripts/build-workspace-native.sh",
+    "xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 native/build/frame-workspace-native --no-vr --test-pattern --seconds 2 --state-file native/build/pattern-state.json --dump native/build/pattern.ppm",
+    "python3 native/tests_stream.py native/build/frame-workspace-native",
+    "python3 native/tests_stream.py native/build/frame-workspace-native --reconnect",
+    "python3 native/tests_decoder.py native/build/frame-workspace-native --expect-no-v4l2"
+  ],
+  "limits": [
+    "No OpenVR runtime in host test",
+    "No measurement of compositor rate or worn image",
+    "Host executable linked libavcodec58 and was not deployed",
+    "Frame production build must use system libavcodec61"
+  ],
+  "previous_binary_sha256": "2ce7e3bd59e814c6137e8b0c228a8e75c00cb91aee5b7add1a8946c1e956f2aa",
+  "explicit_decoder_selection": {
+    "default": "software",
+    "software_identity_and_exit": "passed",
+    "v4l2_unavailable_fail_closed": "passed after first IDR parsed 320x180 visible / 320x192 coded; open error -22, zero uploads, active empty, no fallback",
+    "hardware_decode": "not tested locally",
+    "normal_exit_reason": "timer verified",
+    "parser_resolution_changes": [
+      [
+        320,
+        180,
+        320,
+        192
+      ],
+      [
+        2880,
+        2560,
+        2880,
+        2560
+      ],
+      [
+        640,
+        360,
+        640,
+        368
+      ]
+    ]
+  },
+  "python_macview_suite": {
+    "tests": 41,
+    "skipped": 1,
+    "result": "passed",
+    "note": "required local-socket permission; initial sandbox attempt failed socket startup"
+  },
+  "cleanup": {
+    "generated_logical_bytes_removed": 397845874,
+    "physical_host_reclamation_measured": false,
+    "retained_host_executable": false,
+    "disposable_container_removed": true,
+    "task_started_Colima_stopped": true
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "label": "motion30-v4l2",
+  "evidence": "unattended native desktop texture upload, not compositor or optical fps",
+  "duration": 30.017335971991997,
+  "uploadedFps": 25.751785592207654,
+  "decodedFps": 25.918356003541465,
+  "textureSizes": [
+    [
+      2880,
+      2560
+    ]
+  ],
+  "droppedEncoded": 5,
+  "droppedDecoded": 5,
+  "errors": 0,
+  "timings": {
+    "decodeMs": {
+      "p50": 1.575729,
+      "p95": 1.71989
+    },
+    "convertMs": {
+      "p50": 5.457734,
+      "p95": 11.651328
+    },
+    "uploadMs": {
+      "p50": 4.261445500000001,
+      "p95": 4.968271
+    },
+    "syncMs": {
+      "p50": 2.02751,
+      "p95": 2.187531
+    },
+    "submitMs": {
+      "p50": 0.39626300000000003,
+      "p95": 0.521962
+    },
+    "queueAgeMs": {
+      "p50": 53.346806,
+      "p95": 136.144811
+    }
+  },
+  "date": "2026-10-19 JST",
+  "decoder": "h264_v4l2m2m active",
+  "source": "real 2880x2560 Workspace, 30fps target, owned scrolling fixture",
+  "binary_sha256": "9108842a9fafe942588198ee9721792740b5cfc4323969591f9357bfad477f00",
+  "comparison_limit": "Different run and fixture cadence from software; no matched speedup claimed."
+}

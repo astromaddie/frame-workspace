@@ -1,0 +1,527 @@
+#pragma once
+#include "websocket.hpp"
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
+}
+#include <condition_variable>
+#include <utility>
+
+#include <deque>
+#include <mutex>
+#include <thread>
+namespace fw {
+struct Picture {
+  int width = 0, height = 0;
+  uint32_t seq = 0;
+  double received = 0, decoded = 0;
+  std::vector<uint8_t> rgba;
+};
+// Shared by the live decoder and --inspect-h264: parse complete Annex-B
+// access units with FFmpeg, preserving SPS/PPS across frames and size changes.
+struct H264Headers {
+  AVCodecParserContext *parser = av_parser_init(AV_CODEC_ID_H264);
+  AVCodecContext *context = avcodec_alloc_context3(nullptr);
+  H264Headers() {
+    if (!parser || !context)
+      throw std::runtime_error("H264 parser unavailable");
+    parser->flags |= PARSER_FLAG_COMPLETE_FRAMES;
+    context->codec_id = AV_CODEC_ID_H264;
+    context->codec_type = AVMEDIA_TYPE_VIDEO;
+    context->pkt_timebase = AVRational{1, 1000000};
+  }
+  ~H264Headers() {
+    av_parser_close(parser);
+    avcodec_free_context(&context);
+  }
+  H264Headers(const H264Headers &) = delete;
+  H264Headers &operator=(const H264Headers &) = delete;
+  int parse(const std::vector<uint8_t> &bytes) {
+    // av_parser_parse2 requires AV_INPUT_BUFFER_PADDING_SIZE zero bytes.
+    std::vector<uint8_t> padded = bytes;
+    padded.resize(bytes.size() + AV_INPUT_BUFFER_PADDING_SIZE, 0);
+    uint8_t *output = nullptr;
+    int outputSize = 0;
+    parser->width = parser->height = parser->coded_width =
+        parser->coded_height = 0;
+    parser->key_frame = -1;
+    int used =
+        av_parser_parse2(parser, context, &output, &outputSize, padded.data(),
+                         bytes.size(), AV_NOPTS_VALUE, AV_NOPTS_VALUE, 0);
+    if (used < 0)
+      return used;
+    if (used != int(bytes.size()) || outputSize != int(bytes.size()) ||
+        parser->width < 1 || parser->height < 1 ||
+        parser->coded_width < parser->width ||
+        parser->coded_height < parser->height || parser->coded_width > 4096 ||
+        parser->coded_height > 4096)
+      return AVERROR_INVALIDDATA;
+    return 0;
+  }
+};
+struct Pipeline {
+  const std::string decoderRequested;
+  std::atomic<bool> decoderActive{false};
+  std::atomic<int> decoderError{0}, inputWidth{0}, inputHeight{0},
+      codedWidth{0}, codedHeight{0};
+  std::atomic<const char *> decoderErrorStage{"none"}, stopReason{"running"};
+  explicit Pipeline(std::string mode = "software")
+      : decoderRequested(std::move(mode)) {
+    if (decoderRequested != "software" && decoderRequested != "v4l2")
+      throw std::runtime_error("decoder must be software or v4l2");
+  }
+  const char *codecName() const {
+    return decoderRequested == "v4l2" ? "h264_v4l2m2m" : "h264";
+  }
+  std::string decoderIdentity() const {
+    return std::string("libavcodec ") + codecName() +
+           (decoderActive ? " active" : " pending");
+  }
+  std::atomic<bool> stop{false}, requestKey{false}, focus{false},
+      connected{false};
+  std::atomic<uint64_t> received{0}, decoded{0}, droppedEncoded{0},
+      droppedDecoded{0}, errors{0}, reconnects{0};
+  std::atomic<double> decodeMs{0}, sendMs{0}, convertMs{0}, clockOffset{0};
+  std::atomic<bool> clockValid{false};
+  std::mutex mutex, outMutex;
+  std::condition_variable wake;
+  std::deque<Packet> packets;
+  std::shared_ptr<Picture> newest;
+  std::deque<std::string> outbound;
+  bool needKey = true;
+  std::thread net, decoder;
+  ~Pipeline() { finish(); }
+  void finish() {
+    stop = true;
+    wake.notify_all();
+    if (net.joinable())
+      net.join();
+    if (decoder.joinable())
+      decoder.join();
+  }
+  void enqueue(Packet p) {
+    std::lock_guard<std::mutex> lock(mutex);
+    ++received;
+    if (packets.size() >= 3) {
+      droppedEncoded += packets.size();
+      packets.clear();
+      needKey = true;
+      requestKey = true;
+    }
+    if (needKey && !p.key) {
+      ++droppedEncoded;
+      requestKey = true;
+      return;
+    }
+    if (needKey) {
+      p.reset = true;
+      needKey = false;
+    }
+    packets.push_back(std::move(p));
+    wake.notify_one();
+  }
+  std::shared_ptr<Picture> take() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return std::exchange(newest, {});
+  }
+  void publish(std::shared_ptr<Picture> p) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (newest)
+      ++droppedDecoded;
+    newest = std::move(p);
+  }
+  void report(const Picture &p, double uploaded) {
+    if (!clockValid)
+      return;
+    double o = clockOffset;
+    std::lock_guard<std::mutex> l(outMutex);
+    if (outbound.size() < 8)
+      outbound.push_back("{\"t\":\"fd\",\"f\":[[" + std::to_string(p.seq) +
+                         "," + std::to_string((p.decoded + o) * 1000) + "," +
+                         std::to_string((uploaded + o) * 1000) +
+                         ",0]],\"drop\":0}");
+  }
+  void start(const Endpoint &e) {
+    decoder = std::thread([this] { decodeLoop(); });
+    net = std::thread([this, e] { networkLoop(e); });
+  }
+  void networkLoop(const Endpoint &endpoint) {
+    std::string reconnect;
+    int failed = 0;
+    while (!stop) {
+      try {
+        WebSocket ws(stop);
+        ws.open(endpoint, reconnect);
+        connected = true;
+        ++reconnects;
+        {
+          std::lock_guard<std::mutex> l(mutex);
+          droppedEncoded += packets.size();
+          packets.clear();
+          needKey = true;
+        }
+        double ping = 0, key = 0;
+        ws.idle = [&] {
+          double now = nowMs();
+          if (now - ping > 2000) {
+            ws.sendText("{\"t\":\"ping\",\"c\":" + std::to_string(now * 1000) +
+                        "}");
+            ping = now;
+          }
+          if (requestKey && now - key > 500) {
+            requestKey = false;
+            key = now;
+            ws.sendText("{\"t\":\"key-frame\"}");
+          }
+          if (focus.exchange(false))
+            ws.sendText("{\"t\":\"focus\"}");
+          std::deque<std::string> pending;
+          {
+            std::lock_guard<std::mutex> l(outMutex);
+            pending.swap(outbound);
+          }
+          for (auto &s : pending)
+            ws.sendText(s);
+        };
+        while (!stop) {
+          ws.idle();
+          auto [type, bytes] = ws.receive();
+          double receivedAt = nowMs();
+          if (type == 2) {
+            auto p = packet(bytes);
+            p.received = receivedAt;
+            std::string ack = "{\"t\":\"rx\",\"s\":" + std::to_string(p.seq);
+            if (clockValid)
+              ack += ",\"r\":" +
+                     std::to_string((receivedAt + clockOffset.load()) * 1000);
+            ws.sendText(ack + "}");
+            enqueue(std::move(p));
+          } else {
+            auto j = json(std::string(bytes.begin(), bytes.end()));
+            auto t = str(j, "t");
+            if (t == "hello") {
+              auto r = str(j, "r");
+              if (r.empty() || r.size() > 256)
+                throw std::runtime_error("invalid reconnect key");
+              reconnect = r;
+              ws.sendText("{\"t\":\"ack\"}");
+              failed = 0;
+            } else if (t == "pong") {
+              double c = num(j, "c") / 1000, a = num(j, "a") / 1000;
+              if (c > 0 && a > 0 && receivedAt - c >= 0 &&
+                  receivedAt - c < 1000) {
+                clockOffset = a - (c + receivedAt) / 2;
+                clockValid = true;
+                ws.sendText("{\"t\":\"clock\",\"rtt\":" +
+                            std::to_string(receivedAt - c) + ",\"dec\":\"" +
+                            decoderIdentity() + "\"}");
+              }
+            } else if (t == "close" || t == "closed") {
+              stopReason = "server-close";
+              stop = true;
+              wake.notify_all();
+            } else if (t == "error") {
+              ++errors;
+              fprintf(
+                  stderr,
+                  "[native] server reported stream error (text redacted)\n");
+            }
+          }
+        }
+      } catch (const std::exception &) {
+        connected = false;
+        clockValid = false;
+        if (stop)
+          break;
+        ++errors;
+        ++failed;
+        fprintf(stderr,
+                "[native] stream unavailable; retry=%d (endpoint redacted)\n",
+                failed);
+        if (reconnect.empty() && failed >= 3) {
+          stopReason = "stream-start-failed";
+          stop = true;
+          wake.notify_all();
+          break;
+        }
+        for (int i = 0; i < std::min(failed, 6) * 10 && !stop; i++)
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      }
+    }
+    connected = false;
+  }
+  void decodeLoop() {
+    const AVCodec *codec = avcodec_find_decoder_by_name(codecName());
+    AVCodecContext *context = nullptr;
+    AVFrame *frame = av_frame_alloc();
+    AVPacket *avp = av_packet_alloc();
+    SwsContext *sws = nullptr;
+    struct Timing {
+      uint32_t seq;
+      double received;
+    };
+    std::map<int64_t, Timing> timing;
+    int64_t token = 0;
+    bool submitted = false;
+    H264Headers headers;
+    auto fail = [&](const char *stage, int code) {
+      decoderError = code;
+      decoderErrorStage = stage;
+      stopReason = "decoder-error";
+      ++errors;
+      stop = true;
+      wake.notify_all();
+      char detail[AV_ERROR_MAX_STRING_SIZE]{};
+      av_strerror(code, detail, sizeof(detail));
+      fprintf(stderr,
+              "[native] decoder=%s stage=%s failed=%d (%s); no fallback\n",
+              codecName(), stage, code, detail);
+    };
+    auto open = [&]() {
+      av_frame_unref(frame);
+      avcodec_free_context(&context);
+      timing.clear();
+      decoderActive = false;
+      context = codec ? avcodec_alloc_context3(codec) : nullptr;
+      if (!context) {
+        fail("allocate", AVERROR(ENOMEM));
+        return false;
+      }
+      // V4L2 converts packet timestamps through pkt_timebase to timeval. Use a
+      // unique microsecond token so delayed output maps to its own receive
+      // time.
+      context->pkt_timebase = AVRational{1, 1000000};
+      context->flags |= AV_CODEC_FLAG_LOW_DELAY;
+      if (decoderRequested == "software") {
+        context->thread_count = 2;
+        context->thread_type = FF_THREAD_SLICE;
+      } else {
+        // Request CPU-mappable NV12, not opaque DRM_PRIME surfaces. Conversion
+        // remains in the existing swscale path for a controlled comparison.
+        context->pix_fmt = AV_PIX_FMT_NV12;
+        context->width = headers.parser->width;
+        context->height = headers.parser->height;
+        context->coded_width = headers.parser->coded_width;
+        context->coded_height = headers.parser->coded_height;
+        context->profile = headers.context->profile;
+        context->level = headers.context->level;
+        context->framerate = headers.context->framerate;
+        inputWidth = context->width;
+        inputHeight = context->height;
+        codedWidth = context->coded_width;
+        codedHeight = context->coded_height;
+        fprintf(stderr,
+                "[native] decoder configure codec=%s size=%dx%d coded=%dx%d "
+                "format=NV12 profile=%d level=%d\n",
+                codecName(), context->width, context->height,
+                context->coded_width, context->coded_height, context->profile,
+                context->level);
+      }
+      int result = avcodec_open2(context, codec, nullptr);
+      if (result < 0) {
+        fail("open", result);
+        return false;
+      }
+      fprintf(stderr, "[native] decoder initialized requested=%s codec=%s\n",
+              decoderRequested.c_str(), codecName());
+      return true;
+    };
+    if (!codec || !frame || !avp) {
+      fail("unavailable", codec ? AVERROR(ENOMEM) : AVERROR_DECODER_NOT_FOUND);
+    } else if (decoderRequested == "software") {
+      open();
+    }
+    // Hardware open is deferred until the first IDR has provided valid SPS
+    // dimensions. Drain all available output before asking the decoder for more
+    // input. A delayed frame must never inherit the newest packet's
+    // sequence/time.
+    auto drain = [&]() {
+      int result = AVERROR(EAGAIN);
+      while (!stop) {
+        double before = nowMs();
+        result = avcodec_receive_frame(context, frame);
+        double receiveMs = nowMs() - before;
+        if (result < 0)
+          break;
+        decodeMs = sendMs.load() + receiveMs;
+        auto it = timing.find(frame->pts);
+        if (it == timing.end()) {
+          fail("output-timestamp", AVERROR_INVALIDDATA);
+          break;
+        }
+        if (frame->width < 1 || frame->height < 1 || frame->width > 4096 ||
+            frame->height > 4096 ||
+            !sws_isSupportedInput(AVPixelFormat(frame->format))) {
+          fail("output-format", AVERROR_INVALIDDATA);
+          break;
+        }
+        double convert = nowMs();
+        auto pic = std::make_shared<Picture>();
+        pic->width = frame->width;
+        pic->height = frame->height;
+        pic->seq = it->second.seq;
+        pic->received = it->second.received;
+        timing.erase(it);
+        pic->rgba.resize(size_t(pic->width) * pic->height * 4);
+        sws = sws_getCachedContext(sws, pic->width, pic->height,
+                                   AVPixelFormat(frame->format), pic->width,
+                                   pic->height, AV_PIX_FMT_RGBA, SWS_BILINEAR,
+                                   nullptr, nullptr, nullptr);
+        if (!sws) {
+          fail("conversion-context", AVERROR(ENOMEM));
+          break;
+        }
+        int cs = frame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709
+                                                      : SWS_CS_ITU601;
+        auto coefficients = sws_getCoefficients(cs);
+        sws_setColorspaceDetails(sws, coefficients,
+                                 frame->color_range == AVCOL_RANGE_JPEG,
+                                 coefficients, 1, 0, 1 << 16, 1 << 16);
+        uint8_t *dst[] = {pic->rgba.data()};
+        int strides[] = {pic->width * 4};
+        if (sws_scale(sws, frame->data, frame->linesize, 0, pic->height, dst,
+                      strides) != pic->height) {
+          fail("conversion", AVERROR_INVALIDDATA);
+          break;
+        }
+        pic->decoded = nowMs();
+        convertMs = pic->decoded - convert;
+        if (!decoderActive.exchange(true))
+          fprintf(stderr,
+                  "[native] decoder active requested=%s codec=%s format=%d "
+                  "size=%dx%d\n",
+                  decoderRequested.c_str(), codecName(), frame->format,
+                  pic->width, pic->height);
+        ++decoded;
+        publish(std::move(pic));
+        // Release the driver buffer before a format change or context reopen.
+        av_frame_unref(frame);
+      }
+      av_frame_unref(frame);
+      return result;
+    };
+    while (!stop) {
+      Packet p;
+      bool havePacket = false;
+      {
+        std::unique_lock<std::mutex> l(mutex);
+        wake.wait_for(l, std::chrono::milliseconds(5),
+                      [&] { return stop || !packets.empty(); });
+        if (!packets.empty()) {
+          p = std::move(packets.front());
+          packets.pop_front();
+          havePacket = true;
+        }
+      }
+      if (stop)
+        break;
+      if (!havePacket) {
+        // V4L2 may complete output after the final packet of a static desktop.
+        if (submitted && decoderRequested == "v4l2") {
+          int result = drain();
+          if (result != AVERROR(EAGAIN) && result != AVERROR_EOF && !stop)
+            fail("receive", result);
+        }
+        continue;
+      }
+      if (decoderRequested == "v4l2") {
+        int parsed = headers.parse(p.bytes);
+        if (parsed < 0) {
+          fail("h264-headers", parsed);
+          break;
+        }
+        bool changed = context && (headers.parser->width != inputWidth ||
+                                   headers.parser->height != inputHeight ||
+                                   headers.parser->coded_width != codedWidth ||
+                                   headers.parser->coded_height != codedHeight);
+        if ((!context || changed || p.reset) &&
+            (!p.key || headers.parser->key_frame != 1)) {
+          ++droppedEncoded;
+          requestKey = true;
+          std::lock_guard<std::mutex> lock(mutex);
+          needKey = true;
+          droppedEncoded += packets.size();
+          packets.clear();
+          continue;
+        }
+        if (!context || changed || (p.reset && submitted)) {
+          // No driver flush callback: reopen using this IDR's actual SPS size.
+          // Old mapped AVFrames were released in drain() before this point.
+          if (!open())
+            break;
+          submitted = false;
+        }
+      } else if (p.reset && submitted) {
+        timing.clear();
+        avcodec_flush_buffers(context);
+        submitted = false;
+      }
+      av_packet_unref(avp);
+      int result = av_new_packet(avp, p.bytes.size());
+      if (result < 0) {
+        fail("packet-allocation", result);
+        break;
+      }
+      memcpy(avp->data, p.bytes.data(), p.bytes.size());
+      avp->pts = avp->dts = ++token;
+      if (p.key)
+        avp->flags |= AV_PKT_FLAG_KEY;
+      // Bound metadata independently of compressed and decoded picture queues.
+      if (timing.size() >= 64) {
+        fail("inflight-limit", AVERROR(ENOBUFS));
+        break;
+      }
+      timing[token] = {p.seq, p.received};
+      double before = nowMs();
+      result = avcodec_send_packet(context, avp);
+      sendMs = nowMs() - before;
+      if (result == AVERROR(EAGAIN)) {
+        uint64_t count = decoded;
+        int drained = drain();
+        if (stop)
+          break;
+        if (drained != AVERROR(EAGAIN) || decoded == count) {
+          fail("send-receive-progress",
+               drained == AVERROR(EAGAIN) ? AVERROR_BUG : drained);
+          break;
+        }
+        before = nowMs();
+        result = avcodec_send_packet(context, avp);
+        sendMs = sendMs.load() + nowMs() - before;
+      }
+      if (result < 0) {
+        if (decoderRequested == "v4l2") {
+          fail("send", result);
+          break;
+        }
+        ++errors;
+        requestKey = true;
+        std::lock_guard<std::mutex> l(mutex);
+        needKey = true;
+        droppedEncoded += packets.size();
+        packets.clear();
+        continue;
+      }
+      submitted = true;
+      result = drain();
+      if (result != AVERROR(EAGAIN) && result != AVERROR_EOF && !stop) {
+        if (decoderRequested == "v4l2") {
+          fail("receive", result);
+          break;
+        }
+        ++errors;
+        requestKey = true;
+        std::lock_guard<std::mutex> l(mutex);
+        needKey = true;
+        droppedEncoded += packets.size();
+        packets.clear();
+      }
+    }
+    sws_freeContext(sws);
+    av_packet_free(&avp);
+    av_frame_free(&frame);
+    avcodec_free_context(&context);
+  }
+};
+} // namespace fw
