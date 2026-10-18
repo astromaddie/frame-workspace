@@ -21,8 +21,11 @@ Saved room layouts remain conditional: profiles explicitly report placement as
 manual. See [profile usage and limits](profiles.md). FW-06 still needs the
 inactive-Space and supported-app matrix before FW-07 automatic detachment;
 FW-08 has device-verified placement/curvature APIs and native panel-switcher
-discovery; its new placement UI awaits mockup approval. FW-09 has an active
-stream policy and matched 1/2/4/6-stream Frame measurements. FW-12 has a tested
+discovery; its approved inline placement controls are implemented. FW-09 has an active
+stream policy, matched 1/2/4/6-stream Frame measurements and a
+[bounded decode-burst fix](PERFORMANCE.md#decode-burst-follow-up-2026-10-19).
+Its longer single-stream trial reached 27.7 uploads/s with no encoded drops;
+reliable 30/60 fps remains open. FW-12 has a tested
 letterbox scroll fix and an input audit; worn focus/IME acceptance remains open.
 
 ## Overnight follow-up through FW-11
@@ -34,7 +37,7 @@ These are implementation/evidence milestones, not blanket issue completion.
 | FW-05 | Full-resolution 2880×2560 native surface; [single-surface decision](PIXELS.md) | Worn native readability/input; full 5120-wide transport or tiling is deferred |
 | FW-06 | AppKit/Chrome native entry/exit detection and continuous changing capture; Safari capture continuity with an AX identity limit; [feasibility record](FULLSCREEN.md) | Inactive-Space proof blocked by Mission Control app access; Safari window identity and broader app/lifecycle matrix |
 | FW-07 | Existing source-close recovery repairs support the feasibility work | Automatic detachment remains gated by FW-06; not implemented |
-| FW-08 | Live width/distance changes and curvature 0.25 readback; original pose/flat view restored; native switcher discovery | [Placement UI mockup approval](NATIVE-CONTROLS.md), keyboard-first interaction and worn use |
+| FW-08 | Live width/distance changes and curvature 0.25 readback; original pose/flat view restored; native switcher discovery; [approved inline controls](NATIVE-CONTROLS.md) | Keyboard-first interaction and worn use |
 | FW-09 | Explicit focus/input priority, 10 fps backgrounds; [matched 1/2/4/6-stream Frame trial](PERFORMANCE.md) | Broader workloads, physical focus switching, USB-C and worn latency/legibility |
 | FW-10 | Owned overlay transforms and same-runtime restart restore; curvature API accepted | Runtime/room-origin changes and game coexistence; no saved room anchors |
 | FW-11 | Coding restores after fresh companion launch; profile migrated to private persistent app data; fresh window-rule matching | Cross-runtime spatial restore deliberately unavailable; broader reconnect acceptance |

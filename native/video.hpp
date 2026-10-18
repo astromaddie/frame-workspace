@@ -156,9 +156,11 @@ struct Pipeline {
       decoderReconnectOpens{0}, decoderFormatReopens{0},
       decoderOpenFailures{0};
   std::atomic<uint32_t> lastOverflowRecoverySeq{0};
-  std::atomic<uint64_t> decoderTimingHighWater{0};
+  std::atomic<uint64_t> decoderTimingHighWater{0}, packetQueueHighWater{0},
+      emptyReceives{0};
   std::atomic<double> decodeMs{0}, sendMs{0}, convertMs{0}, planeCopyMs{0},
-      decoderOpenMs{0}, decoderOpenMsTotal{0}, clockOffset{0};
+      decoderOpenMs{0}, decoderOpenMsTotal{0}, clockOffset{0},
+      packetQueueWaitMs{0}, emptyReceiveMaxMs{0}, emptyReceiveTotalMs{0};
   std::atomic<bool> clockValid{false};
   std::mutex mutex, outMutex;
   std::condition_variable wake;
@@ -166,6 +168,9 @@ struct Pipeline {
   std::shared_ptr<Picture> newest;
   std::deque<std::string> outbound;
   bool needKey = true;
+  // Absorb short transport bursts without throwing away an H.264 reference
+  // chain. This remains bounded; a real backlog still recovers at an IDR.
+  static constexpr size_t maxPacketQueue = 8;
   ResetReason pendingResetReason = ResetReason::None;
   std::thread net, decoder;
   static int resetPriority(ResetReason reason) {
@@ -206,7 +211,7 @@ struct Pipeline {
   void enqueue(Packet p) {
     std::lock_guard<std::mutex> lock(mutex);
     ++received;
-    if (packets.size() >= 3) {
+    if (packets.size() >= maxPacketQueue) {
       ++packetQueueOverflows;
       droppedEncoded += packets.size();
       packets.clear();
@@ -225,6 +230,8 @@ struct Pipeline {
       needKey = false;
     }
     packets.push_back(std::move(p));
+    if (packets.size() > packetQueueHighWater)
+      packetQueueHighWater = packets.size();
     wake.notify_one();
   }
   std::shared_ptr<Picture> take() {
@@ -464,8 +471,15 @@ struct Pipeline {
         double before = nowMs();
         result = avcodec_receive_frame(context, frame);
         double receiveMs = nowMs() - before;
-        if (result < 0)
+        if (result < 0) {
+          if (result == AVERROR(EAGAIN)) {
+            ++emptyReceives;
+            emptyReceiveTotalMs = emptyReceiveTotalMs.load() + receiveMs;
+            if (receiveMs > emptyReceiveMaxMs)
+              emptyReceiveMaxMs = receiveMs;
+          }
           break;
+        }
         decodeMs = sendMs.load() + receiveMs;
         TimestampStatus timestamp =
             timestampStatus(frame->pts, staleThroughToken, timing);
@@ -611,6 +625,7 @@ struct Pipeline {
         }
         continue;
       }
+      packetQueueWaitMs = nowMs() - p.received;
       if (decoderRequested == "v4l2") {
         int parsed = headers.parse(p.bytes);
         if (parsed < 0) {

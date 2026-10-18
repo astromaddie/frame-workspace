@@ -1,0 +1,782 @@
+{
+  "schema": 1,
+  "date": "2026-10-19",
+  "scope": "Actual Frame, off-head desktop texture uploads, not compositor/optical FPS or worn acceptance",
+  "comparison": "Sequential queue3 / queue8 / queue3 / queue8; one trial per condition, natural capture/network variance remains",
+  "baseRevision": "ef5b8d2e42ec49308aaab154e4498e67c862363a",
+  "baselineBinarySha256": "9ebd783d7d90f5b695189d094d41502fd3c861583674a47fd552db0d66191545",
+  "candidateBinarySha256": "93f3497538e89d99fb25e7460fbb1c868a6b06cc1756a33e23bba20d7964684f",
+  "compilerInputSha256": {
+    "native/main.cpp": "449ce3ea60c9cf5e3d8df3f6399633251f228f26db39370545039a960e0a801d",
+    "native/overlay.hpp": "bc33a68a3080298ac1499cfc1f924026fa086408481fc58e4511305f59ebd18b",
+    "native/protocol.hpp": "70ded1f152993546ee3d6180789d51ab601ff837b9f65c848dfbb9429e8e807e",
+    "native/vendor/openvr/openvr_capi.h": "c80f5733e2381afb4012eb1625c603930388c9cc6030b8fe161ad044c35637c7",
+    "native/video.hpp": "90ee00995986582a1a777406a6baadd335ee39ddfb73a5908c47b63af3ed7878",
+    "native/websocket.hpp": "f5d514755413a2704767c1330f0c31eafc7d864268dad310fe010b8cce3f50d7"
+  },
+  "conditions": {
+    "display": "9:8 2880x2560 @1x",
+    "stream": "Sharp H264 2880x2560 target30, adaptation disabled, V4L2 CPU conversion",
+    "power": "Mac AC, Frame off-head",
+    "fixture": "Same scrolling Chrome app fixture, 2880x2530 within Workspace",
+    "noConcurrentBuildOrBrowserTests": true,
+    "displayRetainedDuringViewerReplacements": true
+  },
+  "runs": [
+    {
+      "label": "current-cpu30-original-fixture",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.0221899820026,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 55,
+      "receivedFps": 29.644739458831225,
+      "decodedFps": 24.21542200738236,
+      "uploadedFps": 23.316087214811077,
+      "counters": {
+        "received": 890,
+        "decoded": 727,
+        "uploaded": 700,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 149,
+        "droppedDecoded": 27,
+        "queueOverflows": 15,
+        "droppedAwaitingIdr": 104,
+        "overflowRecoveryIdrs": 15,
+        "staleDriverFramesDropped": 15,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.6388595000000001,
+          "p95": 2.348995
+        },
+        "sendMs": {
+          "p50": 1.61735,
+          "p95": 2.333215
+        },
+        "convertMs": {
+          "p50": 6.4636705,
+          "p95": 10.679019
+        },
+        "planeCopyMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "gpuConvertMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "uploadMs": {
+          "p50": 4.3952135000000006,
+          "p95": 6.338621
+        },
+        "syncMs": {
+          "p50": 2.008875,
+          "p95": 2.208427
+        },
+        "submitMs": {
+          "p50": 0.436759,
+          "p95": 0.712428
+        },
+        "queueAgeMs": {
+          "p50": 53.237732,
+          "p95": 193.150064
+        },
+        "decoderOpenMs": {
+          "p50": 13.033034,
+          "p95": 13.033034
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "cpu",
+      "conversionActive": "cpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 2696,
+      "decoderTimingHighWater": 4,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    },
+    {
+      "label": "cpu30-burst-queue8",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.02342071000021,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 29.14391429450125,
+      "decodedFps": 29.177221625123536,
+      "uploadedFps": 29.04399230263439,
+      "counters": {
+        "received": 875,
+        "decoded": 876,
+        "uploaded": 872,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 0,
+        "droppedDecoded": 4,
+        "queueOverflows": 0,
+        "droppedAwaitingIdr": 0,
+        "overflowRecoveryIdrs": 0,
+        "staleDriverFramesDropped": 0,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0,
+        "emptyReceives": 4914,
+        "emptyReceiveTotalMs": 24.668247
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.604507,
+          "p95": 1.711978
+        },
+        "sendMs": {
+          "p50": 1.590992,
+          "p95": 1.697499
+        },
+        "convertMs": {
+          "p50": 6.2150669999999995,
+          "p95": 13.370002
+        },
+        "planeCopyMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "gpuConvertMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "uploadMs": {
+          "p50": 4.4347840000000005,
+          "p95": 5.58842
+        },
+        "syncMs": {
+          "p50": 2.000094,
+          "p95": 2.705228
+        },
+        "submitMs": {
+          "p50": 0.4031385,
+          "p95": 0.720394
+        },
+        "queueAgeMs": {
+          "p50": 53.8822335,
+          "p95": 60.917998
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.1088245,
+          "p95": 1.644324
+        },
+        "decoderOpenMs": {
+          "p50": 10.765917,
+          "p95": 10.765917
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "cpu",
+      "conversionActive": "cpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 0,
+      "decoderTimingHighWater": 4,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 6,
+      "emptyReceiveMaxMs": 0.129267,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    },
+    {
+      "label": "original-queue3-reverse-comparison",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.018750046991045,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 29.14844884048416,
+      "decodedFps": 27.449510679495944,
+      "uploadedFps": 27.282948114693177,
+      "counters": {
+        "received": 875,
+        "decoded": 824,
+        "uploaded": 819,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 46,
+        "droppedDecoded": 5,
+        "queueOverflows": 5,
+        "droppedAwaitingIdr": 31,
+        "overflowRecoveryIdrs": 5,
+        "staleDriverFramesDropped": 5,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.6125015,
+          "p95": 3.574159
+        },
+        "sendMs": {
+          "p50": 1.590835,
+          "p95": 3.562284
+        },
+        "convertMs": {
+          "p50": 6.0086645,
+          "p95": 12.523617
+        },
+        "planeCopyMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "gpuConvertMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "uploadMs": {
+          "p50": 4.363092,
+          "p95": 6.17866
+        },
+        "syncMs": {
+          "p50": 2.074076,
+          "p95": 2.259564
+        },
+        "submitMs": {
+          "p50": 0.37962399999999996,
+          "p95": 0.639251
+        },
+        "queueAgeMs": {
+          "p50": 53.121945499999995,
+          "p95": 83.223527
+        },
+        "decoderOpenMs": {
+          "p50": 13.014749,
+          "p95": 13.014749
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "cpu",
+      "conversionActive": "cpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 1072,
+      "decoderTimingHighWater": 4,
+      "packetQueueLimit": null,
+      "packetQueueHighWater": null,
+      "emptyReceiveMaxMs": null,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    },
+    {
+      "label": "cpu30-burst-queue8-sustained",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 60.04439988400554,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 61,
+      "receivedFps": 28.345690910192175,
+      "decodedFps": 28.345690910192175,
+      "uploadedFps": 27.696171553260626,
+      "counters": {
+        "received": 1702,
+        "decoded": 1702,
+        "uploaded": 1663,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 0,
+        "droppedDecoded": 39,
+        "queueOverflows": 0,
+        "droppedAwaitingIdr": 0,
+        "overflowRecoveryIdrs": 0,
+        "staleDriverFramesDropped": 0,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0,
+        "emptyReceives": 9796,
+        "emptyReceiveTotalMs": 50.819112
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.604298,
+          "p95": 1.700884
+        },
+        "sendMs": {
+          "p50": 1.589741,
+          "p95": 1.684738
+        },
+        "convertMs": {
+          "p50": 6.107461000000001,
+          "p95": 12.080498
+        },
+        "planeCopyMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "gpuConvertMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "uploadMs": {
+          "p50": 4.3224405,
+          "p95": 5.090826
+        },
+        "syncMs": {
+          "p50": 1.9620725,
+          "p95": 2.289145
+        },
+        "submitMs": {
+          "p50": 0.39709700000000003,
+          "p95": 0.720758
+        },
+        "queueAgeMs": {
+          "p50": 52.354738499999996,
+          "p95": 61.200801
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.1042415,
+          "p95": 3.990341
+        },
+        "decoderOpenMs": {
+          "p50": 8.808106,
+          "p95": 8.808106
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "cpu",
+      "conversionActive": "cpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 0,
+      "decoderTimingHighWater": 4,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 6,
+      "emptyReceiveMaxMs": 0.159422,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    }
+  ],
+  "interpretation": "Eight access units absorbed observed six-packet bursts without IDR recovery. Same-size IDR recovery remains bounded for real overload. The longer candidate run still averaged below30 uploads/s; no60fps or worn claim.",
+  "deviceDiagnostics": {
+    "route": "Actual Frame, hidden SDL window on DISPLAY=:0, --no-vr",
+    "checks": [
+      {
+        "exit_code": 0,
+        "name": "baseline",
+        "result": {
+          "case": "default",
+          "conversion": "cpu",
+          "convert_ms": 7.208932,
+          "decoded": 61,
+          "decoder_color_range": 0,
+          "decoder_color_space": 2,
+          "decoder_format_reopens": 0,
+          "decoder_initial_opens": 1,
+          "decoder_open_attempts": 1,
+          "decoder_open_ms_total": 9.076216,
+          "decoder_pixel_format": 23,
+          "decoder_reconnect_opens": 0,
+          "decoder_timing_high_water": 1,
+          "dimensions": [
+            2880,
+            2560
+          ],
+          "error_reasons": {
+            "decoderFatalErrors": 0,
+            "decoderReceiveErrors": 0,
+            "decoderSendErrors": 0,
+            "decoder_error": 0,
+            "decoder_error_stage": "none",
+            "exit_reason": "timer",
+            "networkErrors": 0,
+            "serverErrors": 0,
+            "submitErrors": 0
+          },
+          "errors": 0,
+          "forced_overload": false,
+          "forced_reconnect": false,
+          "gpu_convert_ms": 0.0,
+          "headset_test": false,
+          "last_overflow_recovery_seq": 0,
+          "max_rgb_difference_vs_ffmpeg": 2,
+          "overflow_recovery_idrs": 0,
+          "plane_copy_ms": 0.0,
+          "pose_preserved_on_restart": true,
+          "queue_overflows": 0,
+          "reported_frames": 58,
+          "result": "passed",
+          "sequence_timing_validated": true,
+          "size_change": false,
+          "stale_driver_frames_dropped": 0,
+          "test": "production socket/h264/GL integration",
+          "uploaded": 58,
+          "wire_messages": {
+            "ack": 1,
+            "clock": 2,
+            "fd": 58,
+            "focus": 1,
+            "rx": 61
+          }
+        }
+      },
+      {
+        "exit_code": 0,
+        "name": "forced_overload",
+        "result": {
+          "case": "default",
+          "conversion": "cpu",
+          "convert_ms": 10.140764,
+          "decoded": 3,
+          "decoder_color_range": 0,
+          "decoder_color_space": 2,
+          "decoder_format_reopens": 0,
+          "decoder_initial_opens": 1,
+          "decoder_open_attempts": 1,
+          "decoder_open_ms_total": 8.54618,
+          "decoder_pixel_format": 23,
+          "decoder_reconnect_opens": 0,
+          "decoder_timing_high_water": 3,
+          "dimensions": [
+            2880,
+            2560
+          ],
+          "error_reasons": {
+            "decoderFatalErrors": 0,
+            "decoderReceiveErrors": 0,
+            "decoderSendErrors": 0,
+            "decoder_error": 0,
+            "decoder_error_stage": "none",
+            "exit_reason": "timer",
+            "networkErrors": 0,
+            "serverErrors": 0,
+            "submitErrors": 0
+          },
+          "errors": 0,
+          "forced_overload": true,
+          "forced_reconnect": false,
+          "gpu_convert_ms": 0.0,
+          "headset_test": false,
+          "last_overflow_recovery_seq": 59,
+          "max_rgb_difference_vs_ffmpeg": 2,
+          "overflow_recovery_idrs": 1,
+          "plane_copy_ms": 0.0,
+          "pose_preserved_on_restart": true,
+          "queue_overflows": 7,
+          "reported_frames": 2,
+          "result": "passed",
+          "sequence_timing_validated": true,
+          "size_change": false,
+          "stale_driver_frames_dropped": 1,
+          "test": "production socket/h264/GL integration",
+          "uploaded": 2,
+          "wire_messages": {
+            "ack": 1,
+            "clock": 4,
+            "fd": 2,
+            "focus": 1,
+            "rx": 61
+          }
+        }
+      }
+    ],
+    "generatedPpmBytesRemoved": 44236834
+  },
+  "localChecks": {
+    "macview": {
+      "ran": 49,
+      "skipped": 1,
+      "result": "OK; existing socket ResourceWarnings"
+    },
+    "panels": {
+      "ran": 10,
+      "result": "OK"
+    },
+    "node": [
+      "workspace_placement.mjs",
+      "desk_panels.mjs",
+      "macview_input.mjs"
+    ],
+    "renderedInlineUI": {
+      "widths": [
+        1000,
+        390
+      ],
+      "actualClicks": true,
+      "horizontalOverflow": false
+    }
+  },
+  "postActivationMotionCheck": {
+    "label": "activated-inline-ui-cpu30",
+    "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+    "duration": 20.013843679014826,
+    "workspacePreset": "2880x2560",
+    "target": {
+      "width": 2880,
+      "height": 2560,
+      "maxLong": 4096,
+      "fps": 30,
+      "codec": "h264"
+    },
+    "fixtureWindowSize": [
+      2880,
+      2530
+    ],
+    "fixtureReportedFpsAtWarmup": 60,
+    "receivedFps": 28.730113476548556,
+    "decodedFps": 28.730113476548556,
+    "uploadedFps": 28.530251817581263,
+    "counters": {
+      "received": 575,
+      "decoded": 575,
+      "uploaded": 571,
+      "errors": 0,
+      "networkErrors": 0,
+      "serverErrors": 0,
+      "decoderSendErrors": 0,
+      "decoderReceiveErrors": 0,
+      "decoderFatalErrors": 0,
+      "submitErrors": 0,
+      "droppedEncoded": 0,
+      "droppedDecoded": 4,
+      "queueOverflows": 0,
+      "droppedAwaitingIdr": 0,
+      "overflowRecoveryIdrs": 0,
+      "staleDriverFramesDropped": 0,
+      "decoderOpenAttempts": 0,
+      "decoderInitialOpens": 0,
+      "decoderReconnectOpens": 0,
+      "decoderFormatReopens": 0,
+      "decoderOpenFailures": 0,
+      "decoderOpenTotalMs": 0.0,
+      "emptyReceives": 3278,
+      "emptyReceiveTotalMs": 17.267719999999997
+    },
+    "timings": {
+      "decodeMs": {
+        "p50": 1.654268,
+        "p95": 1.780618
+      },
+      "sendMs": {
+        "p50": 1.6248939999999998,
+        "p95": 1.738589
+      },
+      "convertMs": {
+        "p50": 6.381038500000001,
+        "p95": 12.834211
+      },
+      "planeCopyMs": {
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "gpuConvertMs": {
+        "p50": 0.0,
+        "p95": 0.0
+      },
+      "uploadMs": {
+        "p50": 4.323555,
+        "p95": 5.547265
+      },
+      "syncMs": {
+        "p50": 1.9881635000000002,
+        "p95": 2.270133
+      },
+      "submitMs": {
+        "p50": 0.412304,
+        "p95": 0.853253
+      },
+      "queueAgeMs": {
+        "p50": 53.016813,
+        "p95": 100.840049
+      },
+      "packetQueueWaitMs": {
+        "p50": 0.112887,
+        "p95": 10.763759
+      },
+      "decoderOpenMs": {
+        "p50": 13.854388,
+        "p95": 13.854388
+      }
+    },
+    "textureSizes": [
+      [
+        2880,
+        2560
+      ]
+    ],
+    "decoder": "h264_v4l2m2m",
+    "decoderPixelFormat": 23,
+    "decoderColorSpace": 2,
+    "decoderColorRange": 0,
+    "conversionRequested": "cpu",
+    "conversionActive": "cpu",
+    "conversionFallbacks": 0,
+    "lastOverflowRecoverySeq": 98,
+    "decoderTimingHighWater": 4,
+    "packetQueueLimit": 8,
+    "packetQueueHighWater": 8,
+    "emptyReceiveMaxMs": 0.262492,
+    "note": "Stage percentiles summarize one-second observations, not every frame."
+  },
+  "postActivationNote": "New companion and live inline controls; counters are deltas during20s only. Peak queue and last-overflow sequence are lifetime gauges, including launch/warmup before measurement; they must not be interpreted as window counters.",
+  "build": {
+    "arch": "aarch64",
+    "dependencies": [
+      "2.30.2",
+      "1.2",
+      "61.3.100",
+      "59.8.100",
+      "8.1.100",
+      "0.17",
+      "3.2.1"
+    ],
+    "binary_sha256": "93f3497538e89d99fb25e7460fbb1c868a6b06cc1756a33e23bba20d7964684f"
+  },
+  "cleanup": {
+    "macWorktreeAllocatedBytesRemoved": 29700096,
+    "frameAllocatedBytesRemoved": 5681152,
+    "measurement": "du -sk inventories immediately before deleting owned temporary trees; no source/data deleted",
+    "workerPlaywrightAndCachesMiBRemoved": 13.7,
+    "automaticTestPpmLogicalBytesRemoved": 44236834,
+    "preserved": "Current installed candidate; one preceding verified binary/metadata/pose rollback at /tmp/frame-workspace-30fps-rollback; current companion, persistent Coding profile and awake assertion"
+  },
+  "finalHealth": {
+    "date": "2026-10-19",
+    "workspace": {
+      "state": "running",
+      "preset": "2880x2560",
+      "scale": 1,
+      "quality": "sharp",
+      "placement": {
+        "width": 2.4,
+        "distance": 2.0
+      },
+      "stream": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      }
+    },
+    "native": {
+      "service": "active",
+      "ready": true,
+      "connected": true,
+      "errors": 0,
+      "textureSize": [
+        2880,
+        2560
+      ],
+      "decoder": "h264_v4l2m2m",
+      "conversion": "cpu",
+      "queueLimit": 8,
+      "poseSha256": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c",
+      "binarySha256": "93f3497538e89d99fb25e7460fbb1c868a6b06cc1756a33e23bba20d7964684f"
+    },
+    "streamCount": 1,
+    "tunnel": true,
+    "awakeAssertionAlive": true,
+    "companionSource": "current working tree"
+  }
+}

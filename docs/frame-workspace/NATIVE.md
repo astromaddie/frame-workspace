@@ -221,6 +221,19 @@ This is an engineering hypothesis, not a measured improvement. Valve documents
 and [OpenVR eye-tracking actions](https://partner.steamgames.com/doc/steamhardware/steamframe/input).
 Their availability in this overlay route and gaze-to-sharp-text delay still need
 device and worn verification; the current pinned SDK and viewer do not use them.
+The user identified it as a direction for reaching 60 fps; the immediate
+decode-queue work takes precedence. No foveated transport or bandwidth saving is
+claimed in the present build.
+
+## Decode-burst follow-up
+
+The 2026-10-19 build increases the finite compressed queue from three to eight
+access units, retaining newest-picture presentation and the existing strict
+IDR/timestamp recovery. In same-resolution sequential trials the original queue
+overflowed 15 and 5 times; the new queue absorbed six-packet bursts with no
+overflows or encoded drops. It uploaded 29.04 fps over 30 seconds and 27.70 fps
+over 60 seconds. The longer run received only 28.35 packets/s, so a reliable
+30 fps result is still open. See [the full comparison and limits](PERFORMANCE.md#decode-burst-follow-up-2026-10-19).
 
 ## Native control integration
 

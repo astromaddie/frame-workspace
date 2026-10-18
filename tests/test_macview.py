@@ -1214,6 +1214,29 @@ class WorkspaceLifecycle(unittest.TestCase):
             finally:
                 manager.stop()
 
+    def test_workspace_placement_reads_only_the_current_ready_owner(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+        owner = {"key": mv.workspace_panel_key, "state": "streaming",
+                 "placement": {"width": 2.4, "distance": 2.0}}
+        mv.run = mock.Mock(return_value=json.dumps(owner))
+        self.assertEqual(mv.workspace_placement({"state": "running"}), owner["placement"])
+        self.assertEqual(mv.run.call_args.args[0], "python3 - --native-owner")
+        mv.run.reset_mock()
+        self.assertIsNone(mv.workspace_placement({"state": "stopped"}))
+        mv.run.assert_not_called()
+        for result in (None, {**owner, "key": "other"},
+                       {**owner, "placement": {"width": True, "distance": 2}},
+                       {**owner, "placement": {"width": 2, "distance": 20}}):
+            mv.run.return_value = json.dumps(result)
+            self.assertIsNone(mv.workspace_placement({"state": "running"}))
+        mv.run.side_effect = RuntimeError("offline")
+        self.assertIsNone(mv.workspace_placement({"state": "running"}))
+        mv.workspace_panel_key = "com.frame-control.workspace.1000.fc01234567"
+        mv.run.reset_mock()
+        self.assertIsNone(mv.workspace_placement({"state": "running"}))
+        mv.run.assert_not_called()
+
     def test_native_placement_adjust_uses_live_owner_and_verifies_readback(self):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
         mv.workspace_manager = mock.Mock()

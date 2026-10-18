@@ -51,7 +51,7 @@ static int selfTest() {
               initial.packets.front().resetReason == ResetReason::None,
           "initial IDR does not request a reset");
   Pipeline pipe;
-  for (int i = 0; i < 8; i++) {
+  for (size_t i = 0; i < Pipeline::maxPacketQueue + 5; i++) {
     Packet q;
     q.key = i == 0;
     q.seq = i;
@@ -443,6 +443,17 @@ int main(int argc, char **argv) {
              ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
              ",\"queueOverflows\":" +
                  std::to_string(pipe.packetQueueOverflows) +
+             ",\"packetQueueLimit\":" +
+                 std::to_string(Pipeline::maxPacketQueue) +
+             ",\"packetQueueHighWater\":" +
+                 std::to_string(pipe.packetQueueHighWater) +
+             ",\"packetQueueWaitMs\":" +
+                 std::to_string(pipe.packetQueueWaitMs) +
+             ",\"emptyReceives\":" + std::to_string(pipe.emptyReceives) +
+             ",\"emptyReceiveMaxMs\":" +
+                 std::to_string(pipe.emptyReceiveMaxMs) +
+             ",\"emptyReceiveTotalMs\":" +
+                 std::to_string(pipe.emptyReceiveTotalMs) +
              ",\"droppedAwaitingIdr\":" +
                  std::to_string(pipe.droppedAwaitingIdr) +
              ",\"overflowRecoveryIdrs\":" +

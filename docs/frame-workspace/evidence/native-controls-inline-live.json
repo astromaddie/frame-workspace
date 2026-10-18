@@ -1,0 +1,26 @@
+{
+  "date": "2026-10-19",
+  "route": "Production companion page, actual Frame; off-head",
+  "actions": [
+    "width +0.2m",
+    "distance +0.2m"
+  ],
+  "confirmedPlacement": {
+    "width": 2.6,
+    "distance": 2.2
+  },
+  "sameNativeProcess": true,
+  "sameMacDisplay": true,
+  "orientationPreserved": true,
+  "connected": true,
+  "errors": 0,
+  "restoredOriginalPlacement": true,
+  "restoredPoseSha256": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c",
+  "finalPlacement": {
+    "width": 2.4,
+    "distance": 2.0
+  },
+  "sameNativeProcessAfterRestore": true,
+  "sameMacDisplayAfterRestore": true,
+  "screenshot": "native-controls-inline-live.jpg"
+}

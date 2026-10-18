@@ -345,12 +345,15 @@ def open_switcher():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--native-owner', action='store_true')
     parser.add_argument('--focus')
     parser.add_argument('--open', action='store_true')
     parser.add_argument('--serve', action='store_true')
     args = parser.parse_args()
     try:
-        if args.serve:
+        if args.native_owner:
+            print(json.dumps(native_owner_state()))
+        elif args.serve:
             serve()
         else:
             print(json.dumps(open_switcher() if args.open else focus(args.focus) if args.focus else state()))

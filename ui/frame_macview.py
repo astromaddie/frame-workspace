@@ -824,6 +824,24 @@ class MacView:
             raise MacViewError(f"Workspace {name} must be between {low:g} and {high:g} meters.")
         return float(value)
 
+    def workspace_placement(self, workspace):
+        """Read the reserved owner once per normal state refresh, never per frame."""
+        key = self.workspace_panel_key or ""
+        if workspace.get("state") != "running" or not re.fullmatch(r"com\.frame-workspace\.native\.\d+\.workspace", key):
+            return None
+        try:
+            owner = json.loads(self.run("python3 - --native-owner",
+                stdin=(ROOT / "ui" / "frame_panels.py").read_text(), timeout=10))
+            if not isinstance(owner, dict) or owner.get("key") != key:
+                return None
+            placement = owner.get("placement", {})
+            width = self._placement_number(placement.get("width"), "width", 0.4, 8.0)
+            distance = self._placement_number(placement.get("distance"), "distance", 0.4, 10.0)
+            return {"width": width, "distance": distance}
+        except Exception:
+            # Unreachable or unready owners must not expose guessed dimensions.
+            return None
+
     def adjust_workspace(self, width, distance):
         """Change placement through the active native owner without restarting it."""
         width = self._placement_number(width, "width", 0.4, 8.0)
@@ -1119,6 +1137,7 @@ class MacView:
                              "display": {"logicalWidth": registered.get("w"), "logicalHeight": registered.get("h"),
                                          "bufferWidth": registered.get("pixelW"), "bufferHeight": registered.get("pixelH")},
                              "error": "A Frame Workspace display is registered, but this companion does not own its process. Stop checks the live-owner lease before recovery."}
+        workspace = {**workspace, "placement": self.workspace_placement(workspace)}
         return {"available": True, "screen": status.get("screen", False),
                 "accessibility": status.get("accessibility", False), "streams": status.get("streams", []),
                 "windows": windows, "displays": displays, "workspace": workspace, "tunnel": self.tunnel_up(),

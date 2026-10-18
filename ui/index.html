@@ -421,6 +421,10 @@
   .mv-workspace-controls label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
   .mv-workspace-controls select { max-width: 190px; background: rgba(0,0,0,.28); color: var(--text); border: 1px solid transparent; border-radius: 3px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .mv-workspace-controls select:disabled { opacity: .6; }
+  .mv-placement-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; }
+  .mv-placement-group { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
+  .mv-placement-group > span { margin-right: 3px; }
+  .mv-placement-group output { min-width: 48px; text-align: center; font-variant-numeric: tabular-nums; }
   .mv-workspace-status { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 7px; }
   .mv-workspace-status[data-state="running"] { color: var(--text); }
   .mv-workspace-status .mv-ws-state { color: var(--green, #7fd67f); }
@@ -1261,8 +1265,22 @@
             <option value="2">2× · HiDPI</option>
           </select></label>
           <button class="small action" id="mvWorkspaceStart" data-mv="workspace-start">Start Workspace</button>
-          <button class="small danger" id="mvWorkspaceStop" data-mv="workspace-stop" hidden>Stop Workspace</button>
+
         </div>
+        <div class="mv-placement-row">
+          <button class="small danger" id="mvWorkspaceStop" data-mv="workspace-stop" hidden>Stop Workspace</button>
+          <div class="mv-placement-group" role="group" aria-label="Workspace width">
+            <span>Width</span><button class="small" data-mv="workspace-adjust" data-field="width" data-step="-0.2" id="mvWidthMinus" aria-label="Decrease Workspace width" disabled>−</button>
+            <output id="mvWidthValue" aria-label="Current Workspace width">—</output>
+            <button class="small" data-mv="workspace-adjust" data-field="width" data-step="0.2" id="mvWidthPlus" aria-label="Increase Workspace width" disabled>+</button>
+          </div>
+          <div class="mv-placement-group" role="group" aria-label="Workspace distance">
+            <span>Distance</span><button class="small" data-mv="workspace-adjust" data-field="distance" data-step="-0.2" id="mvDistanceMinus" aria-label="Decrease Workspace distance" disabled>−</button>
+            <output id="mvDistanceValue" aria-label="Current Workspace distance">—</output>
+            <button class="small" data-mv="workspace-adjust" data-field="distance" data-step="0.2" id="mvDistancePlus" aria-label="Increase Workspace distance" disabled>+</button>
+          </div>
+        </div>
+        <div class="mv-workspace-status" id="mvPlacementStatus" role="status" aria-live="polite"></div>
         <div class="mv-workspace-status" id="mvWorkspaceStatus" role="status" aria-live="polite">
           Start creates an extended Mac desktop and opens its panel in the Frame.
         </div>
@@ -4258,6 +4276,7 @@ $("panelList").onclick = e => {
 
 // ---- Mac in the headset: windows and displays as panels (ui/frame_macview.py) ----
 let mvSeq = 0, mvTimer = 0, mvState = null, mvWorkspaceBusy = false;
+let mvPlacementBusy = false, mvPlacementError = "";
 let mvWorkspaceActivePreset = null, mvWorkspacePendingPreset = null;
 // streaming: the src it's shown as (a window may be "separate:<id>"), or "".
 // How a live stream is doing: frames shown, Mac-to-headset delay, bitrate, and
@@ -4278,7 +4297,47 @@ function mvRow(src, title, sub, w, h, streaming, st) {
                 : `<button class="small action" data-mv="show" data-src="${esc(src)}" data-title="${esc(title)}" data-w="${w}" data-h="${h}">Show</button>`}
   </div>`;
 }
+function workspacePlacement(s) {
+  const ws = s && s.workspace, p = ws && ws.placement;
+  return ws && ws.state === "running" && p && Number.isFinite(p.width) && Number.isFinite(p.distance)
+    && p.width >= 0.4 && p.width <= 8 && p.distance >= 0.4 && p.distance <= 10 ? p : null;
+}
+function renderWorkspacePlacement(s) {
+  const p = workspacePlacement(s), busy = mvWorkspaceBusy || mvPlacementBusy;
+  for (const [field, max] of [["Width", 8], ["Distance", 10]]) {
+    const value = p && p[field.toLowerCase()];
+    $("mv" + field + "Value").textContent = p ? `${Number(value.toFixed(3))} m` : "—";
+    $("mv" + field + "Minus").disabled = busy || !p || value <= 0.4;
+    $("mv" + field + "Plus").disabled = busy || !p || value >= max;
+  }
+  $("mvPlacementStatus").textContent = mvPlacementBusy ? "Applying placement…" : mvPlacementError
+    || (p ? "Width and distance update immediately. Show again centers the panel ahead of you."
+          : "Placement requires a running, ready native Workspace panel.");
+}
+async function adjustWorkspacePlacement(b) {
+  const p = workspacePlacement(mvState), field = b.dataset.field;
+  if (mvWorkspaceBusy || mvPlacementBusy || !p || b.disabled || !["width", "distance"].includes(field)) return;
+  const next = {...p, [field]: Math.min(field === "width" ? 8 : 10,
+    Math.max(0.4, Math.round((p[field] + Number(b.dataset.step)) * 1000000) / 1000000))};
+  ++mvSeq; // Discard any state refresh started before this adjustment.
+  mvPlacementBusy = true; mvPlacementError = "";
+  renderMvWorkspace(mvState);
+  try {
+    const result = await api("/api/macview", {action: "workspace_adjust", ...next});
+    if (!result.ready || !workspacePlacement({workspace: {state: "running", placement: result.placement}}))
+      throw new Error("The native owner did not confirm placement.");
+    mvState.workspace.placement = result.placement;
+  } catch (e) {
+    mvPlacementError = "Placement failed: " + e.message;
+    mvState.workspace.placement = null;
+  } finally {
+    mvPlacementBusy = false;
+    renderMvWorkspace(mvState);
+    await loadMacView();
+  }
+}
 function renderMvWorkspace(s) {
+  renderWorkspacePlacement(s);
   const ws = s.workspace || {state: "stopped"}, running = ws.state === "running";
   const stream = running && (s.streams || []).find(x => x.src === ws.captureSrc);
   const status = $("mvWorkspaceStatus"), start = $("mvWorkspaceStart"), stop = $("mvWorkspaceStop");
@@ -4296,10 +4355,10 @@ function renderMvWorkspace(s) {
   }
   if (running && (ws.scale === 1 || ws.scale === 2)) scale.value = String(ws.scale);
   const applyingSize = running && mvWorkspacePendingPreset !== null;
-  start.disabled = mvWorkspaceBusy || pending || !s.screen;
-  preset.disabled = mvWorkspaceBusy || pending;
-  scale.disabled = mvWorkspaceBusy || running || pending;
-  stop.disabled = mvWorkspaceBusy;
+  start.disabled = mvWorkspaceBusy || mvPlacementBusy || pending || !s.screen;
+  preset.disabled = mvWorkspaceBusy || mvPlacementBusy || pending;
+  scale.disabled = mvWorkspaceBusy || mvPlacementBusy || running || pending;
+  stop.disabled = mvWorkspaceBusy || mvPlacementBusy;
   stop.hidden = !needsStop;
   start.textContent = mvWorkspaceBusy ? (applyingSize ? "Applying size…" : "Working…")
     : applyingSize ? "Apply size change" : running ? "Show again" : "Start Workspace";
@@ -4329,12 +4388,17 @@ function renderMvWorkspace(s) {
 }
 
 async function loadMacView(restart) {
+  if (mvPlacementBusy) return;
   const seq = ++mvSeq;
   let s, err;
   try { s = await api("/api/macview" + (restart ? "?restart=1" : "")); } catch (e) { err = e; }
   if (seq !== mvSeq) return;
   const box = $("macview");
-  if (err) { box.hidden = false; return failed($("mvWindows"), err); }
+  if (err) {
+    if (mvState && mvState.workspace) mvState.workspace.placement = null;
+    renderWorkspacePlacement(mvState);
+    box.hidden = false; return failed($("mvWindows"), err);
+  }
   if (!s.available) { box.hidden = true; return; }
   box.hidden = false;
   mvState = s;
@@ -4372,7 +4436,10 @@ $("mvSeparate").onchange = e => localStorage.setItem("mvSeparate", e.target.chec
 $("macview").onclick = async e => {
   const b = e.target.closest("[data-mv]"); if (!b) return;
   const src = b.dataset.src;
-  if (b.dataset.mv === "show") {
+  if (b.dataset.mv === "workspace-adjust") {
+    await adjustWorkspacePlacement(b);
+    return;
+  } else if (b.dataset.mv === "show") {
     const as = $("mvSeparate").checked && src.startsWith("window:") ? "separate:" + src.slice(7) : src;
     await act(`Show ${b.dataset.title} in the headset`, async () => {
       const r = await api("/api/macview", { action: "show", src: as, quality: $("mvQuality").value,
@@ -4386,7 +4453,7 @@ $("macview").onclick = async e => {
   } else if (b.dataset.mv === "perm") {
     await act("Ask macOS for permission", () => api("/api/macview", { action: "permissions" }), b);
   } else if (b.dataset.mv === "workspace-start") {
-    if (mvWorkspaceBusy) return;
+    if (mvWorkspaceBusy || mvPlacementBusy) return;
     const selectedPreset = $("mvWorkspacePreset").value;
     const workspaceRunning = Boolean(mvWorkspaceActivePreset);
     const applyingSize = mvWorkspaceActivePreset && selectedPreset !== mvWorkspaceActivePreset;
@@ -4410,7 +4477,7 @@ $("macview").onclick = async e => {
       await loadMacView();
     }
   } else if (b.dataset.mv === "workspace-stop") {
-    if (mvWorkspaceBusy) return;
+    if (mvWorkspaceBusy || mvPlacementBusy) return;
     mvWorkspaceBusy = true;
     if (mvState) renderMvWorkspace(mvState);
     try {

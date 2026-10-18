@@ -68,7 +68,8 @@ for _ in range(COUNT):
   'ready','connected','textureWidth','textureHeight','received','decoded','uploaded',
   'errors','networkErrors','serverErrors','decoderSendErrors','decoderReceiveErrors',
   'decoderFatalErrors','submitErrors','droppedEncoded','droppedDecoded','decoderActive','decoderCodec',
-  'queueOverflows','droppedAwaitingIdr','overflowRecoveryIdrs','lastOverflowRecoverySeq',
+  'queueOverflows','packetQueueLimit','packetQueueHighWater','emptyReceives',
+  'droppedAwaitingIdr','overflowRecoveryIdrs','lastOverflowRecoverySeq',
   'staleDriverFramesDropped','decoderTimingHighWater','decoderOpenAttempts',
   'decoderInitialOpens','decoderReconnectOpens','decoderFormatReopens','decoderOpenFailures',
   'decoderOpenTotalMs',
@@ -111,12 +112,13 @@ for _ in range(COUNT):
                 "overflowRecoveryIdrs", "staleDriverFramesDropped", "decoderOpenAttempts",
                 "decoderInitialOpens", "decoderReconnectOpens", "decoderFormatReopens",
                 "decoderOpenFailures", "decoderOpenTotalMs")
+    counters += tuple(k for k in ('emptyReceives', 'emptyReceiveTotalMs') if k in first and k in last)
     delta = {key: last[key] - first[key] for key in counters}
     if any(value < 0 for value in delta.values()):
         raise RuntimeError("Native viewer restarted during measurement.")
     timings = {}
     for key in last:
-        if key.endswith("Ms") and key != "decoderOpenTotalMs":
+        if key.endswith("Ms") and key not in ("decoderOpenTotalMs", "emptyReceiveTotalMs", "emptyReceiveMaxMs"):
             values = sorted(float(s[key]) for s in samples[1:] if key in s)
             timings[key] = {"p50": statistics.median(values),
                             "p95": values[round(.95 * (len(values) - 1))]}
@@ -139,6 +141,9 @@ for _ in range(COUNT):
               "conversionFallbacks": last.get("conversionFallbacks"),
               "lastOverflowRecoverySeq": last.get("lastOverflowRecoverySeq"),
               "decoderTimingHighWater": last.get("decoderTimingHighWater"),
+              "packetQueueLimit": last.get("packetQueueLimit"),
+              "packetQueueHighWater": last.get("packetQueueHighWater"),
+              "emptyReceiveMaxMs": last.get("emptyReceiveMaxMs"),
               "note": "Stage percentiles summarize one-second observations, not every frame."}
     args.out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))

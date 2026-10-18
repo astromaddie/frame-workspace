@@ -107,11 +107,18 @@ Recovery counters include `queueOverflows`, `droppedAwaitingIdr`,
 and `decoderTimingHighWater`. Decoder-open attempts, initial/reconnect/format
 opens, failures and cumulative open time are separate counters. `decoderOpenMs`
 is the last open duration; `decoderOpenTotalMs` is cumulative.
+`packetQueueLimit` and `packetQueueHighWater` expose the compressed queue bound
+and its lifetime peak. `packetQueueWaitMs` is the most recent dequeued packet's
+receive-to-dequeue time. `emptyReceives`, `emptyReceiveTotalMs` and
+`emptyReceiveMaxMs` separately measure receive calls returning EAGAIN; they are
+not successful decode or GPU execution timings.
 
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder
-thread. At most three compressed access units wait for decoding. Overflow discards
+thread. At most eight compressed access units wait for decoding. This absorbs
+short delivery bursts that exceeded the previous three-packet bound, without
+discarding a valid H.264 reference chain. Overflow still discards
 that queue and asks for an IDR. Software flushes at recovery; V4L2 keeps its
 context for a same-size overflow IDR and retires older timestamp tokens.
 Delayed driver output through that barrier is discarded; zero, negative,
@@ -233,7 +240,7 @@ unused decoder. On overflow, a validated same-size IDR resets the H.264 referenc
 state without reopening V4L2, whose FFmpeg wrapper has no flush callback. Real
 reconnects and parsed visible/coded dimension changes reopen the hardware
 context. Software reconnects flush the existing context and retire its timing
-metadata. The three-packet and one-newest-picture limits remain in place;
+metadata. The eight-packet and one-newest-picture limits remain in place;
 timestamp metadata is separately bounded to 64 entries. Unsupported output formats or missing timestamps
 fail explicitly instead of reporting guessed timing or software acceleration.
 
