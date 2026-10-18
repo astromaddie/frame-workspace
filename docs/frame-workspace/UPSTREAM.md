@@ -28,6 +28,12 @@ Resolve upstream conflicts consciously; do not overwrite Frame Workspace-specifi
 
 Before distributing an independent build, review inherited release/update settings, CI workflows, installer metadata, application identity, repository references, telemetry and URLs. Do not publish upstream-branded artifacts under the upstream maintainer's name or inadvertently point Frame Workspace's update path at unrelated upstream releases.
 
+The prototype sets `app/package.json`'s `frameWorkspacePrototype` flag: automatic update scheduling is disabled, and manual checks and installation are rejected before network or filesystem update operations. The inherited update URLs remain visible in `app/updater.js` for upstream compatibility, but are inactive. Both jobs in `.github/workflows/release.yml` are restricted to the upstream repository, so fork tags cannot publish inherited installers. Reconfigure application identity, URLs and distribution before enabling an independent channel. The command-line Workspace proof does not start the Electron app or its inherited telemetry; the inherited app's behavior remains documented in [privacy.md](../privacy.md).
+
+## Verified groundwork (2026-10-18)
+
+The upstream baseline is an ancestor of this fork, the original MIT license is intact, and the local `upstream` remote has been added and fetched. Before source changes, all 934 inherited Python tests passed (one expected permission-dependent skip), as did all 15 updater/site Node tests. The Workspace feature is opt-in through the new `workspace` command; existing per-window virtual displays retain their default 2× behavior. See the [roadmap proof](ROADMAP.md#mac-only-virtual-display-proof-fw-03--fw-04-first-slice) for actual M4 creation/capture/removal evidence. FW-02's worn benchmark and the full FW-04 companion UI, restore and reconnect behavior remain open.
+
 ## Known deployment constraints
 
 Local Wi-Fi and USB-C transport are already supported; high throughput alone does not guarantee text clarity or low latency. Private Apple APIs can change, codecs must decode on the Steam Frame, and multiple moving windows contend for encoding and rendering resources.

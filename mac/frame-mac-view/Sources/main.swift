@@ -49,7 +49,12 @@ func displaysJSON() -> [[String: Any]] {
         CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay && !VirtualDisplay.isOurs($0)  // not a separated window's
     }.map { id in
         let b = CGDisplayBounds(id)
+        let mode = CGDisplayCopyDisplayMode(id)
+        let mirrored = CGDisplayMirrorsDisplay(id)
         return ["id": id, "src": "display:\(id)", "name": displayName(id), "w": Int(b.width), "h": Int(b.height),
+                "x": Double(b.minX), "y": Double(b.minY), "pixelW": mode?.pixelWidth ?? 0, "pixelH": mode?.pixelHeight ?? 0,
+                "mirrored": mirrored != kCGNullDirectDisplay,
+                "mirrorDisplayID": mirrored == kCGNullDirectDisplay ? NSNull() : mirrored as Any,
                 "main": CGDisplayIsMain(id) != 0]
     }
 }
@@ -705,6 +710,39 @@ case "permissions":
 case "request-permissions":
     requestPermissions()
     printJSON(permissionsJSON())
+case "workspace":
+    let workspaceArgs = Array(args.dropFirst())
+    if workspaceArgs.contains("--help") {
+        print(WorkspaceOptions.usage)
+        exit(0)
+    }
+    let options: WorkspaceOptions
+    do {
+        options = try WorkspaceOptions(arguments: workspaceArgs)
+    } catch {
+        printJSON(["state": "error", "error": String(describing: error), "usage": WorkspaceOptions.usage])
+        exit(2)
+    }
+    let app = NSApplication.shared
+    app.setActivationPolicy(.prohibited)
+    let workspace = WorkspaceCommand(options: options, app: app)
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+    let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    sigint.setEventHandler { workspace.stop(reason: "SIGINT") }
+    sigterm.setEventHandler { workspace.stop(reason: "SIGTERM") }
+    sigint.resume()
+    sigterm.resume()
+    if options.exitOnStdinEOF {
+        DispatchQueue.global(qos: .utility).async {
+            while !FileHandle.standardInput.availableData.isEmpty {}
+            DispatchQueue.main.async { workspace.stop(reason: "stdin_eof") }
+        }
+    }
+    DispatchQueue.main.async { workspace.start() }
+    withExtendedLifetime((workspace, sigint, sigterm)) { app.run() }
+    exit(workspace.exitStatus)
 case "serve":
     let port = UInt16(argument("--port", in: args) ?? "") ?? 0
     let token = ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_TOKEN"] ?? ""
@@ -750,6 +788,6 @@ case "serve":
     app.setActivationPolicy(.prohibited)
     withExtendedLifetime((server, sigterm)) { app.run() }
 default:
-    FileHandle.standardError.write(Data("usage: frame-mac-view serve|windows|displays|permissions|request-permissions\n".utf8))
+    FileHandle.standardError.write(Data("usage: frame-mac-view serve|workspace|windows|displays|permissions|request-permissions\n".utf8))
     exit(2)
 }

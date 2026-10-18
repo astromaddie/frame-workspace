@@ -304,6 +304,16 @@ class Agent(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIsInstance(json.loads(body)["displays"], list)
 
+    def test_workspace_validation_does_not_attach_a_display(self):
+        before = json.loads(self.get(f"/displays?k={self.token}")[1])["displays"]
+        env = {**os.environ, "FRAME_MAC_VIEW_RUN_DISPLAY_TESTS": "0"}
+        result = subprocess.run(
+            ["sh", str(ROOT / "mac/frame-mac-view/test-workspace.sh"), str(self.bin)],
+            capture_output=True, text=True, timeout=45, env=env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("PASS workspace argument validation", result.stdout)
+        self.assertEqual(json.loads(self.get(f"/displays?k={self.token}")[1])["displays"], before)
+
     def ticket(self, src):
         status, body = self.get(f"/ticket?k={self.token}&src={src}", method="POST")
         self.assertEqual(status, 200)

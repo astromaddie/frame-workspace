@@ -11,56 +11,122 @@ import Foundation
 @_silgen_name("_AXUIElementGetWindow")
 private func axWindowID(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
-/// One of our virtual displays, HiDPI (2 pixels per point). Main thread only.
+/// One of our virtual displays (per-window sources default to HiDPI). Main thread only.
 final class VirtualDisplay {
     static let vendor: UInt32 = 0xF0C0
+    /// Workspace displays remain ordinary entries in the display picker. Only
+    /// per-window displays use `vendor`, which `displaysJSON()` intentionally hides.
+    static let workspaceVendor: UInt32 = 0xF0C1
     /// How often macOS composites our displays (FRAME_MAC_VIEW_VD_HZ to experiment).
     static let refreshRate = Double(ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_VD_HZ"] ?? "") ?? 60
     private var display: CGVirtualDisplay?
     let id: CGDirectDisplayID
+    private(set) var lastModeConfigurationError: String?
     /// Removal is deferred while the Mac's screen sleeps, and an identity
     /// can't be reused until it's gone, so each display gets a fresh serial.
     private static var serial = (UInt32(truncatingIfNeeded: ProcessInfo.processInfo.processIdentifier) & 0xFFFF) << 12
 
-    init?(name: String, width: Int, height: Int) {
+    enum Purpose { case separate, workspace }
+
+    init?(name: String, width: Int, height: Int, pixelScale: Int = 2, purpose: Purpose = .separate) {
         var made: CGVirtualDisplay?
         for _ in 0..<8 where made == nil {
             VirtualDisplay.serial &+= 1
             let d = CGVirtualDisplayDescriptor()
             d.queue = DispatchQueue.main
             d.name = name
-            d.maxPixelsWide = UInt32(2 * width)
-            d.maxPixelsHigh = UInt32(2 * height)
+            d.maxPixelsWide = UInt32(pixelScale * width)
+            d.maxPixelsHigh = UInt32(pixelScale * height)
             d.sizeInMillimeters = CGSize(width: Double(width) * 0.2646, height: Double(height) * 0.2646)
-            d.vendorID = VirtualDisplay.vendor
-            d.productID = 0x5E9A
+            d.vendorID = purpose == .workspace ? VirtualDisplay.workspaceVendor : VirtualDisplay.vendor
+            d.productID = purpose == .workspace ? 0x5E9B : 0x5E9A
             d.serialNum = VirtualDisplay.serial
             d.terminationHandler = { _, _ in }
             guard let vd = CGVirtualDisplay(descriptor: d) else { continue }
             let s = CGVirtualDisplaySettings()
-            s.hiDPI = 1
+            s.hiDPI = pixelScale == 2 ? 1 : 0
             let hz = VirtualDisplay.refreshRate
-            s.modes = [CGVirtualDisplayMode(width: UInt32(2 * width), height: UInt32(2 * height), refreshRate: hz)!,
-                       CGVirtualDisplayMode(width: UInt32(width), height: UInt32(height), refreshRate: hz)!]
+            if pixelScale == 2 {
+                s.modes = [CGVirtualDisplayMode(width: UInt32(2 * width), height: UInt32(2 * height), refreshRate: hz)!,
+                           CGVirtualDisplayMode(width: UInt32(width), height: UInt32(height), refreshRate: hz)!]
+            } else {
+                s.modes = [CGVirtualDisplayMode(width: UInt32(width), height: UInt32(height), refreshRate: hz)!]
+            }
             if vd.apply(s), vd.displayID != 0 { made = vd }
         }
         guard let made else { return nil }
         display = made
         id = made.displayID
-        // Pick the HiDPI mode: `width` points drawn with twice the pixels.
+        // Preserve the per-window mode selection exactly; Workspace also
+        // supports a real 1x logical-to-pixel mode.
         let modes = (CGDisplayCopyAllDisplayModes(id, [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary)
             as? [CGDisplayMode]) ?? []
-        if let hidpi = modes.first(where: {
-            $0.width == width && $0.height == height && $0.pixelWidth == 2 * width && $0.refreshRate == VirtualDisplay.refreshRate
-        }) ?? modes.first(where: { $0.width == width && $0.height == height && $0.pixelWidth == 2 * width }) {
-            var cfg: CGDisplayConfigRef?
-            CGBeginDisplayConfiguration(&cfg)
-            CGConfigureDisplayWithDisplayMode(cfg, id, hidpi, nil)
-            CGCompleteDisplayConfiguration(cfg, .forSession)
+        let requestedMode: CGDisplayMode?
+        if purpose == .separate {
+            requestedMode = modes.first(where: {
+                $0.width == width && $0.height == height && $0.pixelWidth == 2 * width && $0.refreshRate == VirtualDisplay.refreshRate
+            }) ?? modes.first(where: { $0.width == width && $0.height == height && $0.pixelWidth == 2 * width })
+        } else {
+            requestedMode = modes.first(where: {
+                $0.width == width && $0.height == height && $0.pixelWidth == pixelScale * width &&
+                    $0.pixelHeight == pixelScale * height && $0.refreshRate == VirtualDisplay.refreshRate
+            }) ?? modes.first(where: {
+                $0.width == width && $0.height == height && $0.pixelWidth == pixelScale * width && $0.pixelHeight == pixelScale * height
+            })
+        }
+        if let hidpi = requestedMode {
+            if purpose == .separate {
+                var cfg: CGDisplayConfigRef?
+                CGBeginDisplayConfiguration(&cfg)
+                CGConfigureDisplayWithDisplayMode(cfg, id, hidpi, nil)
+                CGCompleteDisplayConfiguration(cfg, .forSession)
+            } else {
+                _ = applyWorkspaceMode(hidpi)
+            }
         }
     }
 
     var bounds: CGRect { CGDisplayBounds(id) }
+
+    /// Reapply once the newly added display has appeared in WindowServer.
+    /// Some large modes are enumerable before CGVirtualDisplay is configurable.
+    @discardableResult
+    func applyWorkspaceMode(width: Int, height: Int, pixelScale: Int) -> Bool {
+        let modes = (CGDisplayCopyAllDisplayModes(id, [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary)
+            as? [CGDisplayMode]) ?? []
+        guard let mode = modes.first(where: {
+            $0.width == width && $0.height == height && $0.pixelWidth == pixelScale * width &&
+                $0.pixelHeight == pixelScale * height && $0.refreshRate == VirtualDisplay.refreshRate
+        }) ?? modes.first(where: {
+            $0.width == width && $0.height == height && $0.pixelWidth == pixelScale * width && $0.pixelHeight == pixelScale * height
+        }) else {
+            lastModeConfigurationError = "the requested mode is not in the display mode list"
+            return false
+        }
+        return applyWorkspaceMode(mode)
+    }
+
+    private func applyWorkspaceMode(_ mode: CGDisplayMode) -> Bool {
+        var config: CGDisplayConfigRef?
+        let begin = CGBeginDisplayConfiguration(&config)
+        guard begin == .success, let config else {
+            lastModeConfigurationError = "CGBeginDisplayConfiguration returned \(begin.rawValue)"
+            return false
+        }
+        let configured = CGConfigureDisplayWithDisplayMode(config, id, mode, nil)
+        guard configured == .success else {
+            CGCancelDisplayConfiguration(config)
+            lastModeConfigurationError = "CGConfigureDisplayWithDisplayMode returned \(configured.rawValue)"
+            return false
+        }
+        let completed = CGCompleteDisplayConfiguration(config, .forSession)
+        guard completed == .success else {
+            lastModeConfigurationError = "CGCompleteDisplayConfiguration returned \(completed.rawValue)"
+            return false
+        }
+        lastModeConfigurationError = nil
+        return true
+    }
 
     var isHiDPI: Bool { CGDisplayCopyDisplayMode(id).map { $0.pixelWidth > $0.width } ?? false }
 
@@ -83,6 +149,8 @@ final class VirtualDisplay {
     func release() { display = nil }
 
     static func isOurs(_ id: CGDirectDisplayID) -> Bool { CGDisplayVendorNumber(id) == vendor }
+
+    static func isWorkspace(_ id: CGDirectDisplayID) -> Bool { CGDisplayVendorNumber(id) == workspaceVendor }
 }
 
 /// A window through the Accessibility API.

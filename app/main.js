@@ -491,7 +491,7 @@ async function installUpdate() {
 }
 
 function scheduleUpdateChecks() {
-  if (process.env.FRAME_CONTROL_NO_UPDATE_CHECK === "1") return;
+  if (!updater.updatesEnabled || process.env.FRAME_CONTROL_NO_UPDATE_CHECK === "1") return;
   setTimeout(checkForUpdate, 8000);
   setInterval(checkForUpdate, UPDATE_EVERY).unref();
 }

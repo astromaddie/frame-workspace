@@ -78,3 +78,12 @@ test("prepare refuses a release that isn't newer (no downgrades)", async () => {
   await assert.rejects(prepare(release, { method: "appimage", appImage: "/nonexistent/x" }, null, "0.4.0"), /isn't newer/);
   await assert.rejects(prepare(release, { method: "appimage", appImage: "/nonexistent/x" }, null, "0.3.1"), /isn't newer/);
 });
+
+test("Workspace prototype cannot check or install upstream updates", async () => {
+  const { updatesEnabled, latestRelease, prepare } = require("../updater");
+  assert.strictEqual(updatesEnabled, false);
+  await assert.rejects(latestRelease(), /Workspace prototype updates are disabled/);
+  await assert.rejects(prepare({ version: "99.0.0", assets: [] },
+                              { method: "mac-zip", bundle: "/nonexistent" }, null, "0.4.7"),
+                       /Workspace prototype updates are disabled/);
+});

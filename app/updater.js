@@ -23,6 +23,13 @@ const https = require("https");
 const os = require("os");
 const path = require("path");
 
+// This fork has no independent installer/update channel yet. Never replace a
+// Workspace prototype with an upstream Frame Control build.
+const updatesEnabled = require("./package.json").frameWorkspacePrototype !== true;
+function requireUpdatesEnabled() {
+  if (!updatesEnabled) throw new Error("Frame Workspace prototype updates are disabled until its own release channel is configured");
+}
+
 const REPO = "saphid/frame-control";  // renamed from saphid/steam-frame; GitHub redirects the old name
 const LATEST = `https://api.github.com/repos/${REPO}/releases/latest`;
 const MANIFEST = `https://github.com/${REPO}/releases/latest/download/update.json`;
@@ -139,6 +146,7 @@ function fromApi(r) {
 }
 
 async function latestRelease() {
+  requireUpdatesEnabled();
   try {
     return fromManifest(await getJson(MANIFEST));
   } catch (e) {
@@ -248,6 +256,7 @@ async function applyAppImage(release, appImage, onProgress) {
 // to be called just before the app quits.
 async function prepare(release, how, onProgress, current) {
   if (!isNewer(release.version, current)) throw new Error(`${release.version} isn't newer than ${current}`);
+  requireUpdatesEnabled();
   if (how.method === "mac-zip") return applyMac(release, how.bundle, onProgress);
   if (how.method === "nsis") return applyNsis(release, onProgress);
   if (how.method === "appimage") return applyAppImage(release, how.appImage, onProgress);
@@ -258,6 +267,6 @@ function writable(dir) {
   try { fs.accessSync(dir, fs.constants.W_OK); return true; } catch { return false; }
 }
 
-module.exports = { REPO, RELEASES, parseVersion, isNewer, assetName, updateMethod, macBundle, latestRelease,
+module.exports = { REPO, RELEASES, updatesEnabled, parseVersion, isNewer, assetName, updateMethod, macBundle, latestRelease,
                    fromManifest, fromApi,
                    download, prepare, writable };
