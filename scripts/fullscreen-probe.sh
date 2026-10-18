@@ -7,6 +7,7 @@ mkdir -p "$module_cache"
 xcrun swiftc -O -swift-version 5 -target arm64-apple-macos14.0 \
   -module-cache-path "$module_cache" \
   "$repo/mac/frame-mac-view/Sources/Stats.swift" \
+  "$repo/mac/frame-mac-view/Sources/WindowCloseRecovery.swift" \
   "$repo/mac/frame-mac-view/Sources/Capture.swift" \
   "$repo/mac/frame-mac-view/Diagnostics/FullscreenProbe.swift" \
   -o "$out"

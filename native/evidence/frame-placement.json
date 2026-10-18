@@ -1,0 +1,18 @@
+{
+  "evidence": "off-head OpenVR getters across native process restart in unchanged SteamVR session",
+  "sameMacDisplayID": true,
+  "sameTextureSize": true,
+  "textureSize": [
+    2880,
+    2560
+  ],
+  "sameOverlayKey": true,
+  "maxAbsoluteTransformDelta": 0.0,
+  "widthBefore": 2.4000000953674316,
+  "widthAfter": 2.4000000953674316,
+  "allGettersSucceeded": true,
+  "trackingOrigin": 1,
+  "limits": [
+    "No SteamVR runtime restart, room relocalization, game coexistence or worn acceptance tested."
+  ]
+}

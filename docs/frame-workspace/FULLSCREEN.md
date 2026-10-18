@@ -1,6 +1,29 @@
 # FW-06 native full-screen feasibility
 
-**Result:** detection and a fresh capture of an already full-screen AppKit fixture are demonstrated. An existing production `SCKSource(.window)` stream terminated incorrectly during a later entry transition. Keep FW-07 gated until transition recovery and inactive-Space capture pass the app/lifecycle matrix.
+**Result:** detection, fresh capture after settled entry, and continuous capture
+through entry/exit are demonstrated on one owned AppKit fixture. A confirmed
+transient window-list omission previously ended the source; the close-recovery
+policy fixes that observed failure. Keep FW-07 gated until inactive-Space capture
+and the broader app/lifecycle matrix pass.
+
+## Repaired production path
+
+`SCKSource` now checks fresh ScreenCaptureKit content and a second window-list
+lookup before declaring a window closed. Both checks preserve the original window
+ID and known owner PID. Five seconds of confirmed absence are required; a live
+match resets that grace. Asynchronous confirmations are single-flight, time out
+for retry, and are invalidated by Stop. Pure production-policy tests cover
+transient reappearance, bounded closure, mismatched identities and cancellation.
+
+The repaired production source was then compiled into the diagnostic observer.
+In one 240-second run, CUA clicked the fixture's native green button at
+16:37:40 UTC and pressed Escape to leave at 16:39:52 UTC. The same window ID
+survived. WindowInfo was absent at both Space notifications, yet capture stayed
+live: **129 changing-content samples while full screen and 96 after exit**,
+ending at **3,374 frames**, without capture failure or termination. The stream
+updated its dimensions on entry and exit. This directly exercises the original
+failure path; it does not prove capture from an inactive Space. See the compact
+[transition evidence](evidence/fullscreen-recovery.json).
 
 ## Test record
 
@@ -33,7 +56,12 @@ The later command was run a second time while window 42121 was already full scre
 
 The probe used public `AXObserver` registration, `AXUIElementCopyAttributeValue`, `NSWorkspace.activeSpaceDidChangeNotification`, `CGWindowList`, and ScreenCaptureKit. Observer 2 registered 13 of 13 notifications successfully; observer 3 registered 18 of 18. The accepted notifications included window create/focus/main, move/resize/destroy, minimize, and restore. AX state was obtained by querying the dynamic string `AXFullScreen`; it is not a public AX attribute constant, and the public notification set has no dedicated full-screen-change notification. No private Spaces or `_AXUIElementGetWindow` API was used.
 
-Production `Capture.swift` creates a `SCContentFilter(desktopIndependentWindow:)` from the initial `SCWindow` ([lines 158–169](../../mac/frame-mac-view/Sources/Capture.swift)). Its one-second window poll terminates the source on one missing `WindowInfo.find` result ([lines 233–244](../../mac/frame-mac-view/Sources/Capture.swift)); the size/title path updates configuration but does not rebuild the filter ([lines 245–256](../../mac/frame-mac-view/Sources/Capture.swift)). A stream error is reported without restart ([lines 306–308](../../mac/frame-mac-view/Sources/Capture.swift)).
+Production [Capture.swift](../../mac/frame-mac-view/Sources/Capture.swift)
+creates a `SCContentFilter(desktopIndependentWindow:)` from the initial `SCWindow`.
+The original one-second poll terminated on a single missing window-list result;
+the repaired path uses the confirmation policy above. Size/title changes update
+the configuration without rebuilding the filter. A genuine stream error is still
+reported without automatic restart.
 
 The logs show that a stable CGWindowID and a matching `SCWindow` can remain available while a stream has ended. Fresh capture of the first settled full-screen window worked. A single `WindowInfo.find` miss should not permanently mark the window gone without confirming absence through settled/repeated enumeration. If capture itself stops, a later experiment can re-enumerate `SCShareableContent` with `onScreenWindowsOnly: false` and rebuild the filter from a fresh `SCWindow`. Recovery still needs changing-content validation across entry, an actual Space away/back, and exit, with only one observer per executable.
 
@@ -41,6 +69,7 @@ The logs show that a stable CGWindowID and a matching `SCWindow` can remain avai
 |---|---|
 | FW-06 native entry detection on AppKit fixture | Demonstrated |
 | FW-06 fresh capture after settled full-screen entry on AppKit fixture | Demonstrated once; concurrent repeat failed |
-| FW-06 Path A continuity through transitions and inactive Space | Not demonstrated; recovery verification required |
+| FW-06 Path A continuity through entry and exit on AppKit fixture | Demonstrated after close-recovery repair |
+| FW-06 Path A live capture from inactive Space | Not demonstrated |
 | FW-06 app matrix and lifecycle matrix | Incomplete |
 | FW-07 automatic detachment | Gated; do not implement or claim supported behavior yet |

@@ -55,6 +55,13 @@ Mac workspace. OpenVR getters returned the same texture dimensions, a 2.4 m widt
 getters returned success. This is API geometry and texture evidence, not an
 optical measurement.
 
+A bounded native-process restart retained the same Mac display and overlay key.
+Every getter succeeded afterward; the maximum absolute matrix difference was
+**0.0**, and the 2880×2560 texture and 2.4 m width were unchanged. The test used
+the same running SteamVR tracking session. The compact
+[placement record](../../native/evidence/frame-placement.json) deliberately
+omits the room transform itself.
+
 The isolated paced test streamed a synthetic H.264 High Annex B file over the
 same WebSocket framing and a reverse SSH tunnel. It used no virtual Mac display
 or user application. The journal and state identified active

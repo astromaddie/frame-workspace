@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-19 JST",
+  "evidence": "owned AppKit fixture, native green-button click and Escape via CUA; production SCKSource compiled with close-recovery policy",
+  "duration_seconds": 240,
+  "entry": "2026-10-18T16:37:40Z",
+  "exit": "2026-10-18T16:39:52Z",
+  "sameWindowID": 42366,
+  "transitions": [
+    {
+      "appKitFullScreen": true,
+      "event": "native_fullscreen_enter",
+      "miniaturized": false,
+      "timestamp": "2026-10-18T16:37:40Z",
+      "windowID": 42366
+    },
+    {
+      "appKitFullScreen": false,
+      "event": "native_fullscreen_exit",
+      "miniaturized": false,
+      "timestamp": "2026-10-18T16:39:52Z",
+      "windowID": 42366
+    }
+  ],
+  "space_events": [
+    {
+      "captureFrames": 105,
+      "elapsedSeconds": 9.440814375062473,
+      "event": "activeSpaceDidChange",
+      "timestamp": "2026-10-18T16:37:39Z",
+      "windowID": 42366,
+      "windowInfoPresent": false
+    },
+    {
+      "captureFrames": 2032,
+      "elapsedSeconds": 141.89367145835422,
+      "event": "activeSpaceDidChange",
+      "timestamp": "2026-10-18T16:39:52Z",
+      "windowID": 42366,
+      "windowInfoPresent": false
+    }
+  ],
+  "capture_errors_or_ends": [],
+  "phases": {
+    "windowed": {
+      "content_samples": 8,
+      "changed_samples": 7,
+      "last_capture_frame_count": 105
+    },
+    "fullscreen": {
+      "content_samples": 129,
+      "changed_samples": 129,
+      "last_capture_frame_count": 2024
+    },
+    "after_exit": {
+      "content_samples": 96,
+      "changed_samples": 96,
+      "last_capture_frame_count": 3374
+    }
+  },
+  "source_sha256": {
+    "mac/frame-mac-view/Sources/Capture.swift": "6d1e5468493a25e3bbd0ac6140eba244c4727f7b2e415ef906c06ac8262ea096",
+    "mac/frame-mac-view/Sources/WindowCloseRecovery.swift": "540d5a7e4969cba667a44e7769c49dddd1d58a5a4bf55b4c9085ac7e1040e764",
+    "mac/frame-mac-view/Diagnostics/FullscreenProbe.swift": "125d3624c704b5fe8c745f7569a0d7a2a97be710fa179a575b9b0335e22e4244"
+  },
+  "limits": [
+    "Inactive Space switch not established by attempted keyboard shortcuts.",
+    "Single AppKit fixture only; Safari/Chrome/Electron/Stage Manager/two-fullscreen-app matrix still open.",
+    "Minimize happened after this 240-second capture ended and does not validate capture while minimized."
+  ]
+}
