@@ -2,7 +2,7 @@
 
 Created 2026-10-18 (JST) for [`astromaddie/frame-workspace`](https://github.com/astromaddie/frame-workspace).
 
-**Status:** Fork verified from `saphid/frame-control` at the audited commit. GitHub Issues are currently disabled in this fork (HTTP 410), so the [13 fully specified issues](ISSUES.md) are committed as a reviewable backlog. When Issues are enabled, these can be published without rewriting the plan.
+**Status:** Fork verified against the audited upstream commit. All **13 GitHub Issues** are now [published](https://github.com/astromaddie/frame-workspace/issues), with code-grounded acceptance criteria. The [original issue specifications](ISSUES.md) remain versioned alongside this roadmap.
 
 ## Product thesis
 
@@ -31,20 +31,20 @@ Local-first Steam Frame workspace for an Apple Silicon (M4) MacBook: a *real* ex
 
 | ID | Priority | Phase | Title | Depends on |
 |---|---|---|---|---|
-| FW-01 | P0 | M0 | Establish the fork, upstream baseline, and scope boundaries | — |
-| FW-02 | P0 | M0 | Benchmark current Mac → Frame streaming and coding readability | FW-01 |
-| FW-03 | P0 | M0 | Spike: independent HiDPI ultrawide macOS virtual display | FW-01, FW-02 |
-| FW-04 | P1 | M1 | Implement lifecycle-managed virtual ultrawide Workspace mode | FW-03 |
-| FW-05 | P0 | M1 | Preserve readable text on ultrawide: evaluate tiled or viewport streaming | FW-02, FW-03 |
-| FW-06 | P0 | M0 | Spike: detect native macOS full-screen Spaces reliably | FW-02 |
-| FW-07 | P1 | M2 | Automatic spatial detachment on native full-screen transitions | FW-06, FW-04 |
-| FW-08 | P1 | M1 | Frame-side curved workspace and low-friction controls | FW-04, FW-05 |
-| FW-09 | P1 | M2 | Prioritize active panel and benchmark multi-stream performance | FW-02, FW-05 |
-| FW-10 | P0 | M0 | Spike: owned VR overlays and saved spatial transform support | FW-02 |
-| FW-11 | P2 | M3 | Saved logical workspace profiles and conditional spatial layouts | FW-04, FW-08, FW-10 |
-| FW-12 | P1 | M2 | Keyboard, pointer, focus and multiple macOS Spaces correctness | FW-04, FW-06 |
-| FW-13 | P1 | M3 | Local-first security, failure recovery and end-to-end regression | FW-04, FW-07, FW-08, FW-09, FW-11, FW-12 |
+| [FW-01](https://github.com/astromaddie/frame-workspace/issues/1) | P0 | M0 | Establish the fork, upstream baseline, and scope boundaries | — |
+| [FW-02](https://github.com/astromaddie/frame-workspace/issues/2) | P0 | M0 | Benchmark current Mac → Frame streaming and coding readability | [FW-01](https://github.com/astromaddie/frame-workspace/issues/1) |
+| [FW-03](https://github.com/astromaddie/frame-workspace/issues/3) | P0 | M0 | Spike: independent HiDPI ultrawide macOS virtual display | [FW-01](https://github.com/astromaddie/frame-workspace/issues/1), [FW-02](https://github.com/astromaddie/frame-workspace/issues/2) |
+| [FW-04](https://github.com/astromaddie/frame-workspace/issues/4) | P1 | M1 | Implement lifecycle-managed virtual ultrawide Workspace mode | [FW-03](https://github.com/astromaddie/frame-workspace/issues/3) |
+| [FW-05](https://github.com/astromaddie/frame-workspace/issues/5) | P0 | M1 | Preserve readable text on ultrawide: evaluate tiled or viewport streaming | [FW-02](https://github.com/astromaddie/frame-workspace/issues/2), [FW-03](https://github.com/astromaddie/frame-workspace/issues/3) |
+| [FW-06](https://github.com/astromaddie/frame-workspace/issues/6) | P0 | M0 | Spike: detect native macOS full-screen Spaces reliably | [FW-02](https://github.com/astromaddie/frame-workspace/issues/2) |
+| [FW-07](https://github.com/astromaddie/frame-workspace/issues/7) | P1 | M2 | Automatic spatial detachment on native full-screen transitions | [FW-06](https://github.com/astromaddie/frame-workspace/issues/6), [FW-04](https://github.com/astromaddie/frame-workspace/issues/4) |
+| [FW-08](https://github.com/astromaddie/frame-workspace/issues/8) | P1 | M1 | Frame-side curved workspace and low-friction controls | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-05](https://github.com/astromaddie/frame-workspace/issues/5) |
+| [FW-09](https://github.com/astromaddie/frame-workspace/issues/9) | P1 | M2 | Prioritize active panel and benchmark multi-stream performance | [FW-02](https://github.com/astromaddie/frame-workspace/issues/2), [FW-05](https://github.com/astromaddie/frame-workspace/issues/5) |
+| [FW-10](https://github.com/astromaddie/frame-workspace/issues/10) | P0 | M0 | Spike: owned VR overlays and saved spatial transform support | [FW-02](https://github.com/astromaddie/frame-workspace/issues/2) |
+| [FW-11](https://github.com/astromaddie/frame-workspace/issues/11) | P2 | M3 | Saved logical workspace profiles and conditional spatial layouts | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-08](https://github.com/astromaddie/frame-workspace/issues/8), [FW-10](https://github.com/astromaddie/frame-workspace/issues/10) |
+| [FW-12](https://github.com/astromaddie/frame-workspace/issues/12) | P1 | M2 | Keyboard, pointer, focus and multiple macOS Spaces correctness | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-06](https://github.com/astromaddie/frame-workspace/issues/6) |
+| [FW-13](https://github.com/astromaddie/frame-workspace/issues/13) | P1 | M3 | Local-first security, failure recovery and end-to-end regression | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-07](https://github.com/astromaddie/frame-workspace/issues/7), [FW-08](https://github.com/astromaddie/frame-workspace/issues/8), [FW-09](https://github.com/astromaddie/frame-workspace/issues/9), [FW-11](https://github.com/astromaddie/frame-workspace/issues/11), [FW-12](https://github.com/astromaddie/frame-workspace/issues/12) |
 
 ## Backlog source
 
-All 13 complete issue descriptions (scope, acceptance criteria, dependencies, references) are preserved in [ISSUES.md](ISSUES.md). The GitHub Issues tracker is not yet enabled; issue numbers and labels have not been assigned.
+All 13 complete issue descriptions (scope, acceptance criteria, dependencies, references) are preserved in [ISSUES.md](ISSUES.md). The [13 live GitHub issues](https://github.com/astromaddie/frame-workspace/issues) are linked in the index above; their tracking IDs match GitHub issue numbers #1–#13.
