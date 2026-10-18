@@ -337,12 +337,15 @@ private final class FullscreenProbe: NSObject, NSApplicationDelegate, NSWindowDe
                 if let contentSample { self.emit("capture_content_sample", contentSample) }
             }
         }
-        source.onEnded = { [weak self] reason in
+        source.onEnded = { [weak self, weak source] reason in
+            // Mirror the production stream consumer: finish this source after
+            // its first terminal callback, so its poll cannot emit a second end.
+            source?.stop()
             DispatchQueue.main.async { self?.emit("capture_ended", ["windowID": id, "reason": reason]) }
         }
-        source.onChange = { [weak self] in
+        source.onChange = { [weak self, weak source] in
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, let source else { return }
                 self.emit("capture_source_changed", ["windowID": id, "frameRect": self.rectJSON(source.frameRect),
                                                      "title": source.title, "app": source.app])
             }

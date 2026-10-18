@@ -1,0 +1,53 @@
+{
+  "evidence": "brief real minimize/restore and close of owned AppKit fixture during production SCKSource observer",
+  "events": [
+    {
+      "appKitFullScreen": false,
+      "event": "window_minimized",
+      "miniaturized": true,
+      "timestamp": "2026-10-18T16:44:39Z",
+      "windowID": 42366
+    },
+    {
+      "appKitFullScreen": false,
+      "event": "window_restored",
+      "miniaturized": false,
+      "timestamp": "2026-10-18T16:44:40Z",
+      "windowID": 42366
+    },
+    {
+      "appKitFullScreen": false,
+      "event": "window_closed",
+      "miniaturized": false,
+      "timestamp": "2026-10-18T16:44:57Z",
+      "windowID": 42366
+    },
+    {
+      "appKitFullScreen": false,
+      "event": "window_closed",
+      "miniaturized": false,
+      "timestamp": "2026-10-18T16:44:57Z",
+      "windowID": 42366
+    }
+  ],
+  "end_events": [
+    {
+      "event": "capture_ended",
+      "reason": "capture stopped: Failed to find any displays or windows to capture",
+      "timestamp": "2026-10-18T16:44:58Z",
+      "windowID": 42366
+    },
+    {
+      "event": "capture_ended",
+      "reason": "the window closed",
+      "timestamp": "2026-10-18T16:45:04Z",
+      "windowID": 42366
+    }
+  ],
+  "changed_samples_after_restore": 17,
+  "notes": [
+    "CUA state refresh restored the minimized fixture after about one second; long minimization was not tested.",
+    "The diagnostic initially left its source running after an end callback, unlike the production stream consumer. It logged the OS error then the later close confirmation. The diagnostic now stops its source after the first end callback.",
+    "No user app window was moved or closed."
+  ]
+}

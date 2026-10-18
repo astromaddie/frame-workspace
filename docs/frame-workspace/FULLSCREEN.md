@@ -25,6 +25,14 @@ updated its dimensions on entry and exit. This directly exercises the original
 failure path; it does not prove capture from an inactive Space. See the compact
 [transition evidence](evidence/fullscreen-recovery.json).
 
+A separate live capture survived a brief native minimize/restore and resumed
+changing content afterward. Closing that owned fixture ended capture about one
+second later. CUA's state refresh restored the minimized window after about one
+second, so sustained minimization is still untested. The initial diagnostic did
+not stop its source on the first terminal callback and logged a later duplicate
+close confirmation; it now mirrors the production consumer's cleanup. See the
+[lifecycle record](evidence/fullscreen-lifecycle.json).
+
 ## Test record
 
 Host: M4 MacBook, macOS 26.3.1. The Mac-side native workspace was active at 2880×2560 (9:8). No Steam Frame spatial panel was used for these tests.
