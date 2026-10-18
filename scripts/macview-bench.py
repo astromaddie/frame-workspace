@@ -3,6 +3,7 @@
 stream is judged by numbers (docs/mac-in-headset.md, "Measuring").
 
   scripts/macview-bench.py run [--scenario test,scroll,type] [--net 8] [--label x]
+  scripts/macview-bench.py run --mode display --display workspace --quality sharp
   scripts/macview-bench.py compare bench/results/A.json bench/results/B.json
   scripts/macview-bench.py ab --arm off:FRAME_MAC_VIEW_ADAPT=0 --arm on: --repeat 3 --scenario scroll
 
@@ -13,8 +14,9 @@ records: when the Mac composited each frame, when it was encoded and sent,
 and when the viewer received, decoded and drew it (the viewer's clock is
 synced to the Mac's). "content" is Mac composited -> drawn in the viewer;
 what the Frame's compositor adds after that is reported ("present",
-"fps_shown") but not graded, because an unworn Frame throttles panels to
-36 fps (15 in standby) after a few seconds whatever they draw. It writes a summary to bench/results/ and exits 1 if a
+"fps_shown") but not graded, because panel scheduling can change with headset
+visibility, standby and firmware. These clock-based estimates do not measure
+physical photon latency or establish worn text readability. It writes a summary to bench/results/ and exits 1 if a
 target is missed ("bad"), or if --baseline is given and a key number got
 more than 10% worse.
 
@@ -23,8 +25,10 @@ can differ by more than a change does. `ab` restarts the lab agent with each
 arm's settings (environment variables read by the agent), runs the arms
 interleaved, and prints each metric's median and range per arm.
 
-Nobody needs to wear the headset. The scroll and type scenarios open a
-throwaway Chrome window (its own profile in /tmp) on the Mac.
+Nobody needs to wear the headset for these synthetic scenarios. The scroll and
+type scenarios open a throwaway Chrome window (a fresh profile in /tmp, removed
+after each scenario) on the Mac. Display mode resolves the current main or
+Workspace display at each launch; a missing/ambiguous Workspace fails closed.
 
 Network conditions come from a relay on the Mac between the agent and the
 tunnel, so they need no sudo:
@@ -39,6 +43,7 @@ Stdlib only.
 import argparse
 import asyncio
 import datetime
+import fcntl
 import json
 import os
 import platform
@@ -47,6 +52,7 @@ import statistics
 import subprocess
 import sys
 import threading
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -59,7 +65,6 @@ import frame_macview  # noqa: E402
 RESULTS = ROOT / "bench" / "results"
 PAGES = ROOT / "bench" / "pages"
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-CHROME_PROFILE = "/tmp/fmv-bench-chrome"
 LAB_DIR = Path.home() / "Library" / "Caches" / "frame-mac-view-lab"  # lab.sh serve
 
 # The acceptance bar (the handoff's targets): (feels local, acceptable) per
@@ -269,7 +274,7 @@ FRAME_CPU = r"""
 hz=$(getconf CLK_TCK)
 while :; do
   t=$(date +%s.%N)
-  for g in viewer:frame-control/mac-view tailscaled:tailscaled sshd:'^sshd' gamescope:'^gamescope'; do
+  for g in viewer:'frame-control/mac-view|data/frame-mac-view|frame-workspace/mac-view' tailscaled:tailscaled sshd:'^sshd' gamescope:'^gamescope'; do
     name=${g%%:*} pat=${g#*:} sum=0
     for p in $(pgrep -f "$pat"); do
       s=$(awk '{print $14+$15}' /proc/$p/stat 2>/dev/null) && sum=$((sum + s))
@@ -332,15 +337,24 @@ class CpuSampler:
 
 # ---- scenarios ----
 
-def chrome_window(page, size=(1280, 820)):
+def chrome_window(page, *, profile, size=(1280, 820), position=(80, 80)):
     """Opens a page in a throwaway Chrome app window; returns (proc, title)."""
     if not Path(CHROME).exists():
         raise SystemExit("Google Chrome is needed for the scroll and type scenarios.")
-    proc = subprocess.Popen([CHROME, f"--user-data-dir={CHROME_PROFILE}", "--no-first-run",
+    proc = subprocess.Popen([CHROME, f"--user-data-dir={profile}", "--no-first-run",
                              "--no-default-browser-check", f"--window-size={size[0]},{size[1]}",
-                             "--window-position=80,80", f"--app=file://{PAGES / page}"],
+                             f"--window-position={position[0]},{position[1]}", f"--app=file://{PAGES / page}"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return proc
+
+
+def select_display(displays, selection):
+    """Resolve a fresh source, never substitute the private physical desktop."""
+    matches = [d for d in displays if
+               (d.get("main") if selection == "main" else d.get("name") == "Frame Workspace")]
+    if len(matches) != 1:
+        raise SystemExit(f"Expected one {selection} display, found {len(matches)}; start Workspace first if selected")
+    return matches[0]
 
 
 def find_window(mv, title, timeout=15):
@@ -381,14 +395,24 @@ def run_scenario(args, scenario, agent_port, token, frame_ssh):
     if args.browser_flag is not None:
         mv.browser_flags = [f for f in args.browser_flag if f]
     chrome = None
+    chrome_profile = None
     src = "test"
     try:
+        source_size = (1280, 820)
         if scenario in ("scroll", "type"):
-            chrome = chrome_window(f"{scenario}.html")
+            position = (80, 80)
+            display = None
+            if args.mode == "display":
+                displays = mv.call("/displays").get("displays", [])
+                display = select_display(displays, args.display)
+                source_size = (display["w"], display["h"])
+                position = (int(display.get("x", 0)) + 20, int(display.get("y", 0)) + 40)
+            chrome_profile = tempfile.TemporaryDirectory(prefix="fmv-bench-")
+            chrome = chrome_window(f"{scenario}.html", size=source_size, position=position, profile=chrome_profile.name)
             w = find_window(mv, f"fmv-bench {scenario}")
-            src = f"{args.mode}:{w['id']}"
+            src = display["src"] if display else f"{args.mode}:{w['id']}"
         t = time.time()
-        shown = mv.show(src, args.quality, 1280, 820)
+        shown = mv.show(src, args.quality, *source_size)
         show_s = round(time.time() - t, 2)
         # Wait for frames, then measure from a clean start.
         stream = None
@@ -457,6 +481,10 @@ def run_scenario(args, scenario, agent_port, token, frame_ssh):
         result["show_s"] = show_s
         result["panel"] = shown.get("panel")
         result["src"] = src
+        result["source_selection"] = args.display if args.mode == "display" else args.mode
+        result["source_window"] = {k: w[k] for k in ("w", "h")} if chrome else None
+        if args.mode == "display" and chrome:
+            result["source_display"] = {k: display.get(k) for k in ("name", "w", "h", "pixelW", "pixelH", "x", "y", "main")}
         result["route"] = mv.route
         return result
     finally:
@@ -472,6 +500,13 @@ def run_scenario(args, scenario, agent_port, token, frame_ssh):
             relay.loop.call_soon_threadsafe(relay.loop.stop)
         if chrome:
             chrome.terminate()
+            try:
+                chrome.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                chrome.kill()
+                chrome.wait(timeout=5)
+        if chrome_profile:
+            chrome_profile.cleanup()
         time.sleep(3)  # Stop ends the Frame's viewer browser 2 s later
 
 
@@ -673,7 +708,9 @@ def add_run_args(r):
     r.add_argument("--duration", type=float, default=20)
     r.add_argument("--warmup", type=float, default=3)
     r.add_argument("--quality", default="balanced", choices=list(frame_macview.QUALITY))
-    r.add_argument("--mode", default="separate", choices=["separate", "window"], help="how Mac windows are shown")
+    r.add_argument("--mode", default="separate", choices=["separate", "window", "display"], help="how Mac content is shown")
+    r.add_argument("--display", default="main", choices=["main", "workspace"],
+                   help="fresh display selection when --mode display is used")
     r.add_argument("--net", default="", help="Mbit/s, or a schedule like 50@0,8@10,50@20")
     r.add_argument("--delay", type=float, default=0, help="extra one-way delay, ms")
     r.add_argument("--buffer", type=float, default=250, help="bottleneck queue, ms at the current rate")
@@ -717,6 +754,17 @@ def frame_ssh_for(args):
 
 
 def run_suite(args, frame_ssh, quiet=False):
+    # A second run would close/relaunch the first run's viewer and corrupt both
+    # measurements. Keep the lease open until all scenario cleanup finishes.
+    with open(Path(tempfile.gettempdir()) / f"frame-macview-bench-{os.getuid()}.lock", "a") as lease:
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit("Another MacView benchmark is active; wait for its cleanup before starting.")
+        return _run_suite(args, frame_ssh, quiet)
+
+
+def _run_suite(args, frame_ssh, quiet=False):
     agent_port, token = lab_agent()
     results = []
     for sc in args.scenario.split(","):
@@ -741,10 +789,10 @@ def document(args, frame_ssh, results, **extra):
     # Whether the headset is in standby (it throttles panels even harder then).
     standby = subprocess.run([*frame_ssh, "grep -h standby ~/.local/share/Steam/logs/vrserver.txt | tail -n 1"],
                              capture_output=True, text=True).stdout.strip()
-    commit = git("rev-parse", "--short", "HEAD") + ("+dirty" if git("status", "--porcelain", "--", "mac", "ui") else "")
+    commit = git("rev-parse", "--short", "HEAD") + ("+dirty" if git("status", "--porcelain", "--", "mac", "ui", "scripts/macview-bench.py") else "")
     return {
         "label": args.label or args.cmd, "date": datetime.datetime.now().isoformat(timespec="seconds"), "commit": commit,
-        "config": {"quality": args.quality, "mode": args.mode, "net": args.net or "none", "delay_ms": args.delay,
+        "config": {"quality": args.quality, "mode": args.mode, "display": args.display, "net": args.net or "none", "delay_ms": args.delay,
                    "buffer_ms": args.buffer, "host": args.host or args.frame, "usb": args.usb, "ssh_opts": args.ssh_opt,
                    "encoder": os.environ.get("FRAME_MAC_VIEW_ENCODER", ""), "duration_s": args.duration,
                    "browser_flags": args.browser_flag if args.browser_flag is not None else frame_macview.BROWSER_FLAGS},
