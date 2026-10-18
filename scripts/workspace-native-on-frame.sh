@@ -10,21 +10,53 @@ key="com.frame-workspace.native.$uid.workspace"
 case "${1:-}" in
   focus)
     [ "$#" -eq 1 ] || exit 2
-    [ "$(systemctl --user show "$unit" --property=ActiveState --value)" = active ] || {
-      echo 'The native Workspace viewer is stopped; use Show Workspace again.' >&2; exit 1;
-    }
-    python3 - "$runtime" <<'PY'
-import fcntl, json, os, pathlib, sys, time
+    python3 - "$runtime" "$unit" "$key" focus <<'PY'
+import fcntl, json, math, os, pathlib, subprocess, sys
 p = pathlib.Path(sys.argv[1])
-with (p / 'control.lock').open('a') as lock:
+unit, key, action = sys.argv[2:]
+def systemd(prop):
+    try:
+        r = subprocess.run(['systemctl', '--user', 'show', unit, '--property=' + prop, '--value'],
+                           capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return r.stdout.strip() if r.returncode == 0 else ''
+def owner():
+    if systemd('ActiveState') != 'active':
+        return None
+    try:
+        if int(systemd('MainPID')) <= 0:
+            return None
+        s = json.loads((p / 'state.json').read_text())
+        placement = s.get('placement')
+        if (s.get('ready') is not True or s.get('overlayKey') != key or
+                not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        return s
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+def next_revision(target):
+    try:
+        data = json.loads(target.read_text())
+        old = data.get('revision') if isinstance(data, dict) else None
+        if (type(old) not in (int, float) or
+                (type(old) is float and (not math.isfinite(old) or not old.is_integer())) or
+                old < 0 or old >= (1 << 53) - 1):
+            return 1
+        return int(old) + 1
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 1
+s = owner()
+if s is None:
+    raise SystemExit('The native Workspace viewer is not ready; use Show Workspace again.')
+lock_fd = os.open(p / 'control.lock', os.O_CREAT | os.O_RDWR, 0o600)
+with os.fdopen(lock_fd, 'r+') as lock:
+    os.fchmod(lock.fileno(), 0o600)
     fcntl.flock(lock, fcntl.LOCK_EX)
     target = p / 'control.json'
-    revision = time.time_ns()
-    if target.exists():
-        revision = max(revision, int(json.loads(target.read_text()).get('revision', 0)) + 1)
+    revision = next_revision(target)
     tmp = p / ('control.' + str(os.getpid()) + '.tmp')
-    # Existing Show again means bring this panel back in front of the wearer.
-    # Ordinary process startup restores its saved world transform unchanged.
+    # Show again keeps its existing focus and recenter behavior.
     tmp.write_text(json.dumps({'revision': revision, 'focus': True, 'recenter': True}))
     os.chmod(tmp, 0o600)
     tmp.replace(target)
@@ -32,8 +64,174 @@ print('Native Workspace focus requested')
 PY
     exit 0
     ;;
+  adjust)
+    [ "$#" -eq 3 ] || exit 2
+    python3 - "$runtime" "$unit" "$key" "$2" "$3" <<'PY'
+import fcntl, json, math, os, pathlib, re, subprocess, sys, time
+p = pathlib.Path(sys.argv[1])
+unit, key, raw_width, raw_distance = sys.argv[2:]
+def number(raw, label, minimum, maximum):
+    if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', raw):
+        raise SystemExit(f'{label} must be a finite number.')
+    value = float(raw)
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        raise SystemExit(f'{label} must be between {minimum:g} and {maximum:g} meters.')
+    return value
+width = number(raw_width, 'Workspace width', 0.4, 8.0)
+distance = number(raw_distance, 'Workspace distance', 0.4, 10.0)
+def systemd(prop):
+    try:
+        r = subprocess.run(['systemctl', '--user', 'show', unit, '--property=' + prop, '--value'],
+                           capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return r.stdout.strip() if r.returncode == 0 else ''
+def owner():
+    if systemd('ActiveState') != 'active':
+        return None
+    try:
+        if int(systemd('MainPID')) <= 0:
+            return None
+        s = json.loads((p / 'state.json').read_text())
+        placement = s.get('placement')
+        if (s.get('ready') is not True or s.get('overlayKey') != key or
+                not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        return s
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+def next_revision(target):
+    try:
+        data = json.loads(target.read_text())
+        old = data.get('revision') if isinstance(data, dict) else None
+        if (type(old) not in (int, float) or
+                (type(old) is float and (not math.isfinite(old) or not old.is_integer())) or
+                old < 0 or old >= (1 << 53) - 1):
+            return 1
+        return int(old) + 1
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 1
+if owner() is None:
+    raise SystemExit('The native Workspace viewer is stopped or not ready; use Show Workspace again.')
+lock_fd = os.open(p / 'control.lock', os.O_CREAT | os.O_RDWR, 0o600)
+with os.fdopen(lock_fd, 'r+') as lock:
+    os.fchmod(lock.fileno(), 0o600)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    target = p / 'control.json'
+    revision = next_revision(target)
+    tmp = p / ('control.' + str(os.getpid()) + '.tmp')
+    # Placement changes use the native owner’s live resize path. They never
+    # request focus/recenter and never restart the viewer or Mac display.
+    tmp.write_text(json.dumps({'revision': revision, 'width': width, 'distance': distance}))
+    os.chmod(tmp, 0o600)
+    tmp.replace(target)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        s = owner()
+        if s is None:
+            raise SystemExit('The native Workspace owner stopped before confirming placement.')
+        try:
+            applied_revision = s.get('controlRevision')
+            placement = s['placement']
+            actual_width = float(placement['width'])
+            actual_distance = float(placement['distance'])
+            if (type(applied_revision) in (int, float) and math.isfinite(applied_revision) and
+                    applied_revision == revision and math.isclose(actual_width, width, abs_tol=0.00001) and
+                    math.isclose(actual_distance, distance, abs_tol=0.00001)):
+                print(json.dumps({'ready': True, 'state': s['state'], 'overlayKey': key,
+                                  'placement': {'width': actual_width, 'distance': actual_distance}}))
+                raise SystemExit(0)
+        except (KeyError, TypeError, ValueError):
+            pass
+        time.sleep(0.1)
+    raise SystemExit('The native Workspace owner did not confirm the requested placement.')
+PY
+    exit $?
+    ;;
+  curvature)
+    [ "$#" -eq 2 ] || exit 2
+    python3 - "$runtime" "$unit" "$key" "$2" <<'PY'
+import fcntl, json, math, os, pathlib, re, subprocess, sys, time
+p = pathlib.Path(sys.argv[1])
+unit, key, raw = sys.argv[2:]
+if not re.fullmatch(r'(?:0(?:\.[0-9]+)?|1(?:\.0+)?)', raw):
+    raise SystemExit('Workspace curvature must be a finite number between 0 and 1.')
+curvature = float(raw)
+if not math.isfinite(curvature) or not 0 <= curvature <= 1:
+    raise SystemExit('Workspace curvature must be a finite number between 0 and 1.')
+def systemd(prop):
+    try:
+        r = subprocess.run(['systemctl', '--user', 'show', unit, '--property=' + prop, '--value'],
+                           capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return r.stdout.strip() if r.returncode == 0 else ''
+def owner():
+    if systemd('ActiveState') != 'active':
+        return None
+    try:
+        if int(systemd('MainPID')) <= 0:
+            return None
+        s = json.loads((p / 'state.json').read_text())
+        placement = s.get('placement')
+        if (s.get('ready') is not True or s.get('overlayKey') != key or
+                not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        return s
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+def next_revision(target):
+    try:
+        data = json.loads(target.read_text())
+        old = data.get('revision') if isinstance(data, dict) else None
+        if (type(old) not in (int, float) or
+                (type(old) is float and (not math.isfinite(old) or not old.is_integer())) or
+                old < 0 or old >= (1 << 53) - 1):
+            return 1
+        return int(old) + 1
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 1
+if owner() is None:
+    raise SystemExit('The native Workspace viewer is stopped or not ready; use Show Workspace again.')
+lock_fd = os.open(p / 'control.lock', os.O_CREAT | os.O_RDWR, 0o600)
+with os.fdopen(lock_fd, 'r+') as lock:
+    os.fchmod(lock.fileno(), 0o600)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    target = p / 'control.json'
+    revision = next_revision(target)
+    tmp = p / ('control.' + str(os.getpid()) + '.tmp')
+    tmp.write_text(json.dumps({'revision': revision, 'curvature': curvature}))
+    os.chmod(tmp, 0o600)
+    tmp.replace(target)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        s = owner()
+        if s is None:
+            raise SystemExit('The native Workspace owner stopped before reporting curvature.')
+        try:
+            result_revision = s.get('controlResultRevision')
+            if (type(result_revision) in (int, float) and math.isfinite(result_revision) and
+                    result_revision == revision):
+                result = s['curvatureResult']
+                value = result.get('value')
+                response = {'ready': True, 'ok': result.get('applied') is True,
+                            'state': s['state'], 'overlayKey': key,
+                            'curvature': {'supported': result.get('supported') is True,
+                                          'applied': result.get('applied') is True,
+                                          'requested': float(result['requested']),
+                                          'value': value,
+                                          'errorCode': int(result['errorCode'])}}
+                print(json.dumps(response, allow_nan=False))
+                raise SystemExit(0)
+        except (KeyError, TypeError, ValueError):
+            pass
+        time.sleep(0.1)
+    raise SystemExit('The native Workspace owner did not report a curvature result.')
+PY
+    exit $?
+    ;;
   start) ;;
-  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] | focus' >&2; exit 2 ;;
+  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] | focus | adjust WIDTH DISTANCE | curvature VALUE' >&2; exit 2 ;;
 esac
 [ "$#" -ge 5 ] && [ "$#" -le 7 ] || exit 2
 url=$2

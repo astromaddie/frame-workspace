@@ -18,6 +18,7 @@ Stdlib only. MacView gets a plain ssh argv for the tunnel (its own
 connection) and the server's `run(remote, stdin=, timeout=)` for commands.
 """
 import json
+import math
 import os
 import re
 import secrets
@@ -816,6 +817,98 @@ class MacView:
         except Exception as e:  # noqa: BLE001 - preserve the headset tool's diagnostic
             raise MacViewError(f"Could not focus the Workspace OpenVR panel: {e}") from e
         return out.strip()
+
+    @staticmethod
+    def _placement_number(value, name, low, high):
+        if type(value) not in (int, float) or not math.isfinite(value) or not low <= value <= high:
+            raise MacViewError(f"Workspace {name} must be between {low:g} and {high:g} meters.")
+        return float(value)
+
+    def adjust_workspace(self, width, distance):
+        """Change placement through the active native owner without restarting it."""
+        width = self._placement_number(width, "width", 0.4, 8.0)
+        distance = self._placement_number(distance, "distance", 0.4, 10.0)
+        with self.workspace_lock:
+            workspace = self.workspace_manager.state()
+            if workspace.get("state") != "running":
+                raise MacViewError("The Workspace display is stopped; start Workspace before changing placement.")
+            key = self.workspace_panel_key or ""
+            if not re.fullmatch(r"com\.frame-workspace\.native\.\d+\.workspace", key):
+                raise MacViewError("Placement controls require the active native Workspace viewer.")
+            try:
+                out = self.run(
+                    "bash -s -- adjust " + f"{width:.6f} {distance:.6f}",
+                    stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=10)
+                lines = [line for line in out.splitlines() if line.strip()]
+                result = json.loads(lines[-1]) if lines else {}
+                placement = result.get("placement") if isinstance(result, dict) else None
+                actual_width = placement.get("width") if isinstance(placement, dict) else None
+                actual_distance = placement.get("distance") if isinstance(placement, dict) else None
+                if (result.get("ready") is not True or result.get("overlayKey") != key or
+                        not isinstance(result.get("state"), str) or
+                        type(actual_width) not in (int, float) or type(actual_distance) not in (int, float) or
+                        not math.isclose(actual_width, width, abs_tol=0.00001) or
+                        not math.isclose(actual_distance, distance, abs_tol=0.00001)):
+                    raise MacViewError("The native Workspace owner did not confirm the requested placement.")
+                return {"ready": True, "state": result["state"], "overlayKey": key,
+                        "placement": {"width": actual_width, "distance": actual_distance}}
+            except MacViewError:
+                raise
+            except Exception as e:  # noqa: BLE001 - preserve the helper's ownership/readiness error
+                raise MacViewError(f"Could not adjust the native Workspace placement: {e}") from e
+
+    @staticmethod
+    def _curvature_number(value):
+        if type(value) not in (int, float) or not math.isfinite(value) or not 0 <= value <= 1:
+            raise MacViewError("Workspace curvature must be between 0 and 1.")
+        return float(value)
+
+    def set_workspace_curvature(self, curvature):
+        """Ask the active native owner to set curvature and return its readback."""
+        curvature = self._curvature_number(curvature)
+        with self.workspace_lock:
+            workspace = self.workspace_manager.state()
+            if workspace.get("state") != "running":
+                raise MacViewError("The Workspace display is stopped; start Workspace before changing curvature.")
+            key = self.workspace_panel_key or ""
+            if not re.fullmatch(r"com\.frame-workspace\.native\.\d+\.workspace", key):
+                raise MacViewError("Curvature controls require the active native Workspace viewer.")
+            try:
+                out = self.run(
+                    "bash -s -- curvature " + f"{curvature:.6f}",
+                    stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=10)
+                lines = [line for line in out.splitlines() if line.strip()]
+                result = json.loads(lines[-1]) if lines else {}
+                if not isinstance(result, dict):
+                    raise MacViewError("The native Workspace owner returned an invalid curvature result.")
+                detail = result.get("curvature")
+                if not isinstance(detail, dict):
+                    raise MacViewError("The native Workspace owner returned an invalid curvature result.")
+                requested = detail.get("requested")
+                value = detail.get("value")
+                supported = detail.get("supported")
+                applied = detail.get("applied")
+                error_code = detail.get("errorCode")
+                ok = result.get("ok")
+                if (result.get("ready") is not True or result.get("overlayKey") != key or
+                        not isinstance(result.get("state"), str) or
+                        type(requested) not in (int, float) or
+                        not math.isclose(requested, curvature, abs_tol=0.00001) or
+                        type(supported) is not bool or type(applied) is not bool or
+                        type(ok) is not bool or ok is not applied or type(error_code) is not int or
+                        (value is not None and (type(value) not in (int, float) or
+                                                not math.isfinite(value) or not 0 <= value <= 1)) or
+                        (applied and (not supported or value is None or
+                                      not math.isclose(value, curvature, abs_tol=0.0001)))):
+                    raise MacViewError("The native Workspace owner returned an invalid curvature result.")
+                return {"ready": True, "ok": ok, "state": result["state"], "overlayKey": key,
+                        "curvature": {"supported": supported, "applied": applied,
+                                      "requested": requested, "value": value,
+                                      "errorCode": error_code}}
+            except MacViewError:
+                raise
+            except Exception as e:  # noqa: BLE001 - preserve the helper's ownership/readiness error
+                raise MacViewError(f"Could not set native Workspace curvature: {e}") from e
 
     def start_workspace(self, preset="5120x1440", scale=1, quality="sharp"):
         """Create/reuse the owned display and show its stable workspace panel.

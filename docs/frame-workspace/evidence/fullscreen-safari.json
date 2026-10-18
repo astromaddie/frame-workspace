@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-19 JST",
+  "result": "Continuous changing capture of explicit Safari window through CUA native entry/exit; general AX-to-CG identity mapping remains inconclusive/ambiguous when windowed.",
+  "app": "Safari",
+  "fixture": "One task-created private window with two local fixture tabs, closed afterward. Existing Safari windows preserved.",
+  "probeBinarySha256": "f89ec3f84a5d678fd4edd599f9588b950014bc92fe8895beccf4e7761f7bdb20",
+  "probeCommand": "fullscreen-probe --pid <SafariPID> --window-id <ownedPrivateCGWindowID> --sample-content --seconds180",
+  "screenCapturePreflight": true,
+  "accessibilityPreflight": true,
+  "newTccGrant": false,
+  "entry": "CUA native green full-screen button",
+  "exit": "CUA Ctrl+Cmd+F; native titlebar controls returned",
+  "captureSelectedIdUnchanged": true,
+  "axStatesCorrelatedByOwnedFixtureTitle": [
+    {
+      "timestamp": "2026-10-18T22:04:10Z",
+      "fullScreen": false,
+      "mapping": "ambiguous",
+      "matchesSelectedWindowId": false
+    },
+    {
+      "timestamp": "2026-10-18T22:04:32Z",
+      "fullScreen": true,
+      "mapping": "unique PID+frame match",
+      "matchesSelectedWindowId": true
+    },
+    {
+      "timestamp": "2026-10-18T22:05:01Z",
+      "fullScreen": false,
+      "mapping": "ambiguous",
+      "matchesSelectedWindowId": false
+    }
+  ],
+  "mappingLimitation": "PID+frame can match multiple Safari windows with equal bounds. AX fixture title includes Private Browsing suffix absent from CG title. Windowed false states were not uniquely mapped to selected CGWindowID; this title correlation is human test evidence, not a safe automatic-detachment binding. No private window/Spaces API added.",
+  "phases": [
+    {
+      "phase": "windowed",
+      "sampleCount": 18,
+      "changedSamples": 17,
+      "sampledFrameCounts": [
+        1,
+        240
+      ]
+    },
+    {
+      "phase": "fullScreenTransitionInterval",
+      "sampleCount": 25,
+      "changedSamples": 25,
+      "sampledFrameCounts": [
+        270,
+        600
+      ]
+    },
+    {
+      "phase": "afterExit",
+      "sampleCount": 13,
+      "changedSamples": 13,
+      "sampledFrameCounts": [
+        630,
+        750
+      ]
+    }
+  ],
+  "spaceNotifications": [
+    {
+      "timestamp": "2026-10-18T22:04:30Z",
+      "captureFrames": 246,
+      "windowInfoPresent": false
+    },
+    {
+      "timestamp": "2026-10-18T22:04:59Z",
+      "captureFrames": 604,
+      "windowInfoPresent": false
+    }
+  ],
+  "captureEndedBeforeOrDuringTransition": false,
+  "endOnOwnedWindowClose": [
+    {
+      "event": "capture_ended",
+      "reason": "capture stopped: Failed to find any displays or windows to capture",
+      "timestamp": "2026-10-18T22:05:14Z",
+      "windowID": 45761
+    }
+  ],
+  "limits": "Address-field popover present during full screen; scrolling content continued changing behind it. No unobstructed-view, inactive-Space, Electron, Stage Manager, optical or automatic-detachment claim.",
+  "sourceBuildRecord": "fullscreen-inactive-attempt.json",
+  "rawLogRetention": "Only fixture transition/count evidence retained; no other Safari window inventory or image retained."
+}

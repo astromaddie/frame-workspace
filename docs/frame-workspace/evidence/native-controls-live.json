@@ -1,0 +1,159 @@
+{
+  "preset": "2880x2560",
+  "texture": [
+    2880,
+    2560
+  ],
+  "initial": {
+    "width": 2.4,
+    "distance": 2.0,
+    "curvature": 0.0
+  },
+  "adjustResponse": {
+    "ready": true,
+    "state": "streaming",
+    "overlayKey": "com.frame-workspace.native.1000.workspace",
+    "placement": {
+      "width": 2.8,
+      "distance": 2.2
+    }
+  },
+  "placementChecks": {
+    "sameOwnerPid": true,
+    "rotationMaxDelta": 0.0,
+    "normalTranslationMaxErrorM": 1.6653345369377348e-16,
+    "controlRevisionAcknowledged": true
+  },
+  "curvatureResponse": {
+    "ready": true,
+    "ok": true,
+    "state": "streaming",
+    "overlayKey": "com.frame-workspace.native.1000.workspace",
+    "curvature": {
+      "supported": true,
+      "applied": true,
+      "requested": 0.25,
+      "value": 0.25,
+      "errorCode": 0
+    }
+  },
+  "restoreCurvature": {
+    "ready": true,
+    "ok": true,
+    "state": "streaming",
+    "overlayKey": "com.frame-workspace.native.1000.workspace",
+    "curvature": {
+      "supported": true,
+      "applied": true,
+      "requested": 0.0,
+      "value": 0.0,
+      "errorCode": 0
+    }
+  },
+  "restorePlacement": {
+    "ready": true,
+    "state": "streaming",
+    "overlayKey": "com.frame-workspace.native.1000.workspace",
+    "placement": {
+      "width": 2.4,
+      "distance": 2.0
+    }
+  },
+  "restoredMatrixMaxDelta": 0.0,
+  "sameDisplay": true,
+  "sameOwnerPid": true,
+  "switcherOwnerRows": 1,
+  "build": {
+    "binarySha256": "9ebd783d7d90f5b695189d094d41502fd3c861583674a47fd552db0d66191545",
+    "metadataSha256": "2f7c52d90fca48b24abb6ba9f0934c77e5e252a46eb096814ed982f0630ab1a8",
+    "sourceBase": "60c680a",
+    "sourceSha256": {
+      "native/main.cpp": "4139c4cb29396e2ac773dd0caf11f0b3256f5c2298e45b32b79861a617cab98b",
+      "native/overlay.hpp": "bc33a68a3080298ac1499cfc1f924026fa086408481fc58e4511305f59ebd18b",
+      "native/protocol.hpp": "70ded1f152993546ee3d6180789d51ab601ff837b9f65c848dfbb9429e8e807e",
+      "native/video.hpp": "17f3dc8db2e7b0f77c6c0045e2e9c4a73207911e6b3c66911d6589fceeec978c",
+      "native/websocket.hpp": "f5d514755413a2704767c1330f0c31eafc7d864268dad310fe010b8cce3f50d7",
+      "native/tests_stream.py": "5f9c0846afaa274bc16f70915a51620f4999a7657d00282a6a2a553206195562"
+    },
+    "sourceIdentityNote": "Compiler-source hashes match the integrated tree. The recorded tests_stream.py hash is the build-time test version; finalStreamTest records the later error-reporting-only test correction. Metadata also includes non-compiler evidence, cache and macOS sidecar files.",
+    "macBinarySha256": "d6bccf857ff48e2de99400e16e15e82b981bb340bc903644460b96b3aa969edc"
+  },
+  "finalStreamTest": {
+    "command": "DISPLAY=:0 python3 tests_stream.py <installed-binary> --decoder v4l2 --duration4 --use-display",
+    "testScriptSha256": "b34f96e728f382f9afda2428ec72c8d3e7c6737d0ef607f2f26d64dd2ab7873f",
+    "result": {
+      "case": "default",
+      "conversion": "cpu",
+      "convert_ms": 10.538642,
+      "decoded": 61,
+      "decoder_color_range": 0,
+      "decoder_color_space": 2,
+      "decoder_format_reopens": 0,
+      "decoder_initial_opens": 1,
+      "decoder_open_attempts": 1,
+      "decoder_open_ms_total": 11.415226,
+      "decoder_pixel_format": 23,
+      "decoder_reconnect_opens": 0,
+      "decoder_timing_high_water": 1,
+      "dimensions": [
+        2880,
+        2560
+      ],
+      "error_reasons": {
+        "decoderFatalErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderSendErrors": 0,
+        "decoder_error": 0,
+        "decoder_error_stage": "none",
+        "exit_reason": "timer",
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "submitErrors": 0
+      },
+      "errors": 0,
+      "forced_overload": false,
+      "forced_reconnect": false,
+      "gpu_convert_ms": 0.0,
+      "headset_test": false,
+      "last_overflow_recovery_seq": 0,
+      "max_rgb_difference_vs_ffmpeg": 2,
+      "overflow_recovery_idrs": 0,
+      "plane_copy_ms": 0.0,
+      "pose_preserved_on_restart": true,
+      "queue_overflows": 0,
+      "reported_frames": 59,
+      "result": "passed",
+      "sequence_timing_validated": true,
+      "size_change": false,
+      "stale_driver_frames_dropped": 0,
+      "test": "production socket/h264/GL integration",
+      "uploaded": 59,
+      "wire_messages": {
+        "ack": 1,
+        "clock": 2,
+        "fd": 59,
+        "focus": 1,
+        "rx": 61
+      }
+    },
+    "startupFailureBeforeCorrection": "Default Frame Xvfb lacked GLX; native exited before control/video. The existing --use-display route uses the actual Frame GL driver, with the Workspace stopped. Return-code assertion moved ahead of dependent control assertion; all video/image/control assertions retained."
+  },
+  "hostRegressionChecks": {
+    "suite": "test_macview.py, test_macview_bench.py, test_macview_stats.py, test_panels.py, test_server.py, test_workspace_profiles.py",
+    "initialRun": "117 tests,1skip,1error in123.539s; existing browser-service fixture stuck-state subcommand hit10s timeout",
+    "correction": "Fake systemctl now reads3state lines with shell builtins instead of spawning3sed processes per property query; production loops, assertions and10second outer deadlines unchanged",
+    "focusedRerun": "test_workspace_viewer_service_ownership_and_failed_readiness_cleanup passed1/1 in9.809s",
+    "combinedResult": "All117 tests accounted for:116passed,1conditional skip, across suite and focused corrected-fixture rerun. Other test/source inputs unchanged.",
+    "swift": [
+      "test-stream-priority.sh passed",
+      "test-capture-recovery.sh passed",
+      "full ARM64 Mac helper build passed before device deployment; production Swift sources unchanged afterward"
+    ],
+    "other": [
+      "bash -n scripts/workspace-native-on-frame.sh passed",
+      "py_compile native/bench_multistream.py passed",
+      "git diff --check passed"
+    ],
+    "inputFix": "Previous commit60c680a actual-page input regression suite passed39 tests; unchanged by this integration"
+  }
+}

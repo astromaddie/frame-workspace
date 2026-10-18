@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-19 JST",
+  "app": "Google Chrome",
+  "fixture": "Owned isolated --user-data-dir and --app local copy of bench/pages/scroll.html; no user tabs/windows sampled",
+  "probeBinarySha256": "f89ec3f84a5d678fd4edd599f9588b950014bc92fe8895beccf4e7761f7bdb20",
+  "probeCommand": "fullscreen-probe --pid <ownedChromePID> --window-id <ownedCGWindowID> --sample-content --seconds180",
+  "screenCapturePreflight": true,
+  "accessibilityPreflight": true,
+  "newTccGrant": false,
+  "entry": "CUA native green full-screen button",
+  "exit": "CUA Ctrl+Cmd+F; native titlebar buttons returned",
+  "sameWindowIdThroughout": true,
+  "transitions": [
+    {
+      "timestamp": "2026-10-18T22:00:14Z",
+      "fullScreen": false
+    },
+    {
+      "timestamp": "2026-10-18T22:00:26Z",
+      "fullScreen": true
+    },
+    {
+      "timestamp": "2026-10-18T22:00:41Z",
+      "fullScreen": false
+    }
+  ],
+  "phases": [
+    {
+      "phase": "windowed",
+      "sampleCount": 10,
+      "changedSamples": 9,
+      "sampledFrameCounts": [
+        1,
+        120
+      ]
+    },
+    {
+      "phase": "fullScreen",
+      "sampleCount": 13,
+      "changedSamples": 13,
+      "sampledFrameCounts": [
+        150,
+        270
+      ]
+    },
+    {
+      "phase": "afterExit",
+      "sampleCount": 59,
+      "changedSamples": 59,
+      "sampledFrameCounts": [
+        300,
+        1140
+      ]
+    }
+  ],
+  "spaceNotifications": [
+    {
+      "timestamp": "2026-10-18T22:00:26Z",
+      "captureFrames": 136,
+      "windowInfoPresent": false
+    },
+    {
+      "timestamp": "2026-10-18T22:00:39Z",
+      "captureFrames": 288,
+      "windowInfoPresent": false
+    }
+  ],
+  "captureEndedBeforeOrDuringTransition": false,
+  "endOnOwnedWindowClose": [
+    {
+      "event": "capture_ended",
+      "reason": "capture stopped: Failed to find any displays or windows to capture",
+      "timestamp": "2026-10-18T22:01:43Z",
+      "windowID": 45674
+    }
+  ],
+  "limits": "Active native full-screen entry/exit only. Not inactive-Space capture, Safari, Electron, Stage Manager, optical presentation or automatic detachment. Probe executable predates active-stream policy integration; exact source/build evidence is retained in fullscreen-inactive-attempt.json.",
+  "sourceBuildRecord": "fullscreen-inactive-attempt.json",
+  "rawLogRetention": "Summarized counts/state only; no images retained; disposable profile/logs removed at task cleanup."
+}

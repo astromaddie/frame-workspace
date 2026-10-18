@@ -409,9 +409,16 @@ int main(int argc, char **argv) {
     int w = 0, h = 0;
     double uploadMs = 0, ageMs = 0, decodeFps = 0, uploadFps = 0;
     bool ready = false, dumped = false;
-    double revision = -1;
+    double revision = -1, controlResultRevision = -1;
+    Overlay::CurvatureResult curvatureResult;
     std::shared_ptr<Picture> retryPicture;
     auto state = [&](const char *status) {
+      auto curvature = overlay.curvatureReadback();
+      const std::string curvatureValue =
+          curvature.readable ? std::to_string(curvature.value) : "null";
+      const std::string resultValue =
+          curvatureResult.hasValue ? std::to_string(curvatureResult.value)
+                                   : "null";
       return "{\"version\":1,\"state\":\"" + std::string(status) +
              "\",\"ready\":" + (ready ? "true" : "false") +
              ",\"diagnostic\":" + (test ? "true" : "false") +
@@ -493,6 +500,21 @@ int main(int argc, char **argv) {
              "\"" + ",\"exitReason\":\"" + exitReason +
              "\",\"connected\":" + (pipe.connected ? "true" : "false") +
              ",\"pendingRecenter\":" + (pendingRecenter ? "true" : "false") +
+             ",\"curvature\":{\"readable\":" +
+                 (curvature.readable ? "true" : "false") +
+             ",\"value\":" + curvatureValue +
+             ",\"errorCode\":" + std::to_string(curvature.errorCode) +
+             "},\"controlResultRevision\":" +
+                 std::to_string(controlResultRevision) +
+             ",\"curvatureResult\":{\"supported\":" +
+                 (curvatureResult.supported ? "true" : "false") +
+             ",\"applied\":" +
+                 (curvatureResult.applied ? "true" : "false") +
+             ",\"requested\":" + std::to_string(curvatureResult.requested) +
+             ",\"value\":" + resultValue +
+             ",\"errorCode\":" +
+                 std::to_string(curvatureResult.errorCode) + "}" +
+             ",\"controlRevision\":" + std::to_string(revision) +
              ",\"placement\":" + placementJSON(overlay.placement) + "}";
     };
     atomicWrite(stateFile, state("connecting"));
@@ -510,20 +532,44 @@ int main(int argc, char **argv) {
             auto j = json(readFile(controlFile));
             double r = num(j, "revision", -1);
             if (r >= 0 && r != revision) {
-              revision = r;
-              overlay.resize(num(j, "width", overlay.placement.width),
-                             num(j, "distance", overlay.placement.distance));
-              if (flag(j, "recenter"))
-                pendingRecenter = true;
-              if (flag(j, "focus")) {
-                pipe.focus = true;
-                overlay.focus();
+              auto requestedCurvature = field(j, "curvature");
+              bool validCurvature = true;
+              double curvature = 0;
+              if (requestedCurvature) {
+                if (!json_object_is_type(requestedCurvature, json_type_int) &&
+                    !json_object_is_type(requestedCurvature, json_type_double)) {
+                  validCurvature = false;
+                } else {
+                  curvature = json_object_get_double(requestedCurvature);
+                  validCurvature = std::isfinite(curvature) && curvature >= 0 &&
+                                   curvature <= 1;
+                }
               }
-              if (flag(j, "stop")) {
-                exitReason = "control-stop";
-                break;
+              if (!validCurvature) {
+                curvatureResult = Overlay::CurvatureResult{};
+                curvatureResult.errorCode = -3;
+                revision = controlResultRevision = r;
+              } else {
+                const bool placementChanged = field(j, "width") || field(j, "distance");
+                if (placementChanged)
+                  overlay.resize(num(j, "width", overlay.placement.width),
+                                 num(j, "distance", overlay.placement.distance));
+                if (requestedCurvature)
+                  curvatureResult = overlay.setCurvature(float(curvature));
+                if (flag(j, "recenter"))
+                  pendingRecenter = true;
+                if (flag(j, "focus")) {
+                  pipe.focus = true;
+                  overlay.focus();
+                }
+                if (placementChanged)
+                  atomicWrite(poseFile, placementJSON(overlay.placement));
+                revision = controlResultRevision = r;
+                if (flag(j, "stop")) {
+                  exitReason = "control-stop";
+                  break;
+                }
               }
-              atomicWrite(poseFile, placementJSON(overlay.placement));
             }
           } catch (const std::exception &) { /* Atomic replacement can briefly
                                                 be absent; no secrets logged. */

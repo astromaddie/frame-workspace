@@ -29,6 +29,8 @@ final class RateController {
 
     let maxFps: Int
     private let lock = NSLock()
+    private let sessionID: Int?
+    private let activity: StreamActivityRegistry?
     private var ceiling = 0  // bits/s at full size and frame rate
     private(set) var target = 0
     private(set) var tier = 0
@@ -49,7 +51,11 @@ final class RateController {
     /// What changed, for the timeline: (time, event).
     private(set) var events: [(Int64, String)] = []
 
-    init(maxFps: Int) { self.maxFps = maxFps }
+    init(maxFps: Int, sessionID: Int? = nil, activity: StreamActivityRegistry? = nil) {
+        self.maxFps = maxFps
+        self.sessionID = sessionID
+        self.activity = activity
+    }
 
     private func locked<T>(_ f: () -> T) -> T { lock.lock(); defer { lock.unlock() }; return f() }
 
@@ -61,8 +67,22 @@ final class RateController {
         }
     }
 
-    var fps: Int { locked { fpsLocked } }
-    private var fpsLocked: Int { min(maxFps, RateController.tiers[tier].fps) }
+    var fps: Int { fps(at: ProcessInfo.processInfo.systemUptime) }
+    func fps(at now: TimeInterval) -> Int { locked { fpsLocked(at: now) } }
+    private func adaptiveFpsLocked() -> Int { min(maxFps, RateController.tiers[tier].fps) }
+    private func fpsLocked(at now: TimeInterval) -> Int {
+        let decision = priorityLocked(at: now)
+        return min(adaptiveFpsLocked(), decision.fpsCap ?? maxFps)
+    }
+    func priority(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> StreamPriorityDecision {
+        locked { priorityLocked(at: now) }
+    }
+    private func priorityLocked(at now: TimeInterval) -> StreamPriorityDecision {
+        guard let sessionID, let activity else {
+            return StreamPriorityDecision(role: "normal", reason: "not-configured", fpsCap: nil, remainingMs: nil)
+        }
+        return activity.decision(for: sessionID, at: now)
+    }
     var scale: Double { locked { RateController.tiers[tier].scale } }
     var baseRtt: Int64 { locked { baseline() } }
 
@@ -86,7 +106,7 @@ final class RateController {
             // Age is what bounds latency. The count only stops a burst, and it
             // allows a full round trip of frames, so a long but clear path
             // (100 ms away) still gets every frame.
-            let interval = Int64(1_000_000 / max(1, fpsLocked))
+            let interval = Int64(1_000_000 / max(1, fpsLocked(at: ProcessInfo.processInfo.systemUptime)))
             let window = max(3, Int((baseline() + slack) / interval) + 1)
             if unacked.count < window, now - oldest.sent <= baseline() + slack { return true }
             if counts { held += 1 }
@@ -140,7 +160,8 @@ final class RateController {
             let base = baseline()
             let spread = rtts.filter { now - $0.t < 2_000_000 }.map(\.v).sorted()
             let jitter = spread.isEmpty ? 0 : spread[spread.count * 9 / 10] - base
-            let interval = Int64(1_000_000 / max(1, fpsLocked))
+            let currentFps = fpsLocked(at: ProcessInfo.processInfo.systemUptime)
+            let interval = Int64(1_000_000 / max(1, currentFps))
             slack = interval + min(max(jitter * 3 / 2, 25_000), 80_000)
             let recent = rtts.filter { now - $0.t < 300_000 }.map(\.v).sorted()
             let queueing = recent.isEmpty ? 0 : recent[recent.count / 2] - base
@@ -153,7 +174,7 @@ final class RateController {
             // less than its budget; when the link hiccups, cutting its bitrate
             // can't help, and it would only look link-limited afterwards.
             if !sentLog.isEmpty { frameBytes = sentLog.reduce(0) { $0 + $1.bytes } / sentLog.count }
-            let demand = min(captures.count, fpsLocked) * frameBytes * 8
+            let demand = min(captures.count, currentFps) * frameBytes * 8
             // Delay alone isn't our queue: Wi-Fi jitters by itself. It only
             // counts while this stream uses a good part of its budget (so its
             // own data could be what's queueing). Frames the gate had to hold,
@@ -222,11 +243,15 @@ final class RateController {
         }
     }
 
-    func state() -> [String: Any] {
+    func state(at now: TimeInterval = ProcessInfo.processInfo.systemUptime) -> [String: Any] {
         locked {
-            ["target": target, "ceiling": ceiling, "tier": tier, "fps": min(maxFps, RateController.tiers[tier].fps),
-             "scale": RateController.tiers[tier].scale, "baseRtt": Double(baseline()) / 1000,
-             "inFlight": unacked.count, "slack": Double(slack) / 1000, "adapt": RateController.enabled]
+            let priority = priorityLocked(at: now)
+            return ["target": target, "ceiling": ceiling, "tier": tier, "fps": fpsLocked(at: now),
+                    "adaptiveFps": adaptiveFpsLocked(), "scale": RateController.tiers[tier].scale,
+                    "priority": priority.role, "priorityReason": priority.reason,
+                    "priorityFpsCap": priority.fpsCap ?? 0, "priorityLeaseMs": priority.remainingMs ?? 0,
+                    "baseRtt": Double(baseline()) / 1000, "inFlight": unacked.count,
+                    "slack": Double(slack) / 1000, "adapt": RateController.enabled]
         }
     }
 

@@ -153,7 +153,15 @@ with tempfile.TemporaryDirectory(prefix='native-stream-') as td:
     listener=socket.socket();listener.bind(('127.0.0.1',0));listener.listen();listener.settimeout(15)
     port=listener.getsockname()[1]
     (temp/'url').write_text(f'http://127.0.0.1:{port}/view?src=test&t=one-use-secret&max=4096&fps=30&codec=h264')
-    (temp/'control').write_text(json.dumps({'revision':1,'width':3,'distance':2.5,'focus':True}))
+    legacy_revision=10**18
+    initial_revision=1 if expect_no_v4l2 else legacy_revision
+    control_file=temp/'control'
+    state_file=temp/'state'
+    control_file.write_text(json.dumps({'revision':initial_revision,'width':3,'distance':2.5,
+                                          'focus':True,'curvature':0.75}))
+    initial_pose={'version':1,'width':2.4,'distance':2.0,
+                  'matrix':[0,0,1,0, 0,1,0,1.3, -1,0,0,-2]}
+    (temp/'pose').write_text(json.dumps(initial_pose))
     counts={'ack':0,'rx':0,'clock':0,'fd':0,'focus':0}; errors=[]
     sent_sequences=set();received_sequences=set();frame_deliveries=[]
     reconnect_test='--reconnect' in sys.argv[2:]
@@ -239,8 +247,27 @@ with tempfile.TemporaryDirectory(prefix='native-stream-') as td:
           conn.close()
       except Exception as exc:errors.append(repr(exc))
     thread=threading.Thread(target=server);thread.start()
+    normalized_control_sent=threading.Event()
+    def send_normalized_control():
+        deadline=time.monotonic()+max(duration,1.2)
+        while time.monotonic()<deadline:
+            try:
+                state=json.loads(state_file.read_text())
+                if state.get('controlRevision')==legacy_revision:
+                    tmp=temp/'control.next'
+                    tmp.write_text(json.dumps({'revision':1,'width':3.25,'distance':2.75}))
+                    tmp.replace(control_file)
+                    normalized_control_sent.set()
+                    return
+            except (OSError,ValueError):
+                pass
+            time.sleep(0.01)
+    control_thread=None
+    if not expect_no_v4l2:
+        control_thread=threading.Thread(target=send_normalized_control,daemon=True)
+        control_thread.start()
     dump_filter=['--dump-size','x'.join(map(str,resized_size))] if size_change else []
-    command=[str(binary),'--no-vr','--decoder','v4l2' if hardware_decoder else 'software','--conversion',conversion,'--url-file',str(temp/'url'),'--seconds',str(duration),'--dump',str(temp/'frame.ppm'),*dump_filter,'--state-file',str(temp/'state'),'--control-file',str(temp/'control'),'--pose-file',str(temp/'pose')]
+    command=[str(binary),'--no-vr','--decoder','v4l2' if hardware_decoder else 'software','--conversion',conversion,'--url-file',str(temp/'url'),'--seconds',str(duration),'--dump',str(temp/'frame.ppm'),*dump_filter,'--state-file',str(state_file),'--control-file',str(control_file),'--pose-file',str(temp/'pose')]
     launcher=[] if use_display else ['xvfb-run','-a']
     test_env=os.environ.copy()
     if not use_display:test_env['LIBGL_ALWAYS_SOFTWARE']='1'
@@ -256,6 +283,13 @@ with tempfile.TemporaryDirectory(prefix='native-stream-') as td:
                               'state':timeout_state,'stdout_tail':tail(exc.stdout),
                               'stderr_tail':tail(exc.stderr)}) from exc
     thread.join();listener.close()
+    # Report a native startup failure before dependent control acknowledgments.
+    # For example, Xvfb on some devices has no GLX; that is not a control failure.
+    if not expect_no_v4l2:
+        assert proc.returncode==0,proc.stderr
+    if control_thread:
+        control_thread.join(timeout=1)
+        assert normalized_control_sent.is_set(),'legacy control revision was not replaced by revision 1'
     if expect_no_v4l2:
         state=json.loads((temp/'state').read_text())
         assert proc.returncode==1 and not errors,(proc.stdout,proc.stderr,errors)
@@ -268,7 +302,6 @@ with tempfile.TemporaryDirectory(prefix='native-stream-') as td:
         assert state['exitReason']=='decoder-error' and 'no fallback' in proc.stdout+proc.stderr,state
         print(json.dumps({'v4l2_unavailable_fail_closed':'passed','initialization':'after actual keyframe','parsed_dimensions':[320,180,320,192]}))
         sys.exit(0)
-    assert proc.returncode==0,proc.stderr
     assert not errors,errors
     assert 'one-use-secret' not in proc.stderr and 'reconnect-secret' not in proc.stderr
     state=json.loads((temp/'state').read_text());pose=json.loads((temp/'pose').read_text())
@@ -281,6 +314,11 @@ with tempfile.TemporaryDirectory(prefix='native-stream-') as td:
     min_frames=20 if case=='default' and duration>=4 else 8
     if overload_test:min_frames=0
     assert state['uploaded']>min_frames and state['decoded']>min_frames,state
+    assert int(state['controlRevision'])==1,state
+    assert int(state['controlResultRevision'])==1,state
+    assert state['curvatureResult']['supported'] is False,state
+    assert state['curvatureResult']['applied'] is False,state
+    assert state['curvatureResult']['requested']==0.75,state
     expected_size=list(resized_size) if size_change else list(stream_size)
     assert [state['textureWidth'],state['textureHeight']]==expected_size,state
     expected_decoder='v4l2' if hardware_decoder else 'software'
@@ -354,7 +392,8 @@ with tempfile.TemporaryDirectory(prefix='native-stream-') as td:
         float(row[1])>0 and float(row[2])>=float(row[1]) and int(row[3])==0
         for row in frame_deliveries
     ),frame_deliveries
-    assert pose['width']==3 and pose['distance']==2.5,pose
+    assert pose['width']==3.25 and pose['distance']==2.75,pose
+    assert pose['matrix']==[0,0,1,-0.75, 0,1,0,1.3, -1,0,0,-2],pose
     raw=(temp/'frame.ppm').read_bytes().split(b'\n',3)[3]
     oracle=resized_expected if size_change else expected
     assert len(raw)==len(oracle)

@@ -3,8 +3,10 @@
 Chromium, not an overlay app. Spatial layout limitations: docs/panels.md.
 """
 import argparse
+import fcntl
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -19,6 +21,8 @@ VRCMD = '/opt/steamvr/bin/linuxarm64/vrcmd'
 PANEL_ID = 2000999030
 PANEL_KEY = 'valve.steam.desktopgame.' + str(PANEL_ID)
 KEY = re.compile(r'[A-Za-z0-9_.:-]{1,200}\Z')
+NATIVE_KEY_PREFIX = 'com.frame-workspace.native.'
+MAX_NATIVE_CONTROL_REVISION = (1 << 53) - 1
 
 
 class PanelError(Exception):
@@ -38,6 +42,7 @@ def run(args):
 
 def parse_overlays(text):
     """Only main dashboard panels, never their thumbnails, layers or cursors.
+    The exact native Workspace overlay is added separately after owner checks.
     vrcmd output verified on SteamVR 2.18.1, BUILD_ID 20260925.6191901.
     """
     if '---- OVERLAYS ----' not in text:
@@ -45,14 +50,110 @@ def parse_overlays(text):
     panels = []
     for line in text.splitlines():
         m = re.fullmatch(r"'([^']+)' -- '(.*)', (.*?) VROverlayType_Dashboard_Main\s*", line)
-        if m and KEY.fullmatch(m[1]):
+        if m and KEY.fullmatch(m[1]) and not m[1].startswith(NATIVE_KEY_PREFIX):
             panels.append({'key': m[1], 'title': 'Panel switcher' if m[1] == PANEL_KEY else m[2] or m[1],
                            'visible': 'not_visible' not in m[3]})
     return panels
 
 
+def native_workspace_key():
+    return f'{NATIVE_KEY_PREFIX}{os.getuid()}.workspace'
+
+
+def native_runtime():
+    return Path(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}') / 'frame-workspace'
+
+
+def next_native_control_revision(target):
+    """Keep control counters exactly representable by native main's double."""
+    try:
+        data = json.loads(target.read_text())
+        old = data.get('revision') if isinstance(data, dict) else None
+        if (type(old) not in (int, float) or
+                (type(old) is float and (not math.isfinite(old) or not old.is_integer())) or
+                old < 0 or old >= MAX_NATIVE_CONTROL_REVISION):
+            return 1
+        return int(old) + 1
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 1
+
+
+def native_owner_state():
+    """Read readiness only from this user's reserved native Workspace service."""
+    key = native_workspace_key()
+    unit = f'frame-workspace-viewer-{os.getuid()}.service'
+    try:
+        active = run(['systemctl', '--user', 'show', unit,
+                      '--property=ActiveState', '--value']).strip()
+        pid = run(['systemctl', '--user', 'show', unit,
+                   '--property=MainPID', '--value']).strip()
+        if active != 'active' or int(pid) <= 0:
+            return None
+        owner = json.loads((native_runtime() / 'state.json').read_text())
+        placement = owner.get('placement')
+        if (owner.get('ready') is not True or owner.get('overlayKey') != key or
+                not isinstance(owner.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        width, distance = placement.get('width'), placement.get('distance')
+        if (type(width) not in (int, float) or type(distance) not in (int, float) or
+                not math.isfinite(width) or not math.isfinite(distance) or
+                not 0.4 <= width <= 8.0 or not 0.4 <= distance <= 10.0):
+            return None
+        curvature = owner.get('curvature')
+        if isinstance(curvature, dict):
+            readable, value, error_code = (curvature.get('readable'), curvature.get('value'),
+                                           curvature.get('errorCode'))
+            if (type(readable) is not bool or type(error_code) is not int or
+                    (readable and (type(value) not in (int, float) or
+                                   not math.isfinite(value) or not 0 <= value <= 1)) or
+                    (not readable and value is not None)):
+                curvature = None
+            else:
+                curvature = {'readable': readable, 'value': value, 'errorCode': error_code}
+        else:
+            curvature = None
+        return {'key': key, 'state': owner['state'],
+                'placement': {'width': width, 'distance': distance}, 'curvature': curvature}
+    except (PanelError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
 def state():
-    return {'panels': parse_overlays(run([VRCMD, '--overlays']))}
+    text = run([VRCMD, '--overlays'])
+    panels = parse_overlays(text)
+    owner = native_owner_state()
+    if owner:
+        for line in text.splitlines():
+            m = re.fullmatch(r"'([^']+)' -- '(.*)', (.*?) (VROverlayType_[A-Za-z0-9_]+)\s*", line)
+            if m and m[1] == owner['key'] and m[2] == 'Frame Workspace':
+                panels.append({'key': owner['key'], 'title': 'Frame Workspace',
+                               'visible': 'not_visible' not in m[3], 'owner': 'native-workspace',
+                               'ready': True, 'state': owner['state'],
+                               'placement': owner['placement'], 'curvature': owner['curvature']})
+                break
+    return {'panels': panels}
+
+
+def focus_native_workspace():
+    owner = native_owner_state()
+    if not owner:
+        raise PanelError('The native Workspace owner is stopped or not ready. Refresh the panel list.')
+    runtime = native_runtime()
+    try:
+        lock_fd = os.open(runtime / 'control.lock', os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(lock_fd, 'r+') as lock:
+            os.fchmod(lock.fileno(), 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            target = runtime / 'control.json'
+            revision = next_native_control_revision(target)
+            tmp = runtime / ('control.' + str(os.getpid()) + '.tmp')
+            # Selecting this row follows Show again: show the owner and recenter it.
+            tmp.write_text(json.dumps({'revision': revision, 'focus': True, 'recenter': True}))
+            os.chmod(tmp, 0o600)
+            tmp.replace(target)
+    except OSError as e:
+        raise PanelError('Could not send focus to the native Workspace owner.') from e
+    return {'requested': owner['key'], 'message': 'Asked the native Workspace owner to show the panel.'}
 
 
 def focus(key):
@@ -60,6 +161,8 @@ def focus(key):
         raise PanelError('Choose an open panel.')
     if key not in {p['key'] for p in state()['panels']}:
         raise PanelError('That panel has closed. Refresh the list.')
+    if key == native_workspace_key():
+        return focus_native_workspace()
     run([VRCMD, '--showdashboard', key])
     # vrcmd acknowledges dispatch, not final focus (a game or the user can
     # switch again). Do not report a focus success without observing it.

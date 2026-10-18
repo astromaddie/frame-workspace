@@ -101,12 +101,16 @@ protocol CaptureSource: AnyObject {
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void)
     /// A smaller or larger picture from now on (the long side, in pixels).
     func setMaxLong(_ maxLong: Int)
+    /// A maximum delivery rate from now on. Used for background sessions while
+    /// preserving the captured dimensions and the selected session's rate.
+    func setMaxFps(_ fps: Int)
     func stop()
     func pointer(x: Double, y: Double, text: String?)  // for the test pattern
 }
 
 extension CaptureSource {
     func pointer(x: Double, y: Double, text: String?) {}
+    func setMaxFps(_ fps: Int) {}
 }
 
 /// ScreenCaptureKit, for a window or a display.
@@ -121,6 +125,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     private var stream: SCStream?
     private var config = SCStreamConfiguration()
     private var maxLong = 1920
+    private var maxFps = 60
     private var scale = 2.0
     private var poll: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "frame-mac-view.capture", qos: .userInteractive)
@@ -148,13 +153,16 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     }
 
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void) {
-        self.maxLong = maxLong
+        queue.async {
+            self.maxLong = maxLong
+            self.maxFps = max(1, fps)
+        }
         SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { [self] content, error in
-            queue.async { self.begin(content, error, fps: fps, completion: completion) }
+            queue.async { self.begin(content, error, completion: completion) }
         }
     }
 
-    private func begin(_ content: SCShareableContent?, _ error: Error?, fps: Int, completion: @escaping (String?) -> Void) {
+    private func begin(_ content: SCShareableContent?, _ error: Error?, completion: @escaping (String?) -> Void) {
         if cancelled { return }
         guard let content else {
             return completion("Screen Recording isn't allowed for Frame Control (\(error?.localizedDescription ?? "no content"))")
@@ -196,7 +204,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         let (w, h) = fitSize(width: frameRect.width * scale, height: frameRect.height * scale, maxLong: maxLong)
         config.width = w
         config.height = h
-        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(fps))
+        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(maxFps))
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         config.colorSpaceName = CGColorSpace.sRGB
@@ -360,6 +368,16 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         }
     }
 
+    func setMaxFps(_ fps: Int) {
+        queue.async {
+            let bounded = max(1, fps)
+            guard bounded != self.maxFps else { return }
+            self.maxFps = bounded
+            self.config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(bounded))
+            self.stream?.updateConfiguration(self.config) { _ in }
+        }
+    }
+
     private func pollDisplay(_ id: CGDirectDisplayID) {
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now() + 0.5, repeating: 1)
@@ -423,16 +441,18 @@ final class TestSource: CaptureSource {
     private var timer: DispatchSourceTimer?
     private var pool: CVPixelBufferPool?
     private var n = 0
+    private var fps = 60
     private var dot: (Double, Double)?
     private var lastText = "Point or type in the headset"
     private let queue = DispatchQueue(label: "frame-mac-view.test")
     private var size = (1280, 720)
 
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void) {
+        self.fps = max(1, fps)
         size = fitSize(width: 1280, height: 720, maxLong: maxLong)
         makePool()
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now(), repeating: 1.0 / Double(fps))
+        t.schedule(deadline: .now(), repeating: 1.0 / Double(self.fps))
         t.setEventHandler { [weak self] in self?.draw() }
         t.resume()
         timer = t
@@ -448,6 +468,15 @@ final class TestSource: CaptureSource {
         queue.async {
             self.size = fitSize(width: 1280, height: 720, maxLong: n)
             self.makePool()
+        }
+    }
+
+    func setMaxFps(_ fps: Int) {
+        queue.async {
+            let bounded = max(1, fps)
+            guard bounded != self.fps else { return }
+            self.fps = bounded
+            self.timer?.schedule(deadline: .now(), repeating: 1.0 / Double(bounded))
         }
     }
 

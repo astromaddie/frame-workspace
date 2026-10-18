@@ -92,9 +92,12 @@ final class Session {
     let ws: WebSocket
     let codec: Codec
     let reconnectKey: String
+    private let activity: StreamActivityRegistry
     let stats = StreamStats()
     let controller: RateController
     private var appliedScale = 1.0
+    private var appliedCaptureFps: Int
+    private var appliedPriorityRole: String?
     private var lastSubmit: Int64 = 0
     private var paceScheduled = false
     private let lock = NSLock()
@@ -126,15 +129,18 @@ final class Session {
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
-         reconnectKey: String) {
+         reconnectKey: String, activity: StreamActivityRegistry) {
         self.id = id
         self.source = source
         self.capture = capture
         self.ws = ws
         self.codec = codec
         self.reconnectKey = reconnectKey
+        self.activity = activity
+        appliedCaptureFps = fps
         encoder = Encoder(codec: codec, fps: fps, bitsPerPixel: bitsPerPixel)
-        controller = RateController(maxFps: fps)
+        controller = RateController(maxFps: fps, sessionID: id, activity: activity)
+        activity.register(id)
         maxPending = codec == .jpeg ? 3 << 20 : 1 << 20
     }
 
@@ -312,12 +318,24 @@ final class Session {
 
     /// Applies the controller's bitrate and tier. On the encoding queue.
     private func adapt(maxLong: Int) {
-        guard let bps = controller.update(now: nowUs()) else { return }
-        encoder.setBitrate(bps)
+        let now = nowUs()
+        if let bps = controller.update(now: now) { encoder.setBitrate(bps) }
         let scale = controller.scale
         if scale != appliedScale {
             appliedScale = scale
             capture.setMaxLong(max(320, Int(Double(maxLong) * scale)))
+        }
+        let priority = controller.priority()
+        if let previous = appliedPriorityRole, previous != priority.role {
+            // A priority switch resumes a fresh reference frame before the
+            // viewer receives frames at the restored or capped rate.
+            encoder.requestKeyFrame()
+        }
+        appliedPriorityRole = priority.role
+        let captureFps = min(controller.maxFps, priority.fpsCap ?? controller.maxFps)
+        if captureFps != appliedCaptureFps {
+            appliedCaptureFps = captureFps
+            capture.setMaxFps(captureFps)
         }
         resendIfRoom()  // a lower tier may let a held frame go now
     }
@@ -342,6 +360,7 @@ final class Session {
         last = nil
         lock.unlock()
         guard !was else { return }
+        activity.unregister(id)
         statsTimer?.cancel()
         capture.stop()
         encodeQueue.async { self.encoder.invalidate() }
@@ -406,6 +425,7 @@ final class Session {
         guard !isStopped, let d = text.data(using: .utf8),
               let m = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let t = m["t"] as? String else { return }
         if report(t, m) { return }
+        activity.recordMessage(sessionID: id, type: t)
         let x = m["x"] as? Double ?? -1, y = m["y"] as? Double ?? -1
         if t == "ack" {
             onAck?()
@@ -482,6 +502,7 @@ final class Agent {
     var sessions: [Int: Session] = [:] { didSet { keepDisplayAwake(!sessions.isEmpty) } }
     var nextId = 1
     let lock = NSLock()
+    private let activity = StreamActivityRegistry()
     private var assertion: IOPMAssertionID = 0
     /// ticket -> (source, expiry, reconnect key once redeemed). A ticket opens
     /// one viewer within a minute; it may be redeemed again, for the same key,
@@ -659,7 +680,7 @@ final class Agent {
         // unacknowledged ticket) replaces the one before.
         let replaced = sessions.values.filter { $0.reconnectKey == key }
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
-                              bitsPerPixel: bpp, reconnectKey: key)
+                              bitsPerPixel: bpp, reconnectKey: key, activity: activity)
         nextId += 1
         sessions[session.id] = session
         lock.unlock()

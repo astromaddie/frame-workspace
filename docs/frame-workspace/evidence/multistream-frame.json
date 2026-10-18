@@ -1,0 +1,1811 @@
+{
+  "date": "2026-10-19 JST",
+  "conditions": {
+    "mac": "M4 MacBook Pro",
+    "frame": "Steam Frame, off-head",
+    "source": "Owned scrolling Chrome fixtures; one native 2880x2560 display plus 0/1/3/5 independent 576x432-point browser window sources encoded at1152x864",
+    "route": "network, exact transport field retained per condition; USB-C not tested",
+    "native": "V4L2 hardware decoder, CPU conversion,30fps target",
+    "browserSides": "Sharp,60fps target, Frame software H264/WebCodecs/ANGLE",
+    "adaptiveCongestionPolicy": false,
+    "priorityChangedOnly": "FRAME_MAC_VIEW_PRIORITY=0 vs1, fresh companion plus Coding restore",
+    "selectedActivity": "Native owner focus request every10seconds; explicit input lease, not visibility/gaze detection",
+    "sampling": "Nominal30second pause. Per-stream Mac and native-counter durations are recorded separately; SSH/HTTP sampling overhead makes them longer and slightly different. No builds during measurement.",
+    "limits": "Desktop texture updates and protocol timestamps; not compositor/optical FPS or input-to-photon latency. One sequential pair, no repeated trials/confidence interval. Not6nativepanels, all full-size streams, typing/IME/static matrix or USB acceptance."
+  },
+  "sourceBase": "60c680a",
+  "sourceSha256": {
+    "native/bench_multistream.py": "db4eef56fe4c8a2679bd1270689a512b65c8bcd8bc0c120f433e7cba54458cc4",
+    "mac/frame-mac-view/Sources/StreamPriority.swift": "e1e17e42369bcb2369c89d32a9ad238e1bba914954781234f249422283434daa",
+    "mac/frame-mac-view/Sources/Controller.swift": "8fc43bfa4f818cacb31266ad22e6273e73cdefb6f5c2e27df6ab9df8ce2df746",
+    "mac/frame-mac-view/Sources/Capture.swift": "0dacf03a40159c6938fb827c2d9092e54531bd43fef2c82163fec698892ec609",
+    "mac/frame-mac-view/Sources/Separate.swift": "e6bc2001e55e6bbd02c33fca141ac70a8969406df6453ae82c6ccd846fa0a4ca",
+    "mac/frame-mac-view/Sources/main.swift": "22d1e4559c7ded28e195847e4395d91e52ff9ed89e267c0f014635edeaf70a7a"
+  },
+  "nativeBinarySha256": "9ebd783d7d90f5b695189d094d41502fd3c861583674a47fd552db0d66191545",
+  "macBinarySha256": "d6bccf857ff48e2de99400e16e15e82b981bb340bc903644460b96b3aa969edc",
+  "priorityOff": [
+    {
+      "count": 1,
+      "durationSeconds": 31.353104332927614,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 41.933667,
+          "frameCount": 942,
+          "sentFps": 22.46405018669128,
+          "captureFps": 22.46405018669128,
+          "mbps": 1.3570487885068578,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 5.208,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 942,
+              "p50": 12.583,
+              "p95": 33.125
+            },
+            "encodeMs": {
+              "n": 942,
+              "p50": 17.584,
+              "p95": 18.75
+            },
+            "wireMs": {
+              "n": 942,
+              "p50": 0.166,
+              "p95": 0.542
+            },
+            "networkMs": {
+              "n": 942,
+              "p50": 7.324999999999999,
+              "p95": 82.064
+            },
+            "decodeMs": {
+              "n": 933,
+              "p50": 56.193,
+              "p95": 129.234
+            },
+            "contentToDrawMs": {
+              "n": 933,
+              "p50": 111.739,
+              "p95": 183.206
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        }
+      ],
+      "nativeWindowSeconds": 36.66958495700965,
+      "nativeUploadedFps": 22.4709388166251,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    },
+    {
+      "count": 2,
+      "durationSeconds": 30.376465834095143,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 41.138709,
+          "frameCount": 872,
+          "sentFps": 21.19658154561924,
+          "captureFps": 21.12365752654027,
+          "mbps": 1.6408678259689675,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 5.125,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 872,
+              "p50": 13.917,
+              "p95": 37.959
+            },
+            "encodeMs": {
+              "n": 872,
+              "p50": 18.5,
+              "p95": 19.75
+            },
+            "wireMs": {
+              "n": 872,
+              "p50": 0.125,
+              "p95": 0.708
+            },
+            "networkMs": {
+              "n": 872,
+              "p50": 9.7615,
+              "p95": 98.609
+            },
+            "decodeMs": {
+              "n": 844,
+              "p50": 59.1015,
+              "p95": 133.468
+            },
+            "contentToDrawMs": {
+              "n": 844,
+              "p50": 114.4065,
+              "p95": 193.119
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        },
+        {
+          "label": "browser-side-1",
+          "measurementSeconds": 41.120208,
+          "frameCount": 1661,
+          "sentFps": 40.39376454515989,
+          "captureFps": 40.36944560202614,
+          "mbps": 1.4854199181093637,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.25,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1661,
+              "p50": 0.5,
+              "p95": 1.708
+            },
+            "encodeMs": {
+              "n": 1661,
+              "p50": 4.708,
+              "p95": 5.917
+            },
+            "wireMs": {
+              "n": 1661,
+              "p50": 0.125,
+              "p95": 0.334
+            },
+            "networkMs": {
+              "n": 1661,
+              "p50": 4.858,
+              "p95": 83.817
+            },
+            "decodeMs": {
+              "n": 1632,
+              "p50": 2.6500000000000004,
+              "p95": 13.5
+            },
+            "contentToDrawMs": {
+              "n": 1632,
+              "p50": 14.638000000000002,
+              "p95": 92.125
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 114 Hz"
+        }
+      ],
+      "nativeWindowSeconds": 35.697663485014345,
+      "nativeUploadedFps": 21.26189576297125,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    },
+    {
+      "count": 4,
+      "durationSeconds": 31.354759707930498,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 42.026625,
+          "frameCount": 910,
+          "sentFps": 21.65294024918727,
+          "captureFps": 21.581556929684453,
+          "mbps": 1.6087978513620829,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 3.833,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 910,
+              "p50": 12.0835,
+              "p95": 32.75
+            },
+            "encodeMs": {
+              "n": 910,
+              "p50": 20.208,
+              "p95": 22.584
+            },
+            "wireMs": {
+              "n": 910,
+              "p50": 0.125,
+              "p95": 0.5
+            },
+            "networkMs": {
+              "n": 910,
+              "p50": 21.551000000000002,
+              "p95": 142.597
+            },
+            "decodeMs": {
+              "n": 872,
+              "p50": 48.932,
+              "p95": 139.831
+            },
+            "contentToDrawMs": {
+              "n": 872,
+              "p50": 123.37950000000001,
+              "p95": 219.97
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        },
+        {
+          "label": "browser-side-1",
+          "measurementSeconds": 41.967875,
+          "frameCount": 1484,
+          "sentFps": 35.360379814322265,
+          "captureFps": 35.33655206512124,
+          "mbps": 1.382881549280253,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.375,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1484,
+              "p50": 0.375,
+              "p95": 2.75
+            },
+            "encodeMs": {
+              "n": 1484,
+              "p50": 5.0,
+              "p95": 9.459
+            },
+            "wireMs": {
+              "n": 1484,
+              "p50": 0.083,
+              "p95": 0.292
+            },
+            "networkMs": {
+              "n": 1484,
+              "p50": 6.1080000000000005,
+              "p95": 129.1
+            },
+            "decodeMs": {
+              "n": 1476,
+              "p50": 2.9,
+              "p95": 13.4
+            },
+            "contentToDrawMs": {
+              "n": 1476,
+              "p50": 19.812,
+              "p95": 145.7
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 119 Hz"
+        },
+        {
+          "label": "browser-side-2",
+          "measurementSeconds": 41.987541,
+          "frameCount": 1481,
+          "sentFps": 35.272368057943666,
+          "captureFps": 35.272368057943666,
+          "mbps": 1.3804595987176291,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.625,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1481,
+              "p50": 0.292,
+              "p95": 2.334
+            },
+            "encodeMs": {
+              "n": 1481,
+              "p50": 5.459,
+              "p95": 8.959
+            },
+            "wireMs": {
+              "n": 1481,
+              "p50": 0.083,
+              "p95": 0.291
+            },
+            "networkMs": {
+              "n": 1481,
+              "p50": 5.867,
+              "p95": 127.15
+            },
+            "decodeMs": {
+              "n": 1481,
+              "p50": 2.8,
+              "p95": 13.5
+            },
+            "contentToDrawMs": {
+              "n": 1481,
+              "p50": 19.366,
+              "p95": 141.6
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 118 Hz"
+        },
+        {
+          "label": "browser-side-3",
+          "measurementSeconds": 42.0015,
+          "frameCount": 1482,
+          "sentFps": 35.28445412663834,
+          "captureFps": 35.26064545313858,
+          "mbps": 1.4133331428639453,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.333,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1482,
+              "p50": 0.334,
+              "p95": 2.375
+            },
+            "encodeMs": {
+              "n": 1482,
+              "p50": 6.625,
+              "p95": 9.167
+            },
+            "wireMs": {
+              "n": 1482,
+              "p50": 0.083,
+              "p95": 0.25
+            },
+            "networkMs": {
+              "n": 1482,
+              "p50": 6.354,
+              "p95": 136.933
+            },
+            "decodeMs": {
+              "n": 1451,
+              "p50": 3.0,
+              "p95": 14.7
+            },
+            "contentToDrawMs": {
+              "n": 1451,
+              "p50": 21.483,
+              "p95": 120.475
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 119 Hz"
+        }
+      ],
+      "nativeWindowSeconds": 36.61659475901979,
+      "nativeUploadedFps": 21.028716762645587,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    },
+    {
+      "count": 6,
+      "durationSeconds": 31.420025749946944,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 42.112875,
+          "frameCount": 937,
+          "sentFps": 22.249727666420302,
+          "captureFps": 22.297219080863037,
+          "mbps": 1.3759983852919089,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 4.708,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 937,
+              "p50": 11.0,
+              "p95": 32.583
+            },
+            "encodeMs": {
+              "n": 937,
+              "p50": 21.958,
+              "p95": 26.167
+            },
+            "wireMs": {
+              "n": 937,
+              "p50": 0.125,
+              "p95": 0.667
+            },
+            "networkMs": {
+              "n": 937,
+              "p50": 24.335,
+              "p95": 92.734
+            },
+            "decodeMs": {
+              "n": 934,
+              "p50": 49.479,
+              "p95": 150.138
+            },
+            "contentToDrawMs": {
+              "n": 934,
+              "p50": 131.152,
+              "p95": 219.498
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        },
+        {
+          "label": "browser-side-1",
+          "measurementSeconds": 42.060417,
+          "frameCount": 1344,
+          "sentFps": 31.954034121915623,
+          "captureFps": 32.02536009093776,
+          "mbps": 1.3063355030455357,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 4.625,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 1,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1344,
+              "p50": 0.5,
+              "p95": 3.75
+            },
+            "encodeMs": {
+              "n": 1344,
+              "p50": 4.958,
+              "p95": 11.417
+            },
+            "wireMs": {
+              "n": 1344,
+              "p50": 0.083,
+              "p95": 0.5
+            },
+            "networkMs": {
+              "n": 1343,
+              "p50": 6.117,
+              "p95": 84.425
+            },
+            "decodeMs": {
+              "n": 1343,
+              "p50": 3.3,
+              "p95": 14.0
+            },
+            "contentToDrawMs": {
+              "n": 1343,
+              "p50": 21.534,
+              "p95": 96.475
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 117 Hz"
+        },
+        {
+          "label": "browser-side-2",
+          "measurementSeconds": 42.07775,
+          "frameCount": 1342,
+          "sentFps": 31.893340304555256,
+          "captureFps": 31.988402421707434,
+          "mbps": 1.298682367759683,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.416,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 2,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1342,
+              "p50": 0.375,
+              "p95": 3.917
+            },
+            "encodeMs": {
+              "n": 1342,
+              "p50": 6.208,
+              "p95": 11.166
+            },
+            "wireMs": {
+              "n": 1342,
+              "p50": 0.083,
+              "p95": 0.417
+            },
+            "networkMs": {
+              "n": 1340,
+              "p50": 7.3004999999999995,
+              "p95": 86.692
+            },
+            "decodeMs": {
+              "n": 1336,
+              "p50": 3.8,
+              "p95": 15.5
+            },
+            "contentToDrawMs": {
+              "n": 1336,
+              "p50": 24.0705,
+              "p95": 101.65
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 119 Hz"
+        },
+        {
+          "label": "browser-side-3",
+          "measurementSeconds": 42.107167,
+          "frameCount": 1342,
+          "sentFps": 31.871058910232552,
+          "captureFps": 31.918556762557788,
+          "mbps": 1.3537615579789541,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.041,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 1,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1342,
+              "p50": 0.334,
+              "p95": 3.917
+            },
+            "encodeMs": {
+              "n": 1342,
+              "p50": 7.583,
+              "p95": 12.666
+            },
+            "wireMs": {
+              "n": 1342,
+              "p50": 0.083,
+              "p95": 0.417
+            },
+            "networkMs": {
+              "n": 1341,
+              "p50": 7.191,
+              "p95": 84.825
+            },
+            "decodeMs": {
+              "n": 1339,
+              "p50": 3.7,
+              "p95": 14.6
+            },
+            "contentToDrawMs": {
+              "n": 1339,
+              "p50": 25.091,
+              "p95": 101.475
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 118 Hz"
+        },
+        {
+          "label": "browser-side-4",
+          "measurementSeconds": 42.127541,
+          "frameCount": 1339,
+          "sentFps": 31.784432896285114,
+          "captureFps": 31.855645217934747,
+          "mbps": 1.3179370711430796,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.5,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 1,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1339,
+              "p50": 0.417,
+              "p95": 3.459
+            },
+            "encodeMs": {
+              "n": 1339,
+              "p50": 9.0,
+              "p95": 13.25
+            },
+            "wireMs": {
+              "n": 1339,
+              "p50": 0.083,
+              "p95": 0.375
+            },
+            "networkMs": {
+              "n": 1338,
+              "p50": 8.0415,
+              "p95": 86.925
+            },
+            "decodeMs": {
+              "n": 1334,
+              "p50": 3.8,
+              "p95": 15.5
+            },
+            "contentToDrawMs": {
+              "n": 1334,
+              "p50": 26.5335,
+              "p95": 104.567
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 116 Hz"
+        },
+        {
+          "label": "browser-side-5",
+          "measurementSeconds": 42.154375,
+          "frameCount": 1341,
+          "sentFps": 31.81164469880054,
+          "captureFps": 31.88281168917817,
+          "mbps": 1.329389511764793,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.292,
+            "ceiling": 8360755,
+            "fps": 60,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "disabled",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 1341,
+              "p50": 0.5,
+              "p95": 3.0
+            },
+            "encodeMs": {
+              "n": 1341,
+              "p50": 10.625,
+              "p95": 14.291
+            },
+            "wireMs": {
+              "n": 1341,
+              "p50": 0.083,
+              "p95": 0.416
+            },
+            "networkMs": {
+              "n": 1341,
+              "p50": 8.5,
+              "p95": 86.483
+            },
+            "decodeMs": {
+              "n": 1336,
+              "p50": 3.6,
+              "p95": 13.9
+            },
+            "contentToDrawMs": {
+              "n": 1336,
+              "p50": 28.737000000000002,
+              "p95": 104.65
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 117 Hz"
+        }
+      ],
+      "nativeWindowSeconds": 36.67925128299976,
+      "nativeUploadedFps": 21.919749500793138,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    }
+  ],
+  "priorityOn": [
+    {
+      "count": 1,
+      "durationSeconds": 31.38134462502785,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 41.97925,
+          "frameCount": 938,
+          "sentFps": 22.344372517374655,
+          "captureFps": 22.272908639387317,
+          "mbps": 1.6127401990269001,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 5.417,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 0,
+            "priority": "normal",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 0,
+            "priorityReason": "single-stream",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 938,
+              "p50": 13.021,
+              "p95": 33.792
+            },
+            "encodeMs": {
+              "n": 938,
+              "p50": 17.583,
+              "p95": 18.958
+            },
+            "wireMs": {
+              "n": 938,
+              "p50": 0.166,
+              "p95": 0.583
+            },
+            "networkMs": {
+              "n": 938,
+              "p50": 5.71,
+              "p95": 84.758
+            },
+            "decodeMs": {
+              "n": 905,
+              "p50": 56.063,
+              "p95": 136.563
+            },
+            "contentToDrawMs": {
+              "n": 905,
+              "p50": 111.525,
+              "p95": 187.544
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        }
+      ],
+      "nativeWindowSeconds": 36.67749217801611,
+      "nativeUploadedFps": 21.839006770482154,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    },
+    {
+      "count": 2,
+      "durationSeconds": 31.189651958993636,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 41.8165,
+          "frameCount": 911,
+          "sentFps": 21.78565877105927,
+          "captureFps": 21.809572776296438,
+          "mbps": 1.3648887879186447,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 4.333,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 0,
+            "priority": "selected",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 24272,
+            "priorityReason": "focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 911,
+              "p50": 13.292,
+              "p95": 33.208
+            },
+            "encodeMs": {
+              "n": 911,
+              "p50": 17.625,
+              "p95": 19.291
+            },
+            "wireMs": {
+              "n": 911,
+              "p50": 0.125,
+              "p95": 0.75
+            },
+            "networkMs": {
+              "n": 911,
+              "p50": 11.822,
+              "p95": 85.917
+            },
+            "decodeMs": {
+              "n": 908,
+              "p50": 57.295,
+              "p95": 135.638
+            },
+            "contentToDrawMs": {
+              "n": 908,
+              "p50": 115.50200000000001,
+              "p95": 191.514
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        },
+        {
+          "label": "browser-side-1",
+          "measurementSeconds": 41.807292,
+          "frameCount": 386,
+          "sentFps": 9.232839094194382,
+          "captureFps": 9.232839094194382,
+          "mbps": 0.8110990781225439,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.666,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24253,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 386,
+              "p50": 0.542,
+              "p95": 3.292
+            },
+            "encodeMs": {
+              "n": 386,
+              "p50": 4.625,
+              "p95": 15.583
+            },
+            "wireMs": {
+              "n": 386,
+              "p50": 0.125,
+              "p95": 0.375
+            },
+            "networkMs": {
+              "n": 386,
+              "p50": 5.6165,
+              "p95": 81.133
+            },
+            "decodeMs": {
+              "n": 384,
+              "p50": 3.7,
+              "p95": 8.5
+            },
+            "contentToDrawMs": {
+              "n": 384,
+              "p50": 18.154,
+              "p95": 95.541
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 116 Hz"
+        }
+      ],
+      "nativeWindowSeconds": 36.481178729998646,
+      "nativeUploadedFps": 22.175818549819923,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    },
+    {
+      "count": 4,
+      "durationSeconds": 31.291239458019845,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 41.891916,
+          "frameCount": 894,
+          "sentFps": 21.3406328801003,
+          "captureFps": 21.3406328801003,
+          "mbps": 1.3405897214154634,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 5.542,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 1,
+            "priority": "selected",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 24261,
+            "priorityReason": "focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 894,
+              "p50": 13.167,
+              "p95": 36.084
+            },
+            "encodeMs": {
+              "n": 894,
+              "p50": 17.583,
+              "p95": 21.209
+            },
+            "wireMs": {
+              "n": 894,
+              "p50": 0.125,
+              "p95": 0.541
+            },
+            "networkMs": {
+              "n": 893,
+              "p50": 14.176,
+              "p95": 91.683
+            },
+            "decodeMs": {
+              "n": 888,
+              "p50": 57.433,
+              "p95": 143.634
+            },
+            "contentToDrawMs": {
+              "n": 888,
+              "p50": 123.197,
+              "p95": 198.439
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        },
+        {
+          "label": "browser-side-1",
+          "measurementSeconds": 41.851792,
+          "frameCount": 391,
+          "sentFps": 9.342491236695432,
+          "captureFps": 9.342491236695432,
+          "mbps": 0.8109010959435141,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 6.208,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24239,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 391,
+              "p50": 0.458,
+              "p95": 3.084
+            },
+            "encodeMs": {
+              "n": 391,
+              "p50": 4.583,
+              "p95": 15.875
+            },
+            "wireMs": {
+              "n": 391,
+              "p50": 0.084,
+              "p95": 0.292
+            },
+            "networkMs": {
+              "n": 391,
+              "p50": 6.442,
+              "p95": 80.375
+            },
+            "decodeMs": {
+              "n": 391,
+              "p50": 3.8,
+              "p95": 8.2
+            },
+            "contentToDrawMs": {
+              "n": 391,
+              "p50": 22.116,
+              "p95": 92.55
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 115 Hz"
+        },
+        {
+          "label": "browser-side-2",
+          "measurementSeconds": 41.852125,
+          "frameCount": 389,
+          "sentFps": 9.294629603634224,
+          "captureFps": 9.294629603634224,
+          "mbps": 0.8107258592006976,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 6.375,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24228,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 389,
+              "p50": 0.375,
+              "p95": 2.625
+            },
+            "encodeMs": {
+              "n": 389,
+              "p50": 5.5,
+              "p95": 17.5
+            },
+            "wireMs": {
+              "n": 389,
+              "p50": 0.083,
+              "p95": 0.5
+            },
+            "networkMs": {
+              "n": 389,
+              "p50": 6.783,
+              "p95": 85.433
+            },
+            "decodeMs": {
+              "n": 388,
+              "p50": 3.7,
+              "p95": 8.2
+            },
+            "contentToDrawMs": {
+              "n": 388,
+              "p50": 22.4085,
+              "p95": 101.541
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 118 Hz"
+        },
+        {
+          "label": "browser-side-3",
+          "measurementSeconds": 41.853583,
+          "frameCount": 388,
+          "sentFps": 9.270413001438849,
+          "captureFps": 9.246520184424831,
+          "mbps": 0.8093502532387729,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 6.167,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24218,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 388,
+              "p50": 0.375,
+              "p95": 2.541
+            },
+            "encodeMs": {
+              "n": 388,
+              "p50": 6.0,
+              "p95": 19.208
+            },
+            "wireMs": {
+              "n": 388,
+              "p50": 0.083,
+              "p95": 0.417
+            },
+            "networkMs": {
+              "n": 388,
+              "p50": 7.3375,
+              "p95": 87.15
+            },
+            "decodeMs": {
+              "n": 387,
+              "p50": 3.9,
+              "p95": 8.4
+            },
+            "contentToDrawMs": {
+              "n": 387,
+              "p50": 23.833,
+              "p95": 102.675
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 119 Hz"
+        }
+      ],
+      "nativeWindowSeconds": 36.58249429700663,
+      "nativeUploadedFps": 21.595028310156582,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    },
+    {
+      "count": 6,
+      "durationSeconds": 31.25742820801679,
+      "route": "network",
+      "streams": [
+        {
+          "label": "native-workspace",
+          "measurementSeconds": 42.243292,
+          "frameCount": 906,
+          "sentFps": 21.447192136446187,
+          "captureFps": 21.423519738944588,
+          "mbps": 1.5930400500036788,
+          "pictureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 30,
+            "baseRtt": 5.709,
+            "ceiling": 30965760,
+            "fps": 30,
+            "inFlight": 2,
+            "priority": "selected",
+            "priorityFpsCap": 0,
+            "priorityLeaseMs": 24132,
+            "priorityReason": "focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 30965760,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 906,
+              "p50": 12.6455,
+              "p95": 35.083
+            },
+            "encodeMs": {
+              "n": 906,
+              "p50": 18.0,
+              "p95": 22.959
+            },
+            "wireMs": {
+              "n": 906,
+              "p50": 0.125,
+              "p95": 0.75
+            },
+            "networkMs": {
+              "n": 904,
+              "p50": 20.252000000000002,
+              "p95": 116.844
+            },
+            "decodeMs": {
+              "n": 871,
+              "p50": 52.056,
+              "p95": 142.923
+            },
+            "contentToDrawMs": {
+              "n": 871,
+              "p50": 126.271,
+              "p95": 220.005
+            }
+          },
+          "viewer": "libavcodec h264_v4l2m2m active"
+        },
+        {
+          "label": "browser-side-1",
+          "measurementSeconds": 42.170334,
+          "frameCount": 387,
+          "sentFps": 9.177067461690012,
+          "captureFps": 9.2007808143042,
+          "mbps": 0.8290457457605149,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 6.542,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 1,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24109,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 387,
+              "p50": 0.5,
+              "p95": 5.625
+            },
+            "encodeMs": {
+              "n": 387,
+              "p50": 7.167,
+              "p95": 19.709
+            },
+            "wireMs": {
+              "n": 387,
+              "p50": 0.084,
+              "p95": 0.458
+            },
+            "networkMs": {
+              "n": 386,
+              "p50": 7.775,
+              "p95": 94.15
+            },
+            "decodeMs": {
+              "n": 386,
+              "p50": 3.8,
+              "p95": 8.7
+            },
+            "contentToDrawMs": {
+              "n": 386,
+              "p50": 27.921,
+              "p95": 137.409
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 115 Hz"
+        },
+        {
+          "label": "browser-side-2",
+          "measurementSeconds": 42.161958,
+          "frameCount": 388,
+          "sentFps": 9.202608664426828,
+          "captureFps": 9.202608664426828,
+          "mbps": 0.8190731559478335,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 6.833,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24099,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 388,
+              "p50": 0.542,
+              "p95": 5.375
+            },
+            "encodeMs": {
+              "n": 388,
+              "p50": 5.833,
+              "p95": 16.667
+            },
+            "wireMs": {
+              "n": 388,
+              "p50": 0.084,
+              "p95": 0.583
+            },
+            "networkMs": {
+              "n": 388,
+              "p50": 6.6205,
+              "p95": 93.192
+            },
+            "decodeMs": {
+              "n": 387,
+              "p50": 3.5,
+              "p95": 8.5
+            },
+            "contentToDrawMs": {
+              "n": 387,
+              "p50": 22.558,
+              "p95": 154.316
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 116 Hz"
+        },
+        {
+          "label": "browser-side-3",
+          "measurementSeconds": 42.1625,
+          "frameCount": 389,
+          "sentFps": 9.226208123332345,
+          "captureFps": 9.226208123332345,
+          "mbps": 0.8102714971835162,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 5.625,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 1,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24088,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 389,
+              "p50": 0.459,
+              "p95": 4.167
+            },
+            "encodeMs": {
+              "n": 389,
+              "p50": 4.959,
+              "p95": 16.333
+            },
+            "wireMs": {
+              "n": 389,
+              "p50": 0.084,
+              "p95": 0.458
+            },
+            "networkMs": {
+              "n": 388,
+              "p50": 7.65,
+              "p95": 95.45
+            },
+            "decodeMs": {
+              "n": 387,
+              "p50": 3.6,
+              "p95": 8.7
+            },
+            "contentToDrawMs": {
+              "n": 387,
+              "p50": 22.333,
+              "p95": 129.359
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 117 Hz"
+        },
+        {
+          "label": "browser-side-4",
+          "measurementSeconds": 42.166125,
+          "frameCount": 388,
+          "sentFps": 9.201699231314237,
+          "captureFps": 9.201699231314237,
+          "mbps": 0.8098813917570087,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 7.875,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24078,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 388,
+              "p50": 0.5,
+              "p95": 6.209
+            },
+            "encodeMs": {
+              "n": 388,
+              "p50": 6.9165,
+              "p95": 19.208
+            },
+            "wireMs": {
+              "n": 388,
+              "p50": 0.0835,
+              "p95": 0.583
+            },
+            "networkMs": {
+              "n": 388,
+              "p50": 7.8665,
+              "p95": 92.866
+            },
+            "decodeMs": {
+              "n": 387,
+              "p50": 3.8,
+              "p95": 9.1
+            },
+            "contentToDrawMs": {
+              "n": 387,
+              "p50": 25.858,
+              "p95": 145.875
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 117 Hz"
+        },
+        {
+          "label": "browser-side-5",
+          "measurementSeconds": 42.17025,
+          "frameCount": 388,
+          "sentFps": 9.200799141574924,
+          "captureFps": 9.224512541424344,
+          "mbps": 0.8372734807121133,
+          "pictureSizes": [
+            [
+              1152,
+              864
+            ]
+          ],
+          "controller": {
+            "adapt": false,
+            "adaptiveFps": 60,
+            "baseRtt": 6.583,
+            "ceiling": 8360755,
+            "fps": 10,
+            "inFlight": 0,
+            "priority": "background",
+            "priorityFpsCap": 10,
+            "priorityLeaseMs": 24069,
+            "priorityReason": "other-stream-focus",
+            "scale": 1,
+            "slack": 40,
+            "target": 8360755,
+            "tier": 0
+          },
+          "timings": {
+            "captureMs": {
+              "n": 388,
+              "p50": 0.375,
+              "p95": 4.292
+            },
+            "encodeMs": {
+              "n": 388,
+              "p50": 5.5835,
+              "p95": 17.292
+            },
+            "wireMs": {
+              "n": 388,
+              "p50": 0.084,
+              "p95": 0.667
+            },
+            "networkMs": {
+              "n": 388,
+              "p50": 6.4125,
+              "p95": 92.017
+            },
+            "decodeMs": {
+              "n": 385,
+              "p50": 3.7,
+              "p95": 8.9
+            },
+            "contentToDrawMs": {
+              "n": 385,
+              "p50": 20.842,
+              "p95": 129.517
+            }
+          },
+          "viewer": "h264 software; ANGLE (angleisbroken, FD750, OpenGL 4.6); raf 120 Hz"
+        }
+      ],
+      "nativeWindowSeconds": 36.672243210021406,
+      "nativeUploadedFps": 21.651252568673627,
+      "nativeErrorsDelta": {
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0
+      },
+      "posePreserved": true
+    }
+  ],
+  "reproduce": [
+    "Restore Coding at2880x2560/1x/Sharp with native V4L2 CPU30; no other streams. Acquire shared Frame booking and off-head consent.",
+    "Run native/bench_multistream.py --holder <booking-holder> --label priority-off --seconds30 --out <file> under FRAME_MAC_VIEW_PRIORITY=0.",
+    "Restart companion with identical settings except FRAME_MAC_VIEW_PRIORITY=1; restoreCoding; rerun --label priority-on.",
+    "Harness removes only its disposable Chrome fixtures/profiles and side viewers; inspect retained counters/errors/dimensions before interpreting performance."
+  ]
+}

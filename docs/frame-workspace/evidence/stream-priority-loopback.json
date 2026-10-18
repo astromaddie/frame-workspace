@@ -1,0 +1,98 @@
+{
+  "evidence": "production local synthetic src=test WebSockets; not Frame decode or optical FPS",
+  "sourceBase": "3e585a5",
+  "sampleWindowSecondsApprox": 1.8,
+  "conditions": {
+    "1": {
+      "captureFps": [
+        60.6
+      ],
+      "controllerFps": [
+        60
+      ],
+      "sentFps": [
+        45.0
+      ],
+      "roles": [
+        "normal"
+      ]
+    },
+    "2": {
+      "captureFps": [
+        60.6,
+        10.6
+      ],
+      "controllerFps": [
+        60,
+        10
+      ],
+      "sentFps": [
+        60.6,
+        11.7
+      ],
+      "roles": [
+        "selected",
+        "background"
+      ]
+    },
+    "4": {
+      "captureFps": [
+        60.6,
+        10,
+        10,
+        10
+      ],
+      "controllerFps": [
+        60,
+        10,
+        10,
+        10
+      ],
+      "sentFps": [
+        61.7,
+        11.7,
+        11.7,
+        11.7
+      ]
+    },
+    "6": {
+      "captureFps": [
+        60.6,
+        10,
+        10,
+        10.6,
+        10.6,
+        10.6
+      ],
+      "controllerFps": [
+        60,
+        10,
+        10,
+        10,
+        10,
+        10
+      ],
+      "sentFps": [
+        60,
+        11.7,
+        11.7,
+        11.7,
+        11.7,
+        11.7
+      ]
+    }
+  },
+  "interpretation": "Short functional wiring samples, including startup/transient windows; not a sustained-rate or statistical benchmark. Selected client first. Raw temporary logs removed; these values are retained tool output.",
+  "reproduce": [
+    "Build with sh mac/frame-mac-view/build.sh <temporary-output>.",
+    "Run serve --port0 with a throwaway FRAME_MAC_VIEW_TOKEN.",
+    "OpenN production /stream?src=test WebSockets, consume binaries and replyrx.",
+    "Send focus on first client, sample /status and /stats with same window; stop all clients and remove temp build."
+  ],
+  "validation": [
+    "test-stream-priority.sh passed, including production classifier blur-release regression",
+    "full arm64 Mac agent build passed",
+    "no Frame or active companion operation by worker"
+  ],
+  "cleanupTemporaryBuildLogicalBytes": 2145648
+}

@@ -210,6 +210,7 @@ final class SeparateSource: CaptureSource {
     private var window: AXWindow?
     private var original: CGRect?
     private var crop: CGRect?  // display points, when only part of the display is captured
+    private var maxFps = 60
     private var poll: DispatchSourceTimer?
     private var stopped = false
     private let queue = DispatchQueue(label: "frame-mac-view.separate")
@@ -232,6 +233,7 @@ final class SeparateSource: CaptureSource {
         pid = info.pid
         DispatchQueue.main.async { [self] in
             guard !stopped else { return }
+            maxFps = max(1, fps)
             guard let w = AXWindow(windowID: windowID, pid: info.pid), let frame = w.frame else {
                 return completion("couldn't reach that window through Accessibility")
             }
@@ -248,17 +250,17 @@ final class SeparateSource: CaptureSource {
             original = frame
             // The new screen shows up in NSScreen a moment later; its menu bar
             // decides where the window can go.
-            placeWindow(attempt: 0, maxLong: maxLong, fps: fps, completion: completion)
+            placeWindow(attempt: 0, maxLong: maxLong, completion: completion)
         }
     }
 
-    private func placeWindow(attempt: Int, maxLong: Int, fps: Int, completion: @escaping (String?) -> Void) {
+    private func placeWindow(attempt: Int, maxLong: Int, completion: @escaping (String?) -> Void) {
         guard !stopped, let vd = display, let w = window else { return }
         // Wait for the screen to appear, and for its HiDPI mode, so the
         // first frames are captured sharp.
         if vd.screen == nil || !vd.isHiDPI, attempt < 30 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                self.placeWindow(attempt: attempt + 1, maxLong: maxLong, fps: fps, completion: completion)
+                self.placeWindow(attempt: attempt + 1, maxLong: maxLong, completion: completion)
             }
             return
         }
@@ -281,7 +283,7 @@ final class SeparateSource: CaptureSource {
         sck.onFrame = { [weak self] pb, pts, shown in self?.onFrame?(pb, pts, shown) }
         sck.onEnded = { [weak self] reason in self?.onEnded?(reason) }
         inner = sck
-        sck.start(maxLong: maxLong, fps: fps) { [weak self] error in
+        sck.start(maxLong: maxLong, fps: maxFps) { [weak self] error in
             // Back on main, where stop() runs too, so a viewer that left during
             // startup can't leave a capture running.
             DispatchQueue.main.async {
@@ -358,6 +360,12 @@ final class SeparateSource: CaptureSource {
     }
 
     func setMaxLong(_ n: Int) { DispatchQueue.main.async { self.inner?.setMaxLong(n) } }
+    func setMaxFps(_ fps: Int) {
+        DispatchQueue.main.async {
+            self.maxFps = max(1, fps)
+            self.inner?.setMaxFps(self.maxFps)
+        }
+    }
 
     func pointer(x: Double, y: Double, text: String?) {}
 }

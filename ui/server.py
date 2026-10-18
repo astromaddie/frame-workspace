@@ -2353,6 +2353,33 @@ def macview_action(body):
     if LOCAL:
         raise Failure("Runs on your computer, not the headset.", 400)
     action = body.get("action")
+    if action == "stream_stats":
+        if set(body) - {"action", "id", "since", "settle"} or "id" not in body:
+            raise Failure("Stream statistics require a current session ID and optional since/settle values.", 400)
+        query = {"id": body["id"], "since": body.get("since", 0), "settle": body.get("settle", 1_500_000)}
+        for name, maximum in (("id", 2**31 - 1), ("since", 2**32 - 1), ("settle", 5_000_000)):
+            value = query[name]
+            if type(value) is not int or not (1 if name == "id" else 0) <= value <= maximum:
+                raise Failure("Invalid stream statistics " + name + ".", 400)
+        try:
+            return macview.call("/stats", **query)
+        except frame_macview.MacViewError as e:
+            raise Failure(str(e), 502)
+    if action == "workspace_adjust":
+        if set(body) != {"action", "width", "distance"}:
+            raise Failure("Workspace placement requires only width and distance.", 400)
+        try:
+            frame_macview.MacView._placement_number(body["width"], "width", 0.4, 8.0)
+            frame_macview.MacView._placement_number(body["distance"], "distance", 0.4, 10.0)
+        except frame_macview.MacViewError as e:
+            raise Failure(str(e), 400)
+    if action == "workspace_curvature":
+        if set(body) != {"action", "curvature"}:
+            raise Failure("Workspace curvature requires only a curvature value.", 400)
+        try:
+            frame_macview.MacView._curvature_number(body["curvature"])
+        except frame_macview.MacViewError as e:
+            raise Failure(str(e), 400)
     profile_actions = {"profile_list", "profile_save", "profile_delete", "profile_reset", "profile_restore"}
     if action in profile_actions:
         allowed = {
@@ -2393,6 +2420,10 @@ def macview_action(body):
         if action == "workspace_start":
             return macview.start_workspace(str(body.get("preset") or "5120x1440"),
                                            body.get("scale", 1), str(body.get("quality") or "sharp"))
+        if action == "workspace_adjust":
+            return macview.adjust_workspace(body["width"], body["distance"])
+        if action == "workspace_curvature":
+            return macview.set_workspace_curvature(body["curvature"])
         if action == "workspace_stop":
             return macview.stop_workspace()
         if action == "stop":

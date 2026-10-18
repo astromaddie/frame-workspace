@@ -33,6 +33,17 @@ Chrome fixture was matched by bundle ID/title hint, closed, relaunched with a ne
 window ID, and matched again through the real API. Its window stream synchronized
 and reported capture/viewer frames. This verifies the logical path, not optical
 presentation or saved room placement. See the compact
-[profile evidence](evidence/profiles-live.json). The running proof companion uses
-its own `/tmp/frame-workspace-companion-data` directory; its saved `Coding`
-definition is distinct from normal Frame Control application data.
+[profile evidence](evidence/profiles-live.json). The running preview companion now uses
+`~/Library/Application Support/Frame Workspace Preview`; its saved `Coding`
+definition is distinct from normal Frame Control application data. Migration
+preserved the exact profile bytes, and a fresh companion restored Coding
+through the authenticated API at 2880×2560 / 1× / Sharp. The native viewer
+confirmed the same full-resolution texture. The profile file is mode 0600
+inside private directories. The preview is not installed as a login service.
+
+For the current preview on port 60339, put `--url http://127.0.0.1:60339`
+before the CLI subcommand, for example:
+
+```sh
+python3 scripts/workspace-profiles.py --url http://127.0.0.1:60339 restore Coding
+```

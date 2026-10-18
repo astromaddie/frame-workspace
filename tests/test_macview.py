@@ -95,6 +95,288 @@ class Helpers(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
+    def test_native_adjust_helper_waits_for_owner_readback_and_keeps_control_private(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            folder = runtime / "frame-workspace"
+            folder.mkdir()
+            bindir = root / "bin"
+            bindir.mkdir()
+            calls = root / "systemctl-calls"
+            systemctl = bindir / "systemctl"
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                "printf '%s\\n' \"$*\" >> \"$TEST_SYSTEMCTL_CALLS\"\n"
+                "case \"$4\" in\n"
+                "  --property=ActiveState) printf '%s\\n' \"$TEST_ACTIVE\" ;;\n"
+                "  --property=MainPID) printf '%s\\n' \"$TEST_PID\" ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n", encoding="utf-8")
+            systemctl.chmod(0o755)
+            key = f"com.frame-workspace.native.{os.getuid()}.workspace"
+            state_file = folder / "state.json"
+            (folder / "control.json").write_text(json.dumps({"revision": 10**18}), encoding="utf-8")
+            state_file.write_text(json.dumps({
+                "ready": True, "state": "streaming", "overlayKey": key, "controlRevision": 0,
+                "placement": {"width": 2.4, "distance": 2.0}}), encoding="utf-8")
+            env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                   "XDG_RUNTIME_DIR": str(runtime), "TEST_ACTIVE": "active", "TEST_PID": "123",
+                   "TEST_SYSTEMCTL_CALLS": str(calls)}
+            changed = threading.Event()
+
+            def owner():
+                deadline = time.monotonic() + 3
+                control = folder / "control.json"
+                while time.monotonic() < deadline:
+                    try:
+                        update = json.loads(control.read_text())
+                        if "width" in update and "distance" in update:
+                            current = json.loads(state_file.read_text())
+                            current["controlRevision"] = update["revision"]
+                            current["placement"] = {"width": update["width"], "distance": update["distance"]}
+                            temp_state = folder / "state.next"
+                            temp_state.write_text(json.dumps(current), encoding="utf-8")
+                            temp_state.replace(state_file)
+                            changed.set()
+                            return
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(0.02)
+
+            thread = threading.Thread(target=owner, daemon=True)
+            thread.start()
+            result = subprocess.run(["bash", "-s", "--", "adjust", "3.25", "2.75"],
+                                    input=frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"),
+                                    text=True, capture_output=True, env=env, timeout=10)
+            thread.join(timeout=1)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(changed.is_set())
+            response = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertEqual(response, {"ready": True, "state": "streaming", "overlayKey": key,
+                                        "placement": {"width": 3.25, "distance": 2.75}})
+            control = json.loads((folder / "control.json").read_text())
+            self.assertEqual(set(control), {"revision", "width", "distance"})
+            self.assertEqual(control["revision"], 1)
+            self.assertEqual((folder / "control.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((folder / "control.lock").stat().st_mode & 0o777, 0o600)
+            self.assertNotIn("secret", json.dumps(control).lower())
+            self.assertTrue(all(line.split()[1] == "show" for line in calls.read_text().splitlines()))
+
+            env["TEST_ACTIVE"] = "inactive"
+            (folder / "control.json").unlink()
+            stopped = subprocess.run(["bash", "-s", "--", "adjust", "3", "2"],
+                                     input=frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"),
+                                     text=True, capture_output=True, env=env, timeout=10)
+            self.assertNotEqual(stopped.returncode, 0)
+            self.assertIn("not ready", stopped.stderr)
+            self.assertFalse((folder / "control.json").exists())
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
+    def test_native_helper_acknowledgements_require_the_exact_requested_revision(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            folder = runtime / "frame-workspace"
+            folder.mkdir()
+            bindir = root / "bin"
+            bindir.mkdir()
+            systemctl = bindir / "systemctl"
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                "case \"$4\" in\n"
+                "  --property=ActiveState) printf '%s\\n' active ;;\n"
+                "  --property=MainPID) printf '%s\\n' 123 ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n", encoding="utf-8")
+            systemctl.chmod(0o755)
+            key = f"com.frame-workspace.native.{os.getuid()}.workspace"
+            state_file = folder / "state.json"
+            control_file = folder / "control.json"
+            control_file.write_text(json.dumps({"revision": 1}), encoding="utf-8")
+            state = {"ready": True, "state": "streaming", "overlayKey": key,
+                     "placement": {"width": 3.25, "distance": 2.75},
+                     "controlRevision": 3, "controlResultRevision": 4,
+                     "curvatureResult": {"supported": False, "applied": False,
+                                          "requested": 0.5, "value": None, "errorCode": 23}}
+            state_file.write_text(json.dumps(state), encoding="utf-8")
+            env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                   "XDG_RUNTIME_DIR": str(runtime)}
+
+            def advance_state(revision, field, value, patch):
+                deadline = time.monotonic() + 4
+                while time.monotonic() < deadline:
+                    try:
+                        update = json.loads(control_file.read_text())
+                        if update.get("revision") == revision and update.get(field) == value:
+                            time.sleep(0.6)
+                            current = json.loads(state_file.read_text())
+                            current.update(patch)
+                            temporary = folder / "state.next"
+                            temporary.write_text(json.dumps(current), encoding="utf-8")
+                            temporary.replace(state_file)
+                            return
+                    except (OSError, ValueError):
+                        pass
+                    time.sleep(0.02)
+
+            script = frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8")
+            thread = threading.Thread(target=advance_state,
+                                      args=(2, "width", 3.25, {"controlRevision": 2}), daemon=True)
+            thread.start()
+            started = time.monotonic()
+            adjusted = subprocess.run(["bash", "-s", "--", "adjust", "3.25", "2.75"],
+                                      input=script, text=True, capture_output=True, env=env, timeout=10)
+            adjust_elapsed = time.monotonic() - started
+            thread.join(timeout=1)
+            self.assertEqual(adjusted.returncode, 0, adjusted.stderr)
+            self.assertGreater(adjust_elapsed, 0.45,
+                               "a matching placement with a higher stale revision must not be acknowledged")
+            self.assertEqual(json.loads(control_file.read_text())["revision"], 2)
+
+            thread = threading.Thread(target=advance_state,
+                                      args=(3, "curvature", 0.5, {"controlResultRevision": 3}), daemon=True)
+            thread.start()
+            started = time.monotonic()
+            curved = subprocess.run(["bash", "-s", "--", "curvature", "0.5"],
+                                    input=script, text=True, capture_output=True, env=env, timeout=10)
+            curvature_elapsed = time.monotonic() - started
+            thread.join(timeout=1)
+            self.assertEqual(curved.returncode, 0, curved.stderr)
+            self.assertGreater(curvature_elapsed, 0.45,
+                               "a supported response with a higher stale revision must not be acknowledged")
+            self.assertEqual(json.loads(control_file.read_text())["revision"], 3)
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
+    def test_native_focus_helper_normalizes_legacy_revision_and_increments_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            folder = runtime / "frame-workspace"
+            folder.mkdir()
+            bindir = root / "bin"
+            bindir.mkdir()
+            systemctl = bindir / "systemctl"
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                "case \"$4\" in\n"
+                "  --property=ActiveState) printf '%s\\n' active ;;\n"
+                "  --property=MainPID) printf '%s\\n' 123 ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n", encoding="utf-8")
+            systemctl.chmod(0o755)
+            key = f"com.frame-workspace.native.{os.getuid()}.workspace"
+            (folder / "state.json").write_text(json.dumps({
+                "ready": True, "state": "streaming", "overlayKey": key,
+                "placement": {"width": 2.4, "distance": 2.0}}), encoding="utf-8")
+            control = folder / "control.json"
+            control.write_text(json.dumps({"revision": 10**18}), encoding="utf-8")
+            env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                   "XDG_RUNTIME_DIR": str(runtime)}
+            script = frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8")
+            for expected_revision in (1, 2):
+                focused = subprocess.run(["bash", "-s", "--", "focus"], input=script,
+                                         text=True, capture_output=True, env=env, timeout=10)
+                self.assertEqual(focused.returncode, 0, focused.stderr)
+                self.assertIn("focus requested", focused.stdout)
+                self.assertEqual(json.loads(control.read_text()), {
+                    "revision": expected_revision, "focus": True, "recenter": True})
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
+    def test_native_curvature_helper_returns_unsupported_readback_without_claiming_success(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            folder = runtime / "frame-workspace"
+            folder.mkdir()
+            bindir = root / "bin"
+            bindir.mkdir()
+            systemctl = bindir / "systemctl"
+            systemctl.write_text(
+                "#!/bin/sh\n"
+                "case \"$4\" in\n"
+                "  --property=ActiveState) printf '%s\\n' active ;;\n"
+                "  --property=MainPID) printf '%s\\n' 123 ;;\n"
+                "  *) exit 2 ;;\n"
+                "esac\n", encoding="utf-8")
+            systemctl.chmod(0o755)
+            key = f"com.frame-workspace.native.{os.getuid()}.workspace"
+            state_file = folder / "state.json"
+            base_state = {"ready": True, "state": "streaming", "overlayKey": key,
+                          "placement": {"width": 2.4, "distance": 2.0},
+                          "controlResultRevision": 0,
+                          "curvatureResult": {"supported": False, "applied": False,
+                                               "requested": 0, "value": None, "errorCode": 23}}
+            state_file.write_text(json.dumps(base_state), encoding="utf-8")
+            control = folder / "control.json"
+            control.write_text(json.dumps({"revision": 10**18}), encoding="utf-8")
+            env = {**os.environ, "PATH": str(bindir) + os.pathsep + os.environ.get("PATH", ""),
+                   "XDG_RUNTIME_DIR": str(runtime)}
+
+            def owner(expected_curvature):
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    try:
+                        update = json.loads(control.read_text())
+                        if update.get("curvature") != expected_curvature:
+                            time.sleep(0.02)
+                            continue
+                        current = dict(base_state)
+                        current["controlResultRevision"] = update["revision"]
+                        current["curvatureResult"] = {"supported": False, "applied": False,
+                                                       "requested": update["curvature"],
+                                                       "value": None, "errorCode": 23}
+                        temp_state = folder / "state.next"
+                        temp_state.write_text(json.dumps(current), encoding="utf-8")
+                        temp_state.replace(state_file)
+                        return
+                    except (OSError, KeyError, ValueError):
+                        pass
+                    time.sleep(0.02)
+
+            thread = threading.Thread(target=owner, args=(0.75,), daemon=True)
+            thread.start()
+            result = subprocess.run(["bash", "-s", "--", "curvature", "0.75"],
+                                    input=frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"),
+                                    text=True, capture_output=True, env=env, timeout=10)
+            thread.join(timeout=1)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            response = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertFalse(response["ok"], "unsupported curvature must not look like a successful command")
+            self.assertEqual(response["curvature"], {"supported": False, "applied": False,
+                                                      "requested": 0.75, "value": None,
+                                                      "errorCode": 23})
+            self.assertEqual(json.loads((folder / "control.json").read_text()),
+                             {"revision": 1, "curvature": 0.75})
+            thread.join(timeout=1)
+            thread = threading.Thread(target=owner, args=(0.5,), daemon=True)
+            thread.start()
+            second = subprocess.run(["bash", "-s", "--", "curvature", "0.5"],
+                                    input=frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"),
+                                    text=True, capture_output=True, env=env, timeout=10)
+            thread.join(timeout=1)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            second_response = json.loads(second.stdout.strip().splitlines()[-1])
+            self.assertFalse(second_response["ok"])
+            self.assertEqual(second_response["curvature"]["requested"], 0.5)
+            self.assertEqual(json.loads(control.read_text()), {"revision": 2, "curvature": 0.5})
+            for invalid in ("nan", "-0.1", "1.01", "1e-3"):
+                with self.subTest(invalid=invalid):
+                    rejected = subprocess.run(["bash", "-s", "--", "curvature", invalid],
+                                              input=frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"),
+                                              text=True, capture_output=True, env=env, timeout=10)
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn("between 0 and 1", rejected.stderr)
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
     def test_workspace_viewer_service_ownership_and_failed_readiness_cleanup(self):
         script = frame_macview.WORKSPACE_VIEWER_SCRIPT
         with tempfile.TemporaryDirectory() as temp:
@@ -114,9 +396,10 @@ class Helpers(unittest.TestCase):
 
             stub("systemctl", '''printf 'systemctl %s\\n' "$*" >> "$TEST_CALLS"
 if [ "$2" = show ]; then
-  load=$(sed -n '1p' "$TEST_STATE")
-  active=$(sed -n '2p' "$TEST_STATE")
-  pid=$(sed -n '3p' "$TEST_STATE")
+  # Builtins keep this fake cheap across the production stop/retry loops.
+  # Spawning three sed processes per property query can exhaust the test's
+  # outer deadline on macOS before the production loop itself terminates.
+  { IFS= read -r load; IFS= read -r active; IFS= read -r pid; } < "$TEST_STATE"
   case "$4" in
     --property=LoadState) printf '%s\\n' "$load" ;;
     --property=ActiveState) printf '%s\\n' "$active" ;;
@@ -930,6 +1213,80 @@ class WorkspaceLifecycle(unittest.TestCase):
                 self.assertNotIn("--showdashboard", calls[-1][0])
             finally:
                 manager.stop()
+
+    def test_native_placement_adjust_uses_live_owner_and_verifies_readback(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager = mock.Mock()
+        mv.workspace_manager.state.return_value = {"state": "running"}
+        mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+        calls = []
+        def run(remote, **kwargs):
+            calls.append((remote, kwargs))
+            return json.dumps({"ready": True, "state": "streaming", "overlayKey": mv.workspace_panel_key,
+                               "placement": {"width": 3.25, "distance": 2.75}})
+        mv.run = run
+        result = mv.adjust_workspace(3.25, 2.75)
+        self.assertEqual(result, {"ready": True, "state": "streaming",
+                                  "overlayKey": "com.frame-workspace.native.1000.workspace",
+                                  "placement": {"width": 3.25, "distance": 2.75}})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0], "bash -s -- adjust 3.250000 2.750000")
+        self.assertEqual(calls[0][1]["stdin"], frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text())
+        self.assertEqual(calls[0][1]["timeout"], 10)
+
+        for width, distance in ((True, 2), (float("nan"), 2), (2, float("inf")),
+                                (8.1, 2), (2, 10.1)):
+            with self.subTest(width=width, distance=distance), self.assertRaises(frame_macview.MacViewError):
+                mv.adjust_workspace(width, distance)
+        self.assertEqual(len(calls), 1, "invalid numbers must not reach the Frame helper")
+
+        mv.workspace_manager.state.return_value = {"state": "stopped"}
+        with self.assertRaisesRegex(frame_macview.MacViewError, "display is stopped"):
+            mv.adjust_workspace(3, 2)
+        self.assertEqual(len(calls), 1, "a stopped Workspace must not be recreated by placement controls")
+
+    def test_native_placement_rejects_non_native_owner_and_unconfirmed_state(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager = mock.Mock()
+        mv.workspace_manager.state.return_value = {"state": "running"}
+        mv.workspace_panel_key = "com.frame-control.workspace.1000.fc01234567"
+        mv.run = mock.Mock(return_value=json.dumps({"ready": True, "state": "streaming",
+                                                    "overlayKey": "com.frame-workspace.native.1000.workspace",
+                                                    "placement": {"width": 3, "distance": 2}}))
+        with self.assertRaisesRegex(frame_macview.MacViewError, "active native"):
+            mv.adjust_workspace(3, 2)
+        mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+        mv.run.return_value = json.dumps({"ready": False, "state": "connecting",
+                                          "overlayKey": mv.workspace_panel_key,
+                                          "placement": {"width": 3, "distance": 2}})
+        with self.assertRaisesRegex(frame_macview.MacViewError, "did not confirm"):
+            mv.adjust_workspace(3, 2)
+        self.assertEqual(mv.run.call_count, 1, "a dashboard-owned or unconfirmed panel is never resized")
+
+    def test_native_curvature_returns_owner_readback_and_rejects_unsupported_owner(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager = mock.Mock()
+        mv.workspace_manager.state.return_value = {"state": "running"}
+        mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+        result_doc = {"ready": True, "ok": True, "state": "streaming", "overlayKey": mv.workspace_panel_key,
+                      "curvature": {"supported": True, "applied": True, "requested": 0.7,
+                                    "value": 0.7, "errorCode": 0}}
+        mv.run = mock.Mock(return_value=json.dumps(result_doc))
+        result = mv.set_workspace_curvature(0.7)
+        self.assertEqual(result, result_doc)
+        self.assertEqual(mv.run.call_args.args[0], "bash -s -- curvature 0.700000")
+        self.assertEqual(mv.run.call_args.kwargs["timeout"], 10)
+        for value in (True, float("nan"), -0.1, 1.1):
+            with self.subTest(value=value), self.assertRaises(frame_macview.MacViewError):
+                mv.set_workspace_curvature(value)
+        self.assertEqual(mv.run.call_count, 1)
+
+        unsupported = {"ready": True, "ok": False, "state": "streaming", "overlayKey": mv.workspace_panel_key,
+                       "curvature": {"supported": False, "applied": False, "requested": 0.7,
+                                     "value": None, "errorCode": 23}}
+        mv.run.return_value = json.dumps(unsupported)
+        self.assertEqual(mv.set_workspace_curvature(0.7), unsupported,
+                         "an unsupported curvature command is returned as unsupported, never success")
 
     def test_native_configuration_errors_precede_display_creation(self):
         manager = frame_macview.WorkspaceDisplayManager("/does/not/matter")

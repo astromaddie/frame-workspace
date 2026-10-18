@@ -126,6 +126,35 @@ class ServerGuards(unittest.TestCase):
         self.assertEqual(status, 200, deleted)
         self.assertEqual(deleted["deleted"], "API Test")
 
+    def test_workspace_placement_api_validates_and_requires_a_running_owner(self):
+        for body in (
+                {"action": "workspace_adjust", "width": 3},
+                {"action": "workspace_adjust", "width": 3, "distance": 2, "token": "private"},
+                {"action": "workspace_adjust", "width": True, "distance": 2},
+                {"action": "workspace_adjust", "width": float("nan"), "distance": 2},
+                {"action": "workspace_adjust", "width": 3, "distance": 10.1}):
+            with self.subTest(body=body):
+                status, result = self.post("/api/macview", body)
+                self.assertEqual(status, 400, result)
+        status, result = self.post("/api/macview", {"action": "workspace_adjust", "width": 3, "distance": 2.5})
+        self.assertEqual(status, 502, result)
+        self.assertIn("Workspace display is stopped", result["error"])
+
+    def test_workspace_curvature_api_validates_and_requires_a_running_owner(self):
+        for body in (
+                {"action": "workspace_curvature"},
+                {"action": "workspace_curvature", "curvature": 0.5, "token": "private"},
+                {"action": "workspace_curvature", "curvature": True},
+                {"action": "workspace_curvature", "curvature": float("nan")},
+                {"action": "workspace_curvature", "curvature": -0.01},
+                {"action": "workspace_curvature", "curvature": 1.01}):
+            with self.subTest(body=body):
+                status, result = self.post("/api/macview", body)
+                self.assertEqual(status, 400, result)
+        status, result = self.post("/api/macview", {"action": "workspace_curvature", "curvature": 0.5})
+        self.assertEqual(status, 502, result)
+        self.assertIn("Workspace display is stopped", result["error"])
+
     def test_captures_are_not_cacheable(self):
         # Headset captures show everything on screen; nothing may cache them.
         _, headers, _ = self.request("GET", "/api/screenshot", headers={"X-Frame-UI": "1"})

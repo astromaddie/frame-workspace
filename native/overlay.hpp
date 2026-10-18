@@ -283,6 +283,19 @@ class Overlay {
   }
 
 public:
+  struct CurvatureReadback {
+    bool readable = false;
+    float value = 0;
+    int errorCode = -1;
+  };
+  struct CurvatureResult {
+    bool supported = false;
+    bool applied = false;
+    float requested = 0;
+    bool hasValue = false;
+    float value = 0;
+    int errorCode = -1;
+  };
   Placement placement;
   std::string key;
   int lastSubmitError = 0;
@@ -415,6 +428,50 @@ public:
   void focus() {
     if (!noVR && texture)
       check(overlay->ShowOverlay(handle), "focus overlay");
+  }
+  CurvatureReadback curvatureReadback() const {
+    CurvatureReadback result;
+    if (noVR || !overlay || !overlay->GetOverlayCurvature)
+      return result;
+    float value = 0;
+    auto error = overlay->GetOverlayCurvature(handle, &value);
+    result.errorCode = int(error);
+    if (error == EVROverlayError_VROverlayError_None && std::isfinite(value) &&
+        value >= 0.f && value <= 1.f) {
+      result.readable = true;
+      result.value = value;
+    } else if (error == EVROverlayError_VROverlayError_None) {
+      result.errorCode = -2; // OpenVR returned an invalid value.
+    }
+    return result;
+  }
+  CurvatureResult setCurvature(float requested) {
+    CurvatureResult result;
+    result.requested = requested;
+    if (!std::isfinite(requested) || requested < 0.f || requested > 1.f) {
+      result.errorCode = -3; // Invalid request; do not call OpenVR.
+      return result;
+    }
+    if (noVR || !overlay || !overlay->SetOverlayCurvature ||
+        !overlay->GetOverlayCurvature)
+      return result;
+    auto setError = overlay->SetOverlayCurvature(handle, requested);
+    if (setError != EVROverlayError_VROverlayError_None) {
+      result.errorCode = int(setError);
+      auto current = curvatureReadback();
+      result.hasValue = current.readable;
+      result.value = current.value;
+      return result;
+    }
+    auto current = curvatureReadback();
+    result.supported = current.readable;
+    result.hasValue = current.readable;
+    result.value = current.value;
+    result.errorCode = current.readable ? 0 : current.errorCode;
+    result.applied = current.readable && std::fabs(current.value - requested) <= 0.0001f;
+    if (current.readable && !result.applied)
+      result.errorCode = -4; // The command ran, but readback did not confirm it.
+    return result;
   }
   bool events() {
     SDL_Event s;

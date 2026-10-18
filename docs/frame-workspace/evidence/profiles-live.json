@@ -83,5 +83,22 @@
       "result": "received/captured stream frames and synchronized; task-owned temporary panel then stopped"
     }
   },
-  "date": "2026-10-19 JST"
+  "date": "2026-10-19 JST",
+  "persistentPreviewMigration": {
+    "dataDirectory": "~/Library/Application Support/Frame Workspace Preview",
+    "profileSha256": "d1763ae80c79445a8868dd34d5a4c7c43fb24d77c5dd29ac5de7ec677670f878",
+    "schemaVersion": 1,
+    "byteExactCopy": true,
+    "directoryMode": "0700",
+    "fileMode": "0600",
+    "freshCompanionRestores": 2,
+    "workspacePreset": "2880x2560",
+    "scale": 1,
+    "quality": "sharp",
+    "nativeTexture": [
+      2880,
+      2560
+    ],
+    "notLoginService": true
+  }
 }

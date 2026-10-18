@@ -60,7 +60,9 @@ native/build/frame-workspace-native \
 ```
 
 The caller creates parent directories. Atomically replace the control file with
-JSON and change `revision` for each command:
+JSON and change `revision` for each command. Use integer revisions from 1 to
+2^53−1 so the native JSON reader represents them exactly; wrap to 1 at the
+limit. The companion normalizes legacy nanosecond revisions before sending:
 
 ```json
 {"revision": 1, "width": 2.4, "distance": 2.0, "recenter": true, "focus": true}
@@ -74,6 +76,14 @@ shows the owned overlay and sends the existing Mac window-focus message.
 `{"revision":2,"stop":true}` or SIGTERM cleanly stops threads and destroys only
 this process's overlay. SteamVR Quit events are acknowledged. State and pose
 files are atomically replaced with mode 0600.
+
+`{"revision":3,"curvature":0.25}` requests OpenVR curvature 0–1. The owner
+sets and reads back the value; `controlResultRevision` acknowledges the exact
+request and `curvatureResult` reports supported/applied/value/errorCode.
+Unsupported curvature is nonfatal. Width/distance-only requests do not alter
+curvature or request focus/recenter. Curvature is not stored in the pose file
+or changed at startup. The current Frame accepted 0.25 and restored 0.0;
+this does not establish worn optical behavior.
 
 `ready` becomes true only after a successful texture submission and overlay
 show. The state contains texture size, received/decoded/uploaded counts, measured
@@ -241,3 +251,12 @@ The tool creates and closes only its disposable scrolling Chrome fixture,
 measures counter deltas over 30 seconds and omits window inventories and room
 transforms from its report. Change rate/conversion between runs and wait for
 readiness before recording the next condition.
+
+On the tested Frame, Xvfb lacks GLX: the default Xvfb stream test fails before
+native control/video startup. For that device, select the existing GL display
+explicitly with `DISPLAY=:0` and `--use-display`, after off-head consent and
+stopping the reserved Workspace viewer to free its hardware decoder. The test
+uses a hidden SDL window and `--no-vr`; it does not restart SteamVR. An error
+return is checked before dependent control acknowledgments so a graphics-startup
+failure is reported directly. All control, image, dimension and error assertions
+remain in effect.

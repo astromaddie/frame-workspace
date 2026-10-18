@@ -41,22 +41,25 @@ Gamescope session are not restarted. The original installed Frame Control app is
 preserved.
 
 The current installed binary SHA-256 is
-`1c6efee0f3c6189c3402891facf3c8956a17ebca208bdc3abb864ebd66f6400c`;
+`9ebd783d7d90f5b695189d094d41502fd3c861583674a47fd552db0d66191545`;
 its build metadata SHA-256 is
-`fbc0e9c4f39e3517cdc674418921cdc1ee71c8587a46b04e9c351ca0251b733b`.
+`2f7c52d90fca48b24abb6ba9f0934c77e5e252a46eb096814ed982f0630ab1a8`.
 It links the Frame's FFmpeg 61, SDL2 and OpenGL libraries. A host-container
 executable linked against FFmpeg 58 was tested locally and never deployed.
-The [pipeline record](../../native/evidence/frame-pipeline.json) includes exact
-production-source and test-script hashes because the tree was uncommitted when
-built; the base Git revision alone is insufficient identity. The initial
+The [current control-build record](evidence/native-controls-live.json) includes
+exact production-source and test-script hashes because the tree was uncommitted
+when built; the base Git revision alone is insufficient identity. The earlier
+[pipeline record](../../native/evidence/frame-pipeline.json) identifies the builds
+used for those decoder and performance results. The initial
 `9108842a…` build in [earlier device evidence](../../native/evidence/frame-hardware.json)
 is historical.
 
-The active preview companion uses `/tmp/frame-workspace-companion-data`, with
-one Coding profile, and leaves the installed Frame Control app unchanged. That
-temporary data location is not a durable app installation. The current native
+The active preview companion stores its Coding profile under
+`~/Library/Application Support/Frame Workspace Preview`, in private directories
+with a mode 0600 profile file. It leaves the installed Frame Control app unchanged.
+The preview process itself is not installed as a login service. The current native
 binary and saved pose are installed on the Frame; the latest previous build
-and metadata remain in `/tmp/frame-workspace-overflow-recovery-rollback-20261019/`
+and metadata remain in `/tmp/frame-workspace-controls-rollback-20261019/`
 for a bounded rollback. Stop the owned viewer before atomically restoring both
 files, then use the existing Workspace controls to reopen it.
 
@@ -169,7 +172,8 @@ recovery; conditional for a complete saved room layout**.
 | Mutate Valve-owned dashboard overlays | Earlier PermissionDenied result retained; no ownership bypass attempted |
 | Show/recenter without restarting the viewer | Owner control JSON is implemented; existing Show again routes there |
 | Change native width/distance | Owner API implemented; [two control mockups](NATIVE-CONTROLS.md) await approval |
-| Native curvature and multiple surfaces | Not implemented or device-verified |
+| Native curvature | Set/readback 0.25 succeeded on Frame; restored flat; worn appearance unverified |
+| Multiple native surfaces | Not implemented |
 | SteamVR dashboard/game coexistence and runtime reload | Not verified by the bounded placement test |
 | Restore across room/tracking-origin changes | Not established; logical profiles explicitly report spatial placement as manual |
 
@@ -178,8 +182,9 @@ recovery; conditional for a complete saved room layout**.
   viewer, not this build.
 - Placement is saved locally by the overlay owner and restored within the same
   SteamVR tracking session. A saved matrix is not a room anchor. Runtime reset,
-  room changes, multiple panels, game coexistence and curvature need separate
-  FW-10 evidence before broader spatial-restore claims.
+  room changes, multiple panels and game coexistence need separate FW-10
+  evidence before broader spatial-restore claims; curvature has API readback
+  evidence only.
 - Keyboard and trackpad input stay on the Mac. Native controller pointer input is
   disabled. This does not establish Japanese IME, multi-panel focus or FW-12
   acceptance.
@@ -216,3 +221,17 @@ This is an engineering hypothesis, not a measured improvement. Valve documents
 and [OpenVR eye-tracking actions](https://partner.steamgames.com/doc/steamhardware/steamframe/input).
 Their availability in this overlay route and gaze-to-sharp-text delay still need
 device and worn verification; the current pinned SDK and viewer do not use them.
+
+## Native control integration
+
+The current build adds owner-scoped placement controls and curvature readback
+to the previously validated decoder pipeline. The actual Frame accepted width,
+distance and curvature updates while retaining the same native process and Mac
+display. Original placement was restored with matrix delta 0.0. The existing
+panel switcher now discovers only the validated owned native Workspace in
+addition to its dashboard panels. See [controls and limits](NATIVE-CONTROLS.md).
+The earlier pipeline measurements above belong to their recorded builds; they
+are not reattributed to the new binary.
+
+The subsequent [multi-stream trial](PERFORMANCE.md) uses the current control
+build and records the active-stream policy separately from decoder changes.

@@ -3,7 +3,9 @@
 **Result:** detection, fresh capture after settled entry, and continuous capture
 through entry/exit are demonstrated on one owned AppKit fixture. A confirmed
 transient window-list omission previously ended the source; the close-recovery
-policy fixes that observed failure. Keep FW-07 gated until inactive-Space capture
+policy fixes that observed failure. Chrome and Safari follow-ups below extend
+entry/exit capture evidence, with a Safari identity-mapping limit. Keep FW-07
+gated until inactive-Space capture
 and the broader app/lifecycle matrix pass.
 
 ## Repaired production path
@@ -55,6 +57,32 @@ not establish an away transition. The app-access request is pending; this is an
 automation access blocker, not evidence that background capture fails. The
 existing attempt record includes this follow-up without retaining raw logs.
 
+## Chrome and Safari follow-up
+
+An isolated Chrome app window using an owned scrolling page retained the same
+CGWindowID through native green-button entry and Ctrl+Cmd+F exit. AX full-screen
+state mapped false → true → false, both Space transitions reported temporary
+window-list absence, and changing capture continued. The full-screen phase had
+13 changing one-second samples, followed by 59 after exit. Closing only the
+fixture then ended capture. See [Chrome evidence](evidence/fullscreen-chrome.json).
+
+A task-created Safari private window also retained changing capture through
+native entry and exit: 25 changing samples during the transition interval and
+13 after exit. The explicit captured ID stayed unchanged. However, its windowed
+AX states were **ambiguous** because multiple Safari windows shared bounds;
+its AX title also included a Private Browsing suffix absent from the CG title.
+Only the full-screen geometry mapped uniquely. The owned fixture title allowed
+human correlation of false → true → false, which is not a safe general binding
+for automatic detachment. An address-field popover remained during full screen.
+The fixture window/tabs were closed; existing Safari windows were preserved.
+See [Safari evidence](evidence/fullscreen-safari.json).
+
+Both used the existing trusted diagnostic binary, public observations and
+production SCK capture logic; no permission grant or private Spaces/window API
+was added. These extend active-entry/exit coverage, not confirmed inactive-Space
+capture. Reliable AX/window identity, inactive-Space capture, Electron, Stage
+Manager and the two-full-screen-app matrix remain open. FW-07 stays gated.
+
 ## Earlier test record
 
 Host: M4 MacBook, macOS 26.3.1. The Mac-side native workspace was active at 2880×2560 (9:8). No Steam Frame spatial panel was used for these tests.
@@ -101,5 +129,7 @@ The logs show that a stable CGWindowID and a matching `SCWindow` can remain avai
 | FW-06 fresh capture after settled full-screen entry on AppKit fixture | Demonstrated once; concurrent repeat failed |
 | FW-06 Path A continuity through entry and exit on AppKit fixture | Demonstrated after close-recovery repair |
 | FW-06 Path A live capture from inactive Space | Not demonstrated |
-| FW-06 app matrix and lifecycle matrix | Incomplete |
+| FW-06 Chrome active entry/exit | Continuous changing capture and unique AX/CG mapping demonstrated |
+| FW-06 Safari active entry/exit | Capture continued; windowed AX/CG mapping ambiguous |
+| FW-06 app matrix and lifecycle matrix | Electron, Stage Manager, two-full-screen-app and broader lifecycle cases incomplete |
 | FW-07 automatic detachment | Gated; do not implement or claim supported behavior yet |
