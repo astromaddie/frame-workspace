@@ -13,10 +13,17 @@ extern "C" {
 #include <thread>
 namespace fw {
 struct Picture {
+  enum class Format { RGBA, NV12, YUV420P };
   int width = 0, height = 0;
   uint32_t seq = 0;
   double received = 0, decoded = 0;
+  Format format = Format::RGBA;
+  AVColorSpace colorSpace = AVCOL_SPC_UNSPECIFIED;
+  AVColorRange colorRange = AVCOL_RANGE_UNSPECIFIED;
   std::vector<uint8_t> rgba;
+  // GPU conversion pictures own compact copies of decoder planes. No pointer
+  // into an AVFrame survives av_frame_unref() or a decoder-context reopen.
+  std::vector<uint8_t> y, u, v, uv;
 };
 // Shared by the live decoder and --inspect-h264: parse complete Annex-B
 // access units with FFmpeg, preserving SPS/PPS across frames and size changes.
@@ -62,14 +69,22 @@ struct H264Headers {
 };
 struct Pipeline {
   const std::string decoderRequested;
+  const std::string conversionRequested;
   std::atomic<bool> decoderActive{false};
+  std::atomic<const char *> conversionActive{"pending"};
+  std::atomic<int> conversionFallbacks{0}, decoderPixelFormat{-1},
+      decoderColorSpace{AVCOL_SPC_UNSPECIFIED},
+      decoderColorRange{AVCOL_RANGE_UNSPECIFIED};
   std::atomic<int> decoderError{0}, inputWidth{0}, inputHeight{0},
       codedWidth{0}, codedHeight{0};
   std::atomic<const char *> decoderErrorStage{"none"}, stopReason{"running"};
-  explicit Pipeline(std::string mode = "software")
-      : decoderRequested(std::move(mode)) {
+  explicit Pipeline(std::string mode = "software", std::string conversion = "cpu")
+      : decoderRequested(std::move(mode)),
+        conversionRequested(std::move(conversion)) {
     if (decoderRequested != "software" && decoderRequested != "v4l2")
       throw std::runtime_error("decoder must be software or v4l2");
+    if (conversionRequested != "cpu" && conversionRequested != "gpu")
+      throw std::runtime_error("conversion must be cpu or gpu");
   }
   const char *codecName() const {
     return decoderRequested == "v4l2" ? "h264_v4l2m2m" : "h264";
@@ -81,8 +96,11 @@ struct Pipeline {
   std::atomic<bool> stop{false}, requestKey{false}, focus{false},
       connected{false};
   std::atomic<uint64_t> received{0}, decoded{0}, droppedEncoded{0},
-      droppedDecoded{0}, errors{0}, reconnects{0};
-  std::atomic<double> decodeMs{0}, sendMs{0}, convertMs{0}, clockOffset{0};
+      droppedDecoded{0}, errors{0}, reconnects{0}, networkErrors{0},
+      serverErrors{0}, decoderSendErrors{0}, decoderReceiveErrors{0},
+      decoderFatalErrors{0};
+  std::atomic<double> decodeMs{0}, sendMs{0}, convertMs{0}, planeCopyMs{0},
+      clockOffset{0};
   std::atomic<bool> clockValid{false};
   std::mutex mutex, outMutex;
   std::condition_variable wake;
@@ -223,6 +241,7 @@ struct Pipeline {
               wake.notify_all();
             } else if (t == "error") {
               ++errors;
+              ++serverErrors;
               fprintf(
                   stderr,
                   "[native] server reported stream error (text redacted)\n");
@@ -235,6 +254,7 @@ struct Pipeline {
         if (stop)
           break;
         ++errors;
+        ++networkErrors;
         ++failed;
         fprintf(stderr,
                 "[native] stream unavailable; retry=%d (endpoint redacted)\n",
@@ -270,6 +290,7 @@ struct Pipeline {
       decoderErrorStage = stage;
       stopReason = "decoder-error";
       ++errors;
+      ++decoderFatalErrors;
       stop = true;
       wake.notify_all();
       char detail[AV_ERROR_MAX_STRING_SIZE]{};
@@ -362,37 +383,93 @@ struct Pipeline {
         pic->height = frame->height;
         pic->seq = it->second.seq;
         pic->received = it->second.received;
+        pic->colorSpace = frame->colorspace;
+        pic->colorRange = frame->color_range;
         timing.erase(it);
-        pic->rgba.resize(size_t(pic->width) * pic->height * 4);
-        sws = sws_getCachedContext(sws, pic->width, pic->height,
-                                   AVPixelFormat(frame->format), pic->width,
-                                   pic->height, AV_PIX_FMT_RGBA, SWS_BILINEAR,
-                                   nullptr, nullptr, nullptr);
-        if (!sws) {
-          fail("conversion-context", AVERROR(ENOMEM));
-          break;
-        }
-        int cs = frame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709
-                                                      : SWS_CS_ITU601;
-        auto coefficients = sws_getCoefficients(cs);
-        sws_setColorspaceDetails(sws, coefficients,
-                                 frame->color_range == AVCOL_RANGE_JPEG,
-                                 coefficients, 1, 0, 1 << 16, 1 << 16);
-        uint8_t *dst[] = {pic->rgba.data()};
-        int strides[] = {pic->width * 4};
-        if (sws_scale(sws, frame->data, frame->linesize, 0, pic->height, dst,
-                      strides) != pic->height) {
-          fail("conversion", AVERROR_INVALIDDATA);
-          break;
+        decoderPixelFormat = frame->format;
+        decoderColorSpace = frame->colorspace;
+        decoderColorRange = frame->color_range;
+        bool gpuFormat = frame->format == AV_PIX_FMT_NV12 ||
+                         frame->format == AV_PIX_FMT_YUV420P ||
+                         frame->format == AV_PIX_FMT_YUVJ420P;
+        bool useGpu = conversionRequested == "gpu" && gpuFormat;
+        if (useGpu) {
+          const int chromaWidth = (pic->width + 1) / 2;
+          const int chromaHeight = (pic->height + 1) / 2;
+          auto copyPlane = [](std::vector<uint8_t> &dst, const uint8_t *src,
+                              int stride, int rowBytes, int rows) {
+            if (!src || std::abs(stride) < rowBytes)
+              return false;
+            dst.resize(size_t(rowBytes) * rows);
+            for (int row = 0; row < rows; ++row)
+              memcpy(dst.data() + size_t(row) * rowBytes,
+                     src + ptrdiff_t(row) * stride, rowBytes);
+            return true;
+          };
+          pic->format = frame->format == AV_PIX_FMT_NV12
+                            ? Picture::Format::NV12
+                            : Picture::Format::YUV420P;
+          if (frame->format == AV_PIX_FMT_YUVJ420P &&
+              pic->colorRange == AVCOL_RANGE_UNSPECIFIED)
+            pic->colorRange = AVCOL_RANGE_JPEG;
+          bool copied = copyPlane(pic->y, frame->data[0], frame->linesize[0],
+                                  pic->width, pic->height);
+          if (pic->format == Picture::Format::NV12)
+            copied = copied &&
+                     copyPlane(pic->uv, frame->data[1], frame->linesize[1],
+                               chromaWidth * 2, chromaHeight);
+          else
+            copied = copied &&
+                     copyPlane(pic->u, frame->data[1], frame->linesize[1],
+                               chromaWidth, chromaHeight) &&
+                     copyPlane(pic->v, frame->data[2], frame->linesize[2],
+                               chromaWidth, chromaHeight);
+          planeCopyMs = nowMs() - convert;
+          convertMs = planeCopyMs.load();
+          if (!copied) {
+            fail("output-plane-layout", AVERROR_INVALIDDATA);
+            break;
+          }
+          conversionActive = "gpu";
+        } else {
+          planeCopyMs = 0;
+          if (conversionRequested == "gpu") {
+            ++conversionFallbacks;
+            conversionActive = "cpu-fallback";
+          } else {
+            conversionActive = "cpu";
+          }
+          pic->rgba.resize(size_t(pic->width) * pic->height * 4);
+          sws = sws_getCachedContext(sws, pic->width, pic->height,
+                                     AVPixelFormat(frame->format), pic->width,
+                                     pic->height, AV_PIX_FMT_RGBA, SWS_BILINEAR,
+                                     nullptr, nullptr, nullptr);
+          if (!sws) {
+            fail("conversion-context", AVERROR(ENOMEM));
+            break;
+          }
+          int cs = frame->colorspace == AVCOL_SPC_BT709 ? SWS_CS_ITU709
+                                                        : SWS_CS_ITU601;
+          auto coefficients = sws_getCoefficients(cs);
+          sws_setColorspaceDetails(sws, coefficients,
+                                   pic->colorRange == AVCOL_RANGE_JPEG,
+                                   coefficients, 1, 0, 1 << 16, 1 << 16);
+          uint8_t *dst[] = {pic->rgba.data()};
+          int strides[] = {pic->width * 4};
+          if (sws_scale(sws, frame->data, frame->linesize, 0, pic->height, dst,
+                        strides) != pic->height) {
+            fail("conversion", AVERROR_INVALIDDATA);
+            break;
+          }
+          convertMs = nowMs() - convert;
         }
         pic->decoded = nowMs();
-        convertMs = pic->decoded - convert;
         if (!decoderActive.exchange(true))
           fprintf(stderr,
                   "[native] decoder active requested=%s codec=%s format=%d "
-                  "size=%dx%d\n",
+                  "conversion=%s size=%dx%d\n",
                   decoderRequested.c_str(), codecName(), frame->format,
-                  pic->width, pic->height);
+                  conversionActive.load(), pic->width, pic->height);
         ++decoded;
         publish(std::move(pic));
         // Release the driver buffer before a format change or context reopen.
@@ -496,6 +573,10 @@ struct Pipeline {
           break;
         }
         ++errors;
+        ++decoderSendErrors;
+        fprintf(stderr,
+                "[native] decoder recoverable stage=send code=%d; requesting IDR\n",
+                result);
         requestKey = true;
         std::lock_guard<std::mutex> l(mutex);
         needKey = true;
@@ -511,6 +592,10 @@ struct Pipeline {
           break;
         }
         ++errors;
+        ++decoderReceiveErrors;
+        fprintf(stderr,
+                "[native] decoder recoverable stage=receive code=%d; requesting IDR\n",
+                result);
         requestKey = true;
         std::lock_guard<std::mutex> l(mutex);
         needKey = true;

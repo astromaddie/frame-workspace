@@ -1,4 +1,5 @@
 #include "overlay.hpp"
+#include <array>
 #include <cassert>
 #include <csignal>
 #include <iostream>
@@ -87,12 +88,115 @@ static std::shared_ptr<Picture> pattern(uint32_t seq) {
   p->received = p->decoded = nowMs();
   return p;
 }
+static std::shared_ptr<Picture> yuvPattern(const std::string &fmt,
+                                           const std::string &range,
+                                           const std::string &space,
+                                           const std::string &pattern) {
+  auto p = std::make_shared<Picture>();
+  p->width = 320;
+  p->height = 180;
+  p->format = fmt == "nv12" ? Picture::Format::NV12 : Picture::Format::YUV420P;
+  p->colorRange = range == "full" ? AVCOL_RANGE_JPEG : AVCOL_RANGE_MPEG;
+  p->colorSpace = space == "bt709" ? AVCOL_SPC_BT709 : AVCOL_SPC_SMPTE170M;
+  p->y.resize(size_t(p->width) * p->height);
+  const int cw = (p->width + 1) / 2, ch = (p->height + 1) / 2;
+  const bool full = range == "full";
+  const bool ramp = pattern == "ramp";
+  auto values = [&](int x, int y) {
+    if (!ramp) {
+      int tile = (x / (p->width / 2) + 2 * (y / (p->height / 2))) % 4;
+      int lum = full ? tile * 85 : 16 + tile * 73;
+      int u = full ? 24 + tile * 68 : 32 + tile * 64;
+      int v = full ? 232 - tile * 68 : 224 - tile * 64;
+      return std::array<uint8_t, 3>{uint8_t(lum), uint8_t(u), uint8_t(v)};
+    }
+    int lum = full ? x * 255 / (p->width - 1)
+                   : 16 + x * 219 / (p->width - 1);
+    int chromaX = x / 2, chromaY = y / 2;
+    int u = full ? chromaX * 255 / (cw - 1)
+                 : 16 + chromaX * 224 / (cw - 1);
+    int v = full ? 255 - chromaY * 255 / (ch - 1)
+                 : 240 - chromaY * 224 / (ch - 1);
+    return std::array<uint8_t, 3>{uint8_t(lum), uint8_t(u), uint8_t(v)};
+  };
+  for (int y = 0; y < p->height; ++y)
+    for (int x = 0; x < p->width; ++x)
+      p->y[size_t(y) * p->width + x] = values(x, y)[0];
+  if (p->format == Picture::Format::NV12) {
+    p->uv.resize(size_t(cw) * ch * 2);
+    for (int y = 0; y < ch; ++y)
+      for (int x = 0; x < cw; ++x) {
+        auto c = values(x * 2, y * 2);
+        size_t i = (size_t(y) * cw + x) * 2;
+        p->uv[i] = c[1];
+        p->uv[i + 1] = c[2];
+      }
+  } else {
+    p->u.resize(size_t(cw) * ch);
+    p->v.resize(size_t(cw) * ch);
+    for (int y = 0; y < ch; ++y)
+      for (int x = 0; x < cw; ++x) {
+        auto c = values(x * 2, y * 2);
+        size_t i = size_t(y) * cw + x;
+        p->u[i] = c[1];
+        p->v[i] = c[2];
+      }
+  }
+  p->received = p->decoded = nowMs();
+  return p;
+}
+static void convertYuvOracle(Picture &p) {
+  const int cw = (p.width + 1) / 2;
+  const uint8_t *planes[4] = {p.y.data(), nullptr, nullptr, nullptr};
+  int strides[4] = {p.width, 0, 0, 0};
+  AVPixelFormat sourceFormat = AV_PIX_FMT_YUV420P;
+  if (p.format == Picture::Format::NV12) {
+    sourceFormat = AV_PIX_FMT_NV12;
+    planes[1] = p.uv.data();
+    strides[1] = cw * 2;
+  } else {
+    planes[1] = p.u.data();
+    planes[2] = p.v.data();
+    strides[1] = strides[2] = cw;
+  }
+  p.rgba.resize(size_t(p.width) * p.height * 4);
+  uint8_t *output[4] = {p.rgba.data(), nullptr, nullptr, nullptr};
+  int outputStrides[4] = {p.width * 4, 0, 0, 0};
+  SwsContext *context = sws_getContext(
+      p.width, p.height, sourceFormat, p.width, p.height, AV_PIX_FMT_RGBA,
+      SWS_BILINEAR, nullptr, nullptr, nullptr);
+  if (!context)
+    throw std::runtime_error("test swscale context allocation failed");
+  int colorSpace = p.colorSpace == AVCOL_SPC_BT709 ? SWS_CS_ITU709 : SWS_CS_ITU601;
+  const int *coefficients = sws_getCoefficients(colorSpace);
+  int result = sws_setColorspaceDetails(
+      context, coefficients, p.colorRange == AVCOL_RANGE_JPEG, coefficients, 1,
+      0, 1 << 16, 1 << 16);
+  if (result < 0 || sws_scale(context, planes, strides, 0, p.height, output,
+                              outputStrides) != p.height) {
+    sws_freeContext(context);
+    throw std::runtime_error("test swscale conversion failed");
+  }
+  sws_freeContext(context);
+  p.format = Picture::Format::RGBA;
+  p.y.clear();
+  p.u.clear();
+  p.v.clear();
+  p.uv.clear();
+}
 int main(int argc, char **argv) {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
+      conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
+                          ? std::getenv("FRAME_WORKSPACE_CONVERSION")
+                          : "cpu",
+      testYuvFormat, testYuvRange = "limited", testYuvColorSpace = "bt601",
+      testYuvPattern = "sharp",
       exitReason = "running";
   std::vector<std::string> inspectFiles;
-  bool test = false, noVR = false;
+  bool test = false, noVR = false, testYuvOracle = false;
+  uint32_t dumpSequence = 0;
+  int dumpWidth = 0, dumpHeight = 0;
   double seconds = 0;
   try {
     for (int i = 1; i < argc; i++) {
@@ -118,21 +222,60 @@ int main(int argc, char **argv) {
         inspectFiles.push_back(value());
       else if (a == "--decoder")
         decoderMode = value();
+      else if (a == "--conversion")
+        conversionMode = value();
       else if (a == "--dump")
         dumpPath = value();
+      else if (a == "--dump-seq") {
+        auto parsed = std::stoul(value());
+        if (parsed > UINT32_MAX)
+          throw std::runtime_error("invalid dump sequence");
+        dumpSequence = uint32_t(parsed);
+      } else if (a == "--dump-size") {
+        std::string size = value();
+        size_t separator = size.find('x');
+        if (separator == std::string::npos ||
+            size.find('x', separator + 1) != std::string::npos)
+          throw std::runtime_error("dump size must be WIDTHxHEIGHT");
+        auto parsedWidth = std::stoul(size.substr(0, separator));
+        auto parsedHeight = std::stoul(size.substr(separator + 1));
+        if (!parsedWidth || !parsedHeight || parsedWidth > 4096 ||
+            parsedHeight > 4096)
+          throw std::runtime_error("invalid dump size");
+        dumpWidth = int(parsedWidth);
+        dumpHeight = int(parsedHeight);
+      }
       else if (a == "--seconds")
         seconds = std::stod(value());
       else if (a == "--test-pattern")
         test = true;
+      else if (a == "--test-yuv-format") {
+        test = true;
+        testYuvFormat = value();
+      } else if (a == "--test-yuv-range")
+        testYuvRange = value();
+      else if (a == "--test-yuv-colorspace")
+        testYuvColorSpace = value();
+      else if (a == "--test-yuv-pattern")
+        testYuvPattern = value();
+      else if (a == "--test-yuv-oracle")
+        testYuvOracle = true;
       else if (a == "--no-vr")
         noVR = true;
       else if (a == "--help") {
         std::cout
             << "frame-workspace-native --url-file PATH [--control-file PATH] "
                "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] "
-               "[--decoder software|v4l2] [--seconds N] [--dump "
-               "PATH.ppm]\nDiagnostics: --self-test | "
-               "--test-pattern [--no-vr] [--seconds N]\n";
+               "[--decoder software|v4l2] [--conversion cpu|gpu] "
+               "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
+               "[--dump-size WIDTHxHEIGHT]] "
+               "\nDiagnostics: --self-test | "
+               "--test-pattern [--no-vr] [--seconds N] | "
+               "--test-yuv-format nv12|yuv420p --conversion gpu "
+               "[--test-yuv-range limited|full] "
+               "[--test-yuv-colorspace bt601|bt709] "
+               "[--test-yuv-pattern sharp|ramp] [--test-yuv-oracle] "
+               "[--dump PATH.ppm]\n";
         return 0;
       } else
         throw std::runtime_error("unknown option");
@@ -145,6 +288,21 @@ int main(int argc, char **argv) {
       throw std::runtime_error("invalid duration");
     if (decoderMode != "software" && decoderMode != "v4l2")
       throw std::runtime_error("decoder must be software or v4l2");
+    if (conversionMode != "cpu" && conversionMode != "gpu")
+      throw std::runtime_error("conversion must be cpu or gpu");
+    if (!testYuvFormat.empty() && testYuvFormat != "nv12" &&
+        testYuvFormat != "yuv420p")
+      throw std::runtime_error("test YUV format must be nv12 or yuv420p");
+    if (testYuvRange != "limited" && testYuvRange != "full")
+      throw std::runtime_error("test YUV range must be limited or full");
+    if (testYuvColorSpace != "bt601" && testYuvColorSpace != "bt709")
+      throw std::runtime_error("test YUV colorspace must be bt601 or bt709");
+    if (testYuvPattern != "sharp" && testYuvPattern != "ramp")
+      throw std::runtime_error("test YUV pattern must be sharp or ramp");
+    if (!testYuvFormat.empty() && conversionMode != "gpu" && !testYuvOracle)
+      throw std::runtime_error("test YUV input requires --conversion gpu");
+    if (testYuvOracle && (testYuvFormat.empty() || conversionMode != "cpu"))
+      throw std::runtime_error("YUV oracle requires --test-yuv-format and --conversion cpu");
     if (!inspectFiles.empty()) {
       H264Headers headers;
       for (const auto &path : inspectFiles) {
@@ -176,7 +334,7 @@ int main(int argc, char **argv) {
     overlay.apply();
     if (!pendingRecenter)
       atomicWrite(poseFile, placementJSON(overlay.placement));
-    Pipeline pipe(decoderMode);
+    Pipeline pipe(decoderMode, conversionMode);
     if (!test)
       pipe.start(endpoint);
     double start = nowMs(), lastState = start, lastLog = start, lastControl = 0,
@@ -202,6 +360,8 @@ int main(int argc, char **argv) {
              ",\"decodeMs\":" + std::to_string(pipe.decodeMs) +
              ",\"sendMs\":" + std::to_string(pipe.sendMs) +
              ",\"convertMs\":" + std::to_string(pipe.convertMs) +
+             ",\"planeCopyMs\":" + std::to_string(pipe.planeCopyMs) +
+             ",\"gpuConvertMs\":" + std::to_string(overlay.gpuConvertMs) +
              ",\"uploadMs\":" + std::to_string(uploadMs) +
              ",\"syncMs\":" + std::to_string(overlay.syncMs) +
              ",\"submitMs\":" + std::to_string(overlay.submitMs) +
@@ -209,9 +369,28 @@ int main(int argc, char **argv) {
              ",\"droppedEncoded\":" + std::to_string(pipe.droppedEncoded) +
              ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
              ",\"errors\":" + std::to_string(pipe.errors + submitErrors) +
+             ",\"networkErrors\":" + std::to_string(pipe.networkErrors) +
+             ",\"serverErrors\":" + std::to_string(pipe.serverErrors) +
+             ",\"decoderSendErrors\":" +
+                 std::to_string(pipe.decoderSendErrors) +
+             ",\"decoderReceiveErrors\":" +
+                 std::to_string(pipe.decoderReceiveErrors) +
+             ",\"decoderFatalErrors\":" +
+                 std::to_string(pipe.decoderFatalErrors) +
+             ",\"submitErrors\":" + std::to_string(submitErrors) +
              ",\"submitError\":" + std::to_string(overlay.lastSubmitError) +
              ",\"decoder\":\"" + pipe.decoderIdentity() + "\"" +
              ",\"decoderRequested\":\"" + decoderMode + "\"" +
+             ",\"conversionRequested\":\"" + conversionMode + "\"" +
+             ",\"conversionActive\":\"" + pipe.conversionActive.load() +
+             "\"" + ",\"conversionFallbacks\":" +
+                 std::to_string(pipe.conversionFallbacks) +
+             ",\"decoderPixelFormat\":" +
+                 std::to_string(pipe.decoderPixelFormat) +
+             ",\"decoderColorSpace\":" +
+                 std::to_string(pipe.decoderColorSpace) +
+             ",\"decoderColorRange\":" +
+                 std::to_string(pipe.decoderColorRange) +
              ",\"decoderActive\":\"" + (pipe.decoderActive ? decoderMode : "") +
              "\"" + ",\"decoderCodec\":\"" + pipe.codecName() + "\"" +
              ",\"decoderInputWidth\":" + std::to_string(pipe.inputWidth) +
@@ -267,7 +446,14 @@ int main(int argc, char **argv) {
       }
       auto picture = pipe.take();
       if (test && now - lastPattern >= 1000.0 / 30) {
-        picture = pattern(uploads);
+        if (testYuvFormat.empty())
+          picture = pattern(uploads);
+        else {
+          picture = yuvPattern(testYuvFormat, testYuvRange,
+                               testYuvColorSpace, testYuvPattern);
+          if (testYuvOracle)
+            convertYuvOracle(*picture);
+        }
         lastPattern = now;
       }
       if (!picture && retryPicture && now - lastPattern > 100) {
@@ -286,7 +472,10 @@ int main(int argc, char **argv) {
           ageMs = nowMs() - picture->received;
           pipe.report(*picture, nowMs());
           retryPicture.reset();
-          if (!dumpPath.empty() && !dumped) {
+          if (!dumpPath.empty() && !dumped &&
+              (!dumpSequence || picture->seq == dumpSequence) &&
+              (!dumpWidth ||
+               (picture->width == dumpWidth && picture->height == dumpHeight))) {
             overlay.dump(dumpPath);
             dumped = true;
           }

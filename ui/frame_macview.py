@@ -65,6 +65,7 @@ def quality_settings(name, workspace=False):
         backend = workspace_viewer_backend()
         if backend == "native":
             workspace_decoder()  # fail before creating the owned display
+            workspace_conversion()  # keep backend selection explicit
         if backend == "native" and settings["codec"] != "h264":
             raise MacViewError("The native Workspace viewer needs H.264. Choose Sharp, Balanced or Light.")
     if workspace and name == "sharp":
@@ -87,6 +88,13 @@ def workspace_decoder():
     if decoder not in ("software", "v4l2"):
         raise MacViewError("FRAME_WORKSPACE_DECODER must be software or v4l2.")
     return decoder
+
+
+def workspace_conversion():
+    conversion = os.environ.get("FRAME_WORKSPACE_CONVERSION", "cpu")
+    if conversion not in ("cpu", "gpu"):
+        raise MacViewError("FRAME_WORKSPACE_CONVERSION must be cpu or gpu.")
+    return conversion
 
 
 # Extra Chromium flags for viewers (see docs/mac-in-headset.md, "Measuring").
@@ -764,7 +772,7 @@ class MacView:
             w, h = int(width or stream.get("width") or 1280), int(height or stream.get("height") or 720)
             native = workspace_viewer_backend() == "native"
             script = WORKSPACE_NATIVE_SCRIPT if native else WORKSPACE_VIEWER_SCRIPT
-            flags = [workspace_decoder()] if native else self.browser_flags
+            flags = [workspace_decoder(), workspace_conversion()] if native else self.browser_flags
             script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *flags))
             out = self.run("bash -s -- " + script_args, stdin=script.read_text(encoding="utf-8"),
                            timeout=60)

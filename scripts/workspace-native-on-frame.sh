@@ -33,15 +33,17 @@ PY
     exit 0
     ;;
   start) ;;
-  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] | focus' >&2; exit 2 ;;
+  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] | focus' >&2; exit 2 ;;
 esac
-[ "$#" -eq 5 ] || [ "$#" -eq 6 ] || exit 2
+[ "$#" -ge 5 ] && [ "$#" -le 7 ] || exit 2
 url=$2
 w=$3
 h=$4
 tag=$5
 decoder=${6:-software}
 case "$decoder" in software|v4l2) ;; *) echo 'Decoder must be software or v4l2.' >&2; exit 2 ;; esac
+conversion=${7:-cpu}
+case "$conversion" in cpu|gpu) ;; *) echo 'Conversion must be cpu or gpu.' >&2; exit 2 ;; esac
 case "$w:$h" in *[!0-9:]*) exit 2 ;; esac
 [ "${#w}" -le 4 ] && [ "${#h}" -le 4 ] || exit 2
 [ "$w" -ge 320 ] && [ "$h" -ge 200 ] && [ "$w" -le 5120 ] && [ "$h" -le 5120 ] || exit 2
@@ -86,7 +88,8 @@ if ! systemd-run --user --unit="$unit" --description='Frame Workspace native vie
   --setenv="HOME=$HOME" --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}" \
   --setenv=DISPLAY=:0 --setenv=LC_ALL=C.UTF-8 \
   "$binary" --url-file "$secret" --overlay-key "$key" --control-file "$control" \
-    --state-file "$state" --pose-file "$pose" --decoder "$decoder" >/dev/null 2>&1; then
+    --state-file "$state" --pose-file "$pose" --decoder "$decoder" \
+    --conversion "$conversion" >/dev/null 2>&1; then
   echo 'Could not start the native Workspace service.' >&2
   exit 1
 fi

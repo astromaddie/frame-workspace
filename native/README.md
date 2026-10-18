@@ -80,22 +80,47 @@ show. The state contains texture size, received/decoded/uploaded counts, measure
 decode/upload rates, last decode/conversion/upload/sync/submit durations, dropped
 frames, errors, pending recenter and the saved transform. A held static picture
 adds no frame count. These are desktop-update rates, **not compositor FPS**.
+The aggregate `errors` counter is split into `networkErrors`, `serverErrors`,
+`decoderSendErrors`, `decoderReceiveErrors`, `decoderFatalErrors` and
+`submitErrors`; fatal decoder code and stage remain in `decoderError` and
+`decoderErrorStage`.
+`conversionRequested`, `conversionActive`, `conversionFallbacks`,
+`decoderPixelFormat`, `decoderColorSpace` and `decoderColorRange` identify the
+conversion in use. `convertMs` measures the CPU conversion stage;
+for GPU conversion it includes the CPU plane copy, also reported separately as
+`planeCopyMs`. `gpuConvertMs` measures CPU wall time spent issuing the plane
+uploads and shader pass; GPU completion is included in `syncMs`. Neither timing
+alone predicts end-to-end throughput or compositor presentation rate.
 
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder
 thread. At most three compressed access units wait for decoding. Overflow discards
 that queue, asks for an IDR and flushes the decoder before accepting that keyframe.
-Only the newest completed RGBA picture waits for the GL owner. There are no
-unbounded work queues. The initial decoder is explicitly software H.264 with
+Only the newest completed picture waits for the GL owner: CPU-converted RGBA or
+owned copies of supported YUV planes. There are no unbounded work queues. The
+initial decoder is explicitly software H.264 with
 slice threading; swscale converts at the source's native resolution, honoring
-BT.709/BT.601 and full/limited range metadata. The default path does not claim hardware acceleration. Explicit V4L2 selection
-is available for controlled device comparison (below); GPU YUV conversion is
-not implemented.
+BT.709/BT.601 and full/limited range metadata. This CPU conversion remains the
+default. Explicit V4L2 selection is available for controlled device comparison
+(below). Optional `--conversion gpu` (or `FRAME_WORKSPACE_CONVERSION=gpu`)
+copies supported decoder planes into owned bounded-picture storage, then
+converts NV12 or YUV420P to the same full-resolution RGBA8 texture on the GL
+owner thread. Color range and matrix metadata feed the conversion shader.
+Decoder-owned mapped buffers are released before the picture enters the queue.
+Other decoded pixel formats use swscale and report `conversionActive` as
+`cpu-fallback`; `conversionFallbacks` counts those frames. A shader setup or GL
+conversion error is reported as an error rather than silently changing paths.
+The CPU path remains selectable with `--conversion cpu` and is the default for
+both the executable and launcher.
 
-The GL owner uploads a full-resolution RGBA8 texture only for a new picture. It
-flushes then finishes producer GPU work once before `SetOverlayTexture`, with the
-wait measured separately. This conservative synchronization follows the Frame
+For each new picture, the GL owner writes the same full-resolution RGBA8 texture.
+The CPU path uploads RGBA; the GPU path uploads 1.5 bytes per pixel of NV12 or
+YUV420P planes and converts them into that texture with a fragment shader. The
+GPU path reduces source-plane upload bytes while keeping full-resolution OpenVR
+texture dimensions and contents. The owner flushes then finishes producer GPU
+work once before `SetOverlayTexture`, with the wait measured separately. This
+conservative synchronization follows the Frame
 Zink incomplete-image lesson; it needs device/worn validation for this overlay
 path. Texture names change on resolution changes, avoiding stale SteamVR texture
 metadata. No per-eye rendering, synchronous steady-state GPU readback or display
@@ -117,15 +142,26 @@ xvfb-run -a env LIBGL_ALWAYS_SOFTWARE=1 native/build/frame-workspace-native \
 # Real protocol, H.264 decoder, conversion, GL upload/readback, control and timing:
 python3 native/tests_stream.py native/build/frame-workspace-native
 python3 native/tests_stream.py native/build/frame-workspace-native --reconnect
+# Sharp chroma edges and smooth ramps through production GL readback, both
+# supported plane layouts, color ranges and matrices, plus stream recovery:
+python3 native/tests_gpu_conversion.py native/build/frame-workspace-native
+# On an existing device GL display, bypass Xvfb and its software-renderer env:
+python3 native/tests_gpu_conversion.py native/build/frame-workspace-native --use-display
 # Device diagnostic, only after the coordinator owns the Frame lock:
 native/build/frame-workspace-native --test-pattern --seconds 15 \
   --state-file /tmp/native-state.json --dump /tmp/native-pattern.ppm
 ```
 
-The stream integration test creates one temporary synthetic H.264 frame, sends it
-through the production WebSocket path, validates acknowledgement/focus/clock and
-frame messages, compares GPU readback to an FFmpeg reference, then removes its
-video and capture data. `--test-pattern` generates an asymmetric four-quadrant
+The stream integration test creates temporary synthetic H.264 frames, sends
+them through the production WebSocket path, validates acknowledgement/focus/
+clock and frame messages, compares GPU readback to FFmpeg output, then removes
+its video and capture data. The YUV layout tests upload synthetic NV12 and
+YUV420P planes through the production shader and compare full-frame readback
+against a direct libswscale `sws_scale` conversion using the same color settings
+as the viewer. A sharp chroma-edge fixture is retained alongside smooth ramps;
+the separate FFmpeg CLI `scale` result is reported because its chroma phase can
+differ from the viewer's direct swscale API path on sharp NV12 edges.
+`--test-pattern` generates an asymmetric four-quadrant
 grid with a moving bar; it is diagnostic content, not a product UI.
 
 Current local evidence: self-test passed; 1920x1080 test-pattern GL readback
@@ -143,8 +179,11 @@ and explicit hardware decoding. Head motion and wearer acceptance remain open.
 The software decoder remains the default. Set `FRAME_WORKSPACE_DECODER=v4l2`
 when starting the companion with `FRAME_WORKSPACE_VIEWER=native` to request the
 Frame's `h264_v4l2m2m` decoder. Invalid values fail before creating the Workspace
-display. The launcher accepts an optional sixth start argument (`software` or
-`v4l2`) and passes `--decoder` to the executable. There is no automatic fallback.
+display. The launcher accepts optional sixth and seventh start arguments
+(`software|v4l2` and `cpu|gpu`) and passes `--decoder` and `--conversion` to the
+executable. `FRAME_WORKSPACE_CONVERSION=gpu` selects the optional conversion
+through the companion environment; invalid values fail before the display is
+created. Decoder selection has no automatic fallback.
 
 State reports `decoderRequested`, `decoderCodec`, and `decoderActive` (empty until
 that decoder produces a valid converted picture), plus `decoderError` and its
@@ -153,8 +192,9 @@ pending/active state. Normal exits report `exitReason`: timer, signal number,
 control stop, server close, SDL Quit or OpenVR Quit. Decoder failures exit nonzero
 with their FFmpeg error code and stage, even if an earlier picture was displayed.
 
-V4L2 requests CPU-mappable NV12 and retains the same RGBA conversion/upload path,
-so the comparison isolates decoder selection. Unique packet timestamp tokens map
+V4L2 requests CPU-mappable NV12 and retains the same RGBA texture contract. The
+default CPU conversion isolates decoder selection; `--conversion gpu` can be
+selected separately for a matched device comparison. Unique packet timestamp tokens map
 delayed output back to the correct sequence and receive time. Input EAGAIN drains
 output before retrying that packet. First-keyframe startup does not flush an
 unused decoder. On queue overflow/reconnect, the next IDR recreates the V4L2

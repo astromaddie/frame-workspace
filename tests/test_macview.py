@@ -899,7 +899,7 @@ class WorkspaceLifecycle(unittest.TestCase):
         popen.assert_not_called()
 
     def test_native_workspace_preserves_stream_auth_resolution_and_owns_focus(self):
-        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2"}):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2", "FRAME_WORKSPACE_CONVERSION": "gpu"}):
             manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
             mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
             mv.workspace_manager = manager
@@ -921,7 +921,7 @@ class WorkspaceLifecycle(unittest.TestCase):
                 self.assertEqual(query["t"], ["one-use"])
                 self.assertEqual(query["max"], ["4096"])
                 self.assertEqual(args[5:7], ["3840", "2160"])
-                self.assertEqual(args[-1], "v4l2")
+                self.assertEqual(args[-2:], ["v4l2", "gpu"])
                 self.assertNotIn("--remote-debugging-port=9999", args)
                 self.assertEqual(calls[0][1]["stdin"], frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text())
                 self.assertEqual(shown["panel"], "com.frame-workspace.native.1000.workspace")
@@ -935,7 +935,8 @@ class WorkspaceLifecycle(unittest.TestCase):
         manager = frame_macview.WorkspaceDisplayManager("/does/not/matter")
         for env, quality, message in [({"FRAME_WORKSPACE_VIEWER": "wrong"}, "sharp", "browser or native"),
                                       ({"FRAME_WORKSPACE_VIEWER": "native"}, "compatible", "needs H.264"),
-                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "auto"}, "sharp", "software or v4l2")]:
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "auto"}, "sharp", "software or v4l2"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_CONVERSION": "auto"}, "sharp", "cpu or gpu")]:
             with self.subTest(env=env, quality=quality), mock.patch.dict(os.environ, env), \
                     mock.patch.object(frame_macview.subprocess, "Popen") as popen:
                 with self.assertRaisesRegex(frame_macview.MacViewError, message):
