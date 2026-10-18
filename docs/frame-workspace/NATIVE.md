@@ -94,6 +94,20 @@ also differed from the software run; see the compact
 
 ## Boundaries and next gates
 
+FW-10 verdict: **go for an owned-overlay prototype and same-runtime process
+recovery; conditional for a complete saved room layout**.
+
+| Capability | Source/device result |
+|---|---|
+| Set a world transform on the native owner's overlay | Successful direct owner call; read-only getters confirm absolute standing-space placement |
+| Restart the native owner and retain placement | Verified; same display/texture/key, matrix difference 0.0 |
+| Mutate Valve-owned dashboard overlays | Earlier PermissionDenied result retained; no ownership bypass attempted |
+| Show/recenter without restarting the viewer | Owner control JSON is implemented; existing Show again routes there |
+| Change native width/distance | Owner API implemented; new companion controls not constructed |
+| Native curvature and multiple surfaces | Not implemented or device-verified |
+| SteamVR dashboard/game coexistence and runtime reload | Not verified by the bounded placement test |
+| Restore across room/tracking-origin changes | Not established; logical profiles explicitly report spatial placement as manual |
+
 - Native-viewer readability and head-motion behavior remain **headset-unverified**.
   The user's favorable readability feedback applies to the preceding browser
   viewer, not this build.
