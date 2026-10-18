@@ -1,0 +1,41 @@
+{
+  "root_generated_logical_bytes_removed": 92696066,
+  "items": [
+    "Frame Workspace Fullscreen Probe.app",
+    "frame-workspace-fullscreen-probe",
+    "frame-workspace-swift-module-cache",
+    "frame-workspace-native-probe.ppm",
+    "frame-workspace-native-source.tgz",
+    "frame-workspace-native-tcp-nodelay-build",
+    "frame-workspace-fullscreen-appkit.jsonl",
+    "frame-workspace-fullscreen-observer3.pid",
+    "frame-workspace-fullscreen-observer2.pid",
+    "frame-workspace-fullscreen-recovery.jsonl",
+    "frame-workspace-fullscreen-appkit-bundle.jsonl",
+    "frame-workspace-fullscreen-lifecycle.log",
+    "frame-workspace-fullscreen-recovery.log",
+    "frame-workspace-fullscreen-observer3.jsonl",
+    "frame-workspace-fullscreen-lifecycle.jsonl",
+    "frame-workspace-fullscreen-observer.jsonl",
+    "frame-workspace-fullscreen-appkit-bundle.log",
+    "frame-workspace-fullscreen-observer2.jsonl"
+  ],
+  "completed_worktrees_allocated_bytes_removed": 56991744,
+  "note": "Worktree value measured with du before removal; root generated sizes are logical file bytes. Host sparse VM physical reclamation not measured.",
+  "compacted_metric_and_test_log_bytes_removed": 165651,
+  "completed_gpu_worktree_allocated_bytes_removed": 28913664,
+  "gpu_host_container_writable_layer_bytes_removed": 808034304,
+  "gpu_host_build_allocated_kib_removed": 2216,
+  "mock_render_temporary_logical_bytes_removed": 67405136,
+  "frame_superseded_logical_bytes_removed": 26700677,
+  "final_local_superseded_logical_bytes_removed": 11448620,
+  "frame_focused_repair_build_allocated_kib_removed": 2828,
+  "preserved": [
+    "source and compact verification reports",
+    "current native Frame binary/metadata and latest98f5 rollback",
+    "active companion and Coding profile",
+    "Frame pose",
+    "requested Mac awake assertion"
+  ],
+  "measurement_limits": "Logical file sizes, allocated worktree sizes and container writable-layer sizes are different accounting measures and must not be summed as physical disk recovery. Sparse VM physical reclamation was not measured."
+}

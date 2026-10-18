@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Selection/exit diagnostics through the real executable. No OpenVR runtime.
 Pass --expect-no-v4l2 only in a host without a compatible V4L2 decoder device.
+Pass --use-display to use the existing GL display without forcing software GL.
 """
 import json
 import os
@@ -10,6 +11,7 @@ import sys
 import tempfile
 
 binary = str(Path(sys.argv[1]).resolve())
+use_display = "--use-display" in sys.argv[2:]
 with tempfile.TemporaryDirectory(prefix="native-decoder-") as directory:
     root = Path(directory)
     invalid = subprocess.run([binary, "--decoder", "auto"], capture_output=True, text=True)
@@ -17,9 +19,11 @@ with tempfile.TemporaryDirectory(prefix="native-decoder-") as directory:
     assert "decoder must be software or v4l2" in invalid.stdout + invalid.stderr
     state = root / "state.json"
     pattern = subprocess.run(
-        ["xvfb-run", "-a", binary, "--no-vr", "--test-pattern", "--seconds", ".2",
+        [*([] if use_display else ["xvfb-run", "-a"]),
+         binary, "--no-vr", "--test-pattern", "--seconds", ".2",
          "--state-file", str(state)], capture_output=True, text=True, timeout=10,
-        env={**os.environ, "LIBGL_ALWAYS_SOFTWARE": "1"})
+        env=(os.environ.copy() if use_display else
+             {**os.environ, "LIBGL_ALWAYS_SOFTWARE": "1"}))
     assert pattern.returncode == 0, pattern.stderr
     value = json.loads(state.read_text())
     assert value["decoderRequested"] == "software" and value["decoderActive"] == ""
@@ -41,6 +45,6 @@ with tempfile.TemporaryDirectory(prefix="native-decoder-") as directory:
         {'width':640,'height':360,'codedWidth':640,'codedHeight':368,'keyFrame':1}],dimensions
     if "--expect-no-v4l2" in sys.argv[2:]:
         subprocess.run([sys.executable,str(Path(__file__).with_name('tests_stream.py')),binary,
-                        '--expect-no-v4l2'],check=True)
+                        '--expect-no-v4l2', *(["--use-display"] if use_display else [])],check=True)
     print(json.dumps({"selection_and_exit": "passed", "v4l2_unavailable_fail_closed":
                       "passed" if "--expect-no-v4l2" in sys.argv[2:] else "not requested"}))

@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "sourceRevision": "7112b27",
+  "evidence": "host ARM64 Ubuntu22.04 FFmpeg58 llvmpipe; no device or worn proof",
+  "binarySha256": "75329ff5380e070573e65bfa76a2240b59d471c623f39c259d89d92bfc3634c0",
+  "matrix": {
+    "cases": 16,
+    "layouts": [
+      "nv12",
+      "yuv420p"
+    ],
+    "matrices": [
+      "bt601",
+      "bt709"
+    ],
+    "ranges": [
+      "limited",
+      "full"
+    ],
+    "patterns": [
+      "sharp",
+      "ramp"
+    ],
+    "oracle": "production-equivalent direct sws_scale, whole-frame RGB readback",
+    "maxRgbDelta": 1,
+    "ffmpegCliSharpNv12PhaseDifference": {
+      "maxRgbDeltaRange": [
+        52,
+        59
+      ],
+      "note": "Separate CLI scale diagnostic differs from both production CPU and GPU. Sharp fixture retained."
+    }
+  },
+  "streamChecks": [
+    "CPU default stream and reconnect",
+    "GPU BT601/709 full/limited",
+    "YUV444 explicit CPU fallback",
+    "GPU reconnect with one expected network error and no decoder/server/submit errors",
+    "GPU resize to640x360",
+    "nonzero CPU planeCopyMs and convertMs in GPU mode",
+    "bounded timing and sequence checks"
+  ],
+  "otherChecks": [
+    "native self-test",
+    "decoder fail-closed test",
+    "41 test_macview tests, one skip",
+    "Python compile",
+    "shell syntax",
+    "git diff --check"
+  ],
+  "cleanup": {
+    "hostBuildAllocatedKiB": 2216,
+    "containerWritableLayerBytes": 808034304,
+    "cachedUbuntuImagePreserved": true,
+    "taskColimaStopped": true
+  },
+  "notes": [
+    "Host executable linked FFmpeg58; device requires a fresh FFmpeg61 build.",
+    "GL issuance CPU wall time is distinct from GPU completion and optical presentation.",
+    "Final host build predates the help-only text correction in7112b27; production shader/decoder source identical."
+  ]
+}

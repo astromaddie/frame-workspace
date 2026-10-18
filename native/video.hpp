@@ -25,6 +25,58 @@ struct Picture {
   // into an AVFrame survives av_frame_unref() or a decoder-context reopen.
   std::vector<uint8_t> y, u, v, uv;
 };
+struct PacketTiming {
+  uint32_t seq;
+  double received;
+};
+enum class RecoveryAction {
+  KeepContext,
+  ReopenContext,
+  FlushContext,
+  SameContextIdrBarrier
+};
+enum class DecoderOpenReason { Initial, Reconnect, FormatChange };
+enum class TimestampStatus { Mapped, Stale, Unknown };
+inline RecoveryAction recoveryAction(bool hardware, bool contextReady,
+                                     bool sizeChanged,
+                                     ResetReason reason) {
+  if (!contextReady || sizeChanged)
+    return RecoveryAction::ReopenContext;
+  if (reason == ResetReason::Reconnect ||
+      reason == ResetReason::FormatChange)
+    return hardware ? RecoveryAction::ReopenContext
+                    : RecoveryAction::FlushContext;
+  if (reason == ResetReason::Overflow)
+    return hardware ? RecoveryAction::SameContextIdrBarrier
+                    : RecoveryAction::FlushContext;
+  if (reason == ResetReason::DecoderError)
+    return hardware ? RecoveryAction::ReopenContext
+                    : RecoveryAction::FlushContext;
+  return RecoveryAction::KeepContext;
+}
+inline bool staleOutputToken(int64_t pts, int64_t staleThroughToken) {
+  // Packet tokens start at one. Zero, negative and AV_NOPTS_VALUE were never
+  // issued by this pipeline and must remain unknown even after a barrier.
+  return pts > 0 && staleThroughToken > 0 && pts <= staleThroughToken;
+}
+inline void retireTimingsThrough(std::map<int64_t, PacketTiming> &timing,
+                                 int64_t token) {
+  timing.erase(timing.begin(), timing.upper_bound(token));
+}
+inline void retireTimingHistory(std::map<int64_t, PacketTiming> &timing,
+                               int64_t token, int64_t &staleThroughToken) {
+  if (token > staleThroughToken)
+    staleThroughToken = token;
+  retireTimingsThrough(timing, staleThroughToken);
+}
+inline TimestampStatus timestampStatus(
+    int64_t pts, int64_t staleThroughToken,
+    const std::map<int64_t, PacketTiming> &timing) {
+  if (staleOutputToken(pts, staleThroughToken))
+    return TimestampStatus::Stale;
+  return timing.count(pts) ? TimestampStatus::Mapped
+                           : TimestampStatus::Unknown;
+}
 // Shared by the live decoder and --inspect-h264: parse complete Annex-B
 // access units with FFmpeg, preserving SPS/PPS across frames and size changes.
 struct H264Headers {
@@ -98,9 +150,15 @@ struct Pipeline {
   std::atomic<uint64_t> received{0}, decoded{0}, droppedEncoded{0},
       droppedDecoded{0}, errors{0}, reconnects{0}, networkErrors{0},
       serverErrors{0}, decoderSendErrors{0}, decoderReceiveErrors{0},
-      decoderFatalErrors{0};
+      decoderFatalErrors{0}, packetQueueOverflows{0}, droppedAwaitingIdr{0},
+      overflowRecoveryIdrs{0}, staleDriverFramesDropped{0},
+      decoderOpenAttempts{0}, decoderInitialOpens{0},
+      decoderReconnectOpens{0}, decoderFormatReopens{0},
+      decoderOpenFailures{0};
+  std::atomic<uint32_t> lastOverflowRecoverySeq{0};
+  std::atomic<uint64_t> decoderTimingHighWater{0};
   std::atomic<double> decodeMs{0}, sendMs{0}, convertMs{0}, planeCopyMs{0},
-      clockOffset{0};
+      decoderOpenMs{0}, decoderOpenMsTotal{0}, clockOffset{0};
   std::atomic<bool> clockValid{false};
   std::mutex mutex, outMutex;
   std::condition_variable wake;
@@ -108,7 +166,34 @@ struct Pipeline {
   std::shared_ptr<Picture> newest;
   std::deque<std::string> outbound;
   bool needKey = true;
+  ResetReason pendingResetReason = ResetReason::None;
   std::thread net, decoder;
+  static int resetPriority(ResetReason reason) {
+    switch (reason) {
+    case ResetReason::Reconnect:
+      return 2;
+    case ResetReason::FormatChange:
+      return 3;
+    case ResetReason::DecoderError:
+      return 2;
+    case ResetReason::Overflow:
+      return 1;
+    case ResetReason::None:
+      return 0;
+    }
+    return 0;
+  }
+  void requireKeyLocked(ResetReason reason) {
+    needKey = true;
+    if (resetPriority(reason) > resetPriority(pendingResetReason))
+      pendingResetReason = reason;
+  }
+  void connectionOpened(bool resumed) {
+    std::lock_guard<std::mutex> lock(mutex);
+    droppedEncoded += packets.size();
+    packets.clear();
+    requireKeyLocked(resumed ? ResetReason::Reconnect : ResetReason::None);
+  }
   ~Pipeline() { finish(); }
   void finish() {
     stop = true;
@@ -122,18 +207,21 @@ struct Pipeline {
     std::lock_guard<std::mutex> lock(mutex);
     ++received;
     if (packets.size() >= 3) {
+      ++packetQueueOverflows;
       droppedEncoded += packets.size();
       packets.clear();
-      needKey = true;
+      requireKeyLocked(ResetReason::Overflow);
       requestKey = true;
     }
     if (needKey && !p.key) {
       ++droppedEncoded;
+      ++droppedAwaitingIdr;
       requestKey = true;
       return;
     }
     if (needKey) {
-      p.reset = true;
+      p.resetReason = pendingResetReason;
+      pendingResetReason = ResetReason::None;
       needKey = false;
     }
     packets.push_back(std::move(p));
@@ -170,15 +258,11 @@ struct Pipeline {
     while (!stop) {
       try {
         WebSocket ws(stop);
+        bool resumed = !reconnect.empty();
         ws.open(endpoint, reconnect);
         connected = true;
         ++reconnects;
-        {
-          std::lock_guard<std::mutex> l(mutex);
-          droppedEncoded += packets.size();
-          packets.clear();
-          needKey = true;
-        }
+        connectionOpened(resumed);
         double ping = 0, key = 0;
         ws.idle = [&] {
           double now = nowMs();
@@ -277,12 +361,11 @@ struct Pipeline {
     AVFrame *frame = av_frame_alloc();
     AVPacket *avp = av_packet_alloc();
     SwsContext *sws = nullptr;
-    struct Timing {
-      uint32_t seq;
-      double received;
-    };
-    std::map<int64_t, Timing> timing;
+    std::map<int64_t, PacketTiming> timing;
     int64_t token = 0;
+    // -1 means no recovery barrier exists yet; in particular, PTS 0 must not
+    // be silently accepted as stale before the first overflow recovery.
+    int64_t staleThroughToken = -1;
     bool submitted = false;
     H264Headers headers;
     auto fail = [&](const char *stage, int code) {
@@ -299,13 +382,28 @@ struct Pipeline {
               "[native] decoder=%s stage=%s failed=%d (%s); no fallback\n",
               codecName(), stage, code, detail);
     };
-    auto open = [&]() {
+    auto open = [&](DecoderOpenReason reason, bool formatReopen = false) {
+      const double openStart = nowMs();
+      ++decoderOpenAttempts;
+      if (reason == DecoderOpenReason::Initial)
+        ++decoderInitialOpens;
+      else if (reason == DecoderOpenReason::Reconnect)
+        ++decoderReconnectOpens;
+      if (formatReopen)
+        ++decoderFormatReopens;
+      auto recordOpenTime = [&] {
+        const double elapsed = nowMs() - openStart;
+        decoderOpenMs = elapsed;
+        decoderOpenMsTotal = decoderOpenMsTotal.load() + elapsed;
+      };
       av_frame_unref(frame);
       avcodec_free_context(&context);
       timing.clear();
       decoderActive = false;
       context = codec ? avcodec_alloc_context3(codec) : nullptr;
       if (!context) {
+        ++decoderOpenFailures;
+        recordOpenTime();
         fail("allocate", AVERROR(ENOMEM));
         return false;
       }
@@ -341,9 +439,12 @@ struct Pipeline {
       }
       int result = avcodec_open2(context, codec, nullptr);
       if (result < 0) {
+        ++decoderOpenFailures;
+        recordOpenTime();
         fail("open", result);
         return false;
       }
+      recordOpenTime();
       fprintf(stderr, "[native] decoder initialized requested=%s codec=%s\n",
               decoderRequested.c_str(), codecName());
       return true;
@@ -351,7 +452,7 @@ struct Pipeline {
     if (!codec || !frame || !avp) {
       fail("unavailable", codec ? AVERROR(ENOMEM) : AVERROR_DECODER_NOT_FOUND);
     } else if (decoderRequested == "software") {
-      open();
+      open(DecoderOpenReason::Initial);
     }
     // Hardware open is deferred until the first IDR has provided valid SPS
     // dimensions. Drain all available output before asking the decoder for more
@@ -366,8 +467,15 @@ struct Pipeline {
         if (result < 0)
           break;
         decodeMs = sendMs.load() + receiveMs;
+        TimestampStatus timestamp =
+            timestampStatus(frame->pts, staleThroughToken, timing);
+        if (timestamp == TimestampStatus::Stale) {
+          ++staleDriverFramesDropped;
+          av_frame_unref(frame);
+          continue;
+        }
         auto it = timing.find(frame->pts);
-        if (it == timing.end()) {
+        if (timestamp == TimestampStatus::Unknown || it == timing.end()) {
           fail("output-timestamp", AVERROR_INVALIDDATA);
           break;
         }
@@ -480,6 +588,7 @@ struct Pipeline {
     };
     while (!stop) {
       Packet p;
+      RecoveryAction action = RecoveryAction::KeepContext;
       bool havePacket = false;
       {
         std::unique_lock<std::mutex> l(mutex);
@@ -512,25 +621,53 @@ struct Pipeline {
                                    headers.parser->height != inputHeight ||
                                    headers.parser->coded_width != codedWidth ||
                                    headers.parser->coded_height != codedHeight);
-        if ((!context || changed || p.reset) &&
+        const bool requiresIdr = !context || changed ||
+                                 p.resetReason != ResetReason::None;
+        if (requiresIdr &&
             (!p.key || headers.parser->key_frame != 1)) {
           ++droppedEncoded;
           requestKey = true;
           std::lock_guard<std::mutex> lock(mutex);
-          needKey = true;
+          requireKeyLocked(changed ? ResetReason::FormatChange
+                                   : p.resetReason);
           droppedEncoded += packets.size();
           packets.clear();
           continue;
         }
-        if (!context || changed || (p.reset && submitted)) {
-          // No driver flush callback: reopen using this IDR's actual SPS size.
-          // Old mapped AVFrames were released in drain() before this point.
-          if (!open())
+        action = recoveryAction(
+            decoderRequested == "v4l2", context != nullptr, changed,
+            p.resetReason);
+        if (action == RecoveryAction::ReopenContext) {
+          // A real reconnect or format change needs a clean driver context.
+          // Queue overflow alone recovers at the validated IDR below.
+          DecoderOpenReason reason = !context
+                                         ? DecoderOpenReason::Initial
+                                         : p.resetReason == ResetReason::Reconnect
+                                               ? DecoderOpenReason::Reconnect
+                                               : DecoderOpenReason::FormatChange;
+          if (!open(reason, context &&
+                                 (changed || p.resetReason ==
+                                                ResetReason::FormatChange)))
             break;
           submitted = false;
         }
-      } else if (p.reset && submitted) {
-        timing.clear();
+        if (action == RecoveryAction::SameContextIdrBarrier) {
+          // IDR starts a new H.264 reference state. Old V4L2 output may still
+          // surface afterward, so retire its bounded PTS metadata and ignore
+          // delayed frames through this token instead of reopening the device.
+          retireTimingHistory(timing, token, staleThroughToken);
+        }
+      } else if (p.resetReason != ResetReason::None && submitted) {
+        const RecoveryAction action =
+            recoveryAction(false, context != nullptr, false, p.resetReason);
+        if (action != RecoveryAction::FlushContext) {
+          fail("recovery-policy", AVERROR_BUG);
+          break;
+        }
+        // Software reconnects keep the context and flush it. Retire every
+        // previously issued timestamp before the flush so delayed output
+        // cannot grow the timing map across repeated reconnects.
+        retireTimingHistory(timing, token, staleThroughToken);
         avcodec_flush_buffers(context);
         submitted = false;
       }
@@ -550,6 +687,9 @@ struct Pipeline {
         break;
       }
       timing[token] = {p.seq, p.received};
+      auto highWater = decoderTimingHighWater.load();
+      if (timing.size() > highWater)
+        decoderTimingHighWater = timing.size();
       double before = nowMs();
       result = avcodec_send_packet(context, avp);
       sendMs = nowMs() - before;
@@ -579,12 +719,18 @@ struct Pipeline {
                 result);
         requestKey = true;
         std::lock_guard<std::mutex> l(mutex);
-        needKey = true;
+        requireKeyLocked(ResetReason::DecoderError);
         droppedEncoded += packets.size();
         packets.clear();
         continue;
       }
       submitted = true;
+      if (p.resetReason == ResetReason::Overflow &&
+          decoderRequested == "v4l2" &&
+          action == RecoveryAction::SameContextIdrBarrier) {
+        ++overflowRecoveryIdrs;
+        lastOverflowRecoverySeq = p.seq;
+      }
       result = drain();
       if (result != AVERROR(EAGAIN) && result != AVERROR_EOF && !stop) {
         if (decoderRequested == "v4l2") {
@@ -598,7 +744,7 @@ struct Pipeline {
                 result);
         requestKey = true;
         std::lock_guard<std::mutex> l(mutex);
-        needKey = true;
+        requireKeyLocked(ResetReason::DecoderError);
         droppedEncoded += packets.size();
         packets.clear();
       }

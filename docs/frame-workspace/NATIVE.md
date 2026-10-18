@@ -25,7 +25,8 @@ Start the Mac companion with these settings to select the native path:
 ```sh
 FRAME_PRIVATE_SSH=1 FRAME_ALIAS=frame FRAME_CONTROL_TELEMETRY=0 \
 FRAME_WORKSPACE_VIEWER=native FRAME_WORKSPACE_DECODER=v4l2 \
-FRAME_WORKSPACE_FPS=30 python3 ui/server.py --port 60339
+FRAME_WORKSPACE_CONVERSION=cpu FRAME_WORKSPACE_FPS=30 FRAME_MAC_VIEW_ADAPT=0 \
+python3 ui/server.py --port 60339
 ```
 
 Use **9:8, 2880×2560 at 1×** for unattended display tests. On this Mac, creating
@@ -39,13 +40,25 @@ the reserved Workspace viewer unit and owned Mac display. SteamVR and the main
 Gamescope session are not restarted. The original installed Frame Control app is
 preserved.
 
-The latest installed binary from the initial device verification is
-`9108842a9fafe942588198ee9721792740b5cfc4323969591f9357bfad477f00`.
+The current installed binary SHA-256 is
+`1c6efee0f3c6189c3402891facf3c8956a17ebca208bdc3abb864ebd66f6400c`;
+its build metadata SHA-256 is
+`fbc0e9c4f39e3517cdc674418921cdc1ee71c8587a46b04e9c351ca0251b733b`.
 It links the Frame's FFmpeg 61, SDL2 and OpenGL libraries. A host-container
-executable linked against FFmpeg 58 was tested locally and was never deployed.
-The installed build metadata and compact [device evidence](../../native/evidence/frame-hardware.json)
-identify the actual source and binary; the production tree was uncommitted when
-that build was produced, so its base Git revision alone is insufficient identity.
+executable linked against FFmpeg 58 was tested locally and never deployed.
+The [pipeline record](../../native/evidence/frame-pipeline.json) includes exact
+production-source and test-script hashes because the tree was uncommitted when
+built; the base Git revision alone is insufficient identity. The initial
+`9108842a…` build in [earlier device evidence](../../native/evidence/frame-hardware.json)
+is historical.
+
+The active preview companion uses `/tmp/frame-workspace-companion-data`, with
+one Coding profile, and leaves the installed Frame Control app unchanged. That
+temporary data location is not a durable app installation. The current native
+binary and saved pose are installed on the Frame; the latest previous build
+and metadata remain in `/tmp/frame-workspace-overflow-recovery-rollback-20261019/`
+for a bounded rollback. Stop the owned viewer before atomically restoring both
+files, then use the existing Workspace controls to reopen it.
 
 ## Device evidence
 
@@ -92,6 +105,52 @@ counts, not GPU timestamps or physical latency. The fixture's observed cadence
 also differed from the software run; see the compact
 [real-desktop record](../../native/evidence/frame-desktop.json).
 
+## Matched desktop pipeline follow-up
+
+The first optional-GPU comparison exposed repeated hardware-decoder opens during
+queue overflow. The repaired path keeps the hardware context for a validated
+same-size recovery IDR and discards delayed older output using bounded timestamp
+metadata. Reconnect and parsed dimension changes still reopen cleanly. Software
+reconnects flush their context and retire prior timing metadata. PTS zero,
+negative, missing and unknown tokens remain explicit failures.
+
+All following runs used the same 2880×2560 1× Workspace, a 2880×2530 owned
+scrolling fixture reporting about 61 fps, V4L2, fixed source targets and disabled
+adaptation. Each measurement lasted 30.02 seconds, with no concurrent builds or
+decoder tests.
+
+| Conversion / target | Received / decoded / uploaded fps | Queue overflows | Errors |
+|---|---:|---:|---:|
+| CPU / 30 | 28.11 / 28.11 / **28.05** | 0 | 0 |
+| GPU / 30 | 29.18 / 28.18 / **27.18** | 1 | 0 |
+| CPU / 60 | 58.92 / 35.44 / **33.71** | 49 | 0 |
+| GPU / 60 | 58.56 / 43.57 / **39.41** | 32 | 0 |
+
+There were no decoder reopens during those measurement windows. The stable
+active mode remains **CPU conversion at 30 fps**; GPU remains opt-in. The 60 fps
+modes still drop substantial content and have timing spikes. These rates include
+queue recovery and IDR waits and do not establish the decoder's silicon limit.
+They are desktop texture updates, not compositor refresh or optical FPS.
+
+The [pipeline evidence](../../native/evidence/frame-pipeline.json) also preserves
+the earlier matched baseline and strict production-path normal, reconnect,
+forced-overload and GPU image-oracle tests. Full-resolution V4L2 tests passed
+with maximum RGB difference 2 versus FFmpeg and zero decoder/server/submit errors.
+Reconnect tests record one intentional network disconnect separately. Forced
+overload recovered with one initial decoder open, 15 queue overflows, one recovery
+IDR and one discarded stale driver frame. A previous dimension-change gate
+covered 2880×2560 → 2816×2560; same-size SPS reparameterization was not tested.
+
+The final build adds software-reconnect cleanup to the build used for the table;
+its V4L2 recovery and GPU conversion paths are unchanged. Focused gates were run
+on the exact final binary and test script; desktop benchmarks were not repeated.
+Hardware reports NV12 with unspecified color range/space. The strict hardware
+GPU oracle establishes the BT.601 limited fixture only, without inventing
+BT.709/full-range metadata. The unchanged shader separately passed 16 raw-plane
+layout/range/matrix cases on the Frame, with maximum RGB difference 1 against
+production libswscale. Legacy 320×180 V4L2 output was padded to 320×192; general
+hardware cropping support is not claimed.
+
 ## Boundaries and next gates
 
 FW-10 verdict: **go for an owned-overlay prototype and same-runtime process
@@ -103,7 +162,7 @@ recovery; conditional for a complete saved room layout**.
 | Restart the native owner and retain placement | Verified; same display/texture/key, matrix difference 0.0 |
 | Mutate Valve-owned dashboard overlays | Earlier PermissionDenied result retained; no ownership bypass attempted |
 | Show/recenter without restarting the viewer | Owner control JSON is implemented; existing Show again routes there |
-| Change native width/distance | Owner API implemented; new companion controls not constructed |
+| Change native width/distance | Owner API implemented; [two control mockups](NATIVE-CONTROLS.md) await approval |
 | Native curvature and multiple surfaces | Not implemented or device-verified |
 | SteamVR dashboard/game coexistence and runtime reload | Not verified by the bounded placement test |
 | Restore across room/tracking-origin changes | Not established; logical profiles explicitly report spatial placement as manual |
@@ -133,8 +192,14 @@ without catch-up bursts. An unready tunnel caused an excluded startup failure
 with zero received packets; it was a harness failure, not a decoder result.
 
 Do not infer video throughput from a static desktop or compositor refresh from
-texture submissions. The current software conversion/upload path still copies
-full RGBA images; zero-copy NV12 import and GPU color conversion are not claimed.
+texture submissions. CPU conversion still copies full RGBA images. Optional
+`FRAME_WORKSPACE_CONVERSION=gpu` instead copies owned NV12/YUV420P planes and
+converts them to the same full-resolution RGBA texture through a shader. It is
+not zero-copy NV12 import; CPU remains the source default. The
+[host validation record](../../native/evidence/host-gpu-validation.json) retains
+the strict sharp-edge and ramp comparisons rather than relying on throughput
+alone. `gpuConvertMs` is CPU wall time issuing GL work; `syncMs` includes the
+completion wait, and neither is an optical latency measurement.
 
 Eye-tracked foveated streaming is a possible later optimization. For this simple
 textured-overlay workload, reduced shading alone is unlikely to address the

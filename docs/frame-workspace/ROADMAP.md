@@ -15,6 +15,14 @@ See [native usage and evidence](NATIVE.md) and the separate
 [full-screen feasibility gate](FULLSCREEN.md). Use 9:8 for unattended display
 testing; 16:9 creation can open a macOS mirror/extend prompt on this Mac.
 
+**Logical profiles:** FW-11 now has authenticated local save/list/restore/delete
+operations and fresh bundle-ID/title matching, including a live relaunch test.
+Saved room layouts remain conditional: profiles explicitly report placement as
+manual. See [profile usage and limits](profiles.md). FW-06 still needs the
+inactive-Space and supported-app matrix before FW-07 automatic detachment;
+FW-08 native controls, FW-09 multi-panel performance and FW-12 worn focus/IME
+acceptance remain open.
+
 ## Product thesis
 
 Local-first Steam Frame workspace for an Apple Silicon (M4) MacBook: a *real* extended macOS virtual ultrawide display for coding, high text fidelity, optional independent Mac panels, and automatic detachment when the user uses the *native macOS green full-screen control*. No internet, cloud service, PC gaming host or purchased utility required for the core workflow. Prefer real macOS display and Space semantics over a new custom window manager.

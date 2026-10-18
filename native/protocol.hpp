@@ -170,8 +170,16 @@ inline Endpoint parseURL(std::string u) {
   }
   return e;
 }
+enum class ResetReason : uint8_t {
+  None,
+  Overflow,
+  DecoderError,
+  Reconnect,
+  FormatChange
+};
 struct Packet {
-  bool key = false, reset = false;
+  bool key = false;
+  ResetReason resetReason = ResetReason::None;
   uint32_t seq = 0;
   double received = 0;
   std::vector<uint8_t> bytes;

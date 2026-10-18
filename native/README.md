@@ -92,11 +92,20 @@ for GPU conversion it includes the CPU plane copy, also reported separately as
 uploads and shader pass; GPU completion is included in `syncMs`. Neither timing
 alone predicts end-to-end throughput or compositor presentation rate.
 
+Recovery counters include `queueOverflows`, `droppedAwaitingIdr`,
+`overflowRecoveryIdrs`, `lastOverflowRecoverySeq`, `staleDriverFramesDropped`
+and `decoderTimingHighWater`. Decoder-open attempts, initial/reconnect/format
+opens, failures and cumulative open time are separate counters. `decoderOpenMs`
+is the last open duration; `decoderOpenTotalMs` is cumulative.
+
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder
 thread. At most three compressed access units wait for decoding. Overflow discards
-that queue, asks for an IDR and flushes the decoder before accepting that keyframe.
+that queue and asks for an IDR. Software flushes at recovery; V4L2 keeps its
+context for a same-size overflow IDR and retires older timestamp tokens.
+Delayed driver output through that barrier is discarded; zero, negative,
+missing or unknown timestamps remain errors.
 Only the newest completed picture waits for the GL owner: CPU-converted RGBA or
 owned copies of supported YUV planes. There are no unbounded work queues. The
 initial decoder is explicitly software H.264 with
@@ -147,6 +156,15 @@ python3 native/tests_stream.py native/build/frame-workspace-native --reconnect
 python3 native/tests_gpu_conversion.py native/build/frame-workspace-native
 # On an existing device GL display, bypass Xvfb and its software-renderer env:
 python3 native/tests_gpu_conversion.py native/build/frame-workspace-native --use-display
+python3 native/tests_decoder.py native/build/frame-workspace-native --use-display
+# Full-resolution hardware stream gates; serialize against the owned viewer
+# unit so another V4L2 decoder is not active. Frame booking/off-head consent
+# required; never stop SteamVR or global Gamescope.
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --decoder v4l2
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --decoder v4l2 --reconnect
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --decoder v4l2 --size-change
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --decoder v4l2 --overload
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --decoder v4l2 --conversion gpu --case bt601-limited
 # Device diagnostic, only after the coordinator owns the Frame lock:
 native/build/frame-workspace-native --test-pattern --seconds 15 \
   --state-file /tmp/native-state.json --dump /tmp/native-pattern.ppm
@@ -155,7 +173,11 @@ native/build/frame-workspace-native --test-pattern --seconds 15 \
 The stream integration test creates temporary synthetic H.264 frames, sends
 them through the production WebSocket path, validates acknowledgement/focus/
 clock and frame messages, compares GPU readback to FFmpeg output, then removes
-its video and capture data. The YUV layout tests upload synthetic NV12 and
+its video and capture data. Hardware tests use a finite, valid 61-access-unit
+sequence with AUD boundaries and alternating adjacent IDR picture IDs. The
+overload case requires a delivered frame at or beyond the recovery IDR, one
+hardware open, bounded timing metadata and zero decoder/submission errors.
+The YUV layout tests upload synthetic NV12 and
 YUV420P planes through the production shader and compare full-frame readback
 against a direct libswscale `sws_scale` conversion using the same color settings
 as the viewer. A sharp chroma-edge fixture is retained alongside smooth ramps;
@@ -197,13 +219,25 @@ default CPU conversion isolates decoder selection; `--conversion gpu` can be
 selected separately for a matched device comparison. Unique packet timestamp tokens map
 delayed output back to the correct sequence and receive time. Input EAGAIN drains
 output before retrying that packet. First-keyframe startup does not flush an
-unused decoder. On queue overflow/reconnect, the next IDR recreates the V4L2
-context because the upstream FFmpeg wrapper has no flush callback. The three
-packet and one newest-picture queue limits remain in place; driver timestamp
-metadata is separately bounded. Unsupported output formats or missing timestamps
+unused decoder. On overflow, a validated same-size IDR resets the H.264 reference
+state without reopening V4L2, whose FFmpeg wrapper has no flush callback. Real
+reconnects and parsed visible/coded dimension changes reopen the hardware
+context. Software reconnects flush the existing context and retire its timing
+metadata. The three-packet and one-newest-picture limits remain in place;
+timestamp metadata is separately bounded to 64 entries. Unsupported output formats or missing timestamps
 fail explicitly instead of reporting guessed timing or software acceleration.
 
 `sendMs` measures the send-packet API call; `decodeMs` now combines that cost with
 the successful receive-frame call. These are decoder API wall times, not GPU
 execution time. Queue age uses the output frame's original received timestamp.
-V4L2 throughput and device recovery still require the coordinator's matched tests.
+The [device pipeline record](evidence/frame-pipeline.json) preserves matched
+30/60-target desktop runs and strict recovery/image-oracle tests. These do not
+establish sustained 60 fps or worn head-motion acceptance.
+
+For a matched desktop run, start the owned 9:8 Workspace with adaptation
+disabled and no concurrent decoder tests/builds, then run
+`python3 native/bench_desktop.py --label cpu-30 --out /tmp/workspace-cpu30.json`.
+The tool creates and closes only its disposable scrolling Chrome fixture,
+measures counter deltas over 30 seconds and omits window inventories and room
+transforms from its report. Change rate/conversion between runs and wait for
+readiness before recording the next condition.

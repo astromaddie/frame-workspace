@@ -1,0 +1,1273 @@
+{
+  "date": "2026-10-19 JST",
+  "evidenceLevel": "off-head production stream/GL tests and desktop texture updates; no wearer or optical FPS claim",
+  "baseline": {
+    "source": {
+      "revision": "7112b2791e995be42c4ae13f7d6c03b5004d0023",
+      "tree_state_at_build": "?? native/bench_desktop.py",
+      "arch": "aarch64",
+      "binary_sha256": "dca166f8492964f136c194c0711e9571ef01d6de2889fd0b25b5b64df158a991",
+      "metadata_sha256": "a279abb199cf790b394b1814e59590614c77dbfbcec2a742421c02c23658d957",
+      "rollback_cpu_binary_sha256": "9108842a9fafe942588198ee9721792740b5cfc4323969591f9357bfad477f00",
+      "rollback_cpu_metadata_sha256": "6e281a584fa2ab201011eb63435f66b1540a54c7e264be1ea66060f1a2221cbd",
+      "pose_sha256_unchanged": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c",
+      "source_sha256": {
+        "native/main.cpp": "9c05d4910c487ab137fa33538564873faa74b594235256559eaf67f841cef268",
+        "native/overlay.hpp": "075cbd496f5ea32c53594d4210d1fa3b3bff0e3af44d33d50f12cf7b2936220c",
+        "native/protocol.hpp": "6d4f76cfa4de919de5277798420930b922131bd91f550bee98bca88ce9c1a40b",
+        "native/video.hpp": "2fe9a1fcc20cf0efdab4e12cbf65eb696564cc77802793a24b6f4906abaca2a1",
+        "native/websocket.hpp": "f5d514755413a2704767c1330f0c31eafc7d864268dad310fe010b8cce3f50d7",
+        "native/bench_desktop.py": "78ae9f3dce6041a370a2be73f46eea26161aba5137102815a702c6bb13200541"
+      },
+      "dependencies": [
+        "SDL2 2.30.2",
+        "GL 1.2",
+        "FFmpeg libavcodec 61.3.100",
+        "libavutil 59.8.100",
+        "libswscale 8.1.100",
+        "json-c 0.17",
+        "OpenSSL 3.2.1"
+      ]
+    },
+    "device_gl": {
+      "vendor": "Mesa",
+      "renderer": "zink Vulkan 1.4 (Turnip Adreno 750)",
+      "gl_core": "4.6",
+      "glsl": "4.60"
+    },
+    "conditions": {
+      "cpu30": {
+        "label": "cpu-30",
+        "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+        "duration": 30.0162148779782,
+        "workspacePreset": "2880x2560",
+        "target": {
+          "width": 2880,
+          "height": 2560,
+          "maxLong": 4096,
+          "fps": 30,
+          "codec": "h264"
+        },
+        "fixtureWindowSize": [
+          2880,
+          2530
+        ],
+        "fixtureReportedFpsAtWarmup": 61,
+        "receivedFps": 29.217541371061508,
+        "decodedFps": 23.653881839741928,
+        "uploadedFps": 23.520620533602536,
+        "counters": {
+          "received": 877,
+          "decoded": 710,
+          "uploaded": 706,
+          "errors": 0,
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "decoderSendErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderFatalErrors": 0,
+          "submitErrors": 0,
+          "droppedEncoded": 156,
+          "droppedDecoded": 4
+        },
+        "timings": {
+          "decodeMs": {
+            "p50": 1.619059,
+            "p95": 2.408094
+          },
+          "sendMs": {
+            "p50": 1.611845,
+            "p95": 38.09291
+          },
+          "convertMs": {
+            "p50": 6.049037,
+            "p95": 8.015662
+          },
+          "planeCopyMs": {
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "gpuConvertMs": {
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "uploadMs": {
+            "p50": 4.2656865,
+            "p95": 5.368878
+          },
+          "syncMs": {
+            "p50": 1.990869,
+            "p95": 2.380491
+          },
+          "submitMs": {
+            "p50": 0.3547275,
+            "p95": 0.619458
+          },
+          "queueAgeMs": {
+            "p50": 50.507561499999994,
+            "p95": 62.147813
+          }
+        },
+        "textureSizes": [
+          [
+            2880,
+            2560
+          ]
+        ],
+        "decoder": "h264_v4l2m2m",
+        "decoderPixelFormat": 23,
+        "decoderColorSpace": 2,
+        "decoderColorRange": 0,
+        "conversionRequested": "cpu",
+        "conversionActive": "cpu",
+        "conversionFallbacks": 0,
+        "note": "Stage percentiles summarize one-second observations, not every frame."
+      },
+      "cpu60": {
+        "label": "cpu-60",
+        "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+        "duration": 30.020375340012833,
+        "workspacePreset": "2880x2560",
+        "target": {
+          "width": 2880,
+          "height": 2560,
+          "maxLong": 4096,
+          "fps": 60,
+          "codec": "h264"
+        },
+        "fixtureWindowSize": [
+          2880,
+          2530
+        ],
+        "fixtureReportedFpsAtWarmup": 61,
+        "receivedFps": 58.86002356688871,
+        "decodedFps": 0.632903479213857,
+        "uploadedFps": 0.632903479213857,
+        "counters": {
+          "received": 1767,
+          "decoded": 19,
+          "uploaded": 19,
+          "errors": 0,
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "decoderSendErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderFatalErrors": 0,
+          "submitErrors": 0,
+          "droppedEncoded": 1690,
+          "droppedDecoded": 0
+        },
+        "timings": {
+          "decodeMs": {
+            "p50": 12.30265,
+            "p95": 12.491237
+          },
+          "sendMs": {
+            "p50": 25.413241999999997,
+            "p95": 39.730199
+          },
+          "convertMs": {
+            "p50": 7.001843,
+            "p95": 15.597382
+          },
+          "planeCopyMs": {
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "gpuConvertMs": {
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "uploadMs": {
+            "p50": 4.450576,
+            "p95": 11.953027
+          },
+          "syncMs": {
+            "p50": 2.109615,
+            "p95": 9.808882
+          },
+          "submitMs": {
+            "p50": 0.447068,
+            "p95": 0.609458
+          },
+          "queueAgeMs": {
+            "p50": 89.4494555,
+            "p95": 144.678523
+          }
+        },
+        "textureSizes": [
+          [
+            2880,
+            2560
+          ]
+        ],
+        "decoder": "h264_v4l2m2m",
+        "decoderPixelFormat": 23,
+        "decoderColorSpace": 2,
+        "decoderColorRange": 0,
+        "conversionRequested": "cpu",
+        "conversionActive": "cpu",
+        "conversionFallbacks": 0,
+        "note": "Stage percentiles summarize one-second observations, not every frame."
+      },
+      "gpu30": {
+        "label": "gpu-30",
+        "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+        "duration": 30.019641426973976,
+        "workspacePreset": "2880x2560",
+        "target": {
+          "width": 2880,
+          "height": 2560,
+          "maxLong": 4096,
+          "fps": 30,
+          "codec": "h264"
+        },
+        "fixtureWindowSize": [
+          2880,
+          2530
+        ],
+        "fixtureReportedFpsAtWarmup": 60,
+        "receivedFps": 30.31348666217994,
+        "decodedFps": 11.225983522147956,
+        "uploadedFps": 10.692999141274463,
+        "counters": {
+          "received": 910,
+          "decoded": 337,
+          "uploaded": 321,
+          "errors": 0,
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "decoderSendErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderFatalErrors": 0,
+          "submitErrors": 0,
+          "droppedEncoded": 537,
+          "droppedDecoded": 16
+        },
+        "timings": {
+          "decodeMs": {
+            "p50": 0.041353,
+            "p95": 1.73843
+          },
+          "sendMs": {
+            "p50": 26.500289,
+            "p95": 44.582376
+          },
+          "convertMs": {
+            "p50": 3.623261,
+            "p95": 4.738952
+          },
+          "planeCopyMs": {
+            "p50": 3.623261,
+            "p95": 4.738952
+          },
+          "gpuConvertMs": {
+            "p50": 0.692476,
+            "p95": 1.291779
+          },
+          "uploadMs": {
+            "p50": 3.281658,
+            "p95": 4.757962
+          },
+          "syncMs": {
+            "p50": 2.299088,
+            "p95": 2.880005
+          },
+          "submitMs": {
+            "p50": 0.288063,
+            "p95": 0.708101
+          },
+          "queueAgeMs": {
+            "p50": 26.75653,
+            "p95": 50.454519
+          }
+        },
+        "textureSizes": [
+          [
+            2880,
+            2560
+          ]
+        ],
+        "decoder": "h264_v4l2m2m",
+        "decoderPixelFormat": 23,
+        "decoderColorSpace": 2,
+        "decoderColorRange": 0,
+        "conversionRequested": "gpu",
+        "conversionActive": "gpu",
+        "conversionFallbacks": 0,
+        "note": "Stage percentiles summarize one-second observations, not every frame."
+      },
+      "gpu60": {
+        "label": "gpu-60",
+        "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+        "duration": 30.01757617300609,
+        "workspacePreset": "2880x2560",
+        "target": {
+          "width": 2880,
+          "height": 2560,
+          "maxLong": 4096,
+          "fps": 60,
+          "codec": "h264"
+        },
+        "fixtureWindowSize": [
+          2880,
+          2530
+        ],
+        "fixtureReportedFpsAtWarmup": 61,
+        "receivedFps": 59.06539521316867,
+        "decodedFps": 0.16656907843533184,
+        "uploadedFps": 0.16656907843533184,
+        "counters": {
+          "received": 1773,
+          "decoded": 5,
+          "uploaded": 5,
+          "errors": 0,
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "decoderSendErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderFatalErrors": 0,
+          "submitErrors": 0,
+          "droppedEncoded": 1710,
+          "droppedDecoded": 0
+        },
+        "timings": {
+          "decodeMs": {
+            "p50": 2.142687,
+            "p95": 2.142687
+          },
+          "sendMs": {
+            "p50": 36.738297,
+            "p95": 45.312247
+          },
+          "convertMs": {
+            "p50": 0.807889,
+            "p95": 3.6943
+          },
+          "planeCopyMs": {
+            "p50": 0.807889,
+            "p95": 3.6943
+          },
+          "gpuConvertMs": {
+            "p50": 0.787785,
+            "p95": 1.513489
+          },
+          "uploadMs": {
+            "p50": 3.915387,
+            "p95": 4.579114
+          },
+          "syncMs": {
+            "p50": 2.741104,
+            "p95": 2.741104
+          },
+          "submitMs": {
+            "p50": 0.383268,
+            "p95": 0.558054
+          },
+          "queueAgeMs": {
+            "p50": 39.023244,
+            "p95": 39.023244
+          }
+        },
+        "textureSizes": [
+          [
+            2880,
+            2560
+          ]
+        ],
+        "decoder": "h264_v4l2m2m",
+        "decoderPixelFormat": 23,
+        "decoderColorSpace": 2,
+        "decoderColorRange": 0,
+        "conversionRequested": "gpu",
+        "conversionActive": "gpu",
+        "conversionFallbacks": 0,
+        "note": "Stage percentiles summarize one-second observations, not every frame."
+      },
+      "cpu30-repeat": {
+        "label": "cpu-30-repeat",
+        "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+        "duration": 30.015979546005838,
+        "workspacePreset": "2880x2560",
+        "target": {
+          "width": 2880,
+          "height": 2560,
+          "maxLong": 4096,
+          "fps": 30,
+          "codec": "h264"
+        },
+        "fixtureWindowSize": [
+          2880,
+          2530
+        ],
+        "fixtureReportedFpsAtWarmup": 61,
+        "receivedFps": 29.684188671382657,
+        "decodedFps": 20.988820272694806,
+        "uploadedFps": 20.822242334022626,
+        "counters": {
+          "received": 891,
+          "decoded": 630,
+          "uploaded": 625,
+          "errors": 0,
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "decoderSendErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderFatalErrors": 0,
+          "submitErrors": 0,
+          "droppedEncoded": 241,
+          "droppedDecoded": 5
+        },
+        "timings": {
+          "decodeMs": {
+            "p50": 1.5994739999999998,
+            "p95": 4.003294
+          },
+          "sendMs": {
+            "p50": 1.5943965,
+            "p95": 37.95728
+          },
+          "convertMs": {
+            "p50": 7.3032005,
+            "p95": 17.205788
+          },
+          "planeCopyMs": {
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "gpuConvertMs": {
+            "p50": 0.0,
+            "p95": 0.0
+          },
+          "uploadMs": {
+            "p50": 4.411091,
+            "p95": 5.65787
+          },
+          "syncMs": {
+            "p50": 1.979538,
+            "p95": 2.129195
+          },
+          "submitMs": {
+            "p50": 0.427172,
+            "p95": 0.894604
+          },
+          "queueAgeMs": {
+            "p50": 55.2209325,
+            "p95": 151.056804
+          }
+        },
+        "textureSizes": [
+          [
+            2880,
+            2560
+          ]
+        ],
+        "decoder": "h264_v4l2m2m",
+        "decoderPixelFormat": 23,
+        "decoderColorSpace": 2,
+        "decoderColorRange": 0,
+        "conversionRequested": "cpu",
+        "conversionActive": "cpu",
+        "conversionFallbacks": 0,
+        "note": "Stage percentiles summarize one-second observations, not every frame."
+      }
+    },
+    "decoder_reopen_counts": [
+      {
+        "condition": "CPU30 initial",
+        "invocation": "49149b6badb94fa8803b4e08ddeb720d",
+        "configure": 18,
+        "initialized": 18,
+        "interval_utc": "2026-10-18T17:34:28Z\u201317:35:33Z"
+      },
+      {
+        "condition": "CPU60 failed startup (excluded)",
+        "invocation": "eba5fb37e6f34e92aac4c701cbcbdf55",
+        "configure": 1,
+        "initialized": 1,
+        "interval_utc": "2026-10-18T17:36:14Z"
+      },
+      {
+        "condition": "CPU60 valid",
+        "invocation": "38d584fbec754318978e8f588f2ca404",
+        "configure": 76,
+        "initialized": 76,
+        "interval_utc": "2026-10-18T17:38:18Z\u201317:39:11Z"
+      },
+      {
+        "condition": "GPU30",
+        "invocation": "fc85a387866040e9b9703a01a17bc6a6",
+        "configure": 41,
+        "initialized": 41,
+        "interval_utc": "2026-10-18T17:39:50Z\u201317:40:39Z"
+      },
+      {
+        "condition": "GPU60",
+        "invocation": "95fd8aeec96e47a6bf1d24dd3a05f315",
+        "configure": 76,
+        "initialized": 76,
+        "interval_utc": "2026-10-18T17:41:18Z\u201317:42:14Z"
+      }
+    ],
+    "verification": {
+      "native_self_test": "passed",
+      "gpu_shader_layouts": 16,
+      "gpu_shader_stream_cases": 7,
+      "gpu_shader_stream_result": "all passed",
+      "shader_vs_libswscale_max_rgb_delta": 1,
+      "decoder_selection_parser": "passed with --use-display",
+      "test_macview": "41 tests, 1 skipped, OK",
+      "test_workspace_profiles": "12 tests, OK",
+      "full_suite": "not rerun; coordinator stated prior full suite valid"
+    },
+    "notes": [
+      "All desktop rates are off-head texture receive/decode/upload rates, not compositor or optical FPS. Timing percentiles summarize one-second state observations.",
+      "Each condition used the same saved 2880x2560 sharp 1x Coding workspace and a uniquely owned 2880x2530 scrolling Chrome fixture (warmup title reported 60/61 fps).",
+      "GPU shader readbacks passed against production libswscale; sharp NV12 comparisons against FFmpeg CLI differed by up to 59 RGB levels in both GPU and CPU CLI comparisons, while GPU-vs-production-libswscale remained at 1. Production stream color checks passed with max CLI deltas 2\u20133.",
+      "The stock decoder test initially failed because target Xvfb lacked GLX; routing to :0 while forcing software GL also failed because no CPU Vulkan device exists. Coordinator added the unchanged-assertion --use-display mode, which passed on the real Mesa/Turnip display.",
+      "An initial companion launched as a shell background process exited after restore with no traceback; that failed CPU60 attempt was excluded. The recovered companion used Python Popen(start_new_session=True), DEVNULL stdin and a dedicated log.",
+      "Repeated V4L2 configure/init journal messages were present in each matched viewer invocation (counts above); this is correlated with low throughput and should be diagnosed separately, not claimed causal."
+    ]
+  },
+  "repairedDesktop": {
+    "cpu30": {
+      "label": "overflow-fix-cpu-30",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.02023248700425,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 61,
+      "receivedFps": 28.11437254409563,
+      "decodedFps": 28.11437254409563,
+      "uploadedFps": 28.04775080820915,
+      "counters": {
+        "received": 844,
+        "decoded": 844,
+        "uploaded": 842,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 0,
+        "droppedDecoded": 2,
+        "queueOverflows": 0,
+        "droppedAwaitingIdr": 0,
+        "overflowRecoveryIdrs": 0,
+        "staleDriverFramesDropped": 0,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.6093709999999999,
+          "p95": 1.765877
+        },
+        "sendMs": {
+          "p50": 1.6020015,
+          "p95": 1.751294
+        },
+        "convertMs": {
+          "p50": 6.198405,
+          "p95": 10.65385
+        },
+        "planeCopyMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "gpuConvertMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "uploadMs": {
+          "p50": 4.382921,
+          "p95": 5.140604
+        },
+        "syncMs": {
+          "p50": 2.0350595,
+          "p95": 2.322993
+        },
+        "submitMs": {
+          "p50": 0.377617,
+          "p95": 0.583678
+        },
+        "queueAgeMs": {
+          "p50": 54.851122000000004,
+          "p95": 137.862051
+        },
+        "decoderOpenMs": {
+          "p50": 12.329937,
+          "p95": 12.329937
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "cpu",
+      "conversionActive": "cpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 0,
+      "decoderTimingHighWater": 4,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    },
+    "gpu30": {
+      "label": "overflow-fix-gpu-30",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.019828193995636,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 29.180713305188455,
+      "decodedFps": 28.181373808435428,
+      "uploadedFps": 27.182034311682397,
+      "counters": {
+        "received": 876,
+        "decoded": 846,
+        "uploaded": 816,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 29,
+        "droppedDecoded": 30,
+        "queueOverflows": 1,
+        "droppedAwaitingIdr": 26,
+        "overflowRecoveryIdrs": 1,
+        "staleDriverFramesDropped": 1,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.6193404999999998,
+          "p95": 1.689104
+        },
+        "sendMs": {
+          "p50": 1.614992,
+          "p95": 1.671344
+        },
+        "convertMs": {
+          "p50": 1.1040475,
+          "p95": 3.70205
+        },
+        "planeCopyMs": {
+          "p50": 1.1040475,
+          "p95": 3.70205
+        },
+        "gpuConvertMs": {
+          "p50": 0.9994675,
+          "p95": 1.599784
+        },
+        "uploadMs": {
+          "p50": 4.0722439999999995,
+          "p95": 4.984085
+        },
+        "syncMs": {
+          "p50": 2.5626385000000003,
+          "p95": 3.018429
+        },
+        "submitMs": {
+          "p50": 0.41519249999999996,
+          "p95": 1.002254
+        },
+        "queueAgeMs": {
+          "p50": 48.5229815,
+          "p95": 68.993207
+        },
+        "decoderOpenMs": {
+          "p50": 17.526476,
+          "p95": 17.526476
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 405,
+      "decoderTimingHighWater": 4,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    },
+    "cpu60": {
+      "label": "overflow-fix-cpu-60",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.021627259993693,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 60,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 58.924187709083284,
+      "decodedFps": 35.44111685837457,
+      "uploadedFps": 33.70903219988258,
+      "counters": {
+        "received": 1769,
+        "decoded": 1064,
+        "uploaded": 1012,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 654,
+        "droppedDecoded": 52,
+        "queueOverflows": 49,
+        "droppedAwaitingIdr": 507,
+        "overflowRecoveryIdrs": 50,
+        "staleDriverFramesDropped": 50,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.5866085,
+          "p95": 2.359549
+        },
+        "sendMs": {
+          "p50": 1.573614,
+          "p95": 2.34606
+        },
+        "convertMs": {
+          "p50": 5.665833,
+          "p95": 13.05004
+        },
+        "planeCopyMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "gpuConvertMs": {
+          "p50": 0.0,
+          "p95": 0.0
+        },
+        "uploadMs": {
+          "p50": 4.1656545000000005,
+          "p95": 5.107052
+        },
+        "syncMs": {
+          "p50": 1.9151894999999999,
+          "p95": 2.112526
+        },
+        "submitMs": {
+          "p50": 0.3530855,
+          "p95": 0.440609
+        },
+        "queueAgeMs": {
+          "p50": 36.868408,
+          "p95": 106.304778
+        },
+        "decoderOpenMs": {
+          "p50": 13.38539,
+          "p95": 13.38539
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "cpu",
+      "conversionActive": "cpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 2175,
+      "decoderTimingHighWater": 4,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    },
+    "gpu60": {
+      "label": "overflow-fix-gpu-60",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.019342016021255,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 60,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 61,
+      "receivedFps": 58.56224293862801,
+      "decodedFps": 43.57190771542972,
+      "uploadedFps": 39.40792570898574,
+      "counters": {
+        "received": 1758,
+        "decoded": 1308,
+        "uploaded": 1183,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 417,
+        "droppedDecoded": 125,
+        "queueOverflows": 32,
+        "droppedAwaitingIdr": 321,
+        "overflowRecoveryIdrs": 33,
+        "staleDriverFramesDropped": 33,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.586244,
+          "p95": 2.280074
+        },
+        "sendMs": {
+          "p50": 1.5834315,
+          "p95": 2.268095
+        },
+        "convertMs": {
+          "p50": 1.1201935,
+          "p95": 6.510751
+        },
+        "planeCopyMs": {
+          "p50": 1.1201935,
+          "p95": 6.510751
+        },
+        "gpuConvertMs": {
+          "p50": 0.9281429999999999,
+          "p95": 1.361408
+        },
+        "uploadMs": {
+          "p50": 3.978006,
+          "p95": 10.580447
+        },
+        "syncMs": {
+          "p50": 2.482644,
+          "p95": 9.014462
+        },
+        "submitMs": {
+          "p50": 0.427172,
+          "p95": 0.7031
+        },
+        "queueAgeMs": {
+          "p50": 31.757224,
+          "p95": 111.891322
+        },
+        "decoderOpenMs": {
+          "p50": 12.445794,
+          "p95": 12.445794
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 2,
+      "decoderColorRange": 0,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 2164,
+      "decoderTimingHighWater": 5,
+      "note": "Stage percentiles summarize one-second observations, not every frame."
+    }
+  },
+  "desktopBuild": {
+    "binarySha256": "98f5fbee452d9146cf5878c0a87e16346d239e70ffa77d303364fdf9439a511c",
+    "metadataSha256": "321f22a91e4e6e9646399e9da56b11420ec9313c3c76e3dba3199dcba0ee7ebe",
+    "relationshipToFinal": "Final build adds software reconnect metadata cleanup and self-test; V4L2 recovery and GPU conversion unchanged. Desktop measurements were not repeated on final build."
+  },
+  "finalGates": {
+    "source": {
+      "native/main.cpp": "fa265213a0d62857bda44a908c42bd41bebedb4f901548a64ba2f928d4c29441",
+      "native/protocol.hpp": "70ded1f152993546ee3d6180789d51ab601ff837b9f65c848dfbb9429e8e807e",
+      "native/video.hpp": "17f3dc8db2e7b0f77c6c0045e2e9c4a73207911e6b3c66911d6589fceeec978c",
+      "native/tests_stream.py": "93ad3b0b12f6fcc5b8fa2e16b5b50434a2834f27fbdeb6c2c80fdfce691cca97"
+    },
+    "frame": {
+      "binarySha256": "1c6efee0f3c6189c3402891facf3c8956a17ebca208bdc3abb864ebd66f6400c",
+      "buildMetadataSha256": "fbc0e9c4f39e3517cdc674418921cdc1ee71c8587a46b04e9c351ca0251b733b",
+      "service": "active/running, PID 1458274",
+      "activeState": {
+        "ready": true,
+        "texture": [
+          2880,
+          2560
+        ],
+        "decoder": "v4l2/h264_v4l2m2m",
+        "conversionRequested": "cpu",
+        "conversionActive": "cpu",
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "submitErrors": 0,
+        "pixelFormat": 23,
+        "colorSpace": 2,
+        "colorRange": 0
+      },
+      "gpuHardwareMetadata": "reported as raw pixelFormat=23 (NV12), colorSpace=2 and range=0 (unspecified); no full-range or BT.709 metadata claim"
+    },
+    "focusedTests": {
+      "softwareReconnect": {
+        "case": "default",
+        "conversion": "cpu",
+        "convert_ms": 0.05229,
+        "decoded": 60,
+        "decoder_color_range": 0,
+        "decoder_color_space": 2,
+        "decoder_format_reopens": 0,
+        "decoder_initial_opens": 1,
+        "decoder_open_attempts": 1,
+        "decoder_open_ms_total": 0.419621,
+        "decoder_pixel_format": 0,
+        "decoder_reconnect_opens": 0,
+        "decoder_timing_high_water": 1,
+        "dimensions": [
+          320,
+          180
+        ],
+        "error_reasons": {
+          "decoderFatalErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderSendErrors": 0,
+          "decoder_error": 0,
+          "decoder_error_stage": "none",
+          "exit_reason": "timer",
+          "networkErrors": 1,
+          "serverErrors": 0,
+          "submitErrors": 0
+        },
+        "errors": 1,
+        "forced_overload": false,
+        "forced_reconnect": true,
+        "gpu_convert_ms": 0.0,
+        "headset_test": false,
+        "last_overflow_recovery_seq": 0,
+        "max_rgb_difference_vs_ffmpeg": 2,
+        "overflow_recovery_idrs": 0,
+        "plane_copy_ms": 0.0,
+        "pose_preserved_on_restart": true,
+        "queue_overflows": 0,
+        "reported_frames": 59,
+        "result": "passed",
+        "sequence_timing_validated": true,
+        "size_change": false,
+        "stale_driver_frames_dropped": 0,
+        "test": "production socket/h264/GL integration",
+        "uploaded": 60,
+        "wire_messages": {
+          "ack": 2,
+          "clock": 2,
+          "fd": 59,
+          "focus": 1,
+          "rx": 60
+        }
+      },
+      "v4l2Normal": {
+        "case": "default",
+        "conversion": "cpu",
+        "convert_ms": 4.879827,
+        "decoded": 61,
+        "decoder_color_range": 0,
+        "decoder_color_space": 2,
+        "decoder_format_reopens": 0,
+        "decoder_initial_opens": 1,
+        "decoder_open_attempts": 1,
+        "decoder_open_ms_total": 21.432158,
+        "decoder_pixel_format": 23,
+        "decoder_reconnect_opens": 0,
+        "decoder_timing_high_water": 2,
+        "dimensions": [
+          2880,
+          2560
+        ],
+        "error_reasons": {
+          "decoderFatalErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderSendErrors": 0,
+          "decoder_error": 0,
+          "decoder_error_stage": "none",
+          "exit_reason": "timer",
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "submitErrors": 0
+        },
+        "errors": 0,
+        "forced_overload": false,
+        "forced_reconnect": false,
+        "gpu_convert_ms": 0.0,
+        "headset_test": false,
+        "last_overflow_recovery_seq": 0,
+        "max_rgb_difference_vs_ffmpeg": 2,
+        "overflow_recovery_idrs": 0,
+        "plane_copy_ms": 0.0,
+        "pose_preserved_on_restart": true,
+        "queue_overflows": 0,
+        "reported_frames": 59,
+        "result": "passed",
+        "sequence_timing_validated": true,
+        "size_change": false,
+        "stale_driver_frames_dropped": 0,
+        "test": "production socket/h264/GL integration",
+        "uploaded": 59,
+        "wire_messages": {
+          "ack": 1,
+          "clock": 2,
+          "fd": 59,
+          "focus": 1,
+          "rx": 61
+        }
+      },
+      "v4l2Reconnect": {
+        "case": "default",
+        "conversion": "cpu",
+        "convert_ms": 8.931819,
+        "decoded": 60,
+        "decoder_color_range": 0,
+        "decoder_color_space": 2,
+        "decoder_format_reopens": 0,
+        "decoder_initial_opens": 1,
+        "decoder_open_attempts": 2,
+        "decoder_open_ms_total": 67.809581,
+        "decoder_pixel_format": 23,
+        "decoder_reconnect_opens": 1,
+        "decoder_timing_high_water": 3,
+        "dimensions": [
+          2880,
+          2560
+        ],
+        "error_reasons": {
+          "decoderFatalErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderSendErrors": 0,
+          "decoder_error": 0,
+          "decoder_error_stage": "none",
+          "exit_reason": "timer",
+          "networkErrors": 1,
+          "serverErrors": 0,
+          "submitErrors": 0
+        },
+        "errors": 1,
+        "forced_overload": false,
+        "forced_reconnect": true,
+        "gpu_convert_ms": 0.0,
+        "headset_test": false,
+        "last_overflow_recovery_seq": 0,
+        "max_rgb_difference_vs_ffmpeg": 2,
+        "overflow_recovery_idrs": 0,
+        "plane_copy_ms": 0.0,
+        "pose_preserved_on_restart": true,
+        "queue_overflows": 0,
+        "reported_frames": 56,
+        "result": "passed",
+        "sequence_timing_validated": true,
+        "size_change": false,
+        "stale_driver_frames_dropped": 0,
+        "test": "production socket/h264/GL integration",
+        "uploaded": 56,
+        "wire_messages": {
+          "ack": 2,
+          "clock": 2,
+          "fd": 56,
+          "focus": 1,
+          "rx": 60
+        }
+      },
+      "v4l2Overload": {
+        "case": "default",
+        "conversion": "cpu",
+        "convert_ms": 9.944336,
+        "decoded": 1,
+        "decoder_color_range": 0,
+        "decoder_color_space": 2,
+        "decoder_format_reopens": 0,
+        "decoder_initial_opens": 1,
+        "decoder_open_attempts": 1,
+        "decoder_open_ms_total": 15.976675,
+        "decoder_pixel_format": 23,
+        "decoder_reconnect_opens": 0,
+        "decoder_timing_high_water": 1,
+        "dimensions": [
+          2880,
+          2560
+        ],
+        "error_reasons": {
+          "decoderFatalErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderSendErrors": 0,
+          "decoder_error": 0,
+          "decoder_error_stage": "none",
+          "exit_reason": "timer",
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "submitErrors": 0
+        },
+        "errors": 0,
+        "forced_overload": true,
+        "forced_reconnect": false,
+        "gpu_convert_ms": 0.0,
+        "headset_test": false,
+        "last_overflow_recovery_seq": 61,
+        "max_rgb_difference_vs_ffmpeg": 2,
+        "overflow_recovery_idrs": 1,
+        "plane_copy_ms": 0.0,
+        "pose_preserved_on_restart": true,
+        "queue_overflows": 15,
+        "reported_frames": 1,
+        "result": "passed",
+        "sequence_timing_validated": true,
+        "size_change": false,
+        "stale_driver_frames_dropped": 1,
+        "test": "production socket/h264/GL integration",
+        "uploaded": 1,
+        "wire_messages": {
+          "ack": 1,
+          "clock": 2,
+          "fd": 1,
+          "focus": 1,
+          "rx": 61
+        }
+      },
+      "v4l2GpuBt601Limited": {
+        "case": "bt601-limited",
+        "conversion": "gpu",
+        "convert_ms": 1.465313,
+        "decoded": 61,
+        "decoder_color_range": 0,
+        "decoder_color_space": 2,
+        "decoder_format_reopens": 0,
+        "decoder_initial_opens": 1,
+        "decoder_open_attempts": 1,
+        "decoder_open_ms_total": 7.210162,
+        "decoder_pixel_format": 23,
+        "decoder_reconnect_opens": 0,
+        "decoder_timing_high_water": 2,
+        "dimensions": [
+          2880,
+          2560
+        ],
+        "error_reasons": {
+          "decoderFatalErrors": 0,
+          "decoderReceiveErrors": 0,
+          "decoderSendErrors": 0,
+          "decoder_error": 0,
+          "decoder_error_stage": "none",
+          "exit_reason": "timer",
+          "networkErrors": 0,
+          "serverErrors": 0,
+          "submitErrors": 0
+        },
+        "errors": 0,
+        "forced_overload": false,
+        "forced_reconnect": false,
+        "gpu_convert_ms": 1.287298,
+        "headset_test": false,
+        "last_overflow_recovery_seq": 0,
+        "max_rgb_difference_vs_ffmpeg": 2,
+        "overflow_recovery_idrs": 0,
+        "plane_copy_ms": 1.465313,
+        "pose_preserved_on_restart": true,
+        "queue_overflows": 0,
+        "reported_frames": 59,
+        "result": "passed",
+        "sequence_timing_validated": true,
+        "size_change": false,
+        "stale_driver_frames_dropped": 0,
+        "test": "production socket/h264/GL integration",
+        "uploaded": 59,
+        "wire_messages": {
+          "ack": 1,
+          "clock": 2,
+          "fd": 59,
+          "focus": 1,
+          "rx": 61
+        }
+      }
+    },
+    "preservedEarlierMatchedDesktopReports": [
+      "/tmp/frame-workspace-overflow-cpu30.json",
+      "/tmp/frame-workspace-overflow-gpu30.json",
+      "/tmp/frame-workspace-overflow-cpu60.json",
+      "/tmp/frame-workspace-overflow-gpu60.json"
+    ]
+  },
+  "limits": [
+    "30-second runs, same fixture and fixed source target with adaptation disabled; no claim of repeated statistical benchmark.",
+    "Stage percentiles summarize one-second observations, not individual frame traces.",
+    "Queue/IDR waits and copy/upload work are included in achieved rates; this does not establish a hardware decoder ceiling.",
+    "Hardware reported NV12 with unspecified color space/range. Full-resolution GPU oracle proves BT.601 limited fixture only, not hardware metadata preservation for BT.709 or full range.",
+    "Legacy 320x180 V4L2 diagnostic produced 320x192 output; no general cropping fix claimed.",
+    "Format-reopen evidence covers parsed visible/coded dimension changes, not every same-size SPS change."
+  ]
+}

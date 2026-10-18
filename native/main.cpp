@@ -43,6 +43,13 @@ static int selfTest() {
   bytes[17] = 7;
   auto p = packet(bytes);
   require(p.key && p.seq == 0x12345678 && p.bytes[0] == 7, "wire packet");
+  Pipeline initial;
+  Packet initialIdr;
+  initialIdr.key = true;
+  initial.enqueue(initialIdr);
+  require(initial.packets.size() == 1 &&
+              initial.packets.front().resetReason == ResetReason::None,
+          "initial IDR does not request a reset");
   Pipeline pipe;
   for (int i = 0; i < 8; i++) {
     Packet q;
@@ -50,13 +57,73 @@ static int selfTest() {
     q.seq = i;
     pipe.enqueue(std::move(q));
   }
-  require(pipe.packets.empty() && pipe.needKey && pipe.requestKey,
+  require(pipe.packets.empty() && pipe.needKey && pipe.requestKey &&
+              pipe.packetQueueOverflows == 1 && pipe.droppedAwaitingIdr > 0,
           "queue recovery");
   Packet idr;
   idr.key = true;
   pipe.enqueue(idr);
-  require(pipe.packets.size() == 1 && pipe.packets.front().reset,
-          "IDR recovery");
+  require(pipe.packets.size() == 1 &&
+              pipe.packets.front().resetReason == ResetReason::Overflow,
+          "overflow IDR recovery reason");
+  Pipeline reconnect;
+  reconnect.connectionOpened(false);
+  Packet connectedIdr;
+  connectedIdr.key = true;
+  reconnect.enqueue(connectedIdr);
+  require(reconnect.packets.front().resetReason == ResetReason::None,
+          "initial connection keeps the initial IDR policy");
+  reconnect.connectionOpened(true);
+  Packet resumedIdr;
+  resumedIdr.key = true;
+  reconnect.enqueue(resumedIdr);
+  require(reconnect.packets.front().resetReason == ResetReason::Reconnect,
+          "real reconnect carries an explicit reset reason");
+  require(recoveryAction(true, false, false, ResetReason::None) ==
+              RecoveryAction::ReopenContext &&
+              recoveryAction(true, true, false, ResetReason::Overflow) ==
+                  RecoveryAction::SameContextIdrBarrier &&
+              recoveryAction(true, true, false, ResetReason::Reconnect) ==
+                  RecoveryAction::ReopenContext &&
+              recoveryAction(true, true, true, ResetReason::Overflow) ==
+                  RecoveryAction::ReopenContext &&
+              recoveryAction(false, true, false, ResetReason::Reconnect) ==
+                  RecoveryAction::FlushContext &&
+              recoveryAction(false, true, false, ResetReason::FormatChange) ==
+                  RecoveryAction::FlushContext &&
+              recoveryAction(false, true, false, ResetReason::Overflow) ==
+                  RecoveryAction::FlushContext,
+          "initial, overflow, reconnect, resize recovery policy");
+  std::map<int64_t, PacketTiming> softwareReconnectTiming{
+      {1, {1, 1}}, {2, {2, 2}}, {3, {3, 3}}};
+  int64_t softwareReconnectBarrier = -1;
+  const RecoveryAction softwareReconnectAction =
+      recoveryAction(false, true, false, ResetReason::Reconnect);
+  if (softwareReconnectAction == RecoveryAction::FlushContext)
+    retireTimingHistory(softwareReconnectTiming, 3,
+                        softwareReconnectBarrier);
+  require(softwareReconnectAction == RecoveryAction::FlushContext &&
+              softwareReconnectTiming.empty() &&
+              softwareReconnectBarrier == 3 &&
+              timestampStatus(2, softwareReconnectBarrier,
+                             softwareReconnectTiming) ==
+                  TimestampStatus::Stale &&
+              timestampStatus(0, softwareReconnectBarrier,
+                             softwareReconnectTiming) ==
+                  TimestampStatus::Unknown,
+          "software reconnect flush retires prior timestamp metadata");
+  std::map<int64_t, PacketTiming> timestamps{{1, {1, 1}}, {2, {2, 2}},
+                                              {3, {3, 3}}, {4, {4, 4}}};
+  retireTimingsThrough(timestamps, 3);
+  require(timestamps.size() == 1 && timestamps.count(4) &&
+              timestampStatus(2, 3, timestamps) == TimestampStatus::Stale &&
+              timestampStatus(0, -1, timestamps) == TimestampStatus::Unknown &&
+              timestampStatus(0, 3, timestamps) == TimestampStatus::Unknown &&
+              timestampStatus(4, 3, timestamps) == TimestampStatus::Mapped &&
+              timestampStatus(AV_NOPTS_VALUE, 3, timestamps) ==
+                  TimestampStatus::Unknown &&
+              timestampStatus(5, 3, timestamps) == TimestampStatus::Unknown,
+          "stale PTS retirement, recovery IDR, and strict unknown PTS");
   auto a = std::make_shared<Picture>();
   a->seq = 1;
   auto b = std::make_shared<Picture>();
@@ -65,8 +132,7 @@ static int selfTest() {
   pipe.publish(b);
   require(pipe.take()->seq == 2 && pipe.droppedDecoded == 1, "newest picture");
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, reconnect "
-         "credential isolation, bounded queue, IDR recovery, newest picture\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -368,6 +434,31 @@ int main(int argc, char **argv) {
              ",\"queueAgeMs\":" + std::to_string(ageMs) +
              ",\"droppedEncoded\":" + std::to_string(pipe.droppedEncoded) +
              ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
+             ",\"queueOverflows\":" +
+                 std::to_string(pipe.packetQueueOverflows) +
+             ",\"droppedAwaitingIdr\":" +
+                 std::to_string(pipe.droppedAwaitingIdr) +
+             ",\"overflowRecoveryIdrs\":" +
+                 std::to_string(pipe.overflowRecoveryIdrs) +
+             ",\"lastOverflowRecoverySeq\":" +
+                 std::to_string(pipe.lastOverflowRecoverySeq) +
+             ",\"staleDriverFramesDropped\":" +
+                 std::to_string(pipe.staleDriverFramesDropped) +
+             ",\"decoderTimingHighWater\":" +
+                 std::to_string(pipe.decoderTimingHighWater) +
+             ",\"decoderOpenAttempts\":" +
+                 std::to_string(pipe.decoderOpenAttempts) +
+             ",\"decoderInitialOpens\":" +
+                 std::to_string(pipe.decoderInitialOpens) +
+             ",\"decoderReconnectOpens\":" +
+                 std::to_string(pipe.decoderReconnectOpens) +
+             ",\"decoderFormatReopens\":" +
+                 std::to_string(pipe.decoderFormatReopens) +
+             ",\"decoderOpenFailures\":" +
+                 std::to_string(pipe.decoderOpenFailures) +
+             ",\"decoderOpenMs\":" + std::to_string(pipe.decoderOpenMs) +
+             ",\"decoderOpenTotalMs\":" +
+                 std::to_string(pipe.decoderOpenMsTotal) +
              ",\"errors\":" + std::to_string(pipe.errors + submitErrors) +
              ",\"networkErrors\":" + std::to_string(pipe.networkErrors) +
              ",\"serverErrors\":" + std::to_string(pipe.serverErrors) +
