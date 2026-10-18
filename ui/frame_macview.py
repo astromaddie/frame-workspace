@@ -77,6 +77,9 @@ if [ -x "$HOME/chromium-xr/chrome" ]; then
 elif flatpak info org.chromium.Chromium >/dev/null 2>&1; then
   cmd=(flatpak run org.chromium.Chromium
     "--user-data-dir=$HOME/.var/app/org.chromium.Chromium/data/frame-mac-view" "${common[@]}")
+elif flatpak --user info com.google.Chrome >/dev/null 2>&1; then
+  cmd=(flatpak run --user com.google.Chrome
+    "--user-data-dir=$HOME/.var/app/com.google.Chrome/data/frame-mac-view" "${common[@]}")
 else
   echo "NO_BROWSER"
   exit 3
@@ -411,8 +414,8 @@ class MacView:
             out = self.run("bash -s -- " + args, stdin=LAUNCH, timeout=60)
         except Exception as e:  # noqa: BLE001 - the server's Failure carries the Frame's words
             if "NO_BROWSER" in (getattr(e, "stdout", "") or ""):
-                raise MacViewError("The Frame needs a browser for this: install Chromium (Tools → Linux apps, "
-                                   "org.chromium.Chromium) or Chromium XR.")
+                raise MacViewError("The Frame needs Chromium, Chromium XR, or the Google Chrome Flatpak "
+                                   "(com.google.Chrome) for this.")
             raise MacViewError(str(e))
         self.shown.add(src)
         return {"panel": f"valve.steam.desktopgame.{appid}", "src": src, "detail": out.strip()}
