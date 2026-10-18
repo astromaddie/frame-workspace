@@ -105,7 +105,7 @@ physical_width=5.34
 if [ "$((10#$h))" -gt "$((10#$w))" ]; then
   physical_width=2.67
 elif [ "$((10#$w))" -lt "$((2 * 10#$h))" ]; then
-  # Keep the near-square landscape panel comparable in size to portrait.
+  # Keep standard and near-square landscape panels at a manageable width.
   physical_width=3.0
 fi
 

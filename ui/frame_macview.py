@@ -157,6 +157,7 @@ class WorkspaceDisplayManager:
         "3440x1440": (3440, 1440),
         "2560x2880": (2560, 2880),
         "2880x2560": (2880, 2560),
+        "3840x2160": (3840, 2160),
     }
 
     def __init__(self, executable=AGENT, track=None, on_unexpected_stop=None):

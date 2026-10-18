@@ -240,6 +240,20 @@ fi
                                      timeout=10)
             self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
 
+            env["TEST_WIDTH"], env["TEST_HEIGHT"] = "3840", "2160"
+            landscape = subprocess.run(["bash", str(script), "start", url, "3840", "2160", tag],
+                                       env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(landscape.returncode, 0, landscape.stdout + landscape.stderr)
+            argv = (root / "args").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(argv[argv.index("--nested-width") + 1], "3840")
+            self.assertEqual(argv[argv.index("--nested-height") + 1], "2160")
+            self.assertEqual(argv[argv.index("--output-width") + 1], "1920")
+            self.assertEqual(argv[argv.index("--output-height") + 1], "1080")
+            self.assertEqual(argv[argv.index("--vr-overlay-physical-width") + 1], "3.0")
+            stopped = subprocess.run(["bash", str(script), "stop"], env=env, text=True, capture_output=True,
+                                     timeout=10)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+
             env["TEST_WIDTH"], env["TEST_HEIGHT"] = "5120", "1440"
             env["TEST_NO_OVERLAY"] = "1"
             env["TEST_STOP_MODE"] = "kill"
@@ -669,7 +683,9 @@ class WorkspaceLifecycle(unittest.TestCase):
 
             wide = mv.start_workspace(preset="5120x1440")
             portrait = mv.start_workspace(preset="2560x2880")
-            landscape = mv.start_workspace(preset="2880x2560")
+            nine_eight = mv.start_workspace(preset="2880x2560")
+            landscape = mv.start_workspace(preset="3840x2160")
+            back_to_nine_eight = mv.start_workspace(preset="2880x2560")
             back_to_portrait = mv.start_workspace(preset="2560x2880")
             back_to_wide = mv.start_workspace(preset="5120x1440")
 
@@ -681,13 +697,22 @@ class WorkspaceLifecycle(unittest.TestCase):
             self.assertEqual(portrait["workspace"]["display"]["logicalWidth"], 2560)
             self.assertEqual(portrait["workspace"]["display"]["logicalHeight"], 2880)
             self.assertEqual(5120 * 1440, 2560 * 2880, "wide and portrait presets keep the same pixel area")
+            self.assertTrue(nine_eight["replaced"])
+            self.assertEqual(nine_eight["previousPreset"], "2560x2880")
+            self.assertEqual(nine_eight["workspace"]["preset"], "2880x2560")
+            self.assertEqual(nine_eight["workspace"]["display"]["logicalWidth"], 2880)
+            self.assertEqual(nine_eight["workspace"]["display"]["logicalHeight"], 2560)
+            self.assertEqual(nine_eight["workspace"]["stream"]["width"], 2880)
+            self.assertEqual(nine_eight["workspace"]["stream"]["height"], 2560)
             self.assertTrue(landscape["replaced"])
-            self.assertEqual(landscape["previousPreset"], "2560x2880")
-            self.assertEqual(landscape["workspace"]["preset"], "2880x2560")
-            self.assertEqual(landscape["workspace"]["display"]["logicalWidth"], 2880)
-            self.assertEqual(landscape["workspace"]["display"]["logicalHeight"], 2560)
-            self.assertEqual(landscape["workspace"]["stream"]["width"], 2880)
-            self.assertEqual(landscape["workspace"]["stream"]["height"], 2560)
+            self.assertEqual(landscape["previousPreset"], "2880x2560")
+            self.assertEqual(landscape["workspace"]["preset"], "3840x2160")
+            self.assertEqual(landscape["workspace"]["display"]["logicalWidth"], 3840)
+            self.assertEqual(landscape["workspace"]["display"]["logicalHeight"], 2160)
+            self.assertEqual(landscape["workspace"]["stream"]["width"], 3840)
+            self.assertEqual(landscape["workspace"]["stream"]["height"], 2160)
+            self.assertTrue(back_to_nine_eight["replaced"])
+            self.assertEqual(back_to_nine_eight["previousPreset"], "3840x2160")
             self.assertTrue(back_to_portrait["replaced"])
             self.assertEqual(back_to_portrait["previousPreset"], "2880x2560")
             self.assertTrue(back_to_wide["replaced"])
@@ -695,12 +720,15 @@ class WorkspaceLifecycle(unittest.TestCase):
             self.assertEqual(back_to_wide["workspace"]["preset"], "5120x1440")
             self.assertEqual([(args[args.index("--width") + 1], args[args.index("--height") + 1])
                               for args in starts], [("5120", "1440"), ("2560", "2880"), ("2880", "2560"),
+                                                   ("3840", "2160"), ("2880", "2560"),
                                                    ("2560", "2880"), ("5120", "1440")])
-            self.assertEqual(len(viewer_starts), 5)
-            self.assertEqual(len(viewer_stops), 4)
-            self.assertEqual(closes, ["display:4242"] * 4)
+            self.assertEqual(len(viewer_starts), 7)
+            self.assertEqual(len(viewer_stops), 6)
+            self.assertEqual(closes, ["display:4242"] * 6)
             self.assertEqual(events, [
                 "display-start", "viewer-start",
+                "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
+                "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
                 "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
                 "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
                 "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
