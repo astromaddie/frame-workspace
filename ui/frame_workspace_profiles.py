@@ -83,10 +83,11 @@ def validate_profile(value):
         raise ProfileError("workspace scale must be 1 or 2")
     if not isinstance(quality, str) or quality not in frame_macview.QUALITY:
         raise ProfileError("workspace quality is unsupported")
-    try:
-        frame_macview.WorkspaceDisplayManager._validate_request(preset, scale, quality)
-    except frame_macview.MacViewError as exc:
-        raise ProfileError(str(exc)) from exc
+    # Stored definitions must remain readable when the viewer backend changes.
+    # Runtime codec/decoder compatibility is checked by start_workspace instead.
+    width, height = frame_macview.WorkspaceDisplayManager.PRESETS[preset]
+    if width * height * scale * scale > 67_108_864:
+        raise ProfileError("workspace buffer exceeds the safe size limit")
 
     windows = value["windows"]
     if not isinstance(windows, list) or len(windows) > MAX_RULES:

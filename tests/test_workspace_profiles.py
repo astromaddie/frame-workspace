@@ -4,6 +4,7 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
+import os
 from pathlib import Path
 import re
 import sys
@@ -11,6 +12,7 @@ import threading
 import time
 import tempfile
 import unittest
+from unittest import mock
 
 import sandbox  # noqa: F401
 
@@ -30,6 +32,24 @@ def sample_profile(windows=None):
 
 
 class ProfileStoreTests(unittest.TestCase):
+    def test_saved_profiles_remain_readable_when_backend_changes(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            compatible = sample_profile()
+            compatible["name"] = "Browser fallback"
+            compatible["workspace"]["quality"] = "compatible"
+            store.save(compatible)
+            store.save(sample_profile())
+            with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native",
+                                               "FRAME_WORKSPACE_DECODER": "v4l2"}):
+                self.assertEqual(store.get("Browser fallback"), compatible)
+                self.assertEqual(len(store.list()), 2)
+                self.assertEqual(store.get("Coding"), sample_profile())
+                # Restoring the incompatible profile still fails before display
+                # creation through the normal runtime request validator.
+                with self.assertRaisesRegex(frame_macview.MacViewError, "needs H.264"):
+                    frame_macview.WorkspaceDisplayManager._validate_request(**compatible["workspace"])
+
     def test_atomic_round_trip_owner_only_mode_and_case_insensitive_names(self):
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "private" / "profiles.json"

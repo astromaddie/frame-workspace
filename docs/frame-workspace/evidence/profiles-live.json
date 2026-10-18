@@ -1,0 +1,87 @@
+{
+  "source": {
+    "checkout": "/Users/mads/code/frame-workspace",
+    "head": "8efe87b159f81e8bc3ed714c632d45e8daacd458",
+    "diff_check": "passed"
+  },
+  "build": {
+    "command": "xcrun swiftc -O -swift-version 5 -target arm64-apple-macos14.0 -module-cache-path <temporary>/ModuleCache -import-objc-header mac/frame-mac-view/Sources/CGVirtualDisplay.h -o mac/bin/frame-mac-view mac/frame-mac-view/Sources/*.swift",
+    "result": "passed; Mach-O 64-bit executable arm64",
+    "binary_sha256": "1c42586bdfb36bf83b494f7d01a46b78444f2476d3b6d19fe789f7c7015c631d"
+  },
+  "checks": {
+    "python_first_sandboxed": "failed because sandbox denied local socket bind (906 tests, 133 errors, 11 failures); no source changes made",
+    "python_escalated": "python3 -m unittest discover -s tests: 968 tests in 257.309 s, OK (skipped=1)",
+    "swift_default": "sh mac/frame-mac-view/test-workspace.sh <temporary build>: PASS ScreenCaptureKit window-close recovery policy; PASS workspace argument validation (no display mutation); desktop lifecycle tests skipped by default"
+  },
+  "companion": {
+    "port": "127.0.0.1:60339",
+    "runner": "/tmp/frame-workspace-run-companion.py",
+    "environment": "FRAME_ALIAS=frame, FRAME_PRIVATE_SSH=1, FRAME_CONTROL_DATA_DIR=/tmp/frame-workspace-companion-data, FRAME_CONTROL_TELEMETRY=0, FRAME_WORKSPACE_VIEWER=native, FRAME_WORKSPACE_DECODER=v4l2, FRAME_WORKSPACE_FPS=30, FRAME_MAC_VIEW_ADAPT=1",
+    "state": "Historical verification checkpoint; later GPU comparisons may restart this owned companion."
+  },
+  "coding_profile": {
+    "saved_through": "scripts/workspace-profiles.py CLI -> real companion API",
+    "name": "Coding",
+    "workspace": {
+      "preset": "2880x2560",
+      "scale": 1,
+      "quality": "sharp"
+    },
+    "windows": [],
+    "file": "/tmp/frame-workspace-companion-data/workspace-profiles/profiles.json",
+    "file_mode": "0600",
+    "other_profiles_after_test": [],
+    "note": "This belongs to the task-owned temporary companion data directory, not the normal Frame Control per-user data directory."
+  },
+  "live_workspace": {
+    "state": "running",
+    "display_id": 99,
+    "logical_and_buffer": "2880x2560",
+    "origin": "1800,0",
+    "main": false,
+    "mirrored": false,
+    "physical_layout_unchanged": true,
+    "stream": "display:99, H.264, 30 fps target, max long edge 4096",
+    "native_frame_state": {
+      "service": "frame-workspace-viewer-1000.service",
+      "active": true,
+      "ready": true,
+      "connected": true,
+      "texture": "2880x2560",
+      "decoder_requested": "v4l2",
+      "decoder_active": "v4l2",
+      "decoder_codec": "h264_v4l2m2m",
+      "decoder_format": "NV12, V4L2 format 23",
+      "decoded": 9,
+      "uploaded": 8,
+      "errors": 0,
+      "decoder_error": 0,
+      "exit_reason": "running"
+    }
+  },
+  "profile_window_matching": {
+    "fixture": "one task-owned temporary Chrome app window using bench/pages/scroll.html; unique title hint fmv-bench scroll",
+    "first_restore": "matched via saved com.google.Chrome rule; CLI/API returned shown and a window-specific MacView stream was present",
+    "stop_close_relaunch": "stopped only the captured source; closed only the fixture; second temporary window received a different ID",
+    "second_restore": "same stable profile resolved again and returned shown with a new window-specific stream",
+    "immediate_stream_clock_sync": "initial two restores sampled before sync; one requested bounded follow-up then confirmed the exact source synced and reported frames; no compositor or optical claim",
+    "cleanup": "both source streams stopped; Chrome fixture/profile and temporary saved profile removed; Coding profile retained",
+    "follow_up": {
+      "poll_timeout_s": 20,
+      "actual_poll_duration_s": 0.58,
+      "poll_samples": 2,
+      "restore_status": "shown",
+      "source_stream_present": true,
+      "final_stats": {
+        "captured": 52,
+        "sentFps": 24.5,
+        "fps": 15.5,
+        "synced": true,
+        "decoder": "h264 software; ANGLE; RAF 117 Hz"
+      },
+      "result": "received/captured stream frames and synchronized; task-owned temporary panel then stopped"
+    }
+  },
+  "date": "2026-10-19 JST"
+}

@@ -18,6 +18,21 @@ Restore starts the saved virtual Workspace through the normal MacView lifecycle 
 
 The local schema is version 1. Unknown fields and unsupported versions are rejected; corrupt files are reported without rewriting them. The file is stored under the companion's app data directory at `workspace-profiles/profiles.json`, in a private directory with a mode `0600` file on macOS and POSIX systems. A restore needs the existing Screen Recording permission and a visible current window for every rule. The profile is saved on the computer running the MacView companion.
 
+Changing the viewer backend does not make existing profiles unreadable. Runtime
+compatibility is checked when restoring: for example, a saved Compatible/JPEG
+profile can still be listed and edited while the native viewer is selected, but
+cannot be restored there until its quality is changed to H.264.
+
 The CLI uses `http://127.0.0.1:47810` and the default UI key `1`. Set `FRAME_CONTROL_URL` or pass `--url` for another local port, and set `FRAME_UI_KEY` when the companion uses a custom key. Requests continue through the companion's authenticated loopback API.
 
 `reset` prompts for the literal `RESET`; `--yes` supplies that confirmation. It clears only saved profile definitions. It does not stop the Workspace, close viewers, move windows, or alter macOS settings.
+
+Live proof on the user's M4/Frame restored `Coding` at 2880×2560, sharp, 1× to a
+fresh virtual display, with the native V4L2 viewer ready. A separate temporary
+Chrome fixture was matched by bundle ID/title hint, closed, relaunched with a new
+window ID, and matched again through the real API. Its window stream synchronized
+and reported capture/viewer frames. This verifies the logical path, not optical
+presentation or saved room placement. See the compact
+[profile evidence](evidence/profiles-live.json). The running proof companion uses
+its own `/tmp/frame-workspace-companion-data` directory; its saved `Coding`
+definition is distinct from normal Frame Control application data.
