@@ -1252,6 +1252,7 @@
             <option value="5120x1440">Wide · 5120 × 1440</option>
             <option value="5120x2160">Tall · 5120 × 2160</option>
             <option value="3440x1440">Compact · 3440 × 1440</option>
+            <option value="2560x2880">Portrait · 2560 × 2880</option>
           </select></label>
           <label>Scale<select id="mvWorkspaceScale" aria-label="Workspace display scale">
             <option value="1">1× · Standard</option>
@@ -4254,7 +4255,8 @@ $("panelList").onclick = e => {
 };
 
 // ---- Mac in the headset: windows and displays as panels (ui/frame_macview.py) ----
-let mvSeq = 0, mvTimer = 0;
+let mvSeq = 0, mvTimer = 0, mvState = null, mvWorkspaceBusy = false;
+let mvWorkspaceActivePreset = null, mvWorkspacePendingPreset = null;
 // streaming: the src it's shown as (a window may be "separate:<id>"), or "".
 // How a live stream is doing: frames shown, Mac-to-headset delay, bitrate, and
 // whether the network made it step down (fewer frames, then fewer pixels).
@@ -4284,14 +4286,23 @@ function renderMvWorkspace(s) {
   const d = ws.display || {}, v = ws.stream || {};
   const pending = ws.state === "starting" || ws.state === "owner_unknown" || (ws.state === "error" && ws.removed === false);
   const needsStop = ws.state !== "stopped" && !(ws.state === "error" && ws.removed === true);
-  if (running && Array.from(preset.options).some(option => option.value === ws.preset)) preset.value = ws.preset;
+  mvWorkspaceActivePreset = running ? ws.preset : null;
+  if (running && Array.from(preset.options).some(option => option.value === ws.preset)) {
+    if (mvWorkspacePendingPreset === ws.preset) mvWorkspacePendingPreset = null;
+    if (mvWorkspacePendingPreset === null) preset.value = ws.preset;
+    else preset.value = mvWorkspacePendingPreset;
+  }
   if (running && (ws.scale === 1 || ws.scale === 2)) scale.value = String(ws.scale);
-  start.disabled = pending || !s.screen;
-  preset.disabled = running || pending;
-  scale.disabled = running || pending;
+  const applyingSize = running && mvWorkspacePendingPreset !== null;
+  start.disabled = mvWorkspaceBusy || pending || !s.screen;
+  preset.disabled = mvWorkspaceBusy || pending;
+  scale.disabled = mvWorkspaceBusy || running || pending;
+  stop.disabled = mvWorkspaceBusy;
   stop.hidden = !needsStop;
-  start.textContent = running ? "Show again" : "Start Workspace";
-  start.setAttribute("aria-label", running ? "Show Workspace in the Frame again" : "Start Workspace and show it in the Frame");
+  start.textContent = mvWorkspaceBusy ? (applyingSize ? "Applying size…" : "Working…")
+    : applyingSize ? "Apply size change" : running ? "Show again" : "Start Workspace";
+  start.setAttribute("aria-label", applyingSize ? "Apply the selected Workspace desktop size"
+    : running ? "Show Workspace in the Frame again" : "Start Workspace and show it in the Frame");
 
   if (running) {
     const route = stream ? "Stream target " + size(v.width, v.height) + " (" + esc(quality) + ", " + esc(v.fps) + " fps target)" : "Display ready; no active stream";
@@ -4299,7 +4310,7 @@ function renderMvWorkspace(s) {
     status.innerHTML = '<span class="mv-ws-state">' + (stream ? "Streaming" : "Running") + "</span> · Desktop " +
       size(d.logicalWidth, d.logicalHeight) + " logical / " + size(d.bufferWidth, d.bufferHeight) +
       " backing px · " + route + (stream ? mvHealth(stream) : "") + restore +
-      '<br><span class="sub">Workspace uses its own ultrawide OpenVR panel; Sharp targets a 4096-pixel long edge. Streaming may adapt detail or rate to conditions, and logical desktop size is not headset pixel resolution. Move windows onto Frame Workspace in macOS. Stop restores eligible moved windows; after a crash macOS rehomes them.</span>';
+      '<br><span class="sub">Workspace uses its own OpenVR panel; Sharp targets a 4096-pixel long edge. Streaming may adapt detail or rate to conditions, and logical desktop size is not headset pixel resolution. Move windows onto Frame Workspace in macOS. Stop restores eligible moved windows; after a crash macOS rehomes them. Applying a size change briefly closes and recreates Workspace; macOS may return windows to the laptop, so move them back if needed.</span>';
   } else if (ws.state === "owner_unknown") {
     status.textContent = "A Workspace display exists outside this companion. Stop attempts recovery only after its owner exits.";
   } else if (ws.state === "starting") {
@@ -4309,7 +4320,7 @@ function renderMvWorkspace(s) {
       (ws.removed === false ? " Removal is unconfirmed; use Stop to retry safe recovery." : "");
   } else {
     status.textContent = s.screen
-      ? "Start opens an extended Mac desktop in its own ultrawide OpenVR panel. Sharp targets a 4096-pixel long edge; the frame-rate target appears here while streaming. Logical size is not headset pixel resolution."
+      ? "Start opens an extended Mac desktop in its own OpenVR panel. Sharp targets a 4096-pixel long edge; the frame-rate target appears here while streaming. Applying a size change briefly closes and recreates Workspace; macOS may return windows to the laptop, so move them back if needed. Logical size is not headset pixel resolution."
       : "Allow Screen Recording above before starting a Workspace.";
   }
   status.dataset.state = ws.state || "stopped";
@@ -4324,6 +4335,7 @@ async function loadMacView(restart) {
   if (err) { box.hidden = false; return failed($("mvWindows"), err); }
   if (!s.available) { box.hidden = true; return; }
   box.hidden = false;
+  mvState = s;
   const live = new Set((s.streams || []).map(x => x.src));
   const byStream = src => (s.streams || []).find(x => x.src === src);
   $("mvCount").textContent = live.size ? `${live.size} showing${s.route === "usb" ? " · over USB-C" : ""}` : "";
@@ -4348,6 +4360,11 @@ async function loadMacView(restart) {
   if (live.size || (s.workspace && s.workspace.state !== "stopped")) mvTimer = setTimeout(tick, 3000);
 }
 $("mvRefresh").onclick = () => loadMacView(true);
+$("mvWorkspacePreset").onchange = () => {
+  mvWorkspacePendingPreset = mvWorkspaceActivePreset && $("mvWorkspacePreset").value !== mvWorkspaceActivePreset
+    ? $("mvWorkspacePreset").value : null;
+  if (mvState) renderMvWorkspace(mvState);
+};
 $("mvSeparate").checked = localStorage.getItem("mvSeparate") !== "0";
 $("mvSeparate").onchange = e => localStorage.setItem("mvSeparate", e.target.checked ? "1" : "0");
 $("macview").onclick = async e => {
@@ -4367,19 +4384,42 @@ $("macview").onclick = async e => {
   } else if (b.dataset.mv === "perm") {
     await act("Ask macOS for permission", () => api("/api/macview", { action: "permissions" }), b);
   } else if (b.dataset.mv === "workspace-start") {
-    await act(b.textContent === "Show again" ? "Show Workspace again" : "Start Workspace", async () => {
-      const result = await api("/api/macview", {action: "workspace_start", preset: $("mvWorkspacePreset").value,
-                                                  scale: Number($("mvWorkspaceScale").value), quality: $("mvQuality").value});
-      return {...result, message: result.alreadyRunning ? "Workspace is already open in the Frame."
-        : "Workspace is running as a Frame panel."};
-    }, b);
-    setTimeout(loadMacView, 300);
+    if (mvWorkspaceBusy) return;
+    const selectedPreset = $("mvWorkspacePreset").value;
+    const workspaceRunning = Boolean(mvWorkspaceActivePreset);
+    const applyingSize = mvWorkspaceActivePreset && selectedPreset !== mvWorkspaceActivePreset;
+    mvWorkspaceBusy = true;
+    if (mvState) renderMvWorkspace(mvState);
+    try {
+      const result = await act(applyingSize ? "Apply Workspace size change"
+        : workspaceRunning ? "Show Workspace again" : "Start Workspace", async () => {
+        const response = await api("/api/macview", {action: "workspace_start", preset: selectedPreset,
+                                                      scale: Number($("mvWorkspaceScale").value), quality: $("mvQuality").value});
+        const message = response.replaced ? "Workspace changed to "
+          + response.workspace.display.logicalWidth + "×" + response.workspace.display.logicalHeight
+          + " and reopened in the Frame."
+          : response.alreadyRunning ? "Workspace is already open in the Frame."
+          : "Workspace is running as a Frame panel.";
+        return {...response, message};
+      }, b);
+      if (result && result.workspace && result.workspace.preset === selectedPreset) mvWorkspacePendingPreset = null;
+    } finally {
+      mvWorkspaceBusy = false;
+      await loadMacView();
+    }
   } else if (b.dataset.mv === "workspace-stop") {
-    await act("Stop Workspace", async () => {
-      const result = await api("/api/macview", {action: "workspace_stop"});
-      return {...result, message: "Workspace stopped and macOS confirmed display removal."};
-    }, b);
-    setTimeout(loadMacView, 300);
+    if (mvWorkspaceBusy) return;
+    mvWorkspaceBusy = true;
+    if (mvState) renderMvWorkspace(mvState);
+    try {
+      await act("Stop Workspace", async () => {
+        const result = await api("/api/macview", {action: "workspace_stop"});
+        return {...result, message: "Workspace stopped and macOS confirmed display removal."};
+      }, b);
+    } finally {
+      mvWorkspaceBusy = false;
+      await loadMacView();
+    }
   }
   setTimeout(loadMacView, 800);
 };

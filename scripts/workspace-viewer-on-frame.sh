@@ -101,6 +101,10 @@ if [ "$((10#$w * 10#$h))" -gt 16777216 ]; then
   echo "Workspace viewer exceeds the 16,777,216-pixel capture limit." >&2
   exit 2
 fi
+physical_width=5.34
+if [ "$((10#$h))" -gt "$((10#$w))" ]; then
+  physical_width=2.67
+fi
 
 # Gamescope uploads its black backing through a fixed 1920x1080 RGBA
 # staging buffer. Keep that backing small and at the client's aspect ratio.
@@ -182,7 +186,7 @@ if ! systemd-run --user --unit="$unit" --description="Frame Workspace viewer" --
       --vr-overlay-show-immediately \
       --vr-overlay-key "com.frame-control.workspace.$uid.$tag" \
       --vr-overlay-explicit-name "Frame Workspace" --vr-overlay-enable-control-bar \
-      --vr-overlay-physical-width 5.34 \
+      --vr-overlay-physical-width "$physical_width" \
       -- "${inner[@]}" >"$log" 2>&1; then
   stop_viewer quiet || true
   echo "Could not start the dedicated Frame Workspace OpenVR viewer:" >&2

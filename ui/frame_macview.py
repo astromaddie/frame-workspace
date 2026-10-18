@@ -155,6 +155,7 @@ class WorkspaceDisplayManager:
         "5120x1440": (5120, 1440),
         "5120x2160": (5120, 2160),
         "3440x1440": (3440, 1440),
+        "2560x2880": (2560, 2880),
     }
 
     def __init__(self, executable=AGENT, track=None, on_unexpected_stop=None):
@@ -168,7 +169,7 @@ class WorkspaceDisplayManager:
     @staticmethod
     def _validate_request(preset, scale, quality):
         if not isinstance(preset, str) or preset not in WorkspaceDisplayManager.PRESETS:
-            raise MacViewError("Choose a supported Workspace size: 5120x1440, 5120x2160, or 3440x1440.")
+            raise MacViewError("Choose a supported Workspace size: 5120x1440, 5120x2160, 3440x1440, or 2560x2880.")
         if type(scale) is not int or scale not in (1, 2):
             raise MacViewError("Workspace scale must be 1 or 2.")
         if not isinstance(quality, str) or quality not in QUALITY:
@@ -439,6 +440,7 @@ class MacView:
         self.track = track or (lambda proc: None)  # the server ends these on exit
         self.workspace_manager = WorkspaceDisplayManager(track=self.track, on_unexpected_stop=self._workspace_ended)
         self.workspace_lock = threading.RLock()
+        self.workspace_removal_pending = False
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(24)
         self.agent = None
@@ -777,20 +779,54 @@ class MacView:
         return out.strip()
 
     def start_workspace(self, preset="5120x1440", scale=1, quality="sharp"):
-        """Create/reuse the owned display and show its stable workspace panel."""
+        """Create/reuse the owned display and show its stable workspace panel.
+
+        A size or scale change replaces the old display only after its viewer,
+        stream, and macOS virtual display have all stopped successfully.
+        """
+        request = WorkspaceDisplayManager._validate_request(preset, scale, quality)
         with self.workspace_lock:
+            if self.workspace_removal_pending:
+                # The last Stop could not confirm WindowServer removal. Retry
+                # safe recovery before accepting any new display request.
+                self.stop_workspace()
             prior = self.workspace_manager.state()
             prior_quality = prior.get("quality") if prior.get("state") == "running" else None
-            if prior.get("state") not in ("running", "starting"):
+            replaced = False
+            previous_preset = prior.get("preset")
+            build_needed = prior.get("state") not in ("running", "starting")
+
+            if prior.get("state") == "owner_unknown":
+                raise MacViewError("A Workspace display is registered outside this companion. Stop it and wait "
+                                   "for confirmed removal before starting another.")
+            if prior.get("state") == "stopped":
+                registered = self.call("/displays").get("displays", [])
+                if any(display.get("name") == "Frame Workspace" for display in registered):
+                    raise MacViewError("A Frame Workspace display is still registered without an owned helper. "
+                                       "Stop Workspace and wait for confirmed removal before starting another.")
+
+            if prior.get("state") == "running" and any(
+                    prior.get(key) != request[key] for key in ("preset", "scale")):
+                # Normal Stop restores eligible moved windows. The replacement
+                # starts only after confirmed removal; macOS may rehome windows.
+                self.stop_workspace()
+                replaced = True
+                build_needed = False  # the live owner already used this binary
+                prior_quality = None
+                prior = self.workspace_manager.state()
+
+            if prior.get("state") == "error" and (prior.get("captureSrc") or prior.get("removed") is False):
+                # Do not turn an unconfirmed prior removal into a second display.
+                self.stop_workspace()
+                prior = self.workspace_manager.state()
+                prior_quality = None
+                build_needed = True
+
+            if build_needed:
                 # Workspace uses a newer CLI command than the original helper;
                 # verify/rebuild the binary before creating any display.
                 self.build()
-            if prior.get("state") == "error" and prior.get("captureSrc"):
-                try:
-                    self.stop(prior["captureSrc"])
-                except MacViewError:
-                    pass
-            workspace, created = self.workspace_manager.start(preset, scale, quality)
+            workspace, created = self.workspace_manager.start(request["preset"], request["scale"], request["quality"])
             capture_src = workspace["captureSrc"]
             if not created and prior_quality == quality and capture_src in self.shown and self.workspace_panel_key:
                 status = self.call("/status")
@@ -819,7 +855,7 @@ class MacView:
                     detail += " Workspace display removal is pending; retry Stop after the Mac wakes."
                 raise MacViewError(f"Couldn't show Workspace in the Frame; its display was rolled back. {detail}") from e
             return {"id": WorkspaceDisplayManager.KEY, "state": "running", "workspace": self.workspace_manager.state(),
-                    **panel}
+                    "replaced": replaced, "previousPreset": previous_preset if replaced else None, **panel}
 
     def _workspace_ended(self, capture_src):
         """Close an old display stream if its independent owner exits/crashes."""
@@ -849,19 +885,26 @@ class MacView:
                     panel_result = self.stop(capture_src)
                 except MacViewError as e:
                     panel_error = str(e)
+            if panel_error:
+                raise MacViewError("Could not confirm Workspace stream shutdown; the display was left in place. "
+                                   + panel_error)
 
-            if workspace.get("state") in ("running", "starting", "error"):
-                removal = self.workspace_manager.stop()
-            else:
-                # After a companion crash there is no retained display ID or
-                # process handle. Let the Swift owner query WindowServer even
-                # when the capture agent is unavailable; its lease prevents it
-                # from changing a display owned by another live process.
-                removal = self.workspace_manager.recover_orphan()
-                # Recovery succeeded, so no other live Workspace owner can
-                # own the reserved service. This also clears a service orphaned
-                # by a previous companion crash.
-                self._stop_workspace_viewer()
+            try:
+                if workspace.get("state") in ("running", "starting", "error"):
+                    removal = self.workspace_manager.stop()
+                else:
+                    # After a companion crash there is no retained display ID or
+                    # process handle. Let the Swift owner query WindowServer even
+                    # when the capture agent is unavailable; its lease prevents it
+                    # from changing a display owned by another live process.
+                    removal = self.workspace_manager.recover_orphan()
+                    # Recovery succeeded, so no other live Workspace owner can
+                    # own the reserved service. This also clears a service orphaned
+                    # by a previous companion crash.
+                    self._stop_workspace_viewer()
+            except MacViewError:
+                self.workspace_removal_pending = True
+                raise
 
             if removal.get("removed") is False:
                 # The owner's normal release can be deferred while the built-in
@@ -873,8 +916,10 @@ class MacView:
                 except MacViewError as e:
                     removal["recoveryError"] = str(e)
             if removal.get("removed") is False:
+                self.workspace_removal_pending = True
                 raise MacViewError(removal.get("recoveryError") or removal.get("error") or
                                    "macOS has not confirmed Workspace display removal; the display was not falsely reported as stopped.")
+            self.workspace_removal_pending = False
             self.workspace_panel_key = None
             result = {"id": WorkspaceDisplayManager.KEY, "state": "stopped", "removed": True,
                       "panelClosed": panel_result.get("closed", 0), "windowsRestored": removal.get("windowsRestored", 0),

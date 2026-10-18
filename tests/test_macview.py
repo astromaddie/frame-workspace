@@ -162,9 +162,9 @@ exit 0
 ''')
             stub("gamescope", "exit 99\n")
             stub("xwininfo", '''if [ "$1" = -root ]; then
-  printf '  0x123 "Chromium [fc0a0b0c00]": ("Chromium" "Chromium") 5120x1440+0+0\\n'
+  printf '  0x123 "Chromium [fc0a0b0c00]": ("Chromium" "Chromium") %sx%s+0+0\\n' "$TEST_WIDTH" "$TEST_HEIGHT"
 else
-  printf '  Width: 5120\\n  Height: 1440\\n  Map State: IsViewable\\n'
+  printf '  Width: %s\\n  Height: %s\\n  Map State: IsViewable\\n' "$TEST_WIDTH" "$TEST_HEIGHT"
 fi
 ''')
             stub("xprop", '''printf '_NET_WM_NAME(STRING) = "Frame Workspace [fc0a0b0c00]"\\n'
@@ -178,6 +178,7 @@ fi
             env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "HOME": temp,
                    "TEST_STATE": str(state), "TEST_MAIN_PID_READS": str(main_pid_reads),
                    "TEST_STOP_MODE": "drain", "TEST_DRAIN_AFTER": "3", "TEST_SYSTEMD_RUN_FAIL": "0",
+                   "TEST_WIDTH": "5120", "TEST_HEIGHT": "1440",
                    "TEST_CALLS": str(calls), "TEST_ARGS": str(root / "args"),
                    "TEST_DISPLAY": str(display_file), "TEST_OVERLAY_KEY": key, "TEST_NO_OVERLAY": "0",
                    "FRAME_WORKSPACE_VRCMD": str(bindir / "vrcmd")}
@@ -215,6 +216,19 @@ fi
             self.assertIn("--signal=TERM --kill-whom=all frame-workspace-viewer-", stop_calls)
             self.assertNotIn("is-active", stop_calls, "stopped detection must include deactivating units")
 
+            env["TEST_WIDTH"], env["TEST_HEIGHT"] = "2560", "2880"
+            portrait = subprocess.run(["bash", str(script), "start", url, "2560", "2880", tag],
+                                      env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(portrait.returncode, 0, portrait.stdout + portrait.stderr)
+            argv = (root / "args").read_text(encoding="utf-8").splitlines()
+            self.assertEqual(argv[argv.index("--nested-width") + 1], "2560")
+            self.assertEqual(argv[argv.index("--nested-height") + 1], "2880")
+            self.assertEqual(argv[argv.index("--vr-overlay-physical-width") + 1], "2.67")
+            stopped = subprocess.run(["bash", str(script), "stop"], env=env, text=True, capture_output=True,
+                                     timeout=10)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+
+            env["TEST_WIDTH"], env["TEST_HEIGHT"] = "5120", "1440"
             env["TEST_NO_OVERLAY"] = "1"
             env["TEST_STOP_MODE"] = "kill"
             failed = subprocess.run(["bash", str(script), "start", url, "5120", "1440", tag],
@@ -437,15 +451,29 @@ class WorkspaceLifecycle(unittest.TestCase):
     def fake_helper(path):
         path.write_text(
             "#!/usr/bin/env python3\n"
-            "import json, sys\n"
+            "import json, os, sys\n"
+            "if '--recover-orphan' in sys.argv:\n"
+            " failed = os.environ.get('FRAME_WORKSPACE_TEST_FAIL_RECOVERY') == '1'\n"
+            " print(json.dumps({'state':'error' if failed else 'stopped','removed':False if failed else True,"
+            "'error':'test recovery could not confirm removal'}), flush=True)\n"
+            " raise SystemExit(1 if failed else 0)\n"
+            "width = int(sys.argv[sys.argv.index('--width') + 1])\n"
+            "height = int(sys.argv[sys.argv.index('--height') + 1])\n"
+            "scale = int(sys.argv[sys.argv.index('--scale') + 1])\n"
+            "actual = {'logicalWidth':width,'logicalHeight':height,'bufferWidth':width*scale,"
+            "'bufferHeight':height*scale,'scale':float(scale)}\n"
             "print(json.dumps({'state':'ready','name':'Frame Workspace','src':'display:4242','displayID':4242,"
-            "'requested':{'logicalWidth':5120,'logicalHeight':1440,'scale':1},"
-            "'actual':{'logicalWidth':5120,'logicalHeight':1440,'bufferWidth':5120,'bufferHeight':1440,'scale':1.0},"
-            "'bounds':{'x':1800,'y':0,'width':5120,'height':1440},'mirrored':False,'mirrorDisplayID':None,"
+            "'requested':{'logicalWidth':width,'logicalHeight':height,'scale':scale},'actual':actual,"
+            "'bounds':{'x':1800,'y':0,'width':width,'height':height},'mirrored':False,'mirrorDisplayID':None,"
             "'main':False,'physicalLayoutUnchanged':True,'windowRestoreAvailable':True,'snapshottedWindows':3}), flush=True)\n"
             "sys.stdin.read()\n"
-            "print(json.dumps({'state':'stopped','displayID':4242,'reason':'stdin_eof','removed':True,"
-            "'physicalLayoutUnchanged':True,'windowsRestored':1}), flush=True)\n",
+            "failed = os.environ.get('FRAME_WORKSPACE_TEST_FAIL_REMOVAL') == '1'\n"
+            "registered = os.environ.get('FRAME_WORKSPACE_TEST_REGISTERED')\n"
+            "if registered:\n"
+            " open(registered, 'w').close() if failed else (os.path.exists(registered) and os.unlink(registered))\n"
+            "print(json.dumps({'state':'stopped','displayID':4242,'reason':'stdin_eof','removed':not failed,"
+            "'physicalLayoutUnchanged':True,'windowsRestored':1,"
+            "'error':'test display removal not confirmed' if failed else None}), flush=True)\n",
             encoding="utf-8")
         path.chmod(0o755)
         return path
@@ -561,6 +589,159 @@ class WorkspaceLifecycle(unittest.TestCase):
             self.assertEqual(stopped["panelClosed"], 1)
             self.assertEqual(closes, ["display:4242", "display:4242"])
             self.assertFalse(mv.shown)
+
+    def test_running_workspace_switches_between_wide_and_portrait_only_after_removal(self):
+        with tempfile.TemporaryDirectory() as temp:
+            helper = self.fake_helper(Path(temp) / "fake-frame-mac-view")
+            registered = Path(temp) / "registered-workspace"
+            starts, viewer_starts, viewer_stops, closes, events = [], [], [], [], []
+
+            def track(proc):
+                starts.append(proc.args)
+                events.append("display-start")
+
+            manager = frame_macview.WorkspaceDisplayManager(helper, track=track)
+            stop_owner = manager.stop
+
+            def stop_owner_and_record():
+                result = stop_owner()
+                events.append(("display-removed", result.get("removed")))
+                return result
+
+            manager.stop = stop_owner_and_record
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.build = mock.Mock()
+            mv.remote_port = 47900
+            mv.agent = mock.Mock(poll=lambda: None)
+            active = False
+
+            def call(path, method="GET", **query):
+                nonlocal active
+                if path == "/status":
+                    stream = ([{"src": manager.state()["captureSrc"]}] if active else [])
+                    return {"screen": True, "accessibility": True, "streams": stream, "finished": []}
+                if path == "/ticket":
+                    return {"ticket": "one-use"}
+                if path == "/close":
+                    closes.append(query.get("src"))
+                    events.append("stream-close")
+                    active = False
+                    return {"closed": 1}
+                if path == "/displays":
+                    return {"displays": ([{"name": "Frame Workspace", "id": 4242, "src": "display:4242"}]
+                                         if registered.exists() else [])}
+                return {}
+
+            def run(remote, **kwargs):
+                nonlocal active
+                if remote == "bash -s -- stop":
+                    viewer_stops.append(remote)
+                    events.append("viewer-stop")
+                    active = False
+                    return "Workspace viewer stopped"
+                if remote.startswith("bash -s -- 'start'"):
+                    viewer_starts.append((remote, kwargs))
+                    events.append("viewer-start")
+                    active = True
+                    tag = re.search(r"'(fc[0-9a-f]{8})'$", remote).group(1)
+                    return f"Workspace viewer ready: 5120x1440 and registered OpenVR key com.frame-control.workspace.1000.{tag}"
+                if "--showdashboard" in remote:
+                    return "focus accepted"
+                return "panel opened"
+
+            mv.call = call
+            mv.ensure_tunnel = lambda **kwargs: None
+            mv.run = run
+            mv._end_viewer_browser = lambda *args: None
+
+            wide = mv.start_workspace(preset="5120x1440")
+            portrait = mv.start_workspace(preset="2560x2880")
+            back_to_wide = mv.start_workspace(preset="5120x1440")
+
+            self.assertEqual(wide["workspace"]["display"]["logicalWidth"], 5120)
+            self.assertEqual(wide["workspace"]["display"]["logicalHeight"], 1440)
+            self.assertTrue(portrait["replaced"])
+            self.assertEqual(portrait["previousPreset"], "5120x1440")
+            self.assertEqual(portrait["workspace"]["preset"], "2560x2880")
+            self.assertEqual(portrait["workspace"]["display"]["logicalWidth"], 2560)
+            self.assertEqual(portrait["workspace"]["display"]["logicalHeight"], 2880)
+            self.assertEqual(5120 * 1440, 2560 * 2880, "wide and portrait presets keep the same pixel area")
+            self.assertTrue(back_to_wide["replaced"])
+            self.assertEqual(back_to_wide["previousPreset"], "2560x2880")
+            self.assertEqual(back_to_wide["workspace"]["preset"], "5120x1440")
+            self.assertEqual([(args[args.index("--width") + 1], args[args.index("--height") + 1])
+                              for args in starts], [("5120", "1440"), ("2560", "2880"), ("5120", "1440")])
+            self.assertEqual(len(viewer_starts), 3)
+            self.assertEqual(len(viewer_stops), 2)
+            self.assertEqual(closes, ["display:4242", "display:4242"])
+            self.assertEqual(events, [
+                "display-start", "viewer-start",
+                "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
+                "viewer-stop", "stream-close", ("display-removed", True), "display-start", "viewer-start",
+            ])
+
+    def test_workspace_size_switch_never_starts_a_second_display_after_removal_failure(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {
+                "FRAME_WORKSPACE_TEST_FAIL_REMOVAL": "1",
+                "FRAME_WORKSPACE_TEST_FAIL_RECOVERY": "1",
+                "FRAME_WORKSPACE_TEST_REGISTERED": str(Path(temp) / "registered-workspace")}):
+            helper = self.fake_helper(Path(temp) / "fake-frame-mac-view")
+            registered = Path(temp) / "registered-workspace"
+            starts, viewer_starts, closes = [], [], []
+            manager = frame_macview.WorkspaceDisplayManager(helper, track=lambda proc: starts.append(proc.args))
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.workspace_manager = manager
+            mv.build = mock.Mock()
+            mv.remote_port = 47900
+            mv.agent = mock.Mock(poll=lambda: None)
+            active = False
+
+            def call(path, method="GET", **query):
+                nonlocal active
+                if path == "/status":
+                    stream = ([{"src": manager.state()["captureSrc"]}] if active else [])
+                    return {"screen": True, "accessibility": True, "streams": stream, "finished": []}
+                if path == "/ticket":
+                    return {"ticket": "one-use"}
+                if path == "/close":
+                    closes.append(query.get("src"))
+                    active = False
+                    return {"closed": 1}
+                if path == "/displays":
+                    return {"displays": ([{"name": "Frame Workspace", "id": 4242, "src": "display:4242"}]
+                                         if registered.exists() else [])}
+                return {}
+
+            def run(remote, **kwargs):
+                nonlocal active
+                if remote == "bash -s -- stop":
+                    active = False
+                    return "Workspace viewer stopped"
+                if remote.startswith("bash -s -- 'start'"):
+                    viewer_starts.append(remote)
+                    active = True
+                    tag = re.search(r"'(fc[0-9a-f]{8})'$", remote).group(1)
+                    return f"Workspace viewer ready: 5120x1440 and registered OpenVR key com.frame-control.workspace.1000.{tag}"
+                return "panel opened"
+
+            mv.call = call
+            mv.ensure_tunnel = lambda **kwargs: None
+            mv.run = run
+            mv._end_viewer_browser = lambda *args: None
+
+            mv.start_workspace(preset="5120x1440")
+            with self.assertRaisesRegex(frame_macview.MacViewError, "could not confirm removal"):
+                mv.start_workspace(preset="2560x2880")
+            create_starts = [args for args in starts if "--width" in args]
+            self.assertEqual(len(create_starts), 1, "only the original display owner may have started")
+            self.assertEqual(len(viewer_starts), 1)
+            self.assertEqual(closes, ["display:4242"])
+            self.assertTrue(registered.exists())
+            with self.assertRaisesRegex(frame_macview.MacViewError, "test recovery could not confirm removal"):
+                mv.start_workspace(preset="2560x2880")
+            create_starts = [args for args in starts if "--width" in args]
+            self.assertEqual(len(create_starts), 1, "a registered but unowned display must block another creation")
 
     def test_orphan_stop_recovers_without_a_live_capture_agent(self):
         with tempfile.TemporaryDirectory() as temp:
