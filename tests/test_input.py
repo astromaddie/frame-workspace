@@ -629,5 +629,14 @@ class PageQueue(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+@unittest.skipUnless(shutil.which("node"), "needs node")
+class MacViewInputGeometry(unittest.TestCase):
+    def test_picture_bounds_and_drag_release(self):
+        result = subprocess.run(
+            ["node", str(ROOT / "tests" / "page" / "macview_input.mjs")],
+            capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

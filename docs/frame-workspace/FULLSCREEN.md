@@ -49,6 +49,12 @@ The [compact attempt record](evidence/fullscreen-inactive-attempt.json) preserve
 source/binary identity, counts, limits and reproduction details. FW-07 remains
 gated; no private Spaces API or new permission grant was used.
 
+The next run again captured native entry and exit, but Computer Use explicitly
+rejected access to Mission Control as unapproved. Finder raise and Ctrl+Left did
+not establish an away transition. The app-access request is pending; this is an
+automation access blocker, not evidence that background capture fails. The
+existing attempt record includes this follow-up without retaining raw logs.
+
 ## Earlier test record
 
 Host: M4 MacBook, macOS 26.3.1. The Mac-side native workspace was active at 2880×2560 (9:8). No Steam Frame spatial panel was used for these tests.

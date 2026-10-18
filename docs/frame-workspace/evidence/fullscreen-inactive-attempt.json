@@ -49,5 +49,68 @@
     "FW06InactiveSpace": "open",
     "FW06AppMatrix": "open",
     "FW07AutomaticDetachment": "gated"
+  },
+  "followup": {
+    "date": "2026-10-19 JST",
+    "sourceSha256": "9ac4cca53cc8ffe4056830220e11de6187174bd403ce93942c43647007e8437d",
+    "fixturePID": 83861,
+    "windowID": 44511,
+    "nativeGreenButton": true,
+    "preflights": {
+      "screenCapturePreflight": true,
+      "accessibilityPreflight": true
+    },
+    "transitions": [
+      {
+        "captureFrames": 61,
+        "elapsedSeconds": 7.9107463750988245,
+        "event": "activeSpaceDidChange",
+        "timestamp": "2026-10-18T21:19:38Z",
+        "windowID": 44511,
+        "windowInfoPresent": false
+      },
+      {
+        "appKitFullScreen": true,
+        "event": "native_fullscreen_enter",
+        "miniaturized": false,
+        "timestamp": "2026-10-18T21:19:39Z",
+        "windowID": 44511
+      },
+      {
+        "captureFrames": 2525,
+        "elapsedSeconds": 178.0282964167418,
+        "event": "activeSpaceDidChange",
+        "timestamp": "2026-10-18T21:22:28Z",
+        "windowID": 44511,
+        "windowInfoPresent": false
+      },
+      {
+        "appKitFullScreen": false,
+        "event": "native_fullscreen_exit",
+        "miniaturized": false,
+        "timestamp": "2026-10-18T21:22:29Z",
+        "windowID": 44511
+      },
+      {
+        "appKitFullScreen": false,
+        "event": "window_closed",
+        "miniaturized": false,
+        "timestamp": "2026-10-18T21:24:57Z",
+        "windowID": 44511
+      },
+      {
+        "appKitFullScreen": false,
+        "event": "window_closed",
+        "miniaturized": false,
+        "timestamp": "2026-10-18T21:24:57Z",
+        "windowID": 44511
+      }
+    ],
+    "lastFrameCount": 4549,
+    "changingContentSamples": 312,
+    "captureFailures": [],
+    "spaceAwayEstablished": false,
+    "toolBlock": "Computer Use was not approved to use Mission Control. User asked to enable app access; other work continues.",
+    "result": "Native entry/exit worked again; inactive-Space gate still pending, no capture no-go inferred."
   }
 }

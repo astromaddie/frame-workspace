@@ -346,7 +346,9 @@ addEventListener("pointerup", e => {
 addEventListener("pointercancel", () => send({ t: "release" }));
 addEventListener("contextmenu", e => e.preventDefault());
 addEventListener("wheel", e => {
-  const p = toPicture(e), unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
+  const p = toPicture(e);
+  if (!p.inside) return;
+  const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? innerHeight : 1;
   send(stamp({ t: "wheel", dx: e.deltaX * unit, dy: e.deltaY * unit, x: p.x, y: p.y }, e));
   e.preventDefault();
 }, { passive: false });
