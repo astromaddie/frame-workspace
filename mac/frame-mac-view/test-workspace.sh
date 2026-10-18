@@ -4,6 +4,7 @@
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 binary=${1:-$here/../bin/frame-mac-view}
+sh "$here/test-capture-recovery.sh"
 FRAME_MAC_VIEW_BIN="$binary" python3 - <<'PY'
 import json
 import os

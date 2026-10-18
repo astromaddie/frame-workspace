@@ -127,6 +127,10 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     /// Set by stop(), on `queue`; a start still enumerating windows checks it
     /// before it starts capturing, so a viewer that left early leaves nothing on.
     private var cancelled = false
+    private var windowIdentity: WindowIdentity?
+    private var closeRecovery: WindowCloseRecovery?
+    private var windowConfirmationPending = false
+    private var windowConfirmationID: UInt64 = 0
     /// The window or display no longer exists, so retrying can't help.
     private(set) var gone = false
     var onChange: (() -> Void)?  // title or size changed
@@ -163,6 +167,9 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
                 return completion("that window has closed")
             }
             filter = SCContentFilter(desktopIndependentWindow: w)
+            let identity = WindowIdentity(windowID: id, processID: w.owningApplication?.processID)
+            windowIdentity = identity
+            closeRecovery = WindowCloseRecovery(target: identity)
             title = w.title ?? ""
             app = w.owningApplication?.applicationName ?? ""
             pid = w.owningApplication?.processID
@@ -220,12 +227,22 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
 
     func stop() {
         queue.async {
-            self.cancelled = true
-            self.poll?.cancel()
-            self.poll = nil
-            self.stream?.stopCapture { _ in }
-            self.stream = nil
+            self.stopOnQueue()
         }
+    }
+
+    /// Stops capture while already on `queue`; late ScreenCaptureKit
+    /// confirmation callbacks observe `cancelled` and cannot end the source.
+    private func stopOnQueue() {
+        guard !cancelled else { return }
+        cancelled = true
+        closeRecovery?.cancel()
+        windowConfirmationPending = false
+        windowConfirmationID &+= 1
+        poll?.cancel()
+        poll = nil
+        stream?.stopCapture { _ in }
+        stream = nil
     }
 
     /// Windows move, resize, retitle and close, and displays change mode;
@@ -237,26 +254,98 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         t.schedule(deadline: .now() + 1, repeating: 1)
         t.setEventHandler { [weak self] in
             guard let self else { return }
-            guard let info = WindowInfo.find(id) else {
-                self.stop()
-                self.onEnded?("the window closed")
+            guard let info = WindowInfo.find(id),
+                  self.windowIdentity?.matches(WindowIdentity(windowID: info.id, processID: info.pid)) == true
+            else {
+                self.confirmWindow(id)
                 return
             }
-            var changed = false
-            if !info.title.isEmpty, info.title != self.title { self.title = info.title; changed = true }
-            let old = self.frameRect
-            self.frameRect = info.bounds
-            if abs(old.width - info.bounds.width) > 1 || abs(old.height - info.bounds.height) > 1 {
-                let (w, h) = fitSize(width: info.bounds.width * self.scale, height: info.bounds.height * self.scale, maxLong: self.maxLong)
-                self.config.width = w
-                self.config.height = h
-                self.stream?.updateConfiguration(self.config) { _ in }
-                changed = true
-            }
-            if changed { self.onChange?() }
+            _ = self.closeRecovery?.observe(
+                cgWindow: WindowIdentity(windowID: info.id, processID: info.pid),
+                shareableWindow: nil,
+                shareableContentFresh: false,
+                at: ProcessInfo.processInfo.systemUptime
+            )
+            self.applyWindow(title: info.title, bounds: info.bounds)
         }
         t.resume()
         poll = t
+    }
+
+    /// CGWindowList can briefly omit a live fullscreen window. Confirm that
+    /// omission against fresh ScreenCaptureKit content and a second CG lookup
+    /// before treating it as closed. Only one lookup is in flight; its timeout
+    /// lets later polls retry if the asynchronous API fails to answer.
+    private func confirmWindow(_ id: CGWindowID) {
+        guard !cancelled, !gone, !windowConfirmationPending, let target = windowIdentity else { return }
+        windowConfirmationPending = true
+        windowConfirmationID &+= 1
+        let requestID = windowConfirmationID
+
+        SCShareableContent.getExcludingDesktopWindows(true, onScreenWindowsOnly: false) { [weak self] content, error in
+            guard let self else { return }
+            self.queue.async {
+                guard !self.cancelled, !self.gone, self.windowConfirmationPending,
+                      self.windowConfirmationID == requestID
+                else { return }
+                self.windowConfirmationPending = false
+
+                let cgInfo = WindowInfo.find(id)
+                let cgWindow = cgInfo.map { WindowIdentity(windowID: $0.id, processID: $0.pid) }
+                let shareable = content?.windows.first { $0.windowID == id }
+                let shareableWindow = shareable.map {
+                    WindowIdentity(windowID: $0.windowID, processID: $0.owningApplication?.processID)
+                }
+                let decision = self.closeRecovery?.observe(
+                    cgWindow: cgWindow,
+                    shareableWindow: shareableWindow,
+                    shareableContentFresh: content != nil && error == nil,
+                    at: ProcessInfo.processInfo.systemUptime
+                ) ?? .cancelled
+
+                switch decision {
+                case .present:
+                    if let cgInfo, target.matches(WindowIdentity(windowID: cgInfo.id, processID: cgInfo.pid)) {
+                        self.applyWindow(title: cgInfo.title, bounds: cgInfo.bounds)
+                    } else if let shareable,
+                              target.matches(WindowIdentity(windowID: shareable.windowID,
+                                                           processID: shareable.owningApplication?.processID)) {
+                        self.applyWindow(title: shareable.title ?? "", bounds: shareable.frame)
+                    }
+                case .waiting:
+                    break
+                case .closed:
+                    self.gone = true
+                    self.stopOnQueue()
+                    self.onEnded?("the window closed")
+                case .cancelled:
+                    break
+                }
+            }
+        }
+
+        queue.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.cancelled, self.windowConfirmationPending,
+                  self.windowConfirmationID == requestID
+            else { return }
+            self.windowConfirmationPending = false
+            self.windowConfirmationID &+= 1
+        }
+    }
+
+    private func applyWindow(title newTitle: String, bounds: CGRect) {
+        var changed = false
+        if !newTitle.isEmpty, newTitle != title { title = newTitle; changed = true }
+        let old = frameRect
+        frameRect = bounds
+        if abs(old.width - bounds.width) > 1 || abs(old.height - bounds.height) > 1 {
+            let (w, h) = fitSize(width: bounds.width * scale, height: bounds.height * scale, maxLong: maxLong)
+            config.width = w
+            config.height = h
+            stream?.updateConfiguration(config) { _ in }
+            changed = true
+        }
+        if changed { onChange?() }
     }
 
     func setMaxLong(_ n: Int) {
@@ -304,7 +393,10 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
-        onEnded?("capture stopped: \(error.localizedDescription)")
+        queue.async {
+            guard !self.cancelled else { return }
+            self.onEnded?("capture stopped: \(error.localizedDescription)")
+        }
     }
 }
 
