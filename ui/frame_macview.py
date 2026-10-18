@@ -156,6 +156,7 @@ class WorkspaceDisplayManager:
         "5120x2160": (5120, 2160),
         "3440x1440": (3440, 1440),
         "2560x2880": (2560, 2880),
+        "2880x2560": (2880, 2560),
     }
 
     def __init__(self, executable=AGENT, track=None, on_unexpected_stop=None):
@@ -169,7 +170,7 @@ class WorkspaceDisplayManager:
     @staticmethod
     def _validate_request(preset, scale, quality):
         if not isinstance(preset, str) or preset not in WorkspaceDisplayManager.PRESETS:
-            raise MacViewError("Choose a supported Workspace size: 5120x1440, 5120x2160, 3440x1440, or 2560x2880.")
+            raise MacViewError("Choose a supported Workspace size: " + ", ".join(WorkspaceDisplayManager.PRESETS) + ".")
         if type(scale) is not int or scale not in (1, 2):
             raise MacViewError("Workspace scale must be 1 or 2.")
         if not isinstance(quality, str) or quality not in QUALITY:
