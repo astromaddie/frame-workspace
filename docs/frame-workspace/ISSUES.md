@@ -1,6 +1,6 @@
 # Frame Workspace — issue specifications
 
-**Publication status (2026-10-18):** Saved in this repository. GitHub Issues are disabled; publish these 13 issues once the repository owner enables them in Settings → General → Features → Issues. Keep FW identifiers stable when GitHub assigns issue numbers.
+**Publication status (2026-10-18):** All **13 issues are [published on GitHub](https://github.com/astromaddie/frame-workspace/issues)** as #1–#13. These are the version-controlled issue specifications; see the [roadmap](ROADMAP.md) for dependencies, priorities, and milestones.
 
 ---
 
