@@ -2,7 +2,8 @@
 > [saphid/frame-control](https://github.com/saphid/frame-control) and preserves
 > its MIT attribution and existing management features. The first Workspace
 > prototype now has companion Start/Stop controls for a real Mac virtual
-> ultrawide display. See the [commands, device measurements and remaining
+> ultrawide display, now with a dedicated ultrawide viewer and clearer text.
+> See the [commands, device measurements and remaining
 > acceptance checks](docs/frame-workspace/VALIDATION.md). Worn coding/readability
 > validation is still required before FW-02 through FW-04 can be called complete.
 > The Frame Control documentation below describes the inherited app. Workspace

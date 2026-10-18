@@ -23,6 +23,8 @@ final class Encoder {
     /// bits per pixel. Changing it takes effect on the next frame.
     private var target: Int?
     private(set) var bitrate = 0
+    private let errorLock = NSLock()
+    private var reportedFrameError = false
     /// Called on VideoToolbox's thread with one access unit (or JPEG) per
     /// frame, and the sequence number it was submitted with.
     var onFrame: ((Data, Bool, CMTime, UInt32) -> Void)?
@@ -65,6 +67,16 @@ final class Encoder {
 
     func requestKeyFrame() { forceKey = true }
 
+    private func reportFrameError(_ status: OSStatus) {
+        errorLock.lock()
+        let report = !reportedFrameError
+        reportedFrameError = true
+        errorLock.unlock()
+        if report {
+            onError?("Video encoding failed (VideoToolbox \(status)). Choose a lower picture quality and press Show again.")
+        }
+    }
+
     func invalidate() {
         if let s = session {
             VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid)
@@ -75,6 +87,7 @@ final class Encoder {
 
     private func makeSession(width w: Int, height h: Int) -> Bool {
         invalidate()
+        errorLock.lock(); reportedFrameError = false; errorLock.unlock()
         var spec: [CFString: Any] = [:]
         if codec == .h264 { spec[kVTVideoEncoderSpecification_EnableLowLatencyRateControl] = true }
         if Encoder.options.contains("hw") { spec[kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder] = true }
@@ -156,14 +169,15 @@ final class Encoder {
                                                      frameProperties: props, infoFlagsOut: nil) { [weak self] status, _, sample in
             guard let self else { return }
             defer { self.onDone?(seq) }
-            guard status == noErr, let sample else { return }
+            guard status == noErr else { self.reportFrameError(status); return }
+            guard let sample else { return }
             if codec == .jpeg {
                 if let data = Self.bytes(sample) { self.onFrame?(data, true, pts, seq) }
             } else if let (data, key) = Self.annexB(sample) {
                 self.onFrame?(data, key, pts, seq)
             }
         }
-        if status != noErr { forceKey = true }
+        if status != noErr { forceKey = true; reportFrameError(status) }
         return status == noErr
     }
 

@@ -13,6 +13,7 @@ import http.client
 import json
 import io
 import os
+import re
 import shutil
 import socket
 import struct
@@ -84,8 +85,161 @@ class Helpers(unittest.TestCase):
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
     def test_launch_script_parses(self):
-        r = subprocess.run(["bash", "-n"], input=frame_macview.LAUNCH, text=True, capture_output=True)
-        self.assertEqual(r.returncode, 0, r.stderr)
+        for script in (frame_macview.LAUNCH, frame_macview.WORKSPACE_VIEWER_SCRIPT.read_text(encoding="utf-8")):
+            with self.subTest(script=script[:40]):
+                r = subprocess.run(["bash", "-n"], input=script, text=True, capture_output=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+
+    @unittest.skipUnless(shutil.which("bash"), "needs bash")
+    @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
+    def test_workspace_viewer_service_ownership_and_failed_readiness_cleanup(self):
+        script = frame_macview.WORKSPACE_VIEWER_SCRIPT
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            bindir = root / "bin"
+            bindir.mkdir()
+            state, calls, main_pid_reads = root / "state", root / "calls", root / "main-pid-reads"
+            state.write_text("not-found\ninactive\n0\n", encoding="utf-8")
+            tag = "fc0a0b0c00"
+            key = f"com.frame-control.workspace.{os.getuid()}.{tag}"
+            display_file = Path(f"/tmp/frame-workspace-viewer-{os.getuid()}-{tag}.display")
+
+            def stub(name, body):
+                path = bindir / name
+                path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+                path.chmod(0o755)
+
+            stub("systemctl", '''printf 'systemctl %s\\n' "$*" >> "$TEST_CALLS"
+if [ "$2" = show ]; then
+  load=$(sed -n '1p' "$TEST_STATE")
+  active=$(sed -n '2p' "$TEST_STATE")
+  pid=$(sed -n '3p' "$TEST_STATE")
+  case "$4" in
+    --property=LoadState) printf '%s\\n' "$load" ;;
+    --property=ActiveState) printf '%s\\n' "$active" ;;
+    --property=MainPID)
+      printf '%s\\n' "$pid"
+      if [ "$active" = deactivating ] && [ "$TEST_STOP_MODE" = drain ]; then
+        reads=0
+        [ ! -f "$TEST_MAIN_PID_READS" ] || reads=$(cat "$TEST_MAIN_PID_READS")
+        reads=$((reads + 1))
+        printf '%s\\n' "$reads" > "$TEST_MAIN_PID_READS"
+        if [ "$reads" -ge "$TEST_DRAIN_AFTER" ]; then
+          printf 'loaded\\ninactive\\n0\\n' > "$TEST_STATE"
+        fi
+      fi
+      ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = kill ]; then
+  case "$3" in
+    --signal=TERM) printf 'loaded\\ndeactivating\\n4321\\n' > "$TEST_STATE" ;;
+    --signal=KILL)
+      if [ "$TEST_STOP_MODE" = kill ]; then printf 'loaded\\ninactive\\n0\\n' > "$TEST_STATE"; fi
+      ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = --no-block ] && [ "$3" = stop ]; then exit 0; fi
+exit 1
+''')
+            stub("systemd-run", '''printf 'systemd-run\\n' >> "$TEST_CALLS"
+printf '%s\\n' "$@" > "$TEST_ARGS"
+if [ "$TEST_SYSTEMD_RUN_FAIL" = 1 ]; then
+  printf 'failed while opening %s\\n' "$TEST_URL" >&2
+  exit 1
+fi
+printf ':77\\n\\n' > "$TEST_DISPLAY"
+printf 'loaded\\nactive\\n4321\\n' > "$TEST_STATE"
+''')
+            stub("flatpak", '''[ "$1" = info ] && exit 0
+exit 0
+''')
+            stub("gamescope", "exit 99\n")
+            stub("xwininfo", '''if [ "$1" = -root ]; then
+  printf '  0x123 "Chromium [fc0a0b0c00]": ("Chromium" "Chromium") 5120x1440+0+0\\n'
+else
+  printf '  Width: 5120\\n  Height: 1440\\n  Map State: IsViewable\\n'
+fi
+''')
+            stub("xprop", '''printf '_NET_WM_NAME(STRING) = "Frame Workspace [fc0a0b0c00]"\\n'
+''')
+            stub("vrcmd", '''if [ "${TEST_NO_OVERLAY:-0}" = 0 ]; then
+  printf '%s\\n' '---- OVERLAYS ----' "'$TEST_OVERLAY_KEY' -- 'Frame Workspace', 0x0 visible VROverlayType_Dashboard_Main"
+fi
+''')
+            stub("sleep", "exit 0\n")
+            stub("journalctl", "exit 1\n")
+            env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}", "HOME": temp,
+                   "TEST_STATE": str(state), "TEST_MAIN_PID_READS": str(main_pid_reads),
+                   "TEST_STOP_MODE": "drain", "TEST_DRAIN_AFTER": "3", "TEST_SYSTEMD_RUN_FAIL": "0",
+                   "TEST_CALLS": str(calls), "TEST_ARGS": str(root / "args"),
+                   "TEST_DISPLAY": str(display_file), "TEST_OVERLAY_KEY": key, "TEST_NO_OVERLAY": "0",
+                   "FRAME_WORKSPACE_VRCMD": str(bindir / "vrcmd")}
+
+            url = "http://127.0.0.1/view?ticket=private-token&scope=workspace"
+            env["TEST_URL"] = url
+            started = subprocess.run(["bash", str(script), "start", url, "5120", "1440", tag],
+                                     env=env, text=True, capture_output=True, timeout=10)
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            self.assertIn("registered OpenVR key", started.stdout)
+            args = (root / "args").read_text(encoding="utf-8")
+            for expected in ("--description=Frame Workspace viewer", "--property=TimeoutStopSec=3s",
+                             "--property=KillMode=control-group", "--backend", "openvr", "--nested-width",
+                             "5120", "--output-width", "--vr-overlay-key", key,
+                             "--vr-overlay-explicit-name", "Frame Workspace", "--vr-overlay-show-immediately",
+                             "--vr-overlay-physical-width", "5.34",
+                             "--start-fullscreen", "--disable-background-mode", "workspace-viewer"):
+                self.assertIn(expected, args)
+            self.assertNotIn("--keep-alive", args)
+            argv = args.splitlines()
+            self.assertEqual(argv[argv.index("--nested-width") + 1], "5120")
+            self.assertEqual(argv[argv.index("--nested-height") + 1], "1440")
+            # A 5K backing triggers Gamescope's fixed upload-buffer assertion.
+            # Chrome stays full-sized while the black backing fits the cap.
+            self.assertEqual(argv[argv.index("--output-width") + 1], "2560")
+            self.assertEqual(argv[argv.index("--output-height") + 1], "720")
+            self.assertNotIn("--force-windows-fullscreen", argv)
+            stopped = subprocess.run(["bash", str(script), "stop"], env=env, text=True, capture_output=True,
+                                     timeout=10)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            self.assertEqual(state.read_text(encoding="utf-8"), "loaded\ninactive\n0\n")
+            self.assertGreaterEqual(int(main_pid_reads.read_text(encoding="utf-8")), 3,
+                                    "deactivating with a live MainPID must not count as stopped")
+            stop_calls = calls.read_text(encoding="utf-8")
+            self.assertIn("--signal=TERM --kill-whom=all frame-workspace-viewer-", stop_calls)
+            self.assertNotIn("is-active", stop_calls, "stopped detection must include deactivating units")
+
+            env["TEST_NO_OVERLAY"] = "1"
+            env["TEST_STOP_MODE"] = "kill"
+            failed = subprocess.run(["bash", str(script), "start", url, "5120", "1440", tag],
+                                    env=env, text=True, capture_output=True, timeout=10)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("registered OpenVR overlay did not become ready", failed.stderr)
+            self.assertEqual(state.read_text(encoding="utf-8"), "loaded\ninactive\n0\n",
+                             "failed readiness must stop only the owned service")
+            stop_calls = calls.read_text(encoding="utf-8")
+            self.assertIn("--signal=KILL --kill-whom=all frame-workspace-viewer-", stop_calls)
+            self.assertFalse(display_file.exists())
+
+            env["TEST_STOP_MODE"] = "stuck"
+            stuck = subprocess.run(["bash", str(script), "start", url, "5120", "1440", tag],
+                                   env=env, text=True, capture_output=True, timeout=10)
+            self.assertNotEqual(stuck.returncode, 0)
+            self.assertIn("service could not be stopped", stuck.stderr)
+            self.assertEqual(state.read_text(encoding="utf-8"), "loaded\ndeactivating\n4321\n",
+                             "a live process in deactivating state must be reported as a stop failure")
+
+            state.write_text("not-found\ninactive\n0\n", encoding="utf-8")
+            env["TEST_SYSTEMD_RUN_FAIL"] = "1"
+            launch_failed = subprocess.run(["bash", str(script), "start", url, "5120", "1440", tag],
+                                           env=env, text=True, capture_output=True, timeout=10)
+            self.assertNotEqual(launch_failed.returncode, 0)
+            self.assertIn("[redacted URL]", launch_failed.stderr)
+            self.assertNotIn("private-token", launch_failed.stderr)
 
     @unittest.skipUnless(shutil.which("bash"), "needs bash")
     @unittest.skipIf(os.name == "nt", "Windows' bash.exe is WSL's launcher, and runners have no distribution")
@@ -305,8 +459,11 @@ class WorkspaceLifecycle(unittest.TestCase):
             self.assertEqual(state["captureSrc"], "display:4242")
             self.assertEqual(state["display"], {"logicalWidth": 5120, "logicalHeight": 1440,
                                                 "bufferWidth": 5120, "bufferHeight": 1440})
-            self.assertEqual(state["stream"], {"width": 2560, "height": 720, "maxLong": 2560,
-                                                "fps": 60, "codec": "h264"})
+            self.assertEqual(state["stream"], {"width": 4096, "height": 1152, "maxLong": 4096,
+                                                "fps": 30, "codec": "h264"})
+            self.assertEqual(frame_macview.quality_settings("sharp"), frame_macview.QUALITY["sharp"])
+            self.assertEqual(frame_macview.quality_settings("sharp", workspace=True),
+                             {"max": 4096, "fps": 30, "bpp": 0.14, "codec": "h264"})
             again, created = manager.start()
             self.assertFalse(created)
             self.assertEqual(again["id"], "workspace")
@@ -353,25 +510,49 @@ class WorkspaceLifecycle(unittest.TestCase):
             mv.remote_port = 47900
             mv.agent = mock.Mock(poll=lambda: None)
             closes = []
+            active = False
             def call(path, method="GET", **query):
+                nonlocal active
                 if path == "/status":
-                    return {"screen": True, "accessibility": True, "streams": [], "finished": []}
+                    return {"screen": True, "accessibility": True,
+                            "streams": ([{"src": "display:4242"}] if active else []), "finished": []}
                 if path == "/ticket":
                     return {"ticket": "one-use"}
                 if path == "/close":
                     closes.append(query.get("src"))
+                    active = False
                     return {"closed": 1}
                 return {"displays": []}
             mv.call = call
             mv.ensure_tunnel = lambda **kwargs: None
-            mv.run = lambda *args, **kwargs: "panel opened"
+            launches = []
+            def run(remote, **kwargs):
+                nonlocal active
+                launches.append((remote, kwargs))
+                if remote.startswith("bash -s -- 'start'"):
+                    tag = re.search(r"'(fc[0-9a-f]{8})'$", remote).group(1)
+                    active = True
+                    return f"Workspace viewer ready: 5120x1440 and registered OpenVR key com.frame-control.workspace.1000.{tag}"
+                if "--showdashboard" in remote:
+                    return "focus accepted"
+                return "panel opened"
+            mv.run = run
             mv._end_viewer_browser = lambda *args: None
             shown = mv.start_workspace()
             self.assertEqual(shown["src"], "workspace")
             self.assertEqual(shown["captureSrc"], "display:4242")
             self.assertEqual(shown["workspace"]["id"], "workspace")
+            self.assertEqual(shown["panel"], "com.frame-control.workspace.1000." + re.search(r"fc[0-9a-f]{8}", shown["detail"]).group(0))
+            self.assertTrue(launches[0][0].startswith("bash -s -- 'start' "))
+            self.assertIn("--nested-width", launches[0][1]["stdin"])
+            self.assertIn("--vr-overlay-explicit-name \"Frame Workspace\"", launches[0][1]["stdin"])
+            already = mv.start_workspace(quality="sharp")
+            self.assertTrue(already["alreadyRunning"])
+            self.assertEqual(already["panel"], shown["panel"])
+            self.assertIn("--showdashboard", launches[-1][0])
             changed = mv.start_workspace(quality="balanced")
             self.assertEqual(changed["workspace"]["quality"], "balanced")
+            self.assertIn("'1920' '540'", launches[2][0])
             self.assertEqual(closes, ["display:4242"])
             stopped = mv.stop_workspace()
             self.assertTrue(stopped["removed"])
@@ -392,12 +573,55 @@ class WorkspaceLifecycle(unittest.TestCase):
                 encoding="utf-8")
             helper.chmod(0o755)
             manager = frame_macview.WorkspaceDisplayManager(helper)
-            mv = frame_macview.MacView(["ssh"], lambda *a, **k: self.fail("recovery must not need the capture agent"), "frame")
+            calls = []
+            mv = frame_macview.MacView(["ssh"], lambda remote, **kw: calls.append((remote, kw)) or "already stopped", "frame")
             mv.workspace_manager = manager
             stopped = mv.stop_workspace()
             self.assertTrue(stopped["removed"])
             self.assertTrue(stopped["recoveredOrphan"])
             self.assertFalse(stopped["owned"])
+            self.assertEqual(calls[0][0], "bash -s -- stop")
+            self.assertIn("frame-workspace-viewer-", calls[0][1]["stdin"])
+
+    def test_explicit_orphan_stop_waits_until_owner_lease_is_clear(self):
+        with tempfile.TemporaryDirectory() as temp:
+            helper = Path(temp) / "fake-frame-mac-view"
+            helper.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, sys\n"
+                "if sys.argv[1:] == ['workspace', '--recover-orphan']:\n"
+                " print(json.dumps({'state':'stopped','removed':True,'recoveredOrphan':True}))\n"
+                " sys.exit(0)\n"
+                "sys.exit(2)\n",
+                encoding="utf-8")
+            helper.chmod(0o755)
+            manager = frame_macview.WorkspaceDisplayManager(helper)
+            calls = []
+            mv = frame_macview.MacView(["ssh"], lambda remote, **kw: calls.append((remote, kw)) or "already stopped", "frame")
+            mv.workspace_manager = manager
+            self.assertTrue(mv.stop_workspace()["removed"])
+            self.assertEqual(calls[0][0], "bash -s -- stop")
+
+            helper.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json\n"
+                "print(json.dumps({'state':'error','removed':False,'error':'A live Workspace owner exists.'}))\n"
+                "raise SystemExit(1)\n",
+                encoding="utf-8")
+            helper.chmod(0o755)
+            calls.clear()
+            with self.assertRaisesRegex(frame_macview.MacViewError, "live Workspace owner"):
+                mv.stop_workspace()
+            self.assertEqual(calls, [], "a rejected live-owner recovery must not stop its service")
+
+    def test_unused_stop_all_never_starts_workspace_recovery(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: self.fail("no owned viewer to stop"), "frame")
+        mv.workspace_manager.recover_orphan = mock.Mock(side_effect=AssertionError("unowned recovery"))
+        with mock.patch.object(frame_macview, "SUPPORTED", False), \
+                mock.patch.object(frame_macview.subprocess, "Popen") as popen:
+            self.assertEqual(mv.stop(), {"closed": 0})
+        popen.assert_not_called()
+        mv.workspace_manager.recover_orphan.assert_not_called()
 
     def test_helper_build_failure_precedes_display_creation(self):
         with tempfile.TemporaryDirectory() as temp:

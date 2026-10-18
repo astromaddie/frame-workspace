@@ -1,10 +1,35 @@
-# FW-02–FW-04 validation — 2026-10-18
+# Frame Workspace validation — 2026-10-18
 
 ## Acceptance status
 
 The first delivery scope is **FW-01 through FW-04**. FW-01 is complete. The Mac display, companion controls and off-head Frame transport now have device evidence. **FW-02 and FW-04 remain open for the user's worn readability, keyboard/trackpad/IME and 30-minute real coding session.** USB-C, physical lid closure and Stage Manager remain unverified. Do not describe the first four issues as fully accepted yet.
 
-## Environment and method
+## Ultrawide viewer follow-up
+
+The user's first worn trial confirmed the desktop worked, but reported substantial top/bottom letterboxing and insufficient magnification. After the viewer change below, the user reported it was **much more readable and clear**. This is worn readability feedback, not a completed 30-minute coding/IME acceptance or a sustained frame-rate measurement.
+
+Workspace now launches an isolated **Gamescope OpenVR compositor and Chrome profile** in a transient `frame-workspace-viewer-<uid>.service`. Ordinary Mac window panels retain the inherited route. Chrome is fullscreen at the stream's aspect ratio; its initial physical overlay width is 5.34 m and SteamVR's placement controls remain available. No standalone app installer or startup service was installed.
+
+| Wide desktop | Initial viewer | New Sharp viewer |
+|---|---:|---:|
+| macOS logical desktop | 5120×1440 | 5120×1440 |
+| Decoded canvas | 2560×720 | 4096×1152 |
+| Browser viewport, device scale 1 | 1920×1080 | 4096×1152 |
+| Image inside browser | 1920×540, letterboxed | 4096×1152, no browser letterbox |
+| Requested video rate | 60 fps | 30 fps |
+
+Direct viewer inspection confirmed decoded frames, H.264 `avc1.640c32`, and zero decoder errors. Show again requested focus on the actual registered overlay key without changing display/stream identity. Stop removed the owned unit, overlays, browser processes and Mac virtual display; the original Gamescope PID remained running. The final normal launch omitted temporary browser diagnostics. Static-desktop FPS is not a throughput benchmark.
+
+Two real limits were found and handled:
+
+- Full-sized Gamescope output aborted at `uploadBufferData: size <= upload_buffer_size`. Valve's [OpenVR backend](https://github.com/ValveSoftware/gamescope/blob/master/src/Backends/OpenVRBackend.cpp) creates a black backing texture through a [fixed 1920×1080 RGBA staging buffer](https://github.com/ValveSoftware/gamescope/blob/master/src/rendervulkan.hpp). The launcher halves only the backing dimensions until they fit that capacity, retaining the full nested display and fullscreen Chrome surface. Forced window fullscreen is omitted because it shrinks the client to the backing size. The backend supports direct GPU layers, but its direct/composite choice was not instrumented; OpenVR's texture-size query returned 0×0 for GPU layers. Browser dimensions do not prove exact compositor texture dimensions or optical resolution. Exact correspondence between Valve master and Frame's packaged 3.16.30 source is unverified.
+- This Mac's 5120×1440 H.264 encoder accepted submissions but returned no samples (`-19354`, then `-12915`). A fixture using production `Encoder.swift` produced 12/12 samples at 4096×1152@30, 4096×1728@30 and 4096×1152@60 within a three-second deadline. The 60 fps case is encoder compatibility only. Sharp therefore uses a 4096-pixel long edge; asynchronous encoder errors are now reported once per session rather than leaving a silent black viewer.
+
+The launcher verifies nested window dimensions and overlay registration before reporting ready. Stop checks unit state and MainPID, with bounded TERM/KILL scoped to this service and a three-second timeout. A static service description and redacted diagnostics avoid logging viewer URLs. Explicit orphan recovery retains the live-owner lease check; unused Stop all does not start a display-recovery helper.
+
+Checks: affected MacView suite passed 34 tests with one permission-dependent skip; subsequent lifecycle/idle-shutdown regressions, launcher checks and four benchmark tests passed. Swift build passed. Sustained 4096-wide streaming at 60 fps remains unverified.
+
+## Initial environment and baseline method
 
 M4 MacBook Pro Mac16,1, 10-core, 16 GB; macOS 26.3.1 (25D2128), arm64. Built-in desktop: **1800×1169 logical points / 3600×2338 backing pixels**. Steam Frame: SteamOS 0.5.6 build 20261015.6141207, SteamVR log version 2.18.2, Google Chrome user Flatpak 155.0.8059.84-1 (aarch64). Headset explicitly off-head and reserved with the shared device lock. The original installed Frame Control app and its Mac agent were preserved.
 

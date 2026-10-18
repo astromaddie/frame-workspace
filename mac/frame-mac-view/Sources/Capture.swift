@@ -34,11 +34,19 @@ enum Source: Equatable {
     }
 }
 
-/// Size to capture at: the source's pixel size, shrunk to fit a box whose
-/// long side is `maxLong` (default 1920), even numbers for the encoder.
-func fitSize(width: Double, height: Double, maxLong: Int) -> (Int, Int) {
-    let scale = min(1, Double(maxLong) / max(width, height, 1))
-    let w = max(16, Int((width * scale / 2).rounded()) * 2), h = max(16, Int((height * scale / 2).rounded()) * 2)
+/// Size to capture at: fit the source within its long-edge and pixel-count
+/// limits, then use even dimensions for the encoder.
+func fitSize(width: Double, height: Double, maxLong: Int, maxPixels: Int = 16_777_216) -> (Int, Int) {
+    let sourceWidth = max(1, width), sourceHeight = max(1, height)
+    let byLongEdge = min(1, Double(max(16, maxLong)) / max(sourceWidth, sourceHeight))
+    let byPixels = min(1, sqrt(Double(max(256, maxPixels)) / (sourceWidth * sourceHeight)))
+    let scale = min(byLongEdge, byPixels)
+    var w = max(16, Int((sourceWidth * scale / 2).rounded()) * 2)
+    var h = max(16, Int((sourceHeight * scale / 2).rounded()) * 2)
+    // Rounding to even dimensions may exceed a tight cap by a few pixels.
+    while w * h > max(256, maxPixels) {
+        if w >= h { w -= 2 } else { h -= 2 }
+    }
     return (w, h)
 }
 

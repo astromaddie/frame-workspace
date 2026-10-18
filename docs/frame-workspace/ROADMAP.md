@@ -6,6 +6,8 @@ Created 2026-10-18 (JST) for [`astromaddie/frame-workspace`](https://github.com/
 
 **First-delivery status:** the requested scope is FW-01 through FW-04. Companion Start/Stop, real virtual-display capture, browser rendering and recovery now have off-head device evidence. Worn coding/readability acceptance and USB-C testing remain open; see the [validation report](VALIDATION.md).
 
+**Readability follow-up:** the user confirmed the original letterboxed view was functional, then reported much clearer text after moving Workspace to its own ultrawide Gamescope/OpenVR viewer. Sharp now targets 4096×1152 at 30 fps for the 5120×1440 desktop. Full coding/IME acceptance and sustained 60 fps remain open; the [viewer findings](VALIDATION.md#ultrawide-viewer-follow-up) record the compositor and encoder limits.
+
 ## Product thesis
 
 Local-first Steam Frame workspace for an Apple Silicon (M4) MacBook: a *real* extended macOS virtual ultrawide display for coding, high text fidelity, optional independent Mac panels, and automatic detachment when the user uses the *native macOS green full-screen control*. No internet, cloud service, PC gaming host or purchased utility required for the core workflow. Prefer real macOS display and Space semantics over a new custom window manager.

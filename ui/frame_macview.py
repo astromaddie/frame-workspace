@@ -37,6 +37,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 PAGE = HERE / "mac-view.html"
 SOURCES = ROOT / "mac" / "frame-mac-view"
+WORKSPACE_VIEWER_SCRIPT = ROOT / "scripts" / "workspace-viewer-on-frame.sh"
+FRAME_VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
 AGENT = Path(os.environ.get("FRAME_MAC_VIEW") or ROOT / "mac" / "bin" / "frame-mac-view")
 REMOTE_PORTS = range(47900, 47920)
 SUPPORTED = sys.platform == "darwin"
@@ -49,6 +51,15 @@ QUALITY = {
     "light": {"max": 1280, "fps": 30, "bpp": 0.08, "codec": "h264"},
     "compatible": {"max": 1280, "fps": 20, "bpp": 0.1, "codec": "jpeg"},
 }
+# Workspace has its own long-edge target because its dedicated OpenVR overlay
+# can render the full ultrawide image. Ordinary viewers keep Sharp at 2560/60.
+# VideoToolbox on the tested Mac fails asynchronously at 5120-wide H.264;
+# 4096-wide encoding is verified. The logical desktop stays 5120 pixels wide.
+WORKSPACE_QUALITY = {"sharp": {"max": 4096, "fps": 30, "bpp": 0.14, "codec": "h264"}}
+
+
+def quality_settings(name, workspace=False):
+    return (WORKSPACE_QUALITY.get(name) if workspace else None) or QUALITY.get(name) or QUALITY["balanced"]
 # Extra Chromium flags for viewers (see docs/mac-in-headset.md, "Measuring").
 BROWSER_FLAGS = []
 # Viewer windows are fitted inside a panel's size. gamescope made a 1280x720
@@ -281,7 +292,7 @@ class WorkspaceDisplayManager:
     def _public_state(self, owner):
         record, config = owner["record"], owner["config"]
         actual = record["actual"]
-        q = QUALITY[config["quality"]]
+        q = quality_settings(config["quality"], workspace=True)
         factor = min(1.0, q["max"] / max(actual["bufferWidth"], actual["bufferHeight"], 1))
         stream_w = max(16, round(actual["bufferWidth"] * factor / 2) * 2)
         stream_h = max(16, round(actual["bufferHeight"] * factor / 2) * 2)
@@ -442,6 +453,7 @@ class MacView:
         self.browser_flags = list(BROWSER_FLAGS)
         self.browser_lock = threading.Lock()
         self.browser_cleanup_error = None
+        self.workspace_panel_key = None
 
     # ---- the agent on this Mac ----
 
@@ -686,7 +698,8 @@ class MacView:
         panel_key = panel_key or src
         public_src = public_src or src
         self.shows += 1
-        q = QUALITY.get(quality) or QUALITY["balanced"]
+        workspace_viewer = panel_key == WorkspaceDisplayManager.KEY
+        q = quality_settings(quality, workspace=workspace_viewer)
         state = self.call("/status")
         if src != "test" and not state.get("screen"):
             raise MacViewError("Frame Control needs Screen Recording permission first (Allow… under Mac in the headset).")
@@ -711,21 +724,50 @@ class MacView:
         params = {"src": src, "t": ticket, "tag": tag, "codec": q["codec"], "max": q["max"], "fps": q["fps"],
                   "bpp": q["bpp"]}
         url = f"http://127.0.0.1:{self.remote_port}/view?{urlencode(params)}"
-        w, h = fit(width or 1280, height or 720)
-        args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
-        with self.browser_lock:
-            if self.browser_cleanup_error:
-                raise MacViewError("The previous Frame Workspace browser did not confirm shutdown. Stop all viewers and retry.")
-            try:
-                out = self.run("bash -s -- " + args, stdin=LAUNCH, timeout=60)
-            except Exception as e:  # noqa: BLE001 - the server's Failure carries the Frame's words
-                if "NO_BROWSER" in (getattr(e, "stdout", "") or ""):
-                    raise MacViewError("The Frame needs Chromium, Chromium XR, or the Google Chrome Flatpak "
-                                       "(com.google.Chrome) for this.")
-                raise MacViewError(str(e))
+        if workspace_viewer:
+            workspace = self.workspace_manager.state()
+            stream = workspace.get("stream", {})
+            w, h = int(width or stream.get("width") or 1280), int(height or stream.get("height") or 720)
+            script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *self.browser_flags))
+            out = self.run("bash -s -- " + script_args, stdin=WORKSPACE_VIEWER_SCRIPT.read_text(encoding="utf-8"),
+                           timeout=60)
+            match = re.search(r"registered OpenVR key (com\.frame-control\.workspace\.\d+\.fc[0-9a-f]{8})\b", out)
+            if not match:
+                raise MacViewError("The dedicated Workspace launcher did not report its registered OpenVR panel key.")
+            self.workspace_panel_key = match.group(1)
+        else:
+            w, h = fit(width or 1280, height or 720)
+            args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
+            with self.browser_lock:
+                if self.browser_cleanup_error:
+                    raise MacViewError("The previous Frame Workspace browser did not confirm shutdown. Stop all viewers and retry.")
+                try:
+                    out = self.run("bash -s -- " + args, stdin=LAUNCH, timeout=60)
+                except Exception as e:  # noqa: BLE001 - the server's Failure carries the Frame's words
+                    if "NO_BROWSER" in (getattr(e, "stdout", "") or ""):
+                        raise MacViewError("The Frame needs Chromium, Chromium XR, or the Google Chrome Flatpak "
+                                           "(com.google.Chrome) for this.")
+                    raise MacViewError(str(e))
         self.shown.add(src)
-        return {"panel": f"valve.steam.desktopgame.{appid}", "src": public_src,
-                "captureSrc": src, "detail": out.strip()}
+        panel = self.workspace_panel_key if workspace_viewer else f"valve.steam.desktopgame.{appid}"
+        return {"panel": panel, "src": public_src, "captureSrc": src, "detail": out.strip()}
+
+    def _stop_workspace_viewer(self):
+        try:
+            out = self.run("bash -s -- stop", stdin=WORKSPACE_VIEWER_SCRIPT.read_text(encoding="utf-8"), timeout=15)
+        except Exception as e:  # noqa: BLE001 - report remote service ownership errors plainly
+            raise MacViewError(f"Could not confirm Workspace viewer shutdown: {e}") from e
+        return out.strip()
+
+    def _focus_workspace_viewer(self):
+        key = self.workspace_panel_key
+        if not key:
+            raise MacViewError("The Workspace OpenVR panel key is unknown; use Show Workspace again to replace it safely.")
+        try:
+            out = self.run(f"{_quote(FRAME_VRCMD)} --showdashboard {_quote(key)}", timeout=10)
+        except Exception as e:  # noqa: BLE001 - preserve the headset tool's diagnostic
+            raise MacViewError(f"Could not focus the Workspace OpenVR panel: {e}") from e
+        return out.strip()
 
     def start_workspace(self, preset="5120x1440", scale=1, quality="sharp"):
         """Create/reuse the owned display and show its stable workspace panel."""
@@ -743,11 +785,12 @@ class MacView:
                     pass
             workspace, created = self.workspace_manager.start(preset, scale, quality)
             capture_src = workspace["captureSrc"]
-            if not created and prior_quality == quality and capture_src in self.shown:
+            if not created and prior_quality == quality and capture_src in self.shown and self.workspace_panel_key:
                 status = self.call("/status")
                 if any(s.get("src") == capture_src for s in status.get("streams", [])):
+                    self._focus_workspace_viewer()
                     return {"id": WorkspaceDisplayManager.KEY, "state": "running",
-                            "panel": f"valve.steam.desktopgame.{panel_id(WorkspaceDisplayManager.KEY)}",
+                            "panel": self.workspace_panel_key,
                             "workspace": workspace, "alreadyRunning": True}
             if not created and prior_quality != quality and capture_src in self.shown:
                 self.stop(capture_src)
@@ -755,6 +798,10 @@ class MacView:
                 panel = self.show(WorkspaceDisplayManager.KEY, quality=quality,
                                   width=workspace["stream"]["width"], height=workspace["stream"]["height"])
             except Exception as e:
+                try:
+                    self._stop_workspace_viewer()
+                except MacViewError:
+                    pass
                 try:
                     self.stop(capture_src)
                 except MacViewError:
@@ -772,6 +819,8 @@ class MacView:
         if self.closing:
             return
         try:
+            self._stop_workspace_viewer()
+            self.workspace_panel_key = None
             self.stop(capture_src)
         except MacViewError:
             pass  # it is already gone or the agent is restarting; no stale ID is retained
@@ -783,6 +832,11 @@ class MacView:
             capture_src = workspace.get("captureSrc")
             panel_result = {"closed": 0}
             panel_error = None
+            local_owner = workspace.get("state") in ("running", "starting", "error")
+            if local_owner:
+                # Close only the service reserved for this Workspace before its
+                # source disappears; a failed stop leaves the display intact.
+                self._stop_workspace_viewer()
             if capture_src:
                 try:
                     panel_result = self.stop(capture_src)
@@ -797,6 +851,10 @@ class MacView:
                 # when the capture agent is unavailable; its lease prevents it
                 # from changing a display owned by another live process.
                 removal = self.workspace_manager.recover_orphan()
+                # Recovery succeeded, so no other live Workspace owner can
+                # own the reserved service. This also clears a service orphaned
+                # by a previous companion crash.
+                self._stop_workspace_viewer()
 
             if removal.get("removed") is False:
                 # The owner's normal release can be deferred while the built-in
@@ -810,6 +868,7 @@ class MacView:
             if removal.get("removed") is False:
                 raise MacViewError(removal.get("recoveryError") or removal.get("error") or
                                    "macOS has not confirmed Workspace display removal; the display was not falsely reported as stopped.")
+            self.workspace_panel_key = None
             result = {"id": WorkspaceDisplayManager.KEY, "state": "stopped", "removed": True,
                       "panelClosed": panel_result.get("closed", 0), "windowsRestored": removal.get("windowsRestored", 0),
                       "recoveredOrphan": removal.get("recoveredOrphan", False), "owned": removal.get("owned", True)}
@@ -818,15 +877,25 @@ class MacView:
             return result
 
     def stop(self, src=None):
+        workspace_error = None
+        if src is None and (self.workspace_panel_key or self.workspace_manager.state().get("state") != "stopped"):
+            try:
+                self.stop_workspace()
+            except MacViewError as e:
+                workspace_error = e
         if src:
             self.shown.discard(src)
         else:
             self.shown.clear()
         if not (self.agent and self.agent.poll() is None):
+            if workspace_error:
+                raise workspace_error
             return {"closed": 0}
         out = self.call("/close", method="POST", **({"src": src} if src else {}))
         if not self.shown:
             threading.Thread(target=self._end_viewer_browser, args=(self.shows,), daemon=True).start()
+        if workspace_error:
+            raise workspace_error
         return out
 
     def _end_viewer_browser(self, shows):
@@ -888,16 +957,13 @@ class MacView:
 
     def shutdown(self):
         self.closing = True
-        workspace = self.workspace_manager.state()
-        if workspace.get("state") != "stopped" or (self.agent and self.agent.poll() is None):
-            try:
-                self.stop_workspace()
-            except MacViewError:
-                # The Swift owner also exits on stdin EOF. Keep shutdown bounded
-                # and never claim removal if WindowServer deferred it.
-                self.workspace_manager.stop()
         try:
             self.stop()
+        except MacViewError:
+            # The Swift owner also exits on stdin EOF. Keep shutdown bounded
+            # and never claim removal if WindowServer deferred it.
+            self.workspace_manager.stop()
+        try:
             self.finish_browser_cleanup()
         except MacViewError:
             pass

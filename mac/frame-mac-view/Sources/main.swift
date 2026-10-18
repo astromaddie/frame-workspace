@@ -639,7 +639,7 @@ final class Agent {
 
     private func stream(_ req: Request, _ c: HTTPConnection, src: Source, key: String) {
         let codec = Codec(rawValue: req.query["codec"] ?? "h264") ?? .h264
-        let maxLong = min(max(Int(req.query["max"] ?? "") ?? 1920, 320), 3840)
+        let maxLong = min(max(Int(req.query["max"] ?? "") ?? 1920, 320), 4096)
         let fps = min(max(Int(req.query["fps"] ?? "") ?? 60, 5), 120)
         let bpp = min(max(Double(req.query["bpp"] ?? "") ?? 0.1, 0.02), 0.5)
         guard let ws = c.upgrade(req) else { return }
