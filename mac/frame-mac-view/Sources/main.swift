@@ -35,8 +35,13 @@ func windowsJSON() -> [[String: Any]] {
     return WindowInfo.all().filter {
         $0.layer == 0 && $0.pid != me && !skip.contains($0.app) && $0.bounds.width >= 120 && $0.bounds.height >= 80
     }.map {
-        ["id": $0.id, "src": "window:\($0.id)", "pid": $0.pid, "app": $0.app, "title": $0.title,
-         "w": Int($0.bounds.width), "h": Int($0.bounds.height)]
+        var info: [String: Any] = ["id": $0.id, "src": "window:\($0.id)", "pid": $0.pid,
+                                   "app": $0.app, "title": $0.title,
+                                   "w": Int($0.bounds.width), "h": Int($0.bounds.height)]
+        if let bundleID = NSRunningApplication(processIdentifier: $0.pid)?.bundleIdentifier {
+            info["bundleID"] = bundleID
+        }
+        return info
     }
 }
 

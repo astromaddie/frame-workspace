@@ -55,6 +55,7 @@ import frame_contact  # noqa: E402
 import frame_host  # noqa: E402
 import frame_link  # noqa: E402
 import frame_macview  # noqa: E402
+import frame_workspace_profiles  # noqa: E402
 import frame_media  # noqa: E402
 import frame_panels  # noqa: E402
 import frame_quest  # noqa: E402
@@ -2331,6 +2332,8 @@ def push_media(path):
 macview = frame_macview.MacView(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"],
                                 lambda remote, stdin=None, timeout=30: ssh(remote, stdin=stdin, timeout=timeout),
                                 FRAME, track=_live_tunnels.add)
+workspace_profiles = frame_workspace_profiles.ProfileStore(
+    frame_host.data_dir("workspace-profiles", "profiles.json"))
 
 
 def macview_state(query=None):
@@ -2346,10 +2349,42 @@ def macview_state(query=None):
 
 
 def macview_action(body):
-    """{action: show|stop|permissions|workspace_start|workspace_stop, ...}."""
+    """Control MacView and manage local logical workspace profiles."""
     if LOCAL:
         raise Failure("Runs on your computer, not the headset.", 400)
     action = body.get("action")
+    profile_actions = {"profile_list", "profile_save", "profile_delete", "profile_reset", "profile_restore"}
+    if action in profile_actions:
+        allowed = {
+            "profile_list": {"action"},
+            "profile_save": {"action", "profile"},
+            "profile_delete": {"action", "name"},
+            "profile_reset": {"action", "confirmation"},
+            "profile_restore": {"action", "name"},
+        }[action]
+        if set(body) != allowed:
+            raise Failure("unknown or missing workspace profile request fields", 400)
+        try:
+            if action == "profile_list":
+                return {"schemaVersion": frame_workspace_profiles.SCHEMA_VERSION,
+                        "profiles": workspace_profiles.list()}
+            if action == "profile_save":
+                return {"profile": workspace_profiles.save(body["profile"])}
+            if action == "profile_delete":
+                return {"deleted": workspace_profiles.delete(body["name"])}
+            if action == "profile_reset":
+                if body["confirmation"] != "RESET":
+                    raise frame_workspace_profiles.ProfileError("Reset requires confirmation: RESET")
+                workspace_profiles.reset()
+                return {"reset": True, "profiles": 0,
+                        "message": "Saved profiles cleared. Running Mac windows and viewers were not changed."}
+            return frame_workspace_profiles.restore(workspace_profiles, macview, body["name"])
+        except frame_workspace_profiles.ProfileStoreError as e:
+            raise Failure(str(e), 500)
+        except frame_workspace_profiles.ProfileError as e:
+            raise Failure(str(e), 400)
+        except frame_macview.MacViewError as e:
+            raise Failure(str(e), 502)
     try:
         if action == "show":
             w, h = body.get("w"), body.get("h")

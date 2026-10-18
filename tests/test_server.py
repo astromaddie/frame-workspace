@@ -103,6 +103,28 @@ class ServerGuards(unittest.TestCase):
         self.assertEqual(self.request("GET", "/api/stream")[0], 403)
         self.assertEqual(self.request("GET", "/api/shots/image?id=1/250820/20260925225208_1.jpg")[0], 403)
         self.assertEqual(self.request("POST", "/api/launch", {"appid": "620"})[0], 403)
+        self.assertEqual(self.request("POST", "/api/macview", {"action": "profile_list"})[0], 403)
+
+    def test_workspace_profiles_use_authenticated_api_and_private_local_store(self):
+        profile = {"name": "API Test", "workspace": {"preset": "5120x1440", "scale": 1, "quality": "sharp"},
+                   "windows": [{"bundleID": "com.google.Chrome", "titleHint": "Project"}]}
+        status, saved = self.post("/api/macview", {"action": "profile_save", "profile": profile})
+        self.assertEqual(status, 200, saved)
+        self.assertEqual(saved["profile"], profile)
+        status, listed = self.post("/api/macview", {"action": "profile_list"})
+        self.assertEqual(status, 200, listed)
+        self.assertIn(profile, listed["profiles"])
+
+        invalid = dict(profile, ticket="one-use")
+        status, rejected = self.post("/api/macview", {"action": "profile_save", "profile": invalid})
+        self.assertEqual(status, 400, rejected)
+        self.assertIn("unknown fields: ticket", rejected["error"])
+
+        store = Path(os.environ["FRAME_CONTROL_DATA_DIR"]) / "workspace-profiles" / "profiles.json"
+        self.assertEqual(store.stat().st_mode & 0o777, 0o600)
+        status, deleted = self.post("/api/macview", {"action": "profile_delete", "name": "API Test"})
+        self.assertEqual(status, 200, deleted)
+        self.assertEqual(deleted["deleted"], "API Test")
 
     def test_captures_are_not_cacheable(self):
         # Headset captures show everything on screen; nothing may cache them.
