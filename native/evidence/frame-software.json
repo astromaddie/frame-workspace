@@ -1,0 +1,91 @@
+{
+  "date": "2026-10-19 JST",
+  "runs": [
+    {
+      "label": "motion30",
+      "evidence": "unattended native desktop texture upload, not compositor or optical fps",
+      "duration": 30.018358041998,
+      "uploadedFps": 17.356045899348686,
+      "decodedFps": 17.422671795315473,
+      "textureSizes": [
+        [
+          2048,
+          1820
+        ]
+      ],
+      "droppedEncoded": 0,
+      "droppedDecoded": 2,
+      "errors": 0,
+      "timings": {
+        "decodeMs": {
+          "p50": 5.313727,
+          "p95": 18.057101
+        },
+        "convertMs": {
+          "p50": 2.553039,
+          "p95": 3.954451
+        },
+        "uploadMs": {
+          "p50": 2.9351089999999997,
+          "p95": 6.2488
+        },
+        "syncMs": {
+          "p50": 1.485184,
+          "p95": 2.336796
+        },
+        "submitMs": {
+          "p50": 0.44834450000000003,
+          "p95": 0.765756
+        },
+        "queueAgeMs": {
+          "p50": 13.484806,
+          "p95": 27.054505
+        }
+      },
+      "comparison_limit": "Historical unmatched software run; source cadence/adaptation/config differ."
+    },
+    {
+      "label": "motion30-nodelay",
+      "evidence": "unattended native desktop texture upload, not compositor or optical fps",
+      "duration": 30.01795007000328,
+      "uploadedFps": 17.189714780545092,
+      "decodedFps": 17.189714780545092,
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "droppedEncoded": 359,
+      "droppedDecoded": 0,
+      "errors": 0,
+      "timings": {
+        "decodeMs": {
+          "p50": 11.299706,
+          "p95": 83.266891
+        },
+        "convertMs": {
+          "p50": 4.4341764999999995,
+          "p95": 6.420257
+        },
+        "uploadMs": {
+          "p50": 4.4209735000000006,
+          "p95": 9.973942
+        },
+        "syncMs": {
+          "p50": 2.1015975,
+          "p95": 7.80318
+        },
+        "submitMs": {
+          "p50": 0.42842349999999996,
+          "p95": 0.754246
+        },
+        "queueAgeMs": {
+          "p50": 37.492278999999996,
+          "p95": 94.723856
+        }
+      },
+      "comparison_limit": "Historical unmatched software run; source cadence/adaptation/config differ."
+    }
+  ]
+}

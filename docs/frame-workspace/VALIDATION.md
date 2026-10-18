@@ -6,7 +6,12 @@ The newer [native viewer record](NATIVE.md) separates native build/device eviden
 from the earlier browser viewer results below. Native head-motion acceptance is
 still pending. The [full-screen feasibility record](FULLSCREEN.md) covers FW-06.
 
-The first delivery scope is **FW-01 through FW-04**. FW-01 is complete. The Mac display, companion controls and off-head Frame transport now have device evidence. **FW-02 and FW-04 remain open for the user's worn readability, keyboard/trackpad/IME and 30-minute real coding session.** USB-C, physical lid closure and Stage Manager remain unverified. Do not describe the first four issues as fully accepted yet.
+The first delivery implementation covers **FW-01 through FW-04**, whose GitHub
+issues are closed. The Mac display, companion controls and off-head Frame
+transport have device evidence, and the user confirmed browser-viewer readability.
+**Keyboard/trackpad/IME and a 30-minute real coding session remain outstanding
+acceptance checks.** USB-C, physical lid closure and Stage Manager remain
+unverified. Issue closure does not establish those physical acceptance results.
 
 ## Ultrawide viewer follow-up
 
