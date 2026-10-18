@@ -443,6 +443,7 @@ private final class FullscreenProbe: NSObject, NSApplicationDelegate, NSWindowDe
         let sample: [String: Any] = [
             "elapsedSeconds": now - startedAt,
             "targetPID": pid,
+            "targetIsFrontmost": NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
             "windows": axRows.map(\.json),
             "windowID": selectedWindowID as Any? ?? NSNull(),
             "captureFrames": captureFrameCount,

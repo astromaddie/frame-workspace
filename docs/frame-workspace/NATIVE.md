@@ -151,6 +151,12 @@ layout/range/matrix cases on the Frame, with maximum RGB difference 1 against
 production libswscale. Legacy 320×180 V4L2 output was padded to 320×192; general
 hardware cropping support is not claimed.
 
+A later unattended state check at about 05:23 JST still showed the full-resolution
+viewer ready and connected on CPU/V4L2. It had seven network retry attempts in
+one 04:00–04:02 JST interval and recovered without submission errors. The generic
+redacted retry log does not establish the interruption's cause. This longer idle
+observation is separate from the error-free short benchmark windows.
+
 ## Boundaries and next gates
 
 FW-10 verdict: **go for an owned-overlay prototype and same-runtime process

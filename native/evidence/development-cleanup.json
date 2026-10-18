@@ -37,5 +37,7 @@
     "Frame pose",
     "requested Mac awake assertion"
   ],
-  "measurement_limits": "Logical file sizes, allocated worktree sizes and container writable-layer sizes are different accounting measures and must not be summed as physical disk recovery. Sparse VM physical reclamation was not measured."
+  "measurement_limits": "Logical file sizes, allocated worktree sizes and container writable-layer sizes are different accounting measures and must not be summed as physical disk recovery. Sparse VM physical reclamation was not measured.",
+  "fullscreen_followup_logical_bytes_removed": 83200630,
+  "compacted_duplicate_reports_and_python_cache_logical_bytes_removed": 3420754
 }

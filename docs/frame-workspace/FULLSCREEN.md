@@ -33,7 +33,23 @@ not stop its source on the first terminal callback and logged a later duplicate
 close confirmation; it now mirrors the production consumer's cleanup. See the
 [lifecycle record](evidence/fullscreen-lifecycle.json).
 
-## Test record
+## Inactive-Space follow-up
+
+A further 420-second run used the fixture's own production capture with existing
+Screen Capture and Accessibility preflights. Native green-button entry again
+retained the same window ID and continuous changing content. The diagnostic now
+reports whether its target is the frontmost application, so an accidental
+reactivation during automation can be distinguished from an inactive-Space test.
+
+Computer-use targeting of macOS Space controls timed out before an away/back
+transition was established. Only the full-screen entry Space notification was
+recorded, and the fixture remained frontmost. This is another successful settled
+full-screen capture, **not inactive-Space evidence** and not a capture failure.
+The [compact attempt record](evidence/fullscreen-inactive-attempt.json) preserves
+source/binary identity, counts, limits and reproduction details. FW-07 remains
+gated; no private Spaces API or new permission grant was used.
+
+## Earlier test record
 
 Host: M4 MacBook, macOS 26.3.1. The Mac-side native workspace was active at 2880×2560 (9:8). No Steam Frame spatial panel was used for these tests.
 
@@ -54,9 +70,9 @@ The later command was run a second time while window 42121 was already full scre
 | Fresh capture after settled entry, first fixture | Observer 1 saw AX full screen true for window 42024, started production capture, and recorded 594 changing-content samples during a 600-second run without a capture failure. | Live full-screen capture demonstrated on one AppKit fixture. |
 | Windowed capture before full screen | Observer 2 started at 16:16:32 UTC. Production `SCKSource(.window)` started; 147 frames arrived before the transition, with 10 one-second luma-grid samples and changing content. | Live capture demonstrated while windowed. |
 | Native green-button entry | At 16:16:44–45 UTC, AppKit reported full screen and public `NSWorkspace.activeSpaceDidChangeNotification` fired. The dynamic AX `AXFullScreen` query changed false → true. PID/frame mapping retained `CGWindowID` 42121. | Entry detection demonstrated on the owned AppKit fixture. |
-| Existing stream at entry | The source emitted `capture_ended: the window closed` at 16:16:45 UTC. No later frame or content samples arrived; the count remained 147. `SCShareableContent` still listed the same window ID at the transition. | Current source does not resume. The single missing `WindowInfo.find` result is consistent with a transient Space-transition gap, not proof that the window closed. |
+| Historical pre-fix stream at entry | The source emitted `capture_ended: the window closed` at 16:16:45 UTC. No later frame or content samples arrived; the count remained 147. `SCShareableContent` still listed the same window ID at the transition. | The pre-fix source did not resume. The single missing `WindowInfo.find` result is consistent with a transient Space-transition gap, not proof that the window closed. |
 | Fresh capture while full screen, concurrent repeat | Observer 3 started at 16:18:49 UTC with the same ID and observed AX full screen true. At 16:18:50 UTC it reported an interrupted application connection and produced no frames. Observer 2 from the same executable was still running. | Failed repeat with a known harness interference risk; does not negate the first successful capture. |
-| Native exit | Escape left full screen at 16:19:12 UTC; AX changed true → false and `activeSpaceDidChange` fired. The immediate `WindowInfo` result was absent, while a `SCShareableContent` query two seconds later still listed ID 42121. Neither observer restarted capture. | Window identity survived the transition, but capture recovery is unproven. |
+| Native exit | Escape left full screen at 16:19:12 UTC; AX changed true → false and `activeSpaceDidChange` fired. The immediate `WindowInfo` result was absent, while a `SCShareableContent` query two seconds later still listed ID 42121. Neither observer restarted capture. | Window identity survived the transition, but this initial pre-fix run did not establish recovery (the later repaired run above did). |
 | Separate Space away/back | Calculator activation and Ctrl+Left did not produce another `activeSpaceDidChange` event. | Not tested successfully; do not infer inactive-Space capture. |
 | Minimize, close, Stage Manager, two full-screen apps, Safari/Chrome | Not covered by this initial fixture run. The Mac locked during the first session and was subsequently unlocked by the user for further tests. | Untested in this record. |
 

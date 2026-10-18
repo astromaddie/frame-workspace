@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-19 JST",
+  "result": "Additional settled full-screen capture passed; inactive-Space gate remains untested",
+  "productionPath": "SCKSource(.window), diagnostic fixture in one process, no concurrent observer",
+  "sourceSha256": "9ac4cca53cc8ffe4056830220e11de6187174bd403ce93942c43647007e8437d",
+  "binarySha256": "f89ec3f84a5d678fd4edd599f9588b950014bc92fe8895beccf4e7761f7bdb20",
+  "fixture": {
+    "pid": 21903,
+    "windowID": 44433,
+    "nativeGreenButton": true,
+    "seconds": 420,
+    "screenCapturePreflight": true,
+    "accessibilityPreflight": true,
+    "newPermissionGrants": false
+  },
+  "entry": {
+    "appKitFullScreen": true,
+    "event": "native_fullscreen_enter",
+    "miniaturized": false,
+    "timestamp": "2026-10-18T18:42:07Z",
+    "windowID": 44433
+  },
+  "observed": {
+    "fullScreenSamples": 347,
+    "changingContentSamplesWhileFullScreen": 389,
+    "finalCaptureFrames": 6177,
+    "finalFullScreenSample": {
+      "timestamp": "2026-10-18T18:48:39Z",
+      "elapsedSeconds": 419.4869832500117,
+      "targetIsFrontmost": true,
+      "windowInfoPresent": true,
+      "appKitFullScreen": true
+    },
+    "spaceNotifications": 1,
+    "captureFailuresOrEnds": [],
+    "endedBy": "420-second diagnostic timer"
+  },
+  "inactiveSpaceAttempt": {
+    "result": "not established",
+    "reason": "Computer-use targeting com.apple.dock timed out; no additional Space-change notification occurred, and fixture remained frontmost. No negative capture inference."
+  },
+  "reproduction": [
+    "Build scripts/fullscreen-probe.sh with existing source; create the same disposable AppKit wrapper.",
+    "Reuse bundle identifier com.frameworkspace.fullscreen-probe for CUA app targeting; a different identifier conflicted with cached registration.",
+    "Launch --fixture --seconds420 with only existing TCC preflights, click native green button.",
+    "Read diagnostic logs without refreshing the fixture while testing Space-away; targetIsFrontmost helps detect accidental reactivation."
+  ],
+  "gates": {
+    "FW06InactiveSpace": "open",
+    "FW06AppMatrix": "open",
+    "FW07AutomaticDetachment": "gated"
+  }
+}
