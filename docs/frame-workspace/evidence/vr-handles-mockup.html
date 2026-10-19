@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- FW-14 VR-first window handles, visionOS-style: hidden until the laser moves
+     past the window edge towards them. Four states x three visual styles.
+     Mockup only; rendered with headless Chrome. -->
+<html lang="en"><head><meta charset="utf-8"><title>VR Window Handles</title>
+<style>
+  :root { --text:#dcdedf; --muted:#8f98a0; color-scheme:dark; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:20px 22px 22px; width:1180px; color:var(--text); background:#0b0f14;
+         font:13px/1.4 "Motiva Sans",-apple-system,"Helvetica Neue",sans-serif; }
+  h1 { margin:0 0 4px; font-size:13px; letter-spacing:2px; text-transform:uppercase; }
+  .lede { color:var(--muted); font-size:12.5px; margin:0 0 14px; }
+  .style { margin:0 0 12px; }
+  .shead { display:flex; gap:10px; align-items:baseline; margin:0 0 6px; }
+  .shead b { color:#fff; } .shead span { color:var(--muted); font-size:12px; }
+  .states { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+  .cell { background:radial-gradient(120% 90% at 50% 40%,#1c2633 0%,#0d1218 70%); border-radius:6px; border:1px solid rgba(255,255,255,.06); }
+  .cap { color:var(--muted); font-size:11.5px; padding:6px 8px 0; }
+  svg { display:block; }
+</style></head><body>
+<h1>Window Handles in the Headset · Mockup</h1>
+<p class="lede">The window shows no chrome while you work. Handles fade in only when the laser leaves the window towards them:
+the pill below moves the window (position and angle together), corners resize it, side bars curve it (left/right
+horizontally, top/bottom vertically). The laser dot is the blue ring.</p>
+<div id="root"></div>
+<script>
+const styles = [
+  {name:"A · visionOS", note:"Frosted white pill and corner arcs, as on Apple Vision Pro.",
+   pill:"rgba(235,238,242,.82)", handle:"rgba(235,238,242,.85)", glow:"none", bar:"rgba(235,238,242,.75)"},
+  {name:"B · Steam Accent", note:"Same shapes; the active handle lights in Steam blue.",
+   pill:"rgba(26,159,255,.9)", handle:"rgba(102,192,244,.95)", glow:"drop-shadow(0 0 6px rgba(26,159,255,.8))", bar:"rgba(102,192,244,.85)"},
+  {name:"C · Minimal Lines", note:"Thin strokes only: least visual weight, smallest targets.",
+   pill:"rgba(220,222,223,.55)", handle:"rgba(220,222,223,.7)", glow:"none", bar:"rgba(220,222,223,.55)", thin:true},
+];
+const states = [["Laser inside: nothing shown","in"],["Laser below: move pill","pill"],["Laser past a corner: resize","corner"],["Laser past a side: curve","bar"]];
+const W=270,H=190, x0=45,y0=22,ww=180,wh=120;
+function scene(st,s){
+  const thin=s.thin, sw=thin?2:5;
+  let extra="", laser="";
+  if(st==="in") laser=`<circle cx="${x0+120}" cy="${y0+70}" r="5" fill="none" stroke="#1a9fff" stroke-width="2"/>`;
+  if(st==="pill"){ extra=`<rect x="${x0+ww/2-32}" y="${y0+wh+12}" width="64" height="${thin?6:11}" rx="${thin?3:5.5}" fill="${s.pill}" style="filter:${s.glow}"/>`;
+    laser=`<circle cx="${x0+ww/2+6}" cy="${y0+wh+17}" r="5" fill="none" stroke="#1a9fff" stroke-width="2"/>`;}
+  if(st==="corner"){ extra=`<path d="M${x0+ww+8} ${y0+wh-14} Q${x0+ww+8} ${y0+wh+8} ${x0+ww-14} ${y0+wh+8}" fill="none" stroke="${s.handle}" stroke-width="${sw}" stroke-linecap="round" style="filter:${s.glow}"/>`;
+    laser=`<circle cx="${x0+ww+12}" cy="${y0+wh+12}" r="5" fill="none" stroke="#1a9fff" stroke-width="2"/>`;}
+  if(st==="bar"){ extra=`<rect x="${x0+ww+9}" y="${y0+wh/2-26}" width="${thin?3:7}" height="52" rx="3.5" fill="${s.bar}" style="filter:${s.glow}"/>
+      <path d="M${x0+ww+24} ${y0+wh/2-10} q8 10 0 20" fill="none" stroke="${s.bar}" stroke-width="1.5"/>`;
+    laser=`<circle cx="${x0+ww+13}" cy="${y0+wh/2+4}" r="5" fill="none" stroke="#1a9fff" stroke-width="2"/>`;}
+  // window with a hint of the desktop
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a3f57"/><stop offset="1" stop-color="#1a2738"/></linearGradient></defs>
+    <rect x="${x0}" y="${y0}" width="${ww}" height="${wh}" rx="8" fill="url(#g)"/>
+    <rect x="${x0+10}" y="${y0+10}" width="${ww-20}" height="9" rx="2" fill="rgba(255,255,255,.08)"/>
+    ${[0,1,2,3,4,5,6].map(i=>`<rect x="${x0+14}" y="${y0+28+i*12}" width="${[120,96,140,80,128,104,60][i]}" height="5" rx="2" fill="rgba(220,222,223,.32)"/>`).join("")}
+    ${extra}${laser}</svg>`;
+}
+document.getElementById("root").innerHTML = styles.map(s=>`<div class="style"><div class="shead"><b>${s.name}</b><span>${s.note}</span></div>
+  <div class="states">${states.map(([cap,st])=>`<div class="cell"><div class="cap">${cap}</div>${scene(st,s)}</div>`).join("")}</div></div>`).join("");
+</script></body></html>
