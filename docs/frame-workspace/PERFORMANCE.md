@@ -214,7 +214,11 @@ The Mac's VideoToolbox encode takes about 15.5 ms for a 2880×2560 frame
 whatever its settings. Low-latency rate control, `MaxFrameDelayCount 0`,
 speed priority, expected frame rate and real-time mode were each tested in an
 isolated benchmark; it scales with pixels. Long-term references (`EnableLTR`)
-and a trailing access unit delimiter did not change the decoder hold.
+and a trailing access unit delimiter did not change the decoder hold. Splitting
+the frame across concurrent encoder sessions is slower, not faster: the whole
+frame took p50/p95 16.9/17.7 ms with one session, 17.9/19.8 ms in two bands
+and 19.9/23.6 ms in four. The M4's encoder runs sessions one after another, so
+only encoding fewer pixels would shorten it.
 
 Worn, the network got much worse: the Frame's Wi-Fi fell from −57 to −64 dBm
 and one spatial stream, with Frame → router p99 95 ms and stalls up to about
