@@ -667,10 +667,19 @@ class MacView:
                 target = (self.frame, self.host_opts)  # retarget() may change these meanwhile
             # `via` first: ssh keeps the first value of an option, so USB-C's HostName wins
             # while the headset's pinned identity (in host_opts) still checks it.
+            # A tunnel-only (-N) connection keeps Nagle on and uses SSH's bulk
+            # traffic class: verified 2026-10-19, ssh -vv never logs "setting
+            # TCP_NODELAY" for it. With Nagle each frame's last packet waited for
+            # the Frame's delayed ACK, adding up to tens of ms of irregular delay.
+            # A do-nothing terminal session makes both ends interactive
+            # (TCP_NODELAY, low-delay QoS); IPQoS af41 asks Wi-Fi for its video
+            # queue. "-e none" so no byte in the stream is an escape.
             proc = subprocess.Popen([*self.tunnel_ssh, "-o", "ControlPath=none", *via, *target[1],
-                                     "-o", "ExitOnForwardFailure=yes",
-                                     "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3", "-N",
-                                     "-R", f"127.0.0.1:{port}:127.0.0.1:{self.port}", target[0]],
+                                     "-o", "ExitOnForwardFailure=yes", "-o", "IPQoS=af41",
+                                     "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3",
+                                     "-tt", "-e", "none",
+                                     "-R", f"127.0.0.1:{port}:127.0.0.1:{self.port}", target[0],
+                                     "exec sleep 2147483647"],
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.PIPE, text=True)
             # A taken port makes ssh exit once it's connected; a working

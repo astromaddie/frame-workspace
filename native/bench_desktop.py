@@ -215,6 +215,26 @@ for _ in range(COUNT):
                         if r["cap"] >= start_us and r["drw"] >= r["cap"] > 0)
         return {"n": len(values), **({"p50": statistics.median(values),
                  "p95": values[round(.95 * (len(values) - 1))]} if values else {})}
+    def stages(records):
+        # Per-frame stage durations on the Mac clock (the Frame's receive/decode/
+        # draw times arrive clock-mapped), so slow stages and jitter are visible.
+        names = (("captureDelivery", "cap", "arr"), ("waitForEncoder", "arr", "e0"),
+                 ("encode", "e0", "e1"), ("queueToSend", "e1", "snd"), ("socket", "snd", "wire"),
+                 ("network", "wire", "rx"), ("frameDecode", "rx", "dec"), ("frameDrawSubmit", "dec", "drw"))
+        out = {}
+        for name, a, b in names:
+            values = sorted((r[b] - r[a]) / 1000 for r in records if r[a] > 0 and r[b] > 0)
+            if values:
+                out[name] = {"p50": round(statistics.median(values), 2),
+                             "p95": round(values[round(.95 * (len(values) - 1))], 2)}
+        return out
+    def cadence(records, key):
+        # Gaps between consecutive frames, in 120 Hz headset refreshes. Even
+        # 60 fps pacing is all 2s; 1s and 3s are visible judder.
+        times = sorted(r[key] for r in records if r[key] > 0)
+        gaps = [round((b - a) / 8333.3) for a, b in zip(times, times[1:])]
+        counts = {str(n): gaps.count(n) for n in sorted(set(min(g, 6) for g in gaps))}
+        return {"refreshGaps": counts, "evenShare": round(gaps.count(2) / len(gaps), 3) if gaps else None}
     report["mac"] = {"duration": mac_duration,
                      "desktopCaptureFps": (end_stream["captured"] - start_stream["captured"]) / mac_duration,
                      "uniqueSentCaptureFps": len(unique) / mac_duration,
@@ -223,6 +243,10 @@ for _ in range(COUNT):
                      "repeatedCaptureSubmissions": len(repacks),
                      "h264Mbps": sum(r["b"] for r in rows) * 8 / mac_duration / 1_000_000,
                      "contentToDrawMs": latency(shown.values()), "repeatContentAgeMs": latency(repacks),
+                     "stageMs": stages(shown.values()),
+                     "captureCadence": cadence(shown.values(), "cap"),
+                     "receiveCadence": cadence(shown.values(), "rx"),
+                     "drawCadence": cadence(shown.values(), "drw"),
                      "gazeCounters": {k: v - start_stream.get("summary", {}).get("gaze", {}).get("counts", {}).get(k, 0)
                                       for k, v in end_stream.get("summary", {}).get("gaze", {}).get("counts", {}).items()},
                      "note": "Mac host-clock window brackets the native sampling window; H264 payload only. "
