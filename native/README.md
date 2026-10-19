@@ -123,9 +123,9 @@ not successful decode or GPU execution timings.
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder
-thread. At most eight compressed access units wait for decoding. This absorbs
-short delivery bursts that exceeded the previous three-packet bound, without
-discarding a valid H.264 reference chain. Overflow still discards
+thread. At most sixteen compressed access units wait for decoding. This absorbs
+Wi-Fi delivery gaps of about 200 ms at 60 fps, which overflowed the earlier
+eight-packet bound, without discarding a valid H.264 reference chain. Overflow still discards
 that queue and asks for an IDR. Software flushes at recovery; V4L2 keeps its
 context for a same-size overflow IDR and retires older timestamp tokens.
 Delayed driver output through that barrier is discarded; zero, negative,
@@ -147,16 +147,25 @@ conversion error is reported as an error rather than silently changing paths.
 The CPU path remains selectable with `--conversion cpu` and is the default for
 both the executable and launcher.
 
-For each new picture, the GL owner writes the same full-resolution RGBA8 texture.
-The CPU path uploads RGBA; the GPU path uploads 1.5 bytes per pixel of NV12 or
+For each new picture, the GL owner writes a full-resolution RGBA8 texture in
+one of three slots, each with its own source-plane textures. The CPU path uploads RGBA; the GPU path uploads 1.5 bytes per pixel of NV12 or
 YUV420P planes and converts them into that texture with a fragment shader. The
 GPU path reduces source-plane upload bytes while keeping full-resolution OpenVR
-texture dimensions and contents. The owner flushes then finishes producer GPU
-work once before `SetOverlayTexture`, with the wait measured separately. This
-conservative synchronization follows the Frame
-Zink incomplete-image lesson; it needs device/worn validation for this overlay
-path. Texture names change on resolution changes, avoiding stale SteamVR texture
-metadata. No per-eye rendering, synchronous steady-state GPU readback or display
+texture dimensions and contents. The default `fence` handoff places a GL fence
+after each picture's work, flushes, and calls `SetOverlayTexture` only after
+that fence has signalled, oldest first. SteamVR therefore never imports an
+incomplete texture (the Frame Zink lesson), while the next picture's upload
+overlaps the GPU's conversion of the previous one. A slot is reused only when it
+is neither displayed nor in flight; vrclient blits each submitted texture into
+its own shared texture inside this GL context. `--handoff finish` (or
+`FRAME_WORKSPACE_HANDOFF=finish`) restores the previous serial
+`glFlush(); glFinish()` handoff in one slot. The GL owner sleeps until a
+decoded picture arrives or in-flight work completes, rather than on a fixed
+interval. State reports `handoff`, `gpuLatencyMs` (issue to observed
+completion), `handoffBlockingWaits`, and the per-second maxima
+`decodeStepMaxMs` and `arrivalGapMaxMs`, which separate decoder stalls from
+network bursts. Texture names change on resolution changes, avoiding stale
+SteamVR texture metadata. No per-eye rendering, synchronous steady-state GPU readback or display
 refresh loop is involved. `--dump PATH.ppm` performs one explicit diagnostic
 readback of the first successfully submitted application texture.
 
@@ -247,7 +256,7 @@ unused decoder. On overflow, a validated same-size IDR resets the H.264 referenc
 state without reopening V4L2, whose FFmpeg wrapper has no flush callback. Real
 reconnects and parsed visible/coded dimension changes reopen the hardware
 context. Software reconnects flush the existing context and retire its timing
-metadata. The eight-packet and one-newest-picture limits remain in place;
+metadata. The sixteen-packet and one-newest-picture limits remain in place;
 timestamp metadata is separately bounded to 64 entries. Unsupported output formats or missing timestamps
 fail explicitly instead of reporting guessed timing or software acceleration.
 

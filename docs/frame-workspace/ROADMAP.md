@@ -24,8 +24,9 @@ FW-08 has device-verified placement/curvature APIs and native panel-switcher
 discovery; its approved inline placement controls are implemented. FW-09 has an active
 stream policy, matched 1/2/4/6-stream Frame measurements and a
 [bounded decode-burst fix](PERFORMANCE.md#decode-burst-follow-up-2026-10-19).
-Its longer single-stream trial reached 27.7 uploads/s with no encoded drops;
-reliable 30/60 fps remains open. FW-12 has a tested
+The single 2880×2560 Workspace now reaches about 60 fresh desktop updates/s
+off-head at a 60 fps target ([60 fps record](PERFORMANCE.md#60-fps-single-workspace-2026-10-19));
+worn presentation at that rate remains open. FW-12 has a tested
 letterbox scroll fix and an input audit; worn focus/IME acceptance remains open.
 
 ## Overnight follow-up through FW-11
@@ -43,9 +44,11 @@ These are implementation/evidence milestones, not blanket issue completion.
 | FW-11 | Coding restores after fresh companion launch; profile migrated to private persistent app data; fresh window-rule matching | Cross-runtime spatial restore deliberately unavailable; broader reconnect acceptance |
 | FW-12 | Production wheel mapping fix with actual-page tests; [input audit/checklist](INPUT.md) | Real keyboard/trackpad/IME, native Space and worn multi-window checks |
 
-The active preview retains 9:8 at 1× / Sharp, V4L2 hardware decoding, CPU
-conversion and a 30 fps target. The native viewer still needs the user's worn
-judder/readability assessment. No 60 fps or complete FW-05–12 acceptance is claimed.
+The active preview uses 9:8 at 1× / Sharp, V4L2 hardware decoding, GPU
+conversion, the fence handoff, a 60 fps target and a 120 Hz Workspace display.
+The native viewer still needs the user's worn judder/readability assessment.
+Off-head 60 fps desktop updates are measured; worn 60 fps and complete FW-05–12
+acceptance are not claimed.
 
 ## Product thesis
 

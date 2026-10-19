@@ -1,0 +1,388 @@
+{
+ "schema": 1,
+ "date": "2026-10-19",
+ "evidence": "off-head desktop texture updates on the actual Frame; not compositor or optical FPS",
+ "conditions": {
+  "workspace": "2880x2560 Sharp, 1x",
+  "targetFps": 60,
+  "decoder": "h264_v4l2m2m",
+  "conversion": "gpu",
+  "adaptation": "disabled (FRAME_MAC_VIEW_ADAPT=0)",
+  "fixture": "native/bench_desktop.py scrolling Chrome window 2880x2530",
+  "power": "Mac on AC",
+  "frameBuild": "SteamOS 0.5.6, BUILD_ID 20261015.6141207",
+  "link": "Wi-Fi 5 GHz ch36 40 MHz, -58 dBm; Frame also hosts a 6 GHz AP on the same radio; Mac awdl0 active",
+  "ping": "20 pings: min/avg/max 4.5/28.6/95.6 ms, stddev 34.4"
+ },
+ "binaries": {
+  "nativeSha256": "7e11170b05bad4d881ec22f5b91494dcd564ca985c8a71059129d43882acb742",
+  "macAgentSha256": "1f9c5c53e1ab256d653bc5ac71490040af2134f9f3fdcfa336b902447ec8ebdb",
+  "rollbackNativeSha256": "42f9c8adcf5b9bff2fb375216db5e6e40795cb6e4c381c7a70c5d8461a26fafe",
+  "rollbackMacAgentSha256": "48a3e1390c469b3bdcddb9c69db5f680413f84c3c3369fe27db5ce578e37501d",
+  "note": "Runs before installedFinal used an otherwise identical build (b20f5606...) whose diagnostic --dump read the last submitted texture."
+ },
+ "runs": {
+  "baseline": {
+   "description": "installed 8891836 viewer (glFinish handoff, 8-packet queue) and Mac agent (1/fps capture interval), 60 Hz display",
+   "seconds": 30.02,
+   "macCaptureFps": 52.62,
+   "receivedFps": 51.69,
+   "decodedFps": 47.06,
+   "uploadedFps": 37.6,
+   "freshDrawnFps": 38.22,
+   "h264Mbps": 3.38,
+   "queueOverflows": 6,
+   "droppedEncoded": 133,
+   "droppedDecoded": 284,
+   "errors": 0,
+   "packetQueueHighWater": 8,
+   "contentToDrawMs": {
+    "p50": 65.1,
+    "p95": 195.6
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 3.89,
+     "p95": 5.61
+    },
+    "syncMs": {
+     "p50": 2.72,
+     "p95": 3.04
+    },
+    "queueAgeMs": {
+     "p50": 31.8,
+     "p95": 52.05
+    }
+   }
+  },
+  "fenceViewerOnly": {
+   "description": "fence handoff + picture wakeup, 8-packet queue; old Mac agent",
+   "seconds": 30.02,
+   "macCaptureFps": 54.82,
+   "receivedFps": 53.33,
+   "decodedFps": 41.2,
+   "uploadedFps": 40.0,
+   "freshDrawnFps": 42.29,
+   "h264Mbps": 4.91,
+   "queueOverflows": 14,
+   "droppedEncoded": 351,
+   "droppedDecoded": 36,
+   "errors": 0,
+   "packetQueueHighWater": 8,
+   "contentToDrawMs": {
+    "p50": 72.7,
+    "p95": 230.6
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.94,
+     "p95": 1.89
+    },
+    "syncMs": {
+     "p50": 1.9,
+     "p95": 2.54
+    },
+    "gpuLatencyMs": {
+     "p50": 2.55,
+     "p95": 2.95
+    },
+    "queueAgeMs": {
+     "p50": 29.0,
+     "p95": 112.65
+    }
+   }
+  },
+  "fenceViewerGauges": {
+   "description": "as above, with decode-step/arrival-gap gauges",
+   "seconds": 30.02,
+   "macCaptureFps": 55.51,
+   "receivedFps": 54.56,
+   "decodedFps": 54.26,
+   "uploadedFps": 52.66,
+   "freshDrawnFps": 52.56,
+   "h264Mbps": 2.35,
+   "queueOverflows": 1,
+   "droppedEncoded": 13,
+   "droppedDecoded": 49,
+   "errors": 0,
+   "packetQueueHighWater": 8,
+   "contentToDrawMs": {
+    "p50": 68.6,
+    "p95": 150.3
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.94,
+     "p95": 1.22
+    },
+    "syncMs": {
+     "p50": 1.8,
+     "p95": 2.7
+    },
+    "gpuLatencyMs": {
+     "p50": 2.22,
+     "p95": 3.03
+    },
+    "decodeStepMaxMs": {
+     "p50": 16.16,
+     "p95": 20.45
+    },
+    "arrivalGapMaxMs": {
+     "p50": 105.34,
+     "p95": 208.04
+    },
+    "queueAgeMs": {
+     "p50": 28.33,
+     "p95": 40.88
+    }
+   }
+  },
+  "fullCandidate60Hz_1": {
+   "description": "fence handoff, 16-packet queue, Mac agent with 2 ms capture jitter allowance, 60 Hz display",
+   "seconds": 30.02,
+   "macCaptureFps": 58.4,
+   "receivedFps": 57.93,
+   "decodedFps": 57.89,
+   "uploadedFps": 57.09,
+   "freshDrawnFps": 57.13,
+   "h264Mbps": 2.11,
+   "queueOverflows": 0,
+   "droppedEncoded": 0,
+   "droppedDecoded": 25,
+   "errors": 0,
+   "packetQueueHighWater": 11,
+   "contentToDrawMs": {
+    "p50": 43.6,
+    "p95": 124.0
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.92,
+     "p95": 1.71
+    },
+    "syncMs": {
+     "p50": 2.41,
+     "p95": 2.55
+    },
+    "gpuLatencyMs": {
+     "p50": 2.68,
+     "p95": 2.84
+    },
+    "decodeStepMaxMs": {
+     "p50": 13.63,
+     "p95": 20.89
+    },
+    "arrivalGapMaxMs": {
+     "p50": 102.1,
+     "p95": 143.93
+    },
+    "queueAgeMs": {
+     "p50": 28.05,
+     "p95": 31.89
+    }
+   }
+  },
+  "fullCandidate60Hz_2": {
+   "description": "repeat",
+   "seconds": 30.02,
+   "macCaptureFps": 57.76,
+   "receivedFps": 57.46,
+   "decodedFps": 57.42,
+   "uploadedFps": 56.66,
+   "freshDrawnFps": 56.47,
+   "h264Mbps": 2.12,
+   "queueOverflows": 0,
+   "droppedEncoded": 0,
+   "droppedDecoded": 24,
+   "errors": 0,
+   "packetQueueHighWater": 13,
+   "contentToDrawMs": {
+    "p50": 44.4,
+    "p95": 140.1
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.9,
+     "p95": 1.67
+    },
+    "syncMs": {
+     "p50": 2.16,
+     "p95": 2.73
+    },
+    "gpuLatencyMs": {
+     "p50": 2.6,
+     "p95": 3.06
+    },
+    "decodeStepMaxMs": {
+     "p50": 14.67,
+     "p95": 18.25
+    },
+    "arrivalGapMaxMs": {
+     "p50": 103.3,
+     "p95": 171.04
+    },
+    "queueAgeMs": {
+     "p50": 28.2,
+     "p95": 35.8
+    }
+   }
+  },
+  "final120Hz_1": {
+   "description": "as above with the Workspace display at 120 Hz",
+   "seconds": 30.02,
+   "macCaptureFps": 62.12,
+   "receivedFps": 62.19,
+   "decodedFps": 62.19,
+   "uploadedFps": 61.22,
+   "freshDrawnFps": 60.91,
+   "h264Mbps": 2.24,
+   "queueOverflows": 0,
+   "droppedEncoded": 0,
+   "droppedDecoded": 30,
+   "errors": 0,
+   "packetQueueHighWater": 9,
+   "contentToDrawMs": {
+    "p50": 64.3,
+    "p95": 139.5
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.92,
+     "p95": 1.42
+    },
+    "syncMs": {
+     "p50": 1.72,
+     "p95": 2.53
+    },
+    "gpuLatencyMs": {
+     "p50": 2.47,
+     "p95": 2.97
+    },
+    "decodeStepMaxMs": {
+     "p50": 14.77,
+     "p95": 19.56
+    },
+    "arrivalGapMaxMs": {
+     "p50": 99.02,
+     "p95": 135.91
+    },
+    "queueAgeMs": {
+     "p50": 27.86,
+     "p95": 39.5
+    }
+   }
+  },
+  "final120Hz_2": {
+   "description": "repeat",
+   "seconds": 30.02,
+   "macCaptureFps": 62.19,
+   "receivedFps": 62.02,
+   "decodedFps": 61.99,
+   "uploadedFps": 60.85,
+   "freshDrawnFps": 60.73,
+   "h264Mbps": 2.26,
+   "queueOverflows": 0,
+   "droppedEncoded": 0,
+   "droppedDecoded": 34,
+   "errors": 0,
+   "packetQueueHighWater": 12,
+   "contentToDrawMs": {
+    "p50": 66.3,
+    "p95": 148.3
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.96,
+     "p95": 2.22
+    },
+    "syncMs": {
+     "p50": 1.79,
+     "p95": 2.5
+    },
+    "gpuLatencyMs": {
+     "p50": 2.61,
+     "p95": 3.11
+    },
+    "decodeStepMaxMs": {
+     "p50": 15.76,
+     "p95": 20.24
+    },
+    "arrivalGapMaxMs": {
+     "p50": 101.42,
+     "p95": 209.46
+    },
+    "queueAgeMs": {
+     "p50": 27.54,
+     "p95": 51.32
+    }
+   }
+  },
+  "final120Hz_60s": {
+   "description": "60-second run, final configuration",
+   "seconds": 60.04,
+   "macCaptureFps": 60.47,
+   "receivedFps": 60.29,
+   "decodedFps": 60.29,
+   "uploadedFps": 59.17,
+   "freshDrawnFps": 59.04,
+   "h264Mbps": 2.21,
+   "queueOverflows": 0,
+   "droppedEncoded": 0,
+   "droppedDecoded": 67,
+   "errors": 0,
+   "packetQueueHighWater": 12,
+   "contentToDrawMs": {
+    "p50": 68.0,
+    "p95": 152.4
+   },
+   "stageMsOneSecondSamples": {
+    "uploadMs": {
+     "p50": 0.95,
+     "p95": 1.33
+    },
+    "syncMs": {
+     "p50": 1.79,
+     "p95": 2.66
+    },
+    "gpuLatencyMs": {
+     "p50": 2.35,
+     "p95": 2.97
+    },
+    "decodeStepMaxMs": {
+     "p50": 15.03,
+     "p95": 18.99
+    },
+    "arrivalGapMaxMs": {
+     "p50": 101.78,
+     "p95": 217.19
+    },
+    "queueAgeMs": {
+     "p50": 27.63,
+     "p95": 41.3
+    }
+   }
+  },
+  "installedFinal": {
+   "description": "committed viewer source, final configuration",
+   "seconds": 30.02,
+   "macCaptureFps": 61.43,
+   "decodedFps": 61.39,
+   "uploadedFps": 60.09,
+   "freshDrawnFps": 59.55,
+   "queueOverflows": 0,
+   "droppedEncoded": 0,
+   "errors": 0
+  }
+ },
+ "hardwareGates": {
+  "binary": "candidate on the Frame, hidden GL display, Workspace viewer stopped",
+  "tests_stream v4l2 default/reconnect/size-change/overload, gpu bt601-limited": "all passed; max RGB difference 2; overload overflowed 3 times and recovered at an IDR with one decoder open",
+  "tests_gpu_conversion": "exit 0, 7 cases passed, max RGB difference 3 (known GPU-vs-swscale rounding)",
+  "tests_decoder": "selection_and_exit passed"
+ },
+ "notLearned": [
+  "worn presentation or judder",
+  "whether the higher content-to-draw p50 at 120 Hz is real or clock-sync error (Frame-local queue age unchanged)",
+  "USB-C link"
+ ]
+}

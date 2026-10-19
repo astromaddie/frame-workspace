@@ -397,6 +397,9 @@ int main(int argc, char **argv) {
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
                           : "cpu",
+      handoffMode = std::getenv("FRAME_WORKSPACE_HANDOFF")
+                        ? std::getenv("FRAME_WORKSPACE_HANDOFF")
+                        : "fence",
       testYuvFormat, testYuvRange = "limited", testYuvColorSpace = "bt601",
       testYuvPattern = "sharp",
       exitReason = "running";
@@ -433,6 +436,8 @@ int main(int argc, char **argv) {
         decoderMode = value();
       else if (a == "--conversion")
         conversionMode = value();
+      else if (a == "--handoff")
+        handoffMode = value();
       else if (a == "--foveation")
         foveation = true;
       else if (a == "--diagnostic-gaze") {
@@ -491,7 +496,7 @@ int main(int argc, char **argv) {
         std::cout
             << "frame-workspace-native --url-file PATH [--control-file PATH] "
                "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] "
-               "[--decoder software|v4l2] [--conversion cpu|gpu] [--foveation] "
+               "[--decoder software|v4l2] [--conversion cpu|gpu] [--handoff fence|finish] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
                "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | "
@@ -517,6 +522,8 @@ int main(int argc, char **argv) {
       throw std::runtime_error("decoder must be software or v4l2");
     if (conversionMode != "cpu" && conversionMode != "gpu")
       throw std::runtime_error("conversion must be cpu or gpu");
+    if (handoffMode != "fence" && handoffMode != "finish")
+      throw std::runtime_error("handoff must be fence or finish");
     if (!testYuvFormat.empty() && testYuvFormat != "nv12" &&
         testYuvFormat != "yuv420p")
       throw std::runtime_error("test YUV format must be nv12 or yuv420p");
@@ -555,6 +562,7 @@ int main(int argc, char **argv) {
     av_log_set_level(AV_LOG_ERROR);
     endpoint.foveation = foveation;
     Overlay overlay(noVR, key, foveation && !diagnosticGaze);
+    overlay.handoff = handoffMode;
     bool persisted = loadPlacement(poseFile, overlay.placement);
     bool pendingRecenter = !persisted;
     if (pendingRecenter)
@@ -619,6 +627,11 @@ int main(int argc, char **argv) {
              ",\"uploadMs\":" + std::to_string(uploadMs) +
              ",\"syncMs\":" + std::to_string(overlay.syncMs) +
              ",\"submitMs\":" + std::to_string(overlay.submitMs) +
+             ",\"decodeStepMaxMs\":" + std::to_string(pipe.decodeStepMaxMs.exchange(0)) +
+             ",\"arrivalGapMaxMs\":" + std::to_string(pipe.arrivalGapMaxMs.exchange(0)) +
+             ",\"handoff\":\"" + overlay.handoff +
+             "\",\"gpuLatencyMs\":" + std::to_string(overlay.gpuLatencyMs) +
+             ",\"handoffBlockingWaits\":" + std::to_string(overlay.blockingWaits) +
              ",\"queueAgeMs\":" + std::to_string(ageMs) +
              ",\"droppedEncoded\":" + std::to_string(pipe.droppedEncoded) +
              ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
@@ -793,31 +806,40 @@ int main(int argc, char **argv) {
         picture = retryPicture;
         lastPattern = now;
       }
+      std::vector<Overlay::Completion> done;
+      auto finished = [&] {
+        for (auto &c : done) {
+          const auto &picture = c.picture;
+          if (c.submitted) {
+            ready = true;
+            ++uploads;
+            w = picture->outputWidth();
+            h = picture->outputHeight();
+            encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.direct || picture->layout.warped;
+            ageMs = nowMs() - picture->received;
+            pipe.report(*picture, nowMs());
+            retryPicture.reset();
+            if (!dumpPath.empty() && !dumped &&
+                (!dumpSequence || picture->seq == dumpSequence) &&
+                (!dumpWidth ||
+                 (picture->outputWidth() == dumpWidth && picture->outputHeight() == dumpHeight))) {
+              overlay.dump(dumpPath, c);
+              dumped = true;
+            }
+          } else {
+            ++submitErrors;
+            retryPicture = picture;
+          }
+        }
+        done.clear();
+      };
       if (picture) {
         double before = nowMs();
-        bool submitted = overlay.upload(*picture);
+        overlay.stage(std::move(picture), done);
         uploadMs = nowMs() - before;
-        if (submitted) {
-          ready = true;
-          ++uploads;
-          w = picture->outputWidth();
-          h = picture->outputHeight();
-          encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.direct || picture->layout.warped;
-          ageMs = nowMs() - picture->received;
-          pipe.report(*picture, nowMs());
-          retryPicture.reset();
-          if (!dumpPath.empty() && !dumped &&
-              (!dumpSequence || picture->seq == dumpSequence) &&
-              (!dumpWidth ||
-               (picture->outputWidth() == dumpWidth && picture->outputHeight() == dumpHeight))) {
-            overlay.dump(dumpPath);
-            dumped = true;
-          }
-        } else {
-          ++submitErrors;
-          retryPicture = picture;
-        }
       }
+      overlay.complete(0, done);
+      finished();
       if (now - lastState >= 1000) {
         double dt = (now - previousState) / 1000;
         decodeFps = (pipe.decoded - lastDecoded) / dt;
@@ -842,7 +864,13 @@ int main(int argc, char **argv) {
             (unsigned long long)(pipe.droppedEncoded + pipe.droppedDecoded),
             (unsigned long long)(pipe.errors + submitErrors));
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(4));
+      // Sleep until the GPU finishes in-flight work or a new picture arrives,
+      // rather than a fixed interval after every upload.
+      if (overlay.busy()) {
+        overlay.complete(2, done);
+        finished();
+      } else
+        pipe.waitForPicture(test ? 4 : 8);
     }
     if (exitReason == "running") {
       if (interrupted)

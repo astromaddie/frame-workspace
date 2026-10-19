@@ -41,6 +41,17 @@ class Helpers(unittest.TestCase):
             self.assertNotIn(" ", value)
             self.assertEqual(list(map(float, value.split(","))), [0.5, 0.1])
 
+    def test_workspace_display_defaults_to_120_hz(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FRAME_MAC_VIEW_VD_HZ", None)
+            self.assertEqual(frame_macview.workspace_refresh_hz(), "120")
+        with mock.patch.dict(os.environ, {"FRAME_MAC_VIEW_VD_HZ": "60"}):
+            self.assertEqual(frame_macview.workspace_refresh_hz(), "60")
+        for bad in ("0", "fast", "1000"):
+            with mock.patch.dict(os.environ, {"FRAME_MAC_VIEW_VD_HZ": bad}), \
+                    self.assertRaisesRegex(frame_macview.MacViewError, "30 to 240 Hz"):
+                frame_macview.workspace_refresh_hz()
+
     def test_panel_id_is_stable_and_in_range(self):
         a = frame_macview.panel_id("window:123")
         self.assertEqual(a, frame_macview.panel_id("window:123"))

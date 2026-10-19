@@ -120,7 +120,10 @@ and the benchmark's Chrome windows:
   ScreenCaptureKit delivered only about 46–53 fps from it, whereas the
   built-in ProMotion screen gave 121 fps (**verified**). Neither a 120 Hz
   virtual display (`FRAME_MAC_VIEW_VD_HZ=120`) nor a looser
-  `minimumFrameInterval` changed that. Cause unknown.
+  `minimumFrameInterval` changed that. Cause unknown. (The full-display
+  Workspace capture behaved differently on 2026-10-19: a 2 ms interval
+  allowance plus a 120 Hz display took it from about 54.6 to 60–62 fps; see
+  [the 60 fps record](frame-workspace/PERFORMANCE.md#60-fps-single-workspace-2026-10-19).)
 - **Windows that keep their own size** (Calculator, 230×408). The window
   moved and streamed, but stayed small in the display's corner, so the panel
   was mostly wallpaper. Now only that corner is captured

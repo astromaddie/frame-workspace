@@ -128,8 +128,10 @@ with tempfile.TemporaryDirectory(prefix="fw-gaze-render-") as folder:
             listener.close()
     server_thread = threading.Thread(target=server)
     server_thread.start()
+    # The stall is injected through glFinish, which only the serial handoff
+    # calls; the gaze producer's independence does not depend on the handoff.
     command = [str(a.binary.resolve()), "--no-vr", "--foveation", "--diagnostic-gaze", "scan",
-               "--url-file", str(folder / "url"), "--seconds", "7"]
+               "--handoff", "finish", "--url-file", str(folder / "url"), "--seconds", "7"]
     if not a.use_display:
         command = ["xvfb-run", "-a", *command]
     env = dict(os.environ, FW_TEST_STALL_MARKERS=str(folder / "stalls"))

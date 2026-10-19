@@ -168,9 +168,19 @@ struct Pipeline {
   std::atomic<double> decodeMs{0}, sendMs{0}, convertMs{0}, planeCopyMs{0},
       decoderOpenMs{0}, decoderOpenMsTotal{0}, clockOffset{0},
       packetQueueWaitMs{0}, emptyReceiveMaxMs{0}, emptyReceiveTotalMs{0};
+  // Per-state-interval maxima (the owner resets them after each state write):
+  // one packet's parse/send/receive/copy step, and the gap between packet
+  // arrivals. They distinguish decoder stalls from network delivery bursts.
+  std::atomic<double> decodeStepMaxMs{0}, arrivalGapMaxMs{0};
+  double lastArrival = 0;
+  static void raiseMax(std::atomic<double> &value, double sample) {
+    double current = value.load();
+    while (sample > current && !value.compare_exchange_weak(current, sample)) {
+    }
+  }
   std::atomic<bool> clockValid{false};
   std::mutex mutex, outMutex;
-  std::condition_variable wake;
+  std::condition_variable wake, pictureReady;
   std::deque<Packet> packets;
   std::shared_ptr<Picture> newest;
   std::deque<std::string> outbound;
@@ -186,9 +196,11 @@ struct Pipeline {
   }
   std::atomic<bool> foveationNegotiated{false}, atlasNegotiated{false}, directNegotiated{false};
   bool needKey = true;
-  // Absorb short transport bursts without throwing away an H.264 reference
-  // chain. This remains bounded; a real backlog still recovers at an IDR.
-  static constexpr size_t maxPacketQueue = 8;
+  // Absorb transport bursts without throwing away an H.264 reference chain.
+  // Frame Wi-Fi delivery gaps reached ~210 ms at p95 (about 13 packets at
+  // 60 fps), which overflowed eight. This remains bounded; a real backlog
+  // still recovers at an IDR.
+  static constexpr size_t maxPacketQueue = 16;
   ResetReason pendingResetReason = ResetReason::None;
   std::thread net, decoder;
   static int resetPriority(ResetReason reason) {
@@ -229,6 +241,9 @@ struct Pipeline {
   void enqueue(Packet p) {
     std::lock_guard<std::mutex> lock(mutex);
     ++received;
+    if (lastArrival > 0)
+      raiseMax(arrivalGapMaxMs, p.received - lastArrival);
+    lastArrival = p.received;
     if (packets.size() >= maxPacketQueue) {
       ++packetQueueOverflows;
       droppedEncoded += packets.size();
@@ -257,10 +272,20 @@ struct Pipeline {
     return std::exchange(newest, {});
   }
   void publish(std::shared_ptr<Picture> p) {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (newest)
-      ++droppedDecoded;
-    newest = std::move(p);
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (newest)
+        ++droppedDecoded;
+      newest = std::move(p);
+    }
+    pictureReady.notify_one();
+  }
+  // Lets the GL owner sleep until a decoded picture arrives instead of
+  // polling on a fixed interval; it still wakes for events and control.
+  void waitForPicture(double ms) {
+    std::unique_lock<std::mutex> lock(mutex);
+    pictureReady.wait_for(lock, std::chrono::microseconds(int64_t(ms * 1000)),
+                          [&] { return newest || stop; });
   }
   void report(const Picture &p, double uploaded) {
     if (!clockValid)
@@ -746,6 +771,7 @@ struct Pipeline {
         continue;
       }
       packetQueueWaitMs = nowMs() - p.received;
+      const double stepStart = nowMs();
       H264Crop packetCrop;
       if (decoderRequested == "v4l2") {
         int parsed = headers.parse(p.bytes);
@@ -880,6 +906,7 @@ struct Pipeline {
         lastOverflowRecoverySeq = p.seq;
       }
       result = drain();
+      raiseMax(decodeStepMaxMs, nowMs() - stepStart);
       if (result != AVERROR(EAGAIN) && result != AVERROR_EOF && !stop) {
         if (decoderRequested == "v4l2") {
           fail("receive", result);

@@ -117,6 +117,23 @@ def workspace_diagnostic_gaze():
     return f"{uv[0]:.17g},{uv[1]:.17g}"
 
 
+def workspace_refresh_hz():
+    """The Workspace display's refresh rate, for the Swift helper.
+
+    At 60 Hz a 60 fps capture needs every vsync, so each late app frame costs
+    a streamed frame (about 58/s measured); at 120 Hz it can take the next one.
+    FRAME_MAC_VIEW_VD_HZ=60 restores the previous display mode.
+    """
+    value = os.environ.get("FRAME_MAC_VIEW_VD_HZ", "120")
+    try:
+        hz = float(value)
+    except ValueError:
+        hz = 0
+    if not 30 <= hz <= 240:
+        raise MacViewError("FRAME_MAC_VIEW_VD_HZ must be a refresh rate from 30 to 240 Hz.")
+    return value
+
+
 def workspace_conversion():
     conversion = os.environ.get("FRAME_WORKSPACE_CONVERSION", "cpu")
     if conversion not in ("cpu", "gpu"):
@@ -331,9 +348,10 @@ class WorkspaceDisplayManager:
             width, height = config["width"], config["height"]
             args = [str(self.executable), "workspace", "--width", str(width), "--height", str(height),
                     "--scale", str(scale), "--exit-on-stdin-eof"]
+            env = {**os.environ, "FRAME_MAC_VIEW_VD_HZ": workspace_refresh_hz()}
             try:
                 proc = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                        stderr=subprocess.STDOUT, text=True, bufsize=1, env=env)
             except OSError as e:
                 raise MacViewError(f"Couldn't start the Workspace helper: {e}")
             owner = {"proc": proc, "config": config, "record": None, "error": None,

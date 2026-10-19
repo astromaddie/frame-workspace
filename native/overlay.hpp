@@ -81,11 +81,28 @@ class Overlay {
   VR_IVROverlay_FnTable *overlay = nullptr;
   VR_IVRSystem_FnTable *system = nullptr;
   VROverlayHandle_t handle = 0;
-  GLuint texture = 0;
-  GLuint yuvTextures[3] = {}, yuvFramebuffer = 0, yuvProgram = 0;
-  int yuvWidth = 0, yuvHeight = 0;
-  Picture::Format yuvFormat = Picture::Format::RGBA;
-  int width = 0, height = 0;
+  // One output texture plus its own source planes per slot. With the fence
+  // handoff, the GPU converts one picture while the CPU uploads the next; a
+  // slot is reused only after SteamVR has copied a newer submitted texture
+  // (vrclient blits each SetOverlayTexture source inside this GL context).
+  struct Slot {
+    GLuint texture = 0;
+    GLuint yuv[3] = {};
+    int yuvWidth = 0, yuvHeight = 0;
+    Picture::Format yuvFormat = Picture::Format::RGBA;
+    int width = 0, height = 0;
+    GLsync fence = nullptr;
+    std::shared_ptr<Picture> picture;
+    double staged = 0;
+  };
+  static constexpr int maxSlots = 3;
+  Slot slots[maxSlots];
+  std::deque<int> inFlight; // oldest first
+  int displayed = -1;
+  std::vector<GLuint> retired; // previous-size textures, deleted after a submit
+  GLuint texture = 0;          // the last submitted texture
+  GLuint yuvFramebuffer = 0, yuvProgram = 0;
+  int width = 0, height = 0;   // dimensions of the last submitted texture
   bool noVR = false;
   std::unique_ptr<GazeBridge> gazeBridge;
   // The render thread owns placement and texture dimensions. Gaze uses only
@@ -222,15 +239,15 @@ class Overlay {
     if (!yuvFramebuffer)
       throw std::runtime_error("YUV framebuffer allocation failed");
   }
-  void ensureYuvTextures(const Picture &p) {
+  void ensureYuvTextures(Slot &s, const Picture &p) {
     ensureYuvProgram();
-    if (yuvWidth == p.width && yuvHeight == p.height &&
-        yuvFormat == p.format)
+    if (s.yuvWidth == p.width && s.yuvHeight == p.height &&
+        s.yuvFormat == p.format)
       return;
-    if (!yuvTextures[0])
-      glGenTextures(3, yuvTextures);
-    if (!yuvTextures[0] || !yuvTextures[1] ||
-        (p.format == Picture::Format::YUV420P && !yuvTextures[2]))
+    if (!s.yuv[0])
+      glGenTextures(3, s.yuv);
+    if (!s.yuv[0] || !s.yuv[1] ||
+        (p.format == Picture::Format::YUV420P && !s.yuv[2]))
       throw std::runtime_error("YUV texture allocation failed");
     const int cw = (p.width + 1) / 2, ch = (p.height + 1) / 2;
     auto allocate = [](GLuint id, int w, int h, GLenum format) {
@@ -242,38 +259,38 @@ class Overlay {
       glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0, format,
                    GL_UNSIGNED_BYTE, nullptr);
     };
-    allocate(yuvTextures[0], p.width, p.height, p.format == Picture::Format::RGBA ? GL_RGBA : GL_LUMINANCE);
+    allocate(s.yuv[0], p.width, p.height, p.format == Picture::Format::RGBA ? GL_RGBA : GL_LUMINANCE);
     if (p.format == Picture::Format::RGBA) {
-      yuvWidth = p.width; yuvHeight = p.height; yuvFormat = p.format;
+      s.yuvWidth = p.width; s.yuvHeight = p.height; s.yuvFormat = p.format;
       return;
     }
-    allocate(yuvTextures[1], cw, ch,
+    allocate(s.yuv[1], cw, ch,
              p.format == Picture::Format::NV12 ? GL_LUMINANCE_ALPHA
                                                 : GL_LUMINANCE);
     if (p.format == Picture::Format::YUV420P)
-      allocate(yuvTextures[2], cw, ch, GL_LUMINANCE);
-    glBindTexture(GL_TEXTURE_2D, yuvTextures[1]);
+      allocate(s.yuv[2], cw, ch, GL_LUMINANCE);
+    glBindTexture(GL_TEXTURE_2D, s.yuv[1]);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     if (p.format == Picture::Format::YUV420P) {
-      glBindTexture(GL_TEXTURE_2D, yuvTextures[2]);
+      glBindTexture(GL_TEXTURE_2D, s.yuv[2]);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     }
-    yuvWidth = p.width;
-    yuvHeight = p.height;
-    yuvFormat = p.format;
+    s.yuvWidth = p.width;
+    s.yuvHeight = p.height;
+    s.yuvFormat = p.format;
   }
-  void convertYuv(const Picture &p) {
-    ensureYuvTextures(p);
+  void convertYuv(Slot &s, const Picture &p) {
+    ensureYuvTextures(s, p);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, yuvTextures[0]);
+    glBindTexture(GL_TEXTURE_2D, s.yuv[0]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p.width, p.height,
                     p.format == Picture::Format::RGBA ? GL_RGBA : GL_LUMINANCE, GL_UNSIGNED_BYTE,
                     p.format == Picture::Format::RGBA ? p.rgba.data() : p.y.data());
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, yuvTextures[1]);
+    glBindTexture(GL_TEXTURE_2D, s.yuv[1]);
     if (p.format == Picture::Format::NV12) {
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (p.width + 1) / 2,
                       (p.height + 1) / 2, GL_LUMINANCE_ALPHA,
@@ -283,7 +300,7 @@ class Overlay {
                       (p.height + 1) / 2, GL_LUMINANCE, GL_UNSIGNED_BYTE,
                       p.u.data());
       glActiveTexture(GL_TEXTURE2);
-      glBindTexture(GL_TEXTURE_2D, yuvTextures[2]);
+      glBindTexture(GL_TEXTURE_2D, s.yuv[2]);
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (p.width + 1) / 2,
                       (p.height + 1) / 2, GL_LUMINANCE, GL_UNSIGNED_BYTE,
                       p.v.data());
@@ -291,7 +308,7 @@ class Overlay {
     glActiveTexture(GL_TEXTURE0);
     glBindFramebuffer(GL_FRAMEBUFFER, yuvFramebuffer);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-                           texture, 0);
+                           s.texture, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
       throw std::runtime_error("YUV output framebuffer is incomplete");
     glViewport(0, 0, p.outputWidth(), p.outputHeight());
@@ -369,6 +386,19 @@ public:
   const char *exitReason = "running";
   double syncMs = 0, submitMs = 0;
   double gpuConvertMs = 0;
+  // Fence handoff: time from issuing a picture's GL work to observing its
+  // completion (GPU latency plus polling granularity), and blocking waits.
+  double gpuLatencyMs = 0;
+  uint64_t blockingWaits = 0;
+  // "fence" overlaps GPU conversion with the next upload; "finish" is the
+  // previous serial glFinish handoff, kept for comparison and rollback.
+  std::string handoff = "fence";
+  struct Completion {
+    std::shared_ptr<Picture> picture;
+    bool submitted = false;
+    GLuint texture = 0;
+    int width = 0, height = 0;
+  };
   Overlay(bool test, const std::string &overlayKey, bool foveation = false)
       : noVR(test), key(overlayKey) {
     if (SDL_Init(SDL_INIT_VIDEO))
@@ -462,10 +492,16 @@ public:
       glDeleteFramebuffers(1, &yuvFramebuffer);
     if (yuvProgram)
       glDeleteProgram(yuvProgram);
-    if (yuvTextures[0] || yuvTextures[1] || yuvTextures[2])
-      glDeleteTextures(3, yuvTextures);
-    if (texture)
-      glDeleteTextures(1, &texture);
+    for (auto &s : slots) {
+      if (s.fence)
+        glDeleteSync(s.fence);
+      if (s.yuv[0] || s.yuv[1] || s.yuv[2])
+        glDeleteTextures(3, s.yuv);
+      if (s.texture)
+        glDeleteTextures(1, &s.texture);
+    }
+    if (!retired.empty())
+      glDeleteTextures(GLsizei(retired.size()), retired.data());
     if (context)
       SDL_GL_DeleteContext(context);
     if (window)
@@ -588,28 +624,42 @@ public:
       }
     return true;
   }
-  bool upload(const Picture &p) {
-    GLuint old = 0;
-    if (!texture || p.outputWidth() != width || p.outputHeight() != height) {
-      old = texture;
-      glGenTextures(1, &texture);
-      glBindTexture(GL_TEXTURE_2D, texture);
+  bool fenced() const { return handoff == "fence"; }
+  bool busy() const { return !inFlight.empty(); }
+  // Issues one picture's upload and conversion. The finish handoff completes
+  // and submits it here. The fence handoff returns once the work is flushed;
+  // it completes the oldest in-flight picture first only if no slot is free.
+  void stage(std::shared_ptr<Picture> picture, std::vector<Completion> &done) {
+    const Picture &p = *picture;
+    if (fenced() && int(inFlight.size()) >= maxSlots - 1)
+      complete(-1, done);
+    int index = 0;
+    if (fenced())
+      while (index < maxSlots &&
+             (index == displayed ||
+              std::find(inFlight.begin(), inFlight.end(), index) != inFlight.end()))
+        ++index;
+    if (index >= maxSlots)
+      throw std::runtime_error("no free texture slot");
+    Slot &s = slots[index];
+    if (!s.texture || p.outputWidth() != s.width || p.outputHeight() != s.height) {
+      // New names on resize avoid stale SteamVR texture metadata. The old one
+      // may still be displayed, so it is deleted after the next submission.
+      if (s.texture)
+        retired.push_back(s.texture);
+      s.texture = 0;
+      glGenTextures(1, &s.texture);
+      glBindTexture(GL_TEXTURE_2D, s.texture);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
       glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, p.outputWidth(), p.outputHeight(), 0, GL_RGBA,
                    GL_UNSIGNED_BYTE, nullptr);
-      width = p.outputWidth();
-      height = p.outputHeight();
-      if (!noVR) {
-        HmdVector2_t mouseScale{{float(width), float(height)}};
-        std::lock_guard<std::mutex> lock(gazeGeometryMutex);
-        check(overlay->SetOverlayMouseScale(handle, &mouseScale),
-              "mouse scale");
-      }
+      s.width = p.outputWidth();
+      s.height = p.outputHeight();
     } else
-      glBindTexture(GL_TEXTURE_2D, texture);
+      glBindTexture(GL_TEXTURE_2D, s.texture);
     if (p.format == Picture::Format::RGBA && !p.layout.warped) {
       gpuConvertMs = 0;
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
@@ -617,8 +667,25 @@ public:
                       GL_UNSIGNED_BYTE, p.rgba.data());
     } else {
       double convertStart = nowMs();
-      convertYuv(p);
+      convertYuv(s, p);
       gpuConvertMs = nowMs() - convertStart;
+    }
+    s.picture = std::move(picture);
+    if (fenced()) {
+      if (s.fence)
+        glDeleteSync(s.fence);
+      s.fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+      if (s.fence) {
+        glFlush();
+        if (glGetError() != GL_NO_ERROR)
+          throw std::runtime_error("GL upload failed");
+        s.staged = nowMs();
+        inFlight.push_back(index);
+        return;
+      }
+      // Without ARB_sync this is the serial handoff; inFlight is empty here.
+      fprintf(stderr, "[native] GL fences unavailable; using finish handoff\n");
+      handoff = "finish";
     }
     // Complete producer work before SteamVR imports the texture. Frame Zink
     // has shown incomplete images with flush alone. This wait occurs only
@@ -629,44 +696,93 @@ public:
     syncMs = nowMs() - syncStart;
     if (glGetError() != GL_NO_ERROR)
       throw std::runtime_error("GL upload failed");
-    bool success = true;
+    done.push_back(submit(index));
+  }
+  // Submits in-flight pictures whose GL work has completed, oldest first, so
+  // SteamVR never imports a texture the GPU is still writing (the same
+  // completion guarantee as glFinish). waitMs bounds the wait for the oldest:
+  // 0 polls, negative blocks.
+  void complete(double waitMs, std::vector<Completion> &done) {
+    while (!inFlight.empty()) {
+      const int index = inFlight.front();
+      Slot &s = slots[index];
+      const GLuint64 timeout =
+          waitMs < 0 ? GLuint64(2000000000) : GLuint64(waitMs * 1e6);
+      double waitStart = nowMs();
+      GLenum result = glClientWaitSync(s.fence, 0, timeout);
+      double waited = nowMs() - waitStart;
+      if (result == GL_WAIT_FAILED)
+        throw std::runtime_error("GL fence wait failed");
+      if (result == GL_TIMEOUT_EXPIRED) {
+        if (waitMs < 0)
+          throw std::runtime_error("GL work did not complete within 2 s");
+        break;
+      }
+      if (waitMs < 0)
+        ++blockingWaits;
+      syncMs = waited;
+      glDeleteSync(s.fence);
+      s.fence = nullptr;
+      gpuLatencyMs = nowMs() - s.staged;
+      inFlight.pop_front();
+      done.push_back(submit(index));
+      waitMs = 0;
+    }
+  }
+  Completion submit(int index) {
+    Slot &s = slots[index];
+    Completion c{std::move(s.picture), true, s.texture, s.width, s.height};
+    width = s.width;
+    height = s.height;
     double submitStart = nowMs();
     if (!noVR) {
       // A resize changes the runtime's intersection aspect ratio. Invalidate
       // only around submission, so gaze keeps using the displayed geometry
-      // while GL conversion/upload/glFinish works on the replacement texture.
+      // while GL conversion/upload works on the replacement texture.
       bool sizeChanged = false;
       {
         std::lock_guard<std::mutex> lock(gazeGeometryMutex);
         sizeChanged = width != gazeWidth || height != gazeHeight || gazeTextureChanging;
         if (sizeChanged) {
+          HmdVector2_t mouseScale{{float(width), float(height)}};
+          check(overlay->SetOverlayMouseScale(handle, &mouseScale),
+                "mouse scale");
           gazeTextureChanging = true;
           gazeCalibrated = false; lastGazeCalibration = 0;
         }
       }
-      Texture_t t{reinterpret_cast<void *>(uintptr_t(texture)),
+      Texture_t t{reinterpret_cast<void *>(uintptr_t(s.texture)),
                   ETextureType_TextureType_OpenGL,
                   EColorSpace_ColorSpace_Gamma};
       lastSubmitError = int(overlay->SetOverlayTexture(handle, &t));
-      success = lastSubmitError == 0;
+      c.submitted = lastSubmitError == 0;
       if (sizeChanged) {
         std::lock_guard<std::mutex> lock(gazeGeometryMutex);
-        if (success) { gazeWidth = width; gazeHeight = height; }
+        if (c.submitted) { gazeWidth = width; gazeHeight = height; }
         // A failed submission may have changed runtime geometry. Keep gaze
         // invalid until a successful retry establishes the displayed size.
-        gazeTextureChanging = !success;
+        gazeTextureChanging = !c.submitted;
       }
-      if (success)
+      if (c.submitted)
         check(overlay->ShowOverlay(handle), "ShowOverlay");
     }
     submitMs = nowMs() - submitStart;
-    if (old)
-      glDeleteTextures(1, &old);
-    return success;
+    if (c.submitted) {
+      texture = s.texture;
+      displayed = index;
+      if (!retired.empty()) {
+        glDeleteTextures(GLsizei(retired.size()), retired.data());
+        retired.clear();
+      }
+    }
+    return c;
   }
-  void dump(const std::string &path) {
+  // Reads back the texture a completion submitted; a later completion in the
+  // same batch may already have replaced the displayed one.
+  void dump(const std::string &path, const Completion &c) {
+    const int width = c.width, height = c.height;
     std::vector<uint8_t> rgba(size_t(width) * height * 4);
-    glBindTexture(GL_TEXTURE_2D, texture);
+    glBindTexture(GL_TEXTURE_2D, c.texture);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
     if (glGetError() != GL_NO_ERROR)
       throw std::runtime_error("GPU readback failed");

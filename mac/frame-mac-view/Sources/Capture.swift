@@ -204,7 +204,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         let (w, h) = fitSize(width: frameRect.width * scale, height: frameRect.height * scale, maxLong: maxLong)
         config.width = w
         config.height = h
-        config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(maxFps))
+        config.minimumFrameInterval = minimumInterval(fps: maxFps)
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         config.colorSpaceName = CGColorSpace.sRGB
@@ -368,12 +368,21 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         }
     }
 
+    /// Display frames arrive on a vsync grid with jitter. An interval of
+    /// exactly 1/fps rejects every frame that lands slightly early, which held
+    /// a 60 Hz display near 55/s at a 60 fps target. Allow 2 ms of jitter;
+    /// rate caps (30, 10 fps) still land on the same vsync multiples.
+    private func minimumInterval(fps: Int) -> CMTime {
+        let period = 1_000_000 / Int64(max(1, fps))
+        return CMTime(value: max(period - 2_000, period / 2), timescale: 1_000_000)
+    }
+
     func setMaxFps(_ fps: Int) {
         queue.async {
             let bounded = max(1, fps)
             guard bounded != self.maxFps else { return }
             self.maxFps = bounded
-            self.config.minimumFrameInterval = CMTime(value: 1, timescale: CMTimeScale(bounded))
+            self.config.minimumFrameInterval = self.minimumInterval(fps: bounded)
             self.stream?.updateConfiguration(self.config) { _ in }
         }
     }

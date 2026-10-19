@@ -111,6 +111,80 @@ temporary dependencies/caches, and native tests automatically removed 42.19 MiB
 of logical PPM data. The current installed viewer, companion/profile data and
 one preceding verified rollback at `/tmp/frame-workspace-30fps-rollback` remain.
 
+## 60 fps single Workspace, 2026-10-19
+
+The single full-resolution 2880×2560 Workspace now delivers about 60 fresh
+desktop updates/s to the Frame at a 60 fps target. The same scrolling fixture
+was used throughout, with V4L2, GPU conversion and adaptation disabled; the
+first row is a baseline taken the same day with the previously installed
+binaries. These are off-head desktop texture updates, not compositor or
+optical FPS.
+
+| Configuration | Mac capture/s | Decoded/s | Fresh drawn/s | Overflows | Encoded drops | Capture-to-draw p50/p95 ms |
+|---|---:|---:|---:|---:|---:|---:|
+| Baseline (glFinish handoff, 8-packet queue, 1/fps interval, 60 Hz) | 52.6 | 47.1 | 38.2 | 6 | 133 | 65/196 |
+| Fence handoff only | 54.8 | 41.2 | 42.3 | 14 | 351 | 73/231 |
+| + 16-packet queue, 2 ms capture jitter allowance (two runs) | 58.4, 57.8 | 57.9, 57.4 | 57.1, 56.5 | 0, 0 | 0, 0 | 44/124, 44/140 |
+| + Workspace display at 120 Hz (two runs) | 62.1, 62.2 | 62.2, 62.0 | 60.9, 60.7 | 0, 0 | 0, 0 | 64/139, 66/148 |
+| Final configuration, 60 s | 60.5 | 60.3 | 59.0 | 0 | 0 | 68/152 |
+
+There were three separate limits, each hidden behind the one before it:
+
+1. **The Frame's GL owner was serial.** Each picture was uploaded, converted,
+   then waited on with `glFinish()` before `SetOverlayTexture`, followed by a
+   fixed 4 ms sleep. The viewer now issues each picture into one of three
+   texture slots, places a GL fence and submits the texture once that fence
+   has signalled. SteamVR therefore still never imports an incomplete texture,
+   but uploading the next picture overlaps the GPU's conversion of the
+   previous one. The loop wakes when a decoded picture arrives instead of on a
+   timer. Upload time fell from 3.9 to 0.9 ms p50, and decoded pictures
+   replaced before upload fell from 284 to 24–36 per 30 s. Reusing a slot after
+   submission is safe because vrclient blits the submitted texture into its own
+   shared texture inside our GL context (`CVRSharedGLTexture`, with a Vulkan/GL
+   interop semaphore). `--handoff finish` or `FRAME_WORKSPACE_HANDOFF=finish`
+   restores the previous serial path.
+2. **Wi-Fi delivers in bursts.** New per-second gauges show packet arrival gaps
+   of about 100 ms every second and 140–220 ms at p95, while one decoder step
+   (parse, send, receive, plane copy) peaks at 15–20 ms. A 200 ms gap at 60 fps
+   is about 12 packets, which overflowed the 8-packet queue; each overflow
+   discards the reference chain and waits for an IDR. The bound is now 16, and
+   the observed high water in these runs was 9–13. Frame power saving is off;
+   the link was 5 GHz channel 36 at −58 dBm. The Frame hosts its own 6 GHz
+   access point on the same radio, and the Mac's AWDL interface was active.
+   Either may cause the gaps (**inferred**, not isolated).
+3. **Capture lost early frames.** ScreenCaptureKit's `minimumFrameInterval` was
+   exactly 1/fps, so a 60 Hz display frame landing slightly early was rejected.
+   That held capture near 54.6/s in every earlier 60-target run. The interval
+   now allows 2 ms of jitter, which leaves 30 and 10 fps caps on the same vsync
+   multiples. That alone reached about 58/s. At 60 Hz every late app frame still
+   costs a streamed frame, so the Workspace display now defaults to 120 Hz
+   (`FRAME_MAC_VIEW_VD_HZ=60` restores 60 Hz); capture can then take the next
+   vsync.
+
+The H.264 stream is about 2.2 Mbit/s, so bandwidth is not a limit. Capture-to-
+draw latency read about 20 ms higher at 120 Hz, but the Frame-local
+receive-to-upload age was unchanged (28 ms p50). The cross-device clock
+estimate uses a link with 4.5–95.6 ms ping, so whether that difference is real
+is unresolved. All conditions kept the exact dimensions and saved pose, with
+zero errors. On the Frame, the new binary passed the V4L2 default, reconnect,
+size-change, forced-overload and GPU BT.601 stream gates, plus the GPU
+conversion and decoder suites. Exact runs, hashes and gates are in
+[the 60 fps evidence](../../native/evidence/sixty-fps.json).
+
+Worn presentation, judder and readability at 60 fps are not established.
+
+Reproduce with the Workspace running, off-head and with no other benchmarks:
+
+```sh
+python3 native/bench_desktop.py --seconds 60 --label sixty --out /tmp/sixty.json
+```
+
+For an A/B comparison, the Frame launcher does not forward viewer environment
+variables. Install a build of the previous viewer (or pass `--handoff finish` in
+a direct test run), then Show Workspace again. Alternatively, restart the
+companion with `FRAME_MAC_VIEW_VD_HZ=60`. Keep everything else matched. A pass shows fresh drawn updates within about
+2/s of Mac capture, zero queue overflows, zero encoded drops and zero errors.
+
 ## Remaining acceptance and reproduction
 
 This mixed route exercises one native overlay and real Frame browser viewers.

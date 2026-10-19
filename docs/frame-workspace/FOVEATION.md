@@ -1,5 +1,19 @@
 # Native direct foveated capture (opt-in)
 
+**Status, 2026-10-19:** the ordinary full-resolution Workspace now reaches
+about 60 fresh updates/s without foveation. See
+[the 60 fps record](PERFORMANCE.md#60-fps-single-workspace-2026-10-19).
+Foveation could not raise the frame rate because the limits were never the
+pixels it removes. Hardware decode took about 2 ms and the stream used about
+2.2 Mbit/s. The losses came from the Frame's serial `glFinish` handoff, Wi-Fi
+burst overflow of the packet queue, and the Mac's capture interval. None of
+these scales with encoded pixels. Foveation stays opt-in and experimental. It
+would matter where decode pixel rate or bandwidth actually binds, such as a
+wider or 2× desktop, or a congested link with a low bitrate ceiling. Even then,
+a design that never builds a full-size Frame texture (for example, a
+low-resolution full overlay plus a separate sharp inset overlay) would be
+needed for it to save Frame work.
+
 The current experiment captures a low-resolution whole display and a detailed
 region directly with ScreenCaptureKit, then combines them at their original
 screen positions in one fixed-size NV12 picture. It does not pack an atlas or
