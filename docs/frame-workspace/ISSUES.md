@@ -482,6 +482,9 @@ window's edge towards them:
 - bars on the sides curve it (left/right bend horizontally, top/bottom vertically);
 - a pill below the window moves it in 3D while held, position and angle together.
 
+Visual style (chosen 2026-10-19, see `evidence/vr-handles-mockup.png`): handles
+look like style A (frosted white, visionOS) when they appear, and switch to
+style B (Steam blue with a soft glow) while held for dragging.
 A physical "chrome" frame around windows comes later. Native window panels now
 open beside the Workspace (commit 29b8456) and will use the same handles. Next:
 a worn run of `native/spike_overlay_input.c` to confirm laser hover and click
