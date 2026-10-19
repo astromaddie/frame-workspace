@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- FW-14 spatial placement controls: three layout variations built from the
+     same modular parts, in the production control page's visual system.
+     Mockup only; nothing here is wired. Render: headless Chrome screenshot. -->
+<html lang="en"><head><meta charset="utf-8"><title>Spatial Placement Controls</title>
+<style>
+  :root { --bg:#1b2838; --bg-deep:#0e141b; --text:#dcdedf; --bright:#fff; --muted:#8f98a0; --dim:#5e6873;
+          --blue:#1a9fff; --btn:rgba(103,112,123,.2); --btn-hi:rgba(103,112,123,.45);
+          --action:linear-gradient(to right,#47bfff 5%,#1a44c2 95%); color-scheme:dark; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:22px 26px 28px; width:1000px; color:var(--text);
+         font:14px/1.4 "Motiva Sans",-apple-system,"Helvetica Neue",sans-serif;
+         background:linear-gradient(180deg,var(--bg) 0%,#16202d 40%,var(--bg-deep) 100%); }
+  h1 { margin:0 0 4px; font-size:13px; letter-spacing:2px; text-transform:uppercase; color:var(--text); }
+  .lede { color:var(--muted); font-size:12.5px; margin:0 0 16px; }
+  .variant { border:1px solid rgba(255,255,255,.08); border-radius:4px; padding:14px 16px 14px; margin:0 0 14px; background:rgba(0,0,0,.12); }
+  .vhead { display:flex; align-items:baseline; gap:10px; margin:0 0 10px; }
+  .vhead b { color:var(--bright); font-size:13px; } .vhead span { color:var(--muted); font-size:12px; }
+  button { appearance:none; border:0; border-radius:3px; height:28px; padding:0 10px; font:inherit; font-size:13px;
+           color:var(--text); background:var(--btn); white-space:nowrap; display:inline-flex; align-items:center; gap:6px; }
+  button.action { background:var(--action); color:#fff; font-weight:500; }
+  button.on { background:rgba(26,159,255,.28); color:var(--bright); box-shadow:inset 0 0 0 1px rgba(26,159,255,.6); }
+  button.icon { width:28px; padding:0; justify-content:center; }
+  .row { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; margin:6px 0; }
+  .group { display:inline-flex; align-items:center; gap:4px; }
+  .label { color:var(--muted); font-size:12px; margin-right:4px; min-width:52px; }
+  .val { min-width:46px; text-align:center; color:var(--bright); font-size:13px; }
+  .seg { display:inline-flex; } .seg button { border-radius:0; margin-left:1px; } .seg button:first-child { border-radius:3px 0 0 3px; margin:0; } .seg button:last-child { border-radius:0 3px 3px 0; }
+  .note { color:var(--muted); font-size:12px; margin-top:6px; }
+  .tabs { display:flex; gap:2px; margin:0 0 8px; border-bottom:1px solid rgba(255,255,255,.08); }
+  .tabs button { background:transparent; border-radius:3px 3px 0 0; height:30px; color:var(--muted); }
+  .tabs button.on { background:rgba(255,255,255,.06); color:var(--bright); box-shadow:inset 0 -2px 0 var(--blue); }
+  .tabs button.action { background:var(--action); color:#fff; border-radius:3px; }
+  .views { display:flex; gap:12px; }
+  .view { position:relative; background:rgba(0,0,0,.25); border-radius:3px; border:1px solid rgba(255,255,255,.06); }
+  .view .cap { position:absolute; left:8px; top:6px; color:var(--muted); font-size:11px; letter-spacing:1px; text-transform:uppercase; }
+  svg text { font-family:inherit; }
+  .k { color:var(--dim); font-size:11.5px; }
+</style></head><body>
+<h1>Workspace Placement · Mockup</h1>
+<p class="lede">Shared parts in every variation: Move (right/left, up/down, closer/farther), Turn (yaw, tilt, roll), Size, Curve
+(axis, which side bends, amount), Step size, and Recenter/Reset. All changes apply live and are saved.</p>
+
+<!-- A: inline rows -->
+<div class="variant">
+  <div class="vhead"><b>A · Inline Rows</b><span>Everything visible under the Workspace row; most direct, tallest.</span></div>
+  <div class="row">
+    <span class="label">Move</span>
+    <span class="group"><button class="icon">◀</button><button class="icon">▶</button></span>
+    <span class="group"><button class="icon">▲</button><button class="icon">▼</button></span>
+    <span class="group"><button>Closer</button><button>Farther</button></span>
+    <span class="label" style="margin-left:8px">Step</span>
+    <span class="seg"><button>Fine</button><button class="on">Normal</button><button>Coarse</button></span>
+  </div>
+  <div class="row">
+    <span class="label">Turn</span>
+    <span class="group"><button>⟲ Left</button><button>Right ⟳</button></span>
+    <span class="label" style="min-width:0">Tilt</span>
+    <span class="group"><button>Up</button><button>Down</button></span>
+    <span class="label" style="min-width:0">Roll</span>
+    <span class="group"><button>Left</button><button>Right</button></span>
+    <span class="k">Yaw 12° · Tilt −5° · Roll 0°</span>
+  </div>
+  <div class="row">
+    <span class="label">Size</span>
+    <span class="group"><button class="icon">−</button><span class="val">2.4 m</span><button class="icon">+</button></span>
+    <span class="label" style="min-width:0;margin-left:8px">Curve</span>
+    <span class="seg"><button class="on">Horizontal</button><button>Vertical</button></span>
+    <span class="seg"><button class="on">Both Sides</button><button>Left</button><button>Right</button></span>
+    <span class="group"><button class="icon">−</button><span class="val">0.15</span><button class="icon">+</button></span>
+  </div>
+  <div class="row">
+    <span class="label"></span>
+    <button class="action">Recenter</button><button>Reset Placement</button>
+    <span class="k">Recenter places it ahead of you at eye height; Reset restores 2.4 m wide, 2 m away, flat.</span>
+  </div>
+</div>
+
+<!-- B: tabs -->
+<div class="variant">
+  <div class="vhead"><b>B · Tabs</b><span>One compact row at a time; the Workspace section stays short.</span></div>
+  <div class="tabs"><button class="on">Move</button><button>Turn</button><button>Size</button><button>Curve</button>
+    <span style="flex:1"></span><button class="action" style="height:26px;margin:2px 0">Recenter</button></div>
+  <div class="row">
+    <span class="group"><button class="icon">◀</button><button class="icon">▶</button><button class="icon">▲</button><button class="icon">▼</button></span>
+    <span class="group"><button>Closer</button><button>Farther</button></span>
+    <span class="seg"><button>Fine</button><button class="on">Normal</button><button>Coarse</button></span>
+    <span class="k">Normal: 10 cm per press</span>
+  </div>
+  <div class="note">Turn: ⟲ ⟳ yaw · Tilt Up/Down · Roll Left/Right — Size: − 2.4 m + — Curve: Horizontal/Vertical · Both Sides/One Side · − 0.15 +</div>
+</div>
+
+<!-- C: direct manipulation -->
+<div class="variant">
+  <div class="vhead"><b>C · Drag on a Map</b><span>Drag the screen in top and side views; buttons remain for fine steps.</span></div>
+  <div class="views">
+    <div class="view" style="width:300px;height:170px"><span class="cap">Top View</span>
+      <svg width="300" height="170" viewBox="0 0 300 170">
+        <circle cx="150" cy="140" r="7" fill="#66c0f4"/><text x="162" y="144" fill="#8f98a0" font-size="11">You</text>
+        <path d="M95 60 Q150 44 205 60" fill="none" stroke="#dcdedf" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="150" cy="52" r="6" fill="#1a9fff"/><text x="160" y="40" fill="#8f98a0" font-size="11">drag: move</text>
+        <circle cx="205" cy="60" r="5" fill="none" stroke="#1a9fff" stroke-width="2"/><text x="214" y="64" fill="#8f98a0" font-size="11">turn</text>
+        <line x1="150" y1="133" x2="150" y2="62" stroke="#5e6873" stroke-dasharray="3 4"/><text x="108" y="100" fill="#5e6873" font-size="11">2.0 m</text>
+      </svg></div>
+    <div class="view" style="width:220px;height:170px"><span class="cap">Side View</span>
+      <svg width="220" height="170" viewBox="0 0 220 170">
+        <circle cx="40" cy="95" r="7" fill="#66c0f4"/>
+        <line x1="150" y1="45" x2="160" y2="140" stroke="#dcdedf" stroke-width="5" stroke-linecap="round"/>
+        <circle cx="155" cy="92" r="6" fill="#1a9fff"/><circle cx="150" cy="45" r="5" fill="none" stroke="#1a9fff" stroke-width="2"/>
+        <text x="100" y="34" fill="#8f98a0" font-size="11">drag top: tilt</text><text x="98" y="160" fill="#5e6873" font-size="11">height 1.77 m</text>
+      </svg></div>
+    <div style="flex:1;min-width:0">
+      <div class="row"><span class="label">Size</span><span class="group"><button class="icon">−</button><span class="val">2.4 m</span><button class="icon">+</button></span></div>
+      <div class="row"><span class="label">Curve</span><span class="seg"><button class="on">Horiz.</button><button>Vert.</button></span></div>
+      <div class="row"><span class="label"></span><span class="seg"><button class="on">Both</button><button>Left</button><button>Right</button></span></div>
+      <div class="row"><span class="label"></span><span class="group"><button class="icon">−</button><span class="val">0.15</span><button class="icon">+</button></span></div>
+      <div class="row"><span class="label"></span><button class="action">Recenter</button><button>Reset</button></div>
+    </div>
+  </div>
+</div>
+<p class="note">Keyboard (any variation, while the controls page is focused): arrows move, Shift+arrows turn, +/− size. One-side and
+vertical curves arrive in later stages; until then those choices are shown but disabled with a short reason.</p>
+</body></html>
