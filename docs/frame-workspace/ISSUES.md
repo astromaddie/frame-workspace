@@ -1,6 +1,6 @@
 # Frame Workspace — issue specifications
 
-**Publication status (2026-10-18):** All **13 issues are [published on GitHub](https://github.com/astromaddie/frame-workspace/issues)** as #1–#13. These are the version-controlled issue specifications; see the [roadmap](ROADMAP.md) for dependencies, priorities, and milestones.
+**Publication status (2026-10-19):** All **14 issues are [published on GitHub](https://github.com/astromaddie/frame-workspace/issues)** as #1–#14. These are the version-controlled issue specifications; see the [roadmap](ROADMAP.md) for dependencies, priorities, and milestones.
 
 ---
 
@@ -445,3 +445,49 @@ Ship a workstation tool that remains private and restores macOS reliably even wh
 - [python](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/ui/frame_macview.py)
 - [tests](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/tests/test_macview.py)
 - [panels](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/docs/panels.md)
+
+---
+
+# [FW-14] Adjustable Workspace placement: position, distance, size and curvature
+
+**Tracking ID:** FW-14  
+**Priority:** P0  
+**Phase:** M1.5 — Comfortable placement  
+**Dependencies:** FW-08, FW-10
+
+## Goal
+Let the user put the Workspace exactly where it is comfortable to work, and keep it there. Position, distance, size and curvature must all be adjustable while wearing the headset, apply live, and survive restarts.
+
+## Current state (2026-10-19)
+- **Distance and size:** Width (0.4–8 m) and Distance (0.4–10 m) buttons in the Mac controls, in 0.2 m steps. They apply live through the native owner and are saved in its pose file. Worn comfort is unverified.
+- **Position:** only recenter. Show Workspace Again places the panel ahead of the current head direction at eye height. There is no way to nudge it, raise or lower it, rotate it or tilt it. It cannot be grabbed in the headset, because the overlay takes no controller input, and it is not listed in the SteamVR bar.
+- **Curvature:** the companion API sets 0–1 with OpenVR readback (0.25 was accepted on the Frame). There is no control in the UI, and curvature is neither saved nor restored on restart.
+- **Ownership:** the installed Frame Control app and the preview companion can both start the one Frame viewer. Only the owning companion's controls take effect.
+
+## Implementation / investigation
+- Add live position controls beside Width and Distance: Move Left / Right / Up / Down, Rotate Left / Right and Tilt Up / Down, with sensible steps and limits, plus Recenter. These use the native owner's existing control file. They must not restart the viewer or the Mac display, and must not take typing focus.
+- Add a Curvature control (for example Flat, then gentle steps up to the supported maximum), backed by the existing readback. Show only confirmed values; an unsupported runtime shows a sentence, not a guessed state.
+- Save curvature with the pose and restore it at startup. Keep the pose file validated and atomically written.
+- Optional: a Keep Apparent Size setting that scales width with distance, so moving the panel closer or farther does not change how big text looks.
+- Make every control reachable while wearing the headset without controllers. The Mac controls page on the Workspace display is the first option; consider keyboard shortcuts.
+- **Spike:** in-headset grab and move with a controller or hand, through owned-overlay input or an existing Valve affordance. Produce a go/no-go before building it.
+- Make placement ownership unambiguous when more than one companion is running: one owner at a time, and a clear message when the other companion's controls cannot apply.
+
+## Acceptance criteria
+- [ ] While wearing the Frame, the user can move the Workspace left, right, up and down, rotate and tilt it, and recenter it, with each change visible immediately.
+- [ ] Distance and size adjust independently and live; text stays sharp at the chosen combination.
+- [ ] Curvature is adjustable from the UI, applies live, reads back from SteamVR, and is restored after a viewer restart.
+- [ ] Position, distance, size and curvature persist across viewer and companion restarts within the same SteamVR runtime. Cross-runtime or room restore follows FW-10/FW-11 and is not claimed without proof.
+- [ ] No adjustment restarts the Mac display or viewer, takes typing focus, or needs a controller.
+- [ ] The grab-and-move spike has a documented go/no-go.
+- [ ] Worn verification of each control is recorded with the SteamOS build and date.
+
+## Risks / non-goals
+- SteamVR owns dashboard panel layout. Only the native owned overlay is in scope; arbitrary dashboard panels are not.
+- Curvature support and appearance depend on the SteamVR runtime; unsupported results must fail visibly and keep video running.
+- Room-anchored placement across runtime or room changes stays gated by FW-10.
+
+## References
+- [native placement controls](NATIVE-CONTROLS.md)
+- [native viewer control file](../../native/README.md#launch-and-control)
+- [OpenVR overlay API](https://github.com/ValveSoftware/openvr/wiki/IVROverlay_Overview)

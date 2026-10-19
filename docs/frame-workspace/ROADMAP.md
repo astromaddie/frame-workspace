@@ -39,6 +39,7 @@ These are implementation/evidence milestones, not blanket issue completion.
 | FW-06 | AppKit/Chrome native entry/exit detection and continuous changing capture; Safari capture continuity with an AX identity limit; [feasibility record](FULLSCREEN.md) | Inactive-Space proof blocked by Mission Control app access; Safari window identity and broader app/lifecycle matrix |
 | FW-07 | Existing source-close recovery repairs support the feasibility work | Automatic detachment remains gated by FW-06; not implemented |
 | FW-08 | Live width/distance changes and curvature 0.25 readback; original pose/flat view restored; native switcher discovery; [approved inline controls](NATIVE-CONTROLS.md) | Keyboard-first interaction and worn use |
+| FW-14 | Width and Distance buttons apply live and persist; Show Workspace Again recenters; curvature API with readback | Move/rotate/tilt controls, a Curvature control, curvature persistence, grab-and-move spike and worn verification |
 | FW-09 | Explicit focus/input priority, 10 fps backgrounds; [matched 1/2/4/6-stream Frame trial](PERFORMANCE.md) | Broader workloads, physical focus switching, USB-C and worn latency/legibility |
 | FW-10 | Owned overlay transforms and same-runtime restart restore; curvature API accepted | Runtime/room-origin changes and game coexistence; no saved room anchors |
 | FW-11 | Coding restores after fresh companion launch; profile migrated to private persistent app data; fresh window-rule matching | Cross-runtime spatial restore deliberately unavailable; broader reconnect acceptance |
@@ -94,8 +95,9 @@ The dedicated Workspace OpenVR viewer now uses an aspect-matched fullscreen Chro
 
 1. **M0 — Verify reality:** FW-01, FW-02, FW-03, FW-06, FW-10. Produce live-device proof and architecture decisions before building a UI around uncertain capabilities.
 2. **M1 — Useful workstation:** FW-04, FW-05, FW-08. One persistent Mac extended desktop in VR that has *demonstrably readable coding text*; use SteamVR's existing curvature affordance as the first option.
-3. **M2 — Distinctive interaction:** FW-07, FW-09, FW-12. Native full-screen spatial detachment **only if FW-06 passes**; multi-panel performance and keyboard/pointer behavior.
-4. **M3 — Durable product:** FW-11, FW-13. Named profiles, conditional room transform restore, privacy and failure recovery.
+3. **M1.5 — Comfortable placement:** FW-14. Adjust the Workspace's position, distance, size and curvature live while wearing the headset, without controllers, and keep those settings across restarts. This comes before M2 because a readable desktop is not usable until it can be placed comfortably.
+4. **M2 — Distinctive interaction:** FW-07, FW-09, FW-12. Native full-screen spatial detachment **only if FW-06 passes**; multi-panel performance and keyboard/pointer behavior.
+5. **M3 — Durable product:** FW-11, FW-13. Named profiles, conditional room transform restore, privacy and failure recovery.
 
 **MVP decision rule:** If a giant wide display destroys text legibility or panel positioning cannot be controlled, make multiple **real separated Mac windows** the default instead. Do not ship a giant blurry desktop for the sake of claiming a higher resolution.
 
@@ -116,7 +118,8 @@ The dedicated Workspace OpenVR viewer now uses an aspect-matched fullscreen Chro
 | [FW-11](https://github.com/astromaddie/frame-workspace/issues/11) | P2 | M3 | Saved logical workspace profiles and conditional spatial layouts | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-08](https://github.com/astromaddie/frame-workspace/issues/8), [FW-10](https://github.com/astromaddie/frame-workspace/issues/10) |
 | [FW-12](https://github.com/astromaddie/frame-workspace/issues/12) | P1 | M2 | Keyboard, pointer, focus and multiple macOS Spaces correctness | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-06](https://github.com/astromaddie/frame-workspace/issues/6) |
 | [FW-13](https://github.com/astromaddie/frame-workspace/issues/13) | P1 | M3 | Local-first security, failure recovery and end-to-end regression | [FW-04](https://github.com/astromaddie/frame-workspace/issues/4), [FW-07](https://github.com/astromaddie/frame-workspace/issues/7), [FW-08](https://github.com/astromaddie/frame-workspace/issues/8), [FW-09](https://github.com/astromaddie/frame-workspace/issues/9), [FW-11](https://github.com/astromaddie/frame-workspace/issues/11), [FW-12](https://github.com/astromaddie/frame-workspace/issues/12) |
+| [FW-14](https://github.com/astromaddie/frame-workspace/issues/14) | P0 | M1.5 | Adjustable Workspace placement: position, distance, size and curvature | [FW-08](https://github.com/astromaddie/frame-workspace/issues/8), [FW-10](https://github.com/astromaddie/frame-workspace/issues/10) |
 
 ## Backlog source
 
-All 13 complete issue descriptions (scope, acceptance criteria, dependencies, references) are preserved in [ISSUES.md](ISSUES.md). The [13 live GitHub issues](https://github.com/astromaddie/frame-workspace/issues) are linked in the index above; their tracking IDs match GitHub issue numbers #1–#13.
+All 14 complete issue descriptions (scope, acceptance criteria, dependencies, references) are preserved in [ISSUES.md](ISSUES.md). The [14 live GitHub issues](https://github.com/astromaddie/frame-workspace/issues) are linked in the index above; their tracking IDs match GitHub issue numbers #1–#14.
