@@ -1,0 +1,35 @@
+#!/bin/sh
+# Holds the Mac's AWDL interface (AirDrop, Handoff, Universal Control, Sidecar)
+# down while a Frame Workspace is running, and brings it back up afterwards.
+#
+# AWDL's channel hopping stalled the Mac's Wi-Fi for 40-90 ms every 0.46 s,
+# which streamed to the Frame as a once-a-second hitch and input delay.
+# macOS re-enables AWDL whenever something asks for it, so one `ifconfig down`
+# lasts only moments; this checks once a second. Runs as root from launchd
+# (see install.sh). AWDL is restored only if this script took it down.
+set -u
+ifconfig=${AWDL_HOLD_IFCONFIG:-/sbin/ifconfig}
+pgrep=${AWDL_HOLD_PGREP:-/usr/bin/pgrep}
+held=${AWDL_HOLD_STATE:-/var/run/frame-workspace-awdl-hold}
+
+step() {
+  if "$pgrep" -qf 'frame-mac-view workspace'; then
+    if "$ifconfig" awdl0 | head -n 1 | grep -q '<UP'; then
+      "$ifconfig" awdl0 down && : > "$held"
+    fi
+  elif [ -e "$held" ]; then
+    "$ifconfig" awdl0 up
+    rm -f "$held"
+  fi
+}
+
+# AWDL_HOLD_STEPS runs a fixed number of checks (for tests); 0 runs forever.
+steps=${AWDL_HOLD_STEPS:-0}
+while :; do
+  step
+  if [ "$steps" -gt 0 ]; then
+    steps=$((steps - 1))
+    [ "$steps" -eq 0 ] && exit 0
+  fi
+  sleep 1
+done

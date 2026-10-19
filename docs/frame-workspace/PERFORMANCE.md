@@ -178,9 +178,12 @@ Sharp text in the Claude app was comfortable at the default 2.4 m width and
 links: Mac → router p50/p90/p99 was 5.4/68.1/92.4 ms, while Frame → router was
 4.0/8.9/18.2 ms. Mac → Frame pings spiked to 40–120 ms in a strict rhythm
 (pairs about every 0.46 s, p90 86 ms). So the delivery gaps come from the
-**Mac's Wi-Fi**, not the Frame or the decoder. AWDL (AirDrop/Continuity channel
-hopping) is the likely cause (**inferred**). A USB-C link or
-`sudo ifconfig awdl0 down` is the next comparison. Judder and readability
+**Mac's Wi-Fi**, not the Frame or the decoder. Holding AWDL down (AirDrop/Continuity channel hopping) removed the rhythm:
+Mac → router p90 fell from 68.1 to 6.7 ms (**verified**). macOS re-enables AWDL
+on demand, so [`mac/awdl-hold`](../../mac/awdl-hold/README.md) holds it down
+while a Workspace runs. A USB-C link avoids Wi-Fi entirely. With AWDL held
+down, judder from showing frames on arrival rather than on a steady beat
+remained. Judder and readability
 across a full coding session remain open.
 
 Reproduce with the Workspace running, off-head and with no other benchmarks:
