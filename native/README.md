@@ -1,5 +1,12 @@
 # Native Workspace overlay
 
+Experimental `--foveation` now requires the companion's **direct capture**
+capability. It keeps the video dimensions fixed and uses centre foveation when
+eye tracking is unavailable. It does not negotiate the older packed stream with
+an incompatible companion. The eye producer runs independently of GL rendering;
+eye data and geometry still require headset verification. See the current
+[capture design and validation record](../docs/frame-workspace/FOVEATION.md).
+
 Small Linux ARM64 viewer for the existing Mac `/view` URL and H.264 stream.
 It owns an OpenVR overlay, not a SteamVR scene application. The last submitted
 picture remains world-locked in the compositor between desktop updates. Head

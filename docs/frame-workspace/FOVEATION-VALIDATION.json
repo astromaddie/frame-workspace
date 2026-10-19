@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "outcome": "Functional prototype verified off-head; performance optimization rejected as default; worn acceptance pending.",
+  "outcome": "Direct-capture prototype and independent gaze producer implemented; current evidence in directCapture. Historical packed-stream experiment remains rejected as a default performance optimization.",
   "date": "2026-10-19 Asia/Tokyo",
   "sourceBase": "406d56cc632cb1c480cc9a8bdb30a2d753f976e0",
   "evidenceLevel": "actual Frame off-head; desktop texture updates, not compositor or optical FPS; no worn acceptance",
@@ -1720,5 +1720,1029 @@
       "poseSha256": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c"
     },
     "note": "One small pre-task rollback retained until worn verification; current installed deliverables and user data preserved."
+  },
+  "directCapture": {
+    "sourceBase": "fc2cfb9c897d5fb4853bbdef8993ef0dffd9d2e4",
+    "status": "Source complete; built and installed; off-head correctness verified; no demonstrated performance benefit; ordinary streaming restored",
+    "geometry": "ordinary fixed-size NV12/H264; mode3 only; source==encoded dimensions",
+    "path": "half-size whole-display SCK plus half-width/half-height full-detail immutable ROI SCK; ordinary-position Metal composition",
+    "fallback": "centre-foveation at identical geometry; no full-resolution capture or packing fallback",
+    "unsupportedSources": [
+      "independent-window",
+      "Separate",
+      "TestSource"
+    ],
+    "limits": {
+      "cropStartLimitHz": 10,
+      "captureStreamPixelFraction": 0.5,
+      "fullSizeCompositionAndCodec": true,
+      "otherMacApplicationsRenderWorkReduced": false
+    },
+    "macArtifactSha256": "48a3e1390c469b3bdcddb9c69db5f680413f84c3c3369fe27db5ce578e37501d",
+    "cropHostProbe": {
+      "capture": {
+        "baseHeight": 242,
+        "baseWidth": 322,
+        "frames": 129,
+        "height": 484,
+        "maxCropStartMs": 102.417,
+        "maxOutputGapMs": 818,
+        "path": "direct-display",
+        "rejectedCallbacks": 0,
+        "replacementLimitHz": 10,
+        "replacements": 40,
+        "roiHeight": 242,
+        "roiWidth": 322,
+        "skewHolds": 0,
+        "starts": 41,
+        "width": 644
+      },
+      "centreFramesAfterLoss": 2,
+      "cropPixelErrors": 0,
+      "distinctCropPositions": 39,
+      "frames": 129,
+      "maximumLumaError": 1,
+      "maxMovingGazeOutputGapMs": 125.98687503486872
+    },
+    "sessionHostProbe": {
+      "result": "PASS",
+      "frames": 69,
+      "distinctCropPositions": 25,
+      "bytes": 122484,
+      "durationSeconds": 7,
+      "geometry": [
+        644,
+        484
+      ],
+      "mode": 3,
+      "checks": [
+        "feature-off direct rejection",
+        "unsupported source rejection",
+        "startup failure rejection",
+        "legacy off unchanged",
+        "direct hello after actual capture",
+        "fixed wire and encoded dimensions",
+        "no-gaze centre",
+        "invalid centre",
+        "expired centre",
+        "reacquisition"
+      ],
+      "stats": [
+        {
+          "summary": {
+            "capture": {
+              "p50": 39,
+              "p95": 86.7
+            },
+            "captured": 69,
+            "decode": {},
+            "decoder": "",
+            "directCapture": {
+              "baseHeight": 242,
+              "baseWidth": 322,
+              "frames": 69,
+              "height": 484,
+              "maxCropStartMs": 157.084,
+              "maxOutputGapMs": 1929.083,
+              "path": "direct-display",
+              "rejectedCallbacks": 1,
+              "replacementLimitHz": 10,
+              "replacements": 28,
+              "roiHeight": 242,
+              "roiWidth": 322,
+              "skewHolds": 0,
+              "starts": 29,
+              "width": 644
+            },
+            "draw": {},
+            "dropped": 0,
+            "encode": {
+              "p50": 2,
+              "p95": 14.9
+            },
+            "fps": 0,
+            "gaze": {
+              "active": false,
+              "counts": {
+                "accepted": 196,
+                "activations": 2,
+                "clockFuture": 0,
+                "expired": 1,
+                "fallbacks": 2,
+                "future": 0,
+                "invalid": 13,
+                "malformed": 0,
+                "range": 0,
+                "replay": 0,
+                "sampleGap": 0,
+                "session": 0,
+                "source": 0,
+                "stale": 0,
+                "version": 0
+              },
+              "lastReason": "expired"
+            },
+            "mbps": 0.1,
+            "network": {},
+            "queue": {
+              "p50": 0,
+              "p95": 4.4
+            },
+            "rtt": 0,
+            "sentFps": 9.5,
+            "skipped": 24,
+            "synced": false,
+            "total": {}
+          }
+        }
+      ]
+    },
+    "gazeProducer": {
+      "hostOnly": true,
+      "tsan": "PASS producer lifecycle; proprietary OpenVR internals not covered",
+      "renderStallMs": [
+        301.09,
+        301.05,
+        301.06
+      ],
+      "freshMessagesEach": [
+        15,
+        15,
+        15
+      ],
+      "maxGapsMs": [
+        31.89,
+        28.92,
+        27.09
+      ],
+      "arrivalAgeMs": [
+        -0.17,
+        17.4
+      ],
+      "matchedOldProducerFreshMessages": 0,
+      "startupObservation": {
+        "staleArrivals": 8,
+        "maxRawAgeMs": 283.27,
+        "maxMappedAgeMs": 283.24,
+        "timing": "before first GL warmup; none during/after measured stall windows",
+        "cause": "unresolved; production freshness checks unchanged"
+      }
+    },
+    "hostRegressionNotes": "concurrent mode1/mode2 session scripts passed functional first phase then captured160/158 frames vs165 expected at55fps, tolerance3. Initial solo candidate run passed functional phase then captured75 vs81 at27fps, tolerance3. Untouched fc2cfb9 also failed; final isolated candidate runs passed (see legacyResolution). Tests and tolerances unmodified.",
+    "legacyResolution": "Final isolated mode1/atlas tests all pass, including 30/60 cadence, zero repeated submissions. Earlier timing failures also affected untouched fc2cfb9; tests/thresholds unchanged.",
+    "device": {
+      "arch": "aarch64",
+      "binarySha256": "42f9c8adcf5b9bff2fb375216db5e6e40795cb6e4c381c7a70c5d8461a26fafe",
+      "macSha256": "394c0c25b21845cb88ea5122aa0ab5090b50c8f1d2de0f34587c4a783663a6bd",
+      "installedSourceFilesVerified": 43,
+      "evidence": "off-head desktop texture updates; no worn or optical/compositor acceptance",
+      "initialRuns": {
+        "full60": {
+          "label": "direct-baseline-full60",
+          "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+          "duration": 30.022622983000474,
+          "workspacePreset": "2880x2560",
+          "target": {
+            "width": 2880,
+            "height": 2560,
+            "maxLong": 4096,
+            "fps": 60,
+            "codec": "h264"
+          },
+          "fixtureWindowSize": [
+            2880,
+            2530
+          ],
+          "fixtureReportedFpsAtWarmup": 61,
+          "receivedFps": 54.85863113734502,
+          "decodedFps": 49.795782362070916,
+          "uploadedFps": 41.20226273035567,
+          "counters": {
+            "received": 1647,
+            "decoded": 1495,
+            "uploaded": 1237,
+            "errors": 0,
+            "networkErrors": 0,
+            "serverErrors": 0,
+            "decoderSendErrors": 0,
+            "decoderReceiveErrors": 0,
+            "decoderFatalErrors": 0,
+            "submitErrors": 0,
+            "droppedEncoded": 149,
+            "droppedDecoded": 258,
+            "queueOverflows": 4,
+            "droppedAwaitingIdr": 117,
+            "overflowRecoveryIdrs": 4,
+            "staleDriverFramesDropped": 4,
+            "decoderOpenAttempts": 0,
+            "decoderInitialOpens": 0,
+            "decoderReconnectOpens": 0,
+            "decoderFormatReopens": 0,
+            "decoderOpenFailures": 0,
+            "decoderOpenTotalMs": 0.0,
+            "emptyReceives": 5854,
+            "emptyReceiveTotalMs": 32.119658999999984
+          },
+          "timings": {
+            "decodeMs": {
+              "p50": 1.5903355000000001,
+              "p95": 1.742284
+            },
+            "sendMs": {
+              "p50": 1.5776275000000002,
+              "p95": 1.708275
+            },
+            "convertMs": {
+              "p50": 0.9388735,
+              "p95": 3.504878
+            },
+            "planeCopyMs": {
+              "p50": 0.9388735,
+              "p95": 3.504878
+            },
+            "gpuConvertMs": {
+              "p50": 0.8184095,
+              "p95": 1.295267
+            },
+            "uploadMs": {
+              "p50": 3.939603,
+              "p95": 4.733742
+            },
+            "syncMs": {
+              "p50": 2.6871985,
+              "p95": 3.084164
+            },
+            "submitMs": {
+              "p50": 0.42248549999999996,
+              "p95": 0.58498
+            },
+            "queueAgeMs": {
+              "p50": 31.041398,
+              "p95": 36.911846
+            },
+            "packetQueueWaitMs": {
+              "p50": 0.11999599999999999,
+              "p95": 4.480105
+            },
+            "decoderOpenMs": {
+              "p50": 12.948249,
+              "p95": 12.948249
+            }
+          },
+          "textureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "encodedSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "foveationStates": [
+            false
+          ],
+          "gazeStates": [
+            "disabled"
+          ],
+          "diagnosticGaze": false,
+          "decoder": "h264_v4l2m2m",
+          "decoderPixelFormat": 23,
+          "decoderColorSpace": 2,
+          "decoderColorRange": 0,
+          "conversionRequested": "gpu",
+          "conversionActive": "gpu",
+          "conversionFallbacks": 0,
+          "lastOverflowRecoverySeq": 1758,
+          "decoderTimingHighWater": 7,
+          "packetQueueLimit": 8,
+          "packetQueueHighWater": 8,
+          "emptyReceiveMaxMs": 0.187702,
+          "note": "Stage percentiles summarize one-second observations, not every frame.",
+          "mac": {
+            "duration": 36.415584,
+            "desktopCaptureFps": 54.756776659135824,
+            "uniqueSentCaptureFps": 54.756776659135824,
+            "uniqueDrawnCaptureFps": 41.8502144576344,
+            "sentFps": 54.949002053626266,
+            "repeatedCaptureSubmissions": 7,
+            "h264Mbps": 3.113854771627444,
+            "contentToDrawMs": {
+              "n": 1482,
+              "p50": 54.605000000000004,
+              "p95": 142.637
+            },
+            "repeatContentAgeMs": {
+              "n": 7,
+              "p50": 159.265,
+              "p95": 373.338
+            },
+            "gazeCounters": {},
+            "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+          }
+        },
+        "centre60": {
+          "label": "direct-centre60",
+          "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+          "duration": 30.021808763005538,
+          "workspacePreset": "2880x2560",
+          "target": {
+            "width": 2880,
+            "height": 2560,
+            "maxLong": 4096,
+            "fps": 60,
+            "codec": "h264"
+          },
+          "fixtureWindowSize": [
+            2880,
+            2530
+          ],
+          "fixtureReportedFpsAtWarmup": 61,
+          "receivedFps": 53.52775419648367,
+          "decodedFps": 50.29676965568783,
+          "uploadedFps": 41.170071055914015,
+          "counters": {
+            "received": 1607,
+            "decoded": 1510,
+            "uploaded": 1236,
+            "errors": 0,
+            "networkErrors": 0,
+            "serverErrors": 0,
+            "decoderSendErrors": 0,
+            "decoderReceiveErrors": 0,
+            "decoderFatalErrors": 0,
+            "submitErrors": 0,
+            "droppedEncoded": 94,
+            "droppedDecoded": 274,
+            "queueOverflows": 3,
+            "droppedAwaitingIdr": 70,
+            "overflowRecoveryIdrs": 3,
+            "staleDriverFramesDropped": 3,
+            "decoderOpenAttempts": 0,
+            "decoderInitialOpens": 0,
+            "decoderReconnectOpens": 0,
+            "decoderFormatReopens": 0,
+            "decoderOpenFailures": 0,
+            "decoderOpenTotalMs": 0.0,
+            "emptyReceives": 5830,
+            "emptyReceiveTotalMs": 31.055302999999995
+          },
+          "timings": {
+            "decodeMs": {
+              "p50": 1.6711405,
+              "p95": 2.513455
+            },
+            "sendMs": {
+              "p50": 1.66963,
+              "p95": 2.496528
+            },
+            "convertMs": {
+              "p50": 0.948691,
+              "p95": 4.212042
+            },
+            "planeCopyMs": {
+              "p50": 0.948691,
+              "p95": 4.212042
+            },
+            "gpuConvertMs": {
+              "p50": 0.85221,
+              "p95": 1.951078
+            },
+            "uploadMs": {
+              "p50": 3.9546545,
+              "p95": 5.018524
+            },
+            "syncMs": {
+              "p50": 2.732535,
+              "p95": 2.991876
+            },
+            "submitMs": {
+              "p50": 0.39462149999999996,
+              "p95": 0.636905
+            },
+            "queueAgeMs": {
+              "p50": 30.248379,
+              "p95": 49.828117
+            },
+            "packetQueueWaitMs": {
+              "p50": 0.1044755,
+              "p95": 5.258151
+            },
+            "decoderOpenMs": {
+              "p50": 11.657252,
+              "p95": 11.657252
+            }
+          },
+          "textureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "encodedSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "foveationStates": [
+            true
+          ],
+          "gazeStates": [
+            "eye-unavailable"
+          ],
+          "diagnosticGaze": false,
+          "decoder": "h264_v4l2m2m",
+          "decoderPixelFormat": 23,
+          "decoderColorSpace": 1,
+          "decoderColorRange": 1,
+          "conversionRequested": "gpu",
+          "conversionActive": "gpu",
+          "conversionFallbacks": 0,
+          "lastOverflowRecoverySeq": 730,
+          "decoderTimingHighWater": 11,
+          "packetQueueLimit": 8,
+          "packetQueueHighWater": 8,
+          "emptyReceiveMaxMs": 0.314052,
+          "note": "Stage percentiles summarize one-second observations, not every frame.",
+          "mac": {
+            "duration": 36.510792,
+            "desktopCaptureFps": 54.61398920078206,
+            "uniqueSentCaptureFps": 53.491033555229365,
+            "uniqueDrawnCaptureFps": 41.795861344229394,
+            "sentFps": 53.518422717316014,
+            "repeatedCaptureSubmissions": 1,
+            "h264Mbps": 4.688917841059158,
+            "contentToDrawMs": {
+              "n": 1526,
+              "p50": 78.3475,
+              "p95": 216.84
+            },
+            "repeatContentAgeMs": {
+              "n": 1,
+              "p50": 170.393,
+              "p95": 170.393
+            },
+            "gazeCounters": {
+              "accepted": 0,
+              "activations": 0,
+              "clockFuture": 0,
+              "expired": 0,
+              "fallbacks": 0,
+              "future": 0,
+              "invalid": 2038,
+              "malformed": 0,
+              "range": 0,
+              "replay": 0,
+              "sampleGap": 0,
+              "session": 0,
+              "source": 0,
+              "stale": 0,
+              "version": 0
+            },
+            "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+          }
+        },
+        "scan60": {
+          "label": "direct-moving60",
+          "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+          "duration": 30.02114274998894,
+          "workspacePreset": "2880x2560",
+          "target": {
+            "width": 2880,
+            "height": 2560,
+            "maxLong": 4096,
+            "fps": 60,
+            "codec": "h264"
+          },
+          "fixtureWindowSize": [
+            2880,
+            2530
+          ],
+          "fixtureReportedFpsAtWarmup": 61,
+          "receivedFps": 49.16535030967613,
+          "decodedFps": 46.40063210120518,
+          "uploadedFps": 37.973238044058796,
+          "counters": {
+            "received": 1476,
+            "decoded": 1393,
+            "uploaded": 1140,
+            "errors": 0,
+            "networkErrors": 0,
+            "serverErrors": 0,
+            "decoderSendErrors": 0,
+            "decoderReceiveErrors": 0,
+            "decoderFatalErrors": 0,
+            "submitErrors": 0,
+            "droppedEncoded": 82,
+            "droppedDecoded": 254,
+            "queueOverflows": 3,
+            "droppedAwaitingIdr": 58,
+            "overflowRecoveryIdrs": 3,
+            "staleDriverFramesDropped": 3,
+            "decoderOpenAttempts": 0,
+            "decoderInitialOpens": 0,
+            "decoderReconnectOpens": 0,
+            "decoderFormatReopens": 0,
+            "decoderOpenFailures": 0,
+            "decoderOpenTotalMs": 0.0,
+            "emptyReceives": 5814,
+            "emptyReceiveTotalMs": 32.29311500000001
+          },
+          "timings": {
+            "decodeMs": {
+              "p50": 1.6704375,
+              "p95": 1.829989
+            },
+            "sendMs": {
+              "p50": 1.6728844999999999,
+              "p95": 1.819
+            },
+            "convertMs": {
+              "p50": 0.8780684999999999,
+              "p95": 5.594546
+            },
+            "planeCopyMs": {
+              "p50": 0.8780684999999999,
+              "p95": 5.594546
+            },
+            "gpuConvertMs": {
+              "p50": 0.8095295,
+              "p95": 1.170011
+            },
+            "uploadMs": {
+              "p50": 3.878225,
+              "p95": 4.438232
+            },
+            "syncMs": {
+              "p50": 2.7301135,
+              "p95": 3.07755
+            },
+            "submitMs": {
+              "p50": 0.35655,
+              "p95": 0.423423
+            },
+            "queueAgeMs": {
+              "p50": 30.588159,
+              "p95": 43.713849
+            },
+            "packetQueueWaitMs": {
+              "p50": 0.10114200000000001,
+              "p95": 4.555728
+            },
+            "decoderOpenMs": {
+              "p50": 22.635986,
+              "p95": 22.635986
+            }
+          },
+          "textureSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "encodedSizes": [
+            [
+              2880,
+              2560
+            ]
+          ],
+          "foveationStates": [
+            true
+          ],
+          "gazeStates": [
+            "diagnostic-scan"
+          ],
+          "diagnosticGaze": true,
+          "decoder": "h264_v4l2m2m",
+          "decoderPixelFormat": 23,
+          "decoderColorSpace": 1,
+          "decoderColorRange": 1,
+          "conversionRequested": "gpu",
+          "conversionActive": "gpu",
+          "conversionFallbacks": 0,
+          "lastOverflowRecoverySeq": 2657,
+          "decoderTimingHighWater": 6,
+          "packetQueueLimit": 8,
+          "packetQueueHighWater": 8,
+          "emptyReceiveMaxMs": 0.662321,
+          "note": "Stage percentiles summarize one-second observations, not every frame.",
+          "mac": {
+            "duration": 36.526917,
+            "desktopCaptureFps": 50.7023354859103,
+            "uniqueSentCaptureFps": 48.92282587112403,
+            "uniqueDrawnCaptureFps": 38.27314525340313,
+            "sentFps": 48.95020294212074,
+            "repeatedCaptureSubmissions": 1,
+            "h264Mbps": 6.283746750375895,
+            "contentToDrawMs": {
+              "n": 1398,
+              "p50": 89.8865,
+              "p95": 278.008
+            },
+            "repeatContentAgeMs": {
+              "n": 1,
+              "p50": 241.038,
+              "p95": 241.038
+            },
+            "gazeCounters": {
+              "accepted": 2000,
+              "activations": 5,
+              "clockFuture": 0,
+              "expired": 15,
+              "fallbacks": 4,
+              "future": 0,
+              "invalid": 0,
+              "malformed": 0,
+              "range": 0,
+              "replay": 0,
+              "sampleGap": 0,
+              "session": 0,
+              "source": 0,
+              "stale": 36,
+              "version": 0
+            },
+            "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+          }
+        }
+      },
+      "captureDiagnostics": {
+        "centre60": {
+          "directCapture": {
+            "baseHeight": 1280,
+            "baseWidth": 1440,
+            "frames": 2409,
+            "height": 2560,
+            "maxCropStartMs": 196.708,
+            "maxOutputGapMs": 30491.25,
+            "path": "direct-display",
+            "rejectedCallbacks": 0,
+            "replacementLimitHz": 10,
+            "replacements": 1,
+            "roiHeight": 1280,
+            "roiWidth": 1440,
+            "skewHolds": 1574,
+            "starts": 1,
+            "width": 2880
+          },
+          "gaze": {
+            "active": false,
+            "counts": {
+              "accepted": 0,
+              "activations": 0,
+              "clockFuture": 0,
+              "expired": 0,
+              "fallbacks": 0,
+              "future": 0,
+              "invalid": 6636,
+              "malformed": 0,
+              "range": 0,
+              "replay": 0,
+              "sampleGap": 0,
+              "session": 0,
+              "source": 0,
+              "stale": 0,
+              "version": 0
+            },
+            "lastReason": "invalid"
+          }
+        },
+        "scan60": {
+          "directCapture": {
+            "baseHeight": 1280,
+            "baseWidth": 1440,
+            "frames": 5235,
+            "height": 2560,
+            "maxCropStartMs": 1291.042,
+            "maxOutputGapMs": 2305.125,
+            "path": "direct-display",
+            "rejectedCallbacks": 10,
+            "replacementLimitHz": 10,
+            "replacements": 1022,
+            "roiHeight": 1280,
+            "roiWidth": 1440,
+            "skewHolds": 14,
+            "starts": 1038,
+            "width": 2880
+          },
+          "gaze": {
+            "active": true,
+            "counts": {
+              "accepted": 8885,
+              "activations": 20,
+              "clockFuture": 0,
+              "expired": 35,
+              "fallbacks": 19,
+              "future": 0,
+              "invalid": 0,
+              "malformed": 0,
+              "range": 0,
+              "replay": 0,
+              "sampleGap": 0,
+              "session": 0,
+              "source": 0,
+              "stale": 253,
+              "version": 0
+            },
+            "lastReason": "expired"
+          }
+        }
+      },
+      "fixtureWarmupSeconds": 8,
+      "reproductionNote": "native/bench_desktop.py unchanged except initial time.sleep(5) executed as time.sleep(8) for every arm; disposable Chrome cold start exceeded5 seconds on aborted first attempt; no measurement from aborted attempt retained",
+      "poseSha256BeforeAndAfter": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c",
+      "normalModeRestored": true,
+      "finalMacSha256": "48a3e1390c469b3bdcddb9c69db5f680413f84c3c3369fe27db5ce578e37501d",
+      "finalDirectHealth": {
+        "geometry": [
+          2880,
+          2560
+        ],
+        "negotiatedBeforeStop": true,
+        "active": true,
+        "gazeState": "eye-unavailable",
+        "diagnosticGaze": false,
+        "centreCaptureFramesObserved": 3,
+        "maxEmittedSkewMsObserved": 0,
+        "skewHoldsObserved": 0,
+        "errors": 0,
+        "decoderFormatReopens": 0,
+        "submitErrors": 0,
+        "capturePath": "direct-display",
+        "evidence": "Static installed build health check, not a throughput run. Negotiation and active/ready verified before stop; orderly final state had8received,7decoded,6uploaded."
+      },
+      "finalConfiguration": {
+        "foveation": false,
+        "diagnosticGaze": false,
+        "preset": "2880x2560",
+        "fpsRequested": 60,
+        "decoder": "v4l2",
+        "conversion": "gpu",
+        "poseSha256": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c",
+        "wornAcceptance": false,
+        "verifiedReady": true,
+        "errors": 0,
+        "normalStreamingRestored": true
+      }
+    },
+    "wornAcceptance": false,
+    "hostVerification": {
+      "host_source_commit": "fc2cfb9c897d5fb4853bbdef8993ef0dffd9d2e4",
+      "native_host_candidate_sha256": "d9954bb52663df0a1b775f6bc4ee1d4d7bb8945d0935783e0c38db6592f56d2f",
+      "production_source_sha256": {
+        "native/main.cpp": "bfea5b99e8b3adfc8c63746f9567ee0446902640629cbc6e56dd219aaaccce30",
+        "native/protocol.hpp": "42b6d5ffa34a8bbb66e2b80b9f7dcbfba8bce662c81db98c1bb7d38f22dfd9d2",
+        "native/video.hpp": "00adc1194615947e1d4125cb87cbbbe829fb63b5981c8b90a3e144b0400c4c9c",
+        "native/overlay.hpp": "5372cb75b4b96c9b7691cdbe5f859158a8f6b3ecdb4b4de3967876b46af0343f",
+        "native/gaze_producer.hpp": "904884195d3c8458079ea87c102b3feee927002a33410e543f9131ca6ce96a44"
+      },
+      "host_checks": {
+        "direct_gpu": "PASS; 69 packets, 644x484, format reopens 0, errors 0, independent BT.709 video-range oracle max/mean difference 0; FFmpeg CLI comparison max difference 3",
+        "direct_cpu": "PASS; 69 packets, 644x484, format reopens 0, errors 0, FFmpeg CLI oracle max/mean difference 0",
+        "stream_gpu_default_reconnect_resize": "FAIL; decoderColorRange 0 while test expects limited 1; default fixture omits color metadata",
+        "stream_gpu_bt709_limited_reconnect_resize": "PASS; 54 decoded, 46 uploaded, reconnection and size change, format reopens 0, color range/colorspace 1/1, max RGB difference 1",
+        "stream_gpu_bt709_limited_normal": "PASS; 73 decoded, 69 uploaded, errors 0, format reopens 0, color range/colorspace 1/1, max RGB difference 1",
+        "stream_cpu_default_normal": "PASS; 74 decoded, 70 uploaded, errors 0, format reopens 0, color range 0/colorspace 2, max RGB difference 0",
+        "test_macview": "PASS; 50 tests, 1 skipped; harmless ResourceWarnings about unclosed test sockets"
+      },
+      "capture_sequence": {
+        "path": "/tmp/frame-direct-evidence/direct-host.sequence",
+        "bytes": 122484,
+        "sha256": "4c6c6724d35fac7ec0f6dfb19d8ed3a437ec2f6b69ee830c573fcbc82d599a26",
+        "retained": false,
+        "regenerate": "mac/frame-mac-view/test-direct-capture.sh --host /tmp/frame-direct-evidence"
+      },
+      "device_build": {
+        "source_archive": "/tmp/frame-workspace-direct-device-source/source.tar.gz",
+        "archive_sha256": "dba1abe347d5b341d028958031610de11c48db00f0d7784fa51a92ea6ad2d2a7",
+        "remote_source": "/tmp/frame-workspace-direct-device-build",
+        "remote_binary": "/tmp/frame-workspace-direct-device-build/native/build/frame-workspace-native",
+        "remote_binary_sha256": "42f9c8adcf5b9bff2fb375216db5e6e40795cb6e4c381c7a70c5d8461a26fafe",
+        "architecture": "aarch64",
+        "uid": 1000,
+        "build_script_and_selftest": "PASS; existing system dependencies, no install or viewer switch",
+        "temporaryArchiveAndBuildTreeRetained": false
+      }
+    },
+    "archiveMetadataCleanup": {
+      "sidecarFilesRemoved": 49,
+      "bytesRemoved": 7987,
+      "realNativeSourceFilesMatched": 43,
+      "compiledBinaryUnchanged": true
+    },
+    "initialVerdict": "No demonstrated performance benefit: full41.85,centre41.80,moving38.27 fresh drawn/s; all coded2880x2560, zero errors/format reopens; moving has stale/expired gaze arrivals. Source capture reduction does not reduce full-size codec workload.",
+    "staticCentreInvestigation": {
+      "reason": "Review of150ms ROI/base skew gate and lack of documented idle heartbeat guarantee",
+      "productionFreezeReproduced": false,
+      "separateAnimatedPeriphery": {
+        "seconds": 2.6,
+        "outputs": 118,
+        "peripheralLevels": 8,
+        "centreLevels": 1,
+        "maxOutputGapMs": 78.58,
+        "roiIdleCallbacks": 166,
+        "baseIdleCallbacks": 45,
+        "skewHolds": 0,
+        "roiStreamStarts": 1
+      },
+      "animatedCentreControl": "all8 levels progressed",
+      "decision": "retain capture behavior; add actual SCK regression",
+      "screenshotAlternative": {
+        "geometry": [
+          322,
+          242
+        ],
+        "format": "420v NV12",
+        "pixelErrors": 0,
+        "maxLumaError": 1,
+        "immutablePositions": 60,
+        "latencyMs": {
+          "p50": 51.667,
+          "p95": 81.75,
+          "max": 115.25
+        },
+        "adopted": false
+      },
+      "latencyObservations": {
+        "directOutputGapMs": 387.75,
+        "baseCallbackAgeMs": 342.5,
+        "roiIdleMaxAgeMs": 32.6,
+        "fullBaselineOutputGapMs": 189.458,
+        "earlierDirectGapMs": 166.75,
+        "productionGuard": "base-newer-than-ROI emitted-pair skew <=150ms; not a wall-clock callback cadence guarantee",
+        "testCorrection": "assert actual emitted-pair skew and continued correct progression; retain observed output gaps as latency limitations"
+      },
+      "finalContinuityRegression": {
+        "animatedBoth": {
+          "centreValues": 8,
+          "firstOutputSeconds": 4.203917,
+          "lastOutputSeconds": 6.787625,
+          "maxOutputGapMs": 112.45800000000017,
+          "outputs": 100,
+          "peripheryValues": 8
+        },
+        "baseline": false,
+        "capture": {
+          "baseHeight": 242,
+          "baseWidth": 322,
+          "frames": 208,
+          "height": 484,
+          "maxCropStartMs": 129.917,
+          "maxEmittedSkewMs": 33.334,
+          "maxOutputGapMs": 176.75,
+          "path": "direct-display",
+          "rejectedCallbacks": 0,
+          "replacementLimitHz": 10,
+          "replacements": 1,
+          "roiHeight": 242,
+          "roiWidth": 322,
+          "skewHolds": 0,
+          "starts": 1,
+          "width": 644
+        },
+        "separatePeripheryWindow": true,
+        "staticCentreAnimatedPeriphery": {
+          "centreValues": 1,
+          "firstOutputSeconds": 1.204834,
+          "lastOutputSeconds": 3.799875,
+          "maxOutputGapMs": 177.45799999999969,
+          "outputs": 67,
+          "peripheryValues": 8
+        },
+        "callbackDiagnostics": {
+          "sampleCounts": {
+            "both:base:0:valid=true": 79,
+            "both:base:1:valid=true": 42,
+            "both:current:0:valid=true": 76,
+            "both:current:1:valid=true": 44,
+            "periphery:base:0:valid=true": 73,
+            "periphery:base:1:valid=true": 38,
+            "periphery:current:0:valid=true": 10,
+            "periphery:current:1:valid=true": 101,
+            "static:base:0:valid=true": 9,
+            "static:base:1:valid=true": 6,
+            "static:current:0:valid=true": 7,
+            "static:current:1:valid=true": 5,
+            "static:pending:0:valid=true": 1
+          },
+          "maximumCallbackAgeMs": 59.833,
+          "minimumCallbackAgeMs": -16.787,
+          "note": "Only role/status/validity/timestamp aggregates; no image or gaze history"
+        }
+      }
+    },
+    "initialMacArtifactSha256": "394c0c25b21845cb88ea5122aa0ab5090b50c8f1d2de0f34587c4a783663a6bd",
+    "initialSourceSha256": {
+      "mac/frame-mac-view/Sources/Capture.swift": "ff78906fc2b8a4ebba926f043d2665586dfee9839d6e121c915f2d988b737877",
+      "mac/frame-mac-view/Sources/Controller.swift": "8fc43bfa4f818cacb31266ad22e6273e73cdefb6f5c2e27df6ab9df8ce2df746",
+      "mac/frame-mac-view/Sources/DirectCapture.swift": "2f5de2f3da00a276c7714ede02180f039f80af8d3949001cd0714d42b8990ee2",
+      "mac/frame-mac-view/Sources/DirectComposite.swift": "c76c05da71f14673dcab9cdb8fc26c1c2d886d43a5c4c0daed47f09e475b5642",
+      "mac/frame-mac-view/Sources/Encoder.swift": "c4b085885262b2d14e961f323654b5067c00305e2e2c2f4c85b781dcbe4e16da",
+      "mac/frame-mac-view/Sources/Foveation.swift": "1bd3b39a6ad2914b32bc25278918727b4acddea42323fb1fbfca583cb6f0ea81",
+      "mac/frame-mac-view/Sources/Input.swift": "75bd067209e26f3a7251935df6f271de2781eb0edc1c88dc127f848bdec43829",
+      "mac/frame-mac-view/Sources/Separate.swift": "e6bc2001e55e6bbd02c33fca141ac70a8969406df6453ae82c6ccd846fa0a4ca",
+      "mac/frame-mac-view/Sources/Server.swift": "f356cb10b3d91450f566997a823c9fd9a39123bb9d9871b75337b0106e022efc",
+      "mac/frame-mac-view/Sources/Stats.swift": "b5c71299c2f1ec58fbe6cbfeadff77073a68e9dd8a34b492fd72086b8b816135",
+      "mac/frame-mac-view/Sources/StreamPriority.swift": "e1e17e42369bcb2369c89d32a9ad238e1bba914954781234f249422283434daa",
+      "mac/frame-mac-view/Sources/WindowCloseRecovery.swift": "540d5a7e4969cba667a44e7769c49dddd1d58a5a4bf55b4c9085ac7e1040e764",
+      "mac/frame-mac-view/Sources/Workspace.swift": "102991b974ec6d76417207f2eb85139f25a712dec537788194cfe21e3e896125",
+      "mac/frame-mac-view/Sources/main.swift": "1f1b6864326175d214f4191a8bbc36a042b63d61e1e559811b47ab313974fe24",
+      "native/gaze_producer.hpp": "904884195d3c8458079ea87c102b3feee927002a33410e543f9131ca6ce96a44",
+      "native/main.cpp": "bfea5b99e8b3adfc8c63746f9567ee0446902640629cbc6e56dd219aaaccce30",
+      "native/overlay.hpp": "5372cb75b4b96c9b7691cdbe5f859158a8f6b3ecdb4b4de3967876b46af0343f",
+      "native/protocol.hpp": "42b6d5ffa34a8bbb66e2b80b9f7dcbfba8bce662c81db98c1bb7d38f22dfd9d2",
+      "native/video.hpp": "00adc1194615947e1d4125cb87cbbbe829fb63b5981c8b90a3e144b0400c4c9c"
+    },
+    "sourceSha256": {
+      "mac/frame-mac-view/Sources/Capture.swift": "ff78906fc2b8a4ebba926f043d2665586dfee9839d6e121c915f2d988b737877",
+      "mac/frame-mac-view/Sources/Controller.swift": "8fc43bfa4f818cacb31266ad22e6273e73cdefb6f5c2e27df6ab9df8ce2df746",
+      "mac/frame-mac-view/Sources/DirectCapture.swift": "2d441aceebd3f408cbb675ccad8b3197566d403eb6f245ec913da460499be7fc",
+      "mac/frame-mac-view/Sources/DirectComposite.swift": "c76c05da71f14673dcab9cdb8fc26c1c2d886d43a5c4c0daed47f09e475b5642",
+      "mac/frame-mac-view/Sources/Encoder.swift": "c4b085885262b2d14e961f323654b5067c00305e2e2c2f4c85b781dcbe4e16da",
+      "mac/frame-mac-view/Sources/Foveation.swift": "1bd3b39a6ad2914b32bc25278918727b4acddea42323fb1fbfca583cb6f0ea81",
+      "mac/frame-mac-view/Sources/Input.swift": "75bd067209e26f3a7251935df6f271de2781eb0edc1c88dc127f848bdec43829",
+      "mac/frame-mac-view/Sources/Separate.swift": "e6bc2001e55e6bbd02c33fca141ac70a8969406df6453ae82c6ccd846fa0a4ca",
+      "mac/frame-mac-view/Sources/Server.swift": "f356cb10b3d91450f566997a823c9fd9a39123bb9d9871b75337b0106e022efc",
+      "mac/frame-mac-view/Sources/Stats.swift": "b5c71299c2f1ec58fbe6cbfeadff77073a68e9dd8a34b492fd72086b8b816135",
+      "mac/frame-mac-view/Sources/StreamPriority.swift": "e1e17e42369bcb2369c89d32a9ad238e1bba914954781234f249422283434daa",
+      "mac/frame-mac-view/Sources/WindowCloseRecovery.swift": "540d5a7e4969cba667a44e7769c49dddd1d58a5a4bf55b4c9085ac7e1040e764",
+      "mac/frame-mac-view/Sources/Workspace.swift": "102991b974ec6d76417207f2eb85139f25a712dec537788194cfe21e3e896125",
+      "mac/frame-mac-view/Sources/main.swift": "1f1b6864326175d214f4191a8bbc36a042b63d61e1e559811b47ab313974fe24",
+      "native/gaze_producer.hpp": "904884195d3c8458079ea87c102b3feee927002a33410e543f9131ca6ce96a44",
+      "native/main.cpp": "bfea5b99e8b3adfc8c63746f9567ee0446902640629cbc6e56dd219aaaccce30",
+      "native/overlay.hpp": "5372cb75b4b96c9b7691cdbe5f859158a8f6b3ecdb4b4de3967876b46af0343f",
+      "native/protocol.hpp": "42b6d5ffa34a8bbb66e2b80b9f7dcbfba8bce662c81db98c1bb7d38f22dfd9d2",
+      "native/video.hpp": "00adc1194615947e1d4125cb87cbbbe829fb63b5981c8b90a3e144b0400c4c9c"
+    },
+    "finalCropHostProbe": {
+      "capture": {
+        "baseHeight": 242,
+        "baseWidth": 322,
+        "frames": 194,
+        "height": 484,
+        "maxCropStartMs": 302.875,
+        "maxEmittedSkewMs": 33.334,
+        "maxOutputGapMs": 273.083,
+        "path": "direct-display",
+        "rejectedCallbacks": 0,
+        "replacementLimitHz": 10,
+        "replacements": 33,
+        "roiHeight": 242,
+        "roiWidth": 322,
+        "skewHolds": 0,
+        "starts": 34,
+        "width": 644
+      },
+      "centreFramesAfterLoss": 45,
+      "cropPixelErrors": 0,
+      "distinctCropPositions": 32,
+      "frames": 194,
+      "maximumLumaError": 1,
+      "maxMovingGazeOutputGapMs": 95.44912504497916
+    },
+    "finalArtifactChanges": "Follow-up adds optional nil-by-default diagnostic observer and maximum emitted skew counter only; capture behavior unchanged. Full build and focused regression passed on byte-identical integrated Mac source.",
+    "rollback": {
+      "mac": "/tmp/frame-workspace-direct-rollback/frame-mac-view",
+      "macSha256": "f09de9fe5a1c73ddf29d09f6b1827eea051fba0b62dad916fc5bfc4e46adc04a",
+      "frame": "/tmp/frame-workspace-direct-rollback/frame-workspace-native",
+      "frameSha256": "3b26594e8e82bc98ba29a4fe1803aa14739f1f13e156fda7ec560637ff99be74",
+      "retention": "Keep latest pre-change executable/metadata/pose until wearer acceptance; superseded earlier rollback artifacts removed"
+    },
+    "cleanup": {
+      "local": {
+        "files": 1247,
+        "logicalBytes": 63453954,
+        "allocatedBytes": 66318336,
+        "categories": [
+          "two integrated temporary worktrees",
+          "host binaries and symbols",
+          "build archives",
+          "temporary logs, aggregate captures and H264 test sequence",
+          "superseded older Mac rollback"
+        ],
+        "activeLogBytesTrimmed": 213673
+      },
+      "frame": {
+        "files": 49,
+        "logicalBytes": 6711263,
+        "allocatedBytes": 6782976,
+        "categories": [
+          "temporary ARM64 build tree",
+          "superseded older rollback"
+        ]
+      },
+      "previousExplicitTaskCleanupBytes": 12189985,
+      "localFreeBytesDeltaDuringCleanup": 67096576,
+      "retained": [
+        "active companion runner/pid/log",
+        "installed Mac and Frame executables and native build metadata",
+        "latest pre-change rollback on both machines pending worn acceptance",
+        "source and canonical aggregate evidence",
+        "user data and placement"
+      ],
+      "totalLogicalBytesRemoved": 82568875
+    }
   }
 }

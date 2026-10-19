@@ -88,6 +88,13 @@ class Overlay {
   int width = 0, height = 0;
   bool noVR = false;
   std::unique_ptr<GazeBridge> gazeBridge;
+  // The render thread owns placement and texture dimensions. Gaze uses only
+  // this snapshot, protected together with runtime geometry mutations and UV
+  // calibration. Never hold this mutex across GL work or texture submission.
+  std::mutex gazeGeometryMutex;
+  Placement gazePlacement;
+  int gazeWidth = 0, gazeHeight = 0;
+  bool gazeTextureChanging = false;
   bool gazeCalibrated = false, gazeFlipX = false, gazeFlipY = false;
   double lastGazeCalibration = 0;
   bool gazeIntersection(const EyeRay &ray, float &u, float &v) {
@@ -101,8 +108,9 @@ class Overlay {
         std::isfinite(result.fDistance) && result.fDistance>0;
   }
   bool calibrateGaze() {
-    if(!width || !height) return false;
-    const float h=placement.width * float(height)/float(width);
+    if(!gazeWidth || !gazeHeight) return false;
+    const auto &placement = gazePlacement;
+    const float h=placement.width * float(gazeHeight)/float(gazeWidth);
     float us[4]{},vs[4]{};
     const float positions[4][2]{{-.1f*placement.width,0},{.1f*placement.width,0},{0,.25f*h},{0,-.25f*h}};
     for(int i=0;i<4;++i) {
@@ -425,6 +433,8 @@ public:
   }
   const char *gaze(double &u, double &v) {
     if(!gazeBridge) return "unavailable";
+    std::lock_guard<std::mutex> lock(gazeGeometryMutex);
+    if(gazeTextureChanging) return "overlay-resizing";
     if(!gazeCalibrated && nowMs()-lastGazeCalibration>=1000) {
       lastGazeCalibration=nowMs();gazeCalibrated=calibrateGaze();
     }
@@ -440,6 +450,7 @@ public:
     return "valid";
   }
   ~Overlay() {
+    // The main-scope GazeProducer has already joined before this object dies.
     if (handle) {
       overlay->HideOverlay(handle);
       overlay->ClearOverlayTexture(handle);
@@ -493,7 +504,9 @@ public:
     apply();
   }
   void apply() {
+    std::lock_guard<std::mutex> lock(gazeGeometryMutex);
     gazeCalibrated = false; lastGazeCalibration = 0;
+    gazePlacement = placement;
     if (noVR)
       return;
     check(overlay->SetOverlayWidthInMeters(handle, placement.width), "width");
@@ -523,6 +536,7 @@ public:
     return result;
   }
   CurvatureResult setCurvature(float requested) {
+    std::lock_guard<std::mutex> lock(gazeGeometryMutex);
     gazeCalibrated = false; lastGazeCalibration = 0;
     CurvatureResult result;
     result.requested = requested;
@@ -586,11 +600,11 @@ public:
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
       glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, p.outputWidth(), p.outputHeight(), 0, GL_RGBA,
                    GL_UNSIGNED_BYTE, nullptr);
-      gazeCalibrated = false; lastGazeCalibration = 0;
       width = p.outputWidth();
       height = p.outputHeight();
       if (!noVR) {
         HmdVector2_t mouseScale{{float(width), float(height)}};
+        std::lock_guard<std::mutex> lock(gazeGeometryMutex);
         check(overlay->SetOverlayMouseScale(handle, &mouseScale),
               "mouse scale");
       }
@@ -618,11 +632,30 @@ public:
     bool success = true;
     double submitStart = nowMs();
     if (!noVR) {
+      // A resize changes the runtime's intersection aspect ratio. Invalidate
+      // only around submission, so gaze keeps using the displayed geometry
+      // while GL conversion/upload/glFinish works on the replacement texture.
+      bool sizeChanged = false;
+      {
+        std::lock_guard<std::mutex> lock(gazeGeometryMutex);
+        sizeChanged = width != gazeWidth || height != gazeHeight || gazeTextureChanging;
+        if (sizeChanged) {
+          gazeTextureChanging = true;
+          gazeCalibrated = false; lastGazeCalibration = 0;
+        }
+      }
       Texture_t t{reinterpret_cast<void *>(uintptr_t(texture)),
                   ETextureType_TextureType_OpenGL,
                   EColorSpace_ColorSpace_Gamma};
       lastSubmitError = int(overlay->SetOverlayTexture(handle, &t));
       success = lastSubmitError == 0;
+      if (sizeChanged) {
+        std::lock_guard<std::mutex> lock(gazeGeometryMutex);
+        if (success) { gazeWidth = width; gazeHeight = height; }
+        // A failed submission may have changed runtime geometry. Keep gaze
+        // invalid until a successful retry establishes the displayed size.
+        gazeTextureChanging = !success;
+      }
       if (success)
         check(overlay->ShowOverlay(handle), "ShowOverlay");
     }

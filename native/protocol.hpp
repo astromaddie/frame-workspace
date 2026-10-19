@@ -95,7 +95,7 @@ struct Endpoint {
   std::string path(const std::string &reconnect) const {
     return "/stream?src=" + quote(source) +
            "&codec=h264&max=" + std::to_string(max) +
-           (foveation ? "&foveation=1&atlas=1" : "") +
+           (foveation ? "&foveation=1&direct=1" : "") +
            "&fps=" + std::to_string(fps) + "&bpp=" + std::to_string(bpp) +
            (reconnect.empty() ? "&t=" + quote(ticket)
                               : "&r=" + quote(reconnect));
@@ -179,18 +179,26 @@ enum class ResetReason : uint8_t {
   Reconnect,
   FormatChange
 };
-// Wire v1: mode1 axis warp, mode2 base+ROI atlas. Values are source-pixel
-// edges, never sample centers. Zero-sized core is the full-quality fallback.
+// Wire v1: mode1 axis warp, mode2 base+ROI atlas, mode3 direct capture.
+// Direct pictures already occupy their ordinary screen positions: no warp or
+// reconstruction, and loss of gaze never changes coded dimensions.
 struct FoveationLayout {
   bool present = false, warped = false;
   int width = 0, height = 0, encodedWidth = 0, encodedHeight = 0;
   int left = 0, top = 0, coreWidth = 0, coreHeight = 0;
   bool atlas = false;
+  bool direct = false;
   bool valid() const {
     if (!present) return true;
     if (width < 1 || height < 1 || width > 4096 || height > 4096 ||
         encodedWidth < 1 || encodedHeight < 1 ||
         encodedWidth > 4096 || encodedHeight > 4096) return false;
+    if (direct) return !warped && !atlas && width >= 16 && height >= 16 &&
+        width % 4 == 0 && height % 4 == 0 &&
+        encodedWidth == width && encodedHeight == height &&
+        left >= 0 && top >= 0 && left % 2 == 0 && top % 2 == 0 &&
+        coreWidth == width / 2 && coreHeight == height / 2 &&
+        left + coreWidth <= width && top + coreHeight <= height;
     if (!warped) return !atlas && width == encodedWidth && height == encodedHeight &&
                         !left && !top && !coreWidth && !coreHeight;
     if (atlas) return width >= 16 && height >= 16 && width % 4 == 0 && height % 4 == 0 &&
@@ -221,7 +229,8 @@ struct Packet {
   std::vector<uint8_t> bytes;
   FoveationLayout layout;
 };
-inline Packet packet(const std::vector<uint8_t> &b, bool negotiated = false, bool atlasNegotiated = false) {
+inline Packet packet(const std::vector<uint8_t> &b, bool negotiated = false,
+                     bool atlasNegotiated = false, bool directNegotiated = false) {
   if (b.size() < 18 || b.size() > 16 * 1024 * 1024)
     throw std::runtime_error("invalid video packet");
   Packet p;
@@ -231,11 +240,14 @@ inline Packet packet(const std::vector<uint8_t> &b, bool negotiated = false, boo
   size_t header = 17;
   if (b[0] & 0x7e) throw std::runtime_error("unknown video flags");
   if (b[0] & 0x80) {
-    if (!negotiated || b.size() < 38 || b[17] != 1 || b[18] > 2 || (b[18] == 2 && !atlasNegotiated) || b[19] || b[20])
+    if (!negotiated || b.size() < 38 || b[17] != 1 || b[18] > 3 ||
+        (b[18] == 2 && !atlasNegotiated) ||
+        (b[18] == 3 && !directNegotiated) ||
+        (directNegotiated && b[18] != 3) || b[19] || b[20])
       throw std::runtime_error("invalid foveation extension");
     auto u16 = [&](size_t i) { return (int(b[i]) << 8) | b[i + 1]; };
-    p.layout = {true, b[18] != 0, u16(21), u16(23), u16(25), u16(27),
-                u16(29), u16(31), u16(33), u16(35), b[18] == 2};
+    p.layout = {true, b[18] == 1 || b[18] == 2, u16(21), u16(23), u16(25), u16(27),
+                u16(29), u16(31), u16(33), u16(35), b[18] == 2, b[18] == 3};
     if (!p.layout.valid()) throw std::runtime_error("invalid foveation layout");
     header = 37;
   } else if (negotiated) {

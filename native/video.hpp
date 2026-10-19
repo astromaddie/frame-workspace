@@ -184,7 +184,7 @@ struct Pipeline {
     gazeSample = {u, v, sampled, valid && std::isfinite(u) && std::isfinite(v) &&
         u >= 0 && u <= 1 && v >= 0 && v <= 1 && std::isfinite(sampled), diagnostic};
   }
-  std::atomic<bool> foveationNegotiated{false}, atlasNegotiated{false};
+  std::atomic<bool> foveationNegotiated{false}, atlasNegotiated{false}, directNegotiated{false};
   bool needKey = true;
   // Absorb short transport bursts without throwing away an H.264 reference
   // chain. This remains bounded; a real backlog still recovers at an IDR.
@@ -293,8 +293,9 @@ struct Pipeline {
         ++reconnects;
         connectionOpened(resumed);
         clockValid = false;
-        foveationNegotiated = false; atlasNegotiated = false;
+        foveationNegotiated = false; atlasNegotiated = false; directNegotiated = false;
         std::string gazeSession;
+        int directWidth = 0, directHeight = 0;
         FoveationClock gazeClock;
         { std::lock_guard<std::mutex> l(outMutex); gazeSample = {}; }
         double ping = 0, key = 0, lastGaze = 0, lastSentSample = -1;
@@ -319,7 +320,7 @@ struct Pipeline {
           }
           if (focus.exchange(false))
             ws.sendText("{\"t\":\"focus\"}");
-          if (foveationNegotiated && clockValid && now - lastGaze >= 16) {
+          if (directNegotiated && clockValid && now - lastGaze >= 16) {
             GazeSample g;
             { std::lock_guard<std::mutex> l(outMutex); g = gazeSample; }
             const bool valid = g.valid && now >= g.sampled && now - g.sampled <= 100;
@@ -346,7 +347,14 @@ struct Pipeline {
           auto [type, bytes] = ws.receive();
           double receivedAt = nowMs();
           if (type == 2) {
-            auto p = packet(bytes, foveationNegotiated, atlasNegotiated);
+            if (endpoint.foveation && !directNegotiated)
+              throw std::runtime_error("video before direct capture negotiation");
+            auto p = packet(bytes, foveationNegotiated, atlasNegotiated, directNegotiated);
+            if (directNegotiated) {
+              if (directWidth && (directWidth != p.layout.width || directHeight != p.layout.height))
+                throw std::runtime_error("direct capture dimensions changed");
+              directWidth = p.layout.width; directHeight = p.layout.height;
+            }
             p.received = receivedAt;
             std::string ack = "{\"t\":\"rx\",\"s\":" + std::to_string(p.seq);
             if (clockValid)
@@ -362,14 +370,24 @@ struct Pipeline {
               if (r.empty() || r.size() > 256)
                 throw std::runtime_error("invalid reconnect key");
               reconnect = r;
-              if (endpoint.foveation && json_object_is_type(field(j, "foveation"), json_type_int) && num(j, "foveation") == 1) {
+              if (endpoint.foveation &&
+                  (!json_object_is_type(field(j, "foveation"), json_type_int) || num(j, "foveation") != 1 ||
+                   !json_object_is_type(field(j, "direct"), json_type_int) || num(j, "direct") != 1)) {
+                ++errors; ++serverErrors;
+                stopReason = "direct-capture-unavailable";
+                stop = true;
+                wake.notify_all();
+                fprintf(stderr, "[native] companion does not support direct foveated capture\n");
+                break;
+              }
+              if (endpoint.foveation) {
                 auto nonce = str(j, "gazeSession");
                 if (nonce.empty() || nonce.size() > 64 ||
                     nonce.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos)
                   throw std::runtime_error("invalid gaze session");
                 gazeSession = nonce;
                 foveationNegotiated = true;
-                atlasNegotiated = json_object_is_type(field(j, "atlas"), json_type_int) && num(j, "atlas") == 1;
+                directNegotiated = true;
               }
               ws.sendText("{\"t\":\"ack\"}");
               failed = 0;
@@ -407,7 +425,7 @@ struct Pipeline {
       } catch (const std::exception &) {
         connected = false;
         clockValid = false;
-        foveationNegotiated = false; atlasNegotiated = false;
+        foveationNegotiated = false; atlasNegotiated = false; directNegotiated = false;
         if (stop)
           break;
         ++errors;

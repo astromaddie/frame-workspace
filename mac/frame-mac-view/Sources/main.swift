@@ -108,11 +108,14 @@ final class Session {
         let pts: CMTime
         let capture: Int64
         let arrived: Int64
+        var layout: FoveationLayout? = nil
+        var directEpoch: UInt64? = nil
         var echo: UInt32  // the input this picture is the first reply to
     }
     private var last: Picture?
     private let foveation: Bool
     private let foveationAtlas: Bool
+    private let foveationDirect: Bool
     private let gazeSession = UUID().uuidString
     private var gaze = FoveationGaze()
     private var packer: FoveationPacker?
@@ -139,7 +142,8 @@ final class Session {
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
-         reconnectKey: String, activity: StreamActivityRegistry, foveation: Bool = false, foveationAtlas: Bool = false) {
+         reconnectKey: String, activity: StreamActivityRegistry, foveation: Bool = false, foveationAtlas: Bool = false, foveationDirect: Bool = false) {
+        self.foveationDirect = foveation && foveationDirect
         self.foveation = foveation
         self.foveationAtlas = foveation && foveationAtlas
         self.id = id
@@ -182,7 +186,7 @@ final class Session {
 
     /// Encodes `pb` unless the link or the encoder is busy, in which case it
     /// becomes the picture to send next.
-    private func offer(_ pb: CVPixelBuffer, pts: CMTime, capture shown: Int64) {
+    private func offer(_ pb: CVPixelBuffer, pts: CMTime, capture shown: Int64, layout: FoveationLayout? = nil, directEpoch: UInt64? = nil) {
         let arrived = nowUs()
         stats.withLock { stats.captured += 1 }
         controller.captured(at: arrived)
@@ -193,7 +197,7 @@ final class Session {
             echo = p.id
             pendingEcho = nil
         }
-        let picture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived, echo: echo)
+        let picture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived, layout: layout, directEpoch: directEpoch, echo: echo)
         last = picture
         let busy = stopped || ws.pendingBytes > maxPending || inFlight >= Session.maxInFlight
             || paced(now: arrived) || !controller.maySend(now: arrived)
@@ -219,8 +223,15 @@ final class Session {
             let seq = self.stats.newFrame(r)
             if p.echo != 0 { self.stats.updateInput(p.echo) { $0.frame = seq; $0.capture = p.capture } }
             var buffer = p.pb
-            var layout: FoveationLayout?
-            if self.foveation {
+            var layout = p.layout
+            if self.foveationDirect {
+                self.lock.lock()
+                let next = self.gaze.layout(width: CVPixelBufferGetWidth(p.pb), height: CVPixelBufferGetHeight(p.pb), now: nowUs(), direct: true)
+                let accept = !self.stopped && (self.gaze.active || p.layout == next)
+                self.lock.unlock()
+                // A picture paced before loss must not restore an old eye ROI.
+                guard accept, (self.capture as? DirectSCKSource)?.acceptsPicture(epoch:p.directEpoch) == true else { self.finished(); return }
+            } else if self.foveation {
                 self.lock.lock()
                 var chosen = self.gaze.layout(width: CVPixelBufferGetWidth(p.pb), height: CVPixelBufferGetHeight(p.pb), now: nowUs(), atlas: self.foveationAtlas)
                 self.lock.unlock()
@@ -267,7 +278,7 @@ final class Session {
         // time stays in the record, so the wait counts as latency.
         if let p = next {
             submit(Picture(pb: p.pb, pts: CMClockGetTime(CMClockGetHostTimeClock()), capture: p.capture,
-                           arrived: p.arrived, echo: p.echo))
+                           arrived: p.arrived, layout: p.layout, directEpoch: p.directEpoch, echo: p.echo))
         }
     }
 
@@ -308,6 +319,15 @@ final class Session {
         encoder.onDone = { [weak self] _ in self?.finished() }
         encoder.onError = { [weak self] message in self?.ws.sendJSON(["t": "error", "message": message]) }
         capture.onFrame = { [weak self] pb, pts, shown in self?.offer(pb, pts: pts, capture: shown) }
+        if let direct = capture as? DirectSCKSource {
+            direct.selectLayout = { [weak self] w,h in
+                guard let self else { return (.makeDirect(w,h,u:0.5,v:0.5),false) }
+                self.lock.lock(); defer { self.lock.unlock() }
+                let layout = self.gaze.layout(width:w,height:h,now:nowUs(),direct:true)
+                return (layout,self.gaze.active)
+            }
+            direct.onDirectFrame = { [weak self] pb,pts,shown,layout,epoch in self?.offer(pb,pts:pts,capture:shown,layout:layout,directEpoch:epoch) }
+        }
         capture.onEnded = { [weak self] reason in
             guard let self else { return }
             self.ws.sendJSON(["t": "closed", "reason": reason])
@@ -322,7 +342,9 @@ final class Session {
         var hello: [String: Any] = ["t": "hello", "r": reconnectKey]
         if foveation { hello["foveation"] = 1; hello["gazeSession"] = gazeSession }
         if foveationAtlas { hello["atlas"] = 1 }
-        ws.sendJSON(hello)
+        // Direct capability is advertised only after both actual SCK streams
+        // have supplied validated buffers and the first composition succeeded.
+        if !foveationDirect { ws.sendJSON(hello) }
         capture.onChange = { [weak self] in self?.sendInfo() }
         // The numbers, for the viewer's overlay.
         // Adapt ten times a second; the numbers go to the viewer once a second.
@@ -343,7 +365,7 @@ final class Session {
         }
         t.resume()
         statsTimer = t
-        if foveation {
+        if foveation && !foveationDirect {
             // ScreenCaptureKit need not emit a new picture on a static desktop.
             // Repack its newest picture when gaze moves, or restore full quality
             // when gaze expires, without keeping any additional picture queue.
@@ -382,6 +404,11 @@ final class Session {
                 self.end()
                 return
             }
+            if self.foveationDirect {
+                var directHello = hello
+                directHello["direct"] = 1
+                self.ws.sendJSON(directHello)
+            }
             self.sendInfo()
         }
     }
@@ -391,7 +418,7 @@ final class Session {
         let now = nowUs()
         if let bps = controller.update(now: now) { encoder.setBitrate(bps) }
         let scale = controller.scale
-        if scale != appliedScale {
+        if !foveationDirect && scale != appliedScale {
             appliedScale = scale
             capture.setMaxLong(max(320, Int(Double(maxLong) * scale)))
         }
@@ -495,6 +522,7 @@ final class Session {
         if foveation {
             lock.lock(); result["gaze"] = gaze.diagnostics; lock.unlock()
         }
+        if let direct = capture as? DirectSCKSource { result["directCapture"] = direct.diagnostics }
         return result
     }
 
@@ -754,8 +782,19 @@ final class Agent {
         let fps = min(max(Int(req.query["fps"] ?? "") ?? 60, 5), 120)
         let bpp = min(max(Double(req.query["bpp"] ?? "") ?? 0.1, 0.02), 0.5)
         guard let ws = c.upgrade(req) else { return }
+        let wantsDirect = req.query["direct"] == "1"
+        let foveation = codec == .h264 && req.query["foveation"] == "1" && ProcessInfo.processInfo.environment["FRAME_WORKSPACE_FOVEATION"] == "1"
+        if wantsDirect {
+            guard foveation, case .display = src else {
+                ws.start()
+                ws.sendJSON(["t":"error","message":"direct foveated capture requires an enabled H264 display source; independent windows, Separate and test sources are unsupported"])
+                ws.close()
+                return
+            }
+        }
         let capture: CaptureSource
         switch src {
+        case .display(let id) where wantsDirect: capture = DirectSCKSource(displayID:id)
         case .test: capture = TestSource()
         case .separate(let id): capture = SeparateSource(windowID: id)
         default: capture = SCKSource(src)
@@ -766,8 +805,8 @@ final class Agent {
         let replaced = sessions.values.filter { $0.reconnectKey == key }
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
                               bitsPerPixel: bpp, reconnectKey: key, activity: activity,
-                              foveation: codec == .h264 && req.query["foveation"] == "1" && ProcessInfo.processInfo.environment["FRAME_WORKSPACE_FOVEATION"] == "1",
-                              foveationAtlas: req.query["atlas"] == "1")
+                              foveation: foveation,
+                              foveationAtlas: !wantsDirect && req.query["atlas"] == "1", foveationDirect: wantsDirect)
         nextId += 1
         sessions[session.id] = session
         lock.unlock()

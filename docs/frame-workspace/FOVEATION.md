@@ -1,4 +1,222 @@
-# Native foveated transport (opt-in)
+# Native direct foveated capture (opt-in)
+
+The current experiment captures a low-resolution whole display and a detailed
+region directly with ScreenCaptureKit, then combines them at their original
+screen positions in one fixed-size NV12 picture. It does not pack an atlas or
+warp the desktop. The ordinary H.264 decoder and one OpenVR overlay receive the
+same dimensions throughout gaze movement and tracking loss. H.264 remains the
+transport; this change does not optimize the codec.
+
+Public ScreenCaptureKit exposes rectangular cropping and output dimensions,
+not a per-region density/rasterization-rate map. This reduces the pixels delivered
+by the capture streams, not the rendering work inside other Mac applications.
+A full-size GPU composition and full-size encode/decode remain necessary. See
+Apple's [SCStreamConfiguration](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration)
+and [sourceRect](https://developer.apple.com/documentation/screencapturekit/scstreamconfiguration/sourcerect).
+
+## Fixed dimensions and centre fallback
+
+New native clients request `foveation=1&direct=1`; the companion must explicitly
+answer `foveation:1,direct:1`. The existing `FRAME_WORKSPACE_FOVEATION=1` gate is
+required on both ends. The feature remains opt-in. An unsupported peer or source
+ends the direct session explicitly; there is no automatic packing or full-quality
+capture fallback. Ordinary sessions without the opt-in retain their existing path.
+
+Wire mode3 uses the existing 20-byte extension. Source and encoded width/height
+are equal. The even-aligned half-width by half-height detailed region describes
+pixels already in their ordinary positions; native rendering must not reconstruct
+it. The parser rejects unsupported modes, reduced encoded geometry, out-of-bounds
+regions, packets before negotiation and geometry changes within a connection.
+Legacy mode0/1/2 parser support remains for bounded historical tests, but new
+production `--foveation` connections require direct mode3 throughout.
+
+Missing, invalid, stale or uncalibrated gaze chooses a detailed **centre** crop.
+It does not select an unfoveated encoded fallback. Session nonce, sample ordering,
+150ms freshness and 50ms future limits remain in force. Gaze coordinates stay in
+session memory and are not logged. Source capture failure is an explicit error.
+
+## Crop provenance and costs
+
+The low-resolution whole-display stream delivers one quarter of the baseline
+pixels; the full-detail half-width by half-height crop delivers another quarter.
+Their normal steady capture output is therefore 50% of the baseline pixels,
+while the composed and encoded picture remains full size.
+
+Each detailed crop stream has an immutable source rectangle and layout. Moving
+it creates a bounded replacement generation, with coalesced gaze targets; a late
+callback can never be placed using a newer requested origin. This deliberately
+avoids treating `updateConfiguration` completion as a queued-frame flush: Apple
+does not document that guarantee, and `SCStreamFrameInfo` does not document a
+configuration-generation echo. Replacement startup, temporary overlap and
+cross-stream synchronization can outweigh the capture reduction, so fewer
+capture pixels alone is not evidence of improved throughput.
+
+## Independent gaze producer
+
+A bounded producer samples eye tracking independently of the render loop and
+posts into the existing newest-sample network slot. Rendering reads status; no
+render/GL work runs on the producer. Geometry synchronization excludes long
+uploads and `glFinish`, and shutdown joins the producer before destroying OpenVR
+resources. The required `glFlush(); glFinish()` compositor handoff is retained.
+
+## Host verification of the direct path
+
+`mac/frame-mac-view/test-direct-capture.sh --host /tmp/frame-direct-evidence`
+creates and removes its own 644×484 non-16:9 display and pattern window. It never
+replaces the active Workspace, installed companion or headset viewer. The checks
+cover actual ScreenCaptureKit source rectangles, all NV12 luma/chroma samples in
+both ranges, fixed dimensions under attempted size adaptation, loss/reentry
+callback generations, and centre fallback. The real Session test additionally
+covers unsupported/disabled requests, startup failure, direct hello only after
+successful capture, VideoToolbox framing and gaze invalidation/expiry.
+
+The native direct-sequence test runs that actual SCK/VT output through the strict
+handshake, decoder, and ordinary GL texture. CPU RGB uses the FFmpeg CLI oracle.
+GPU RGB uses independently decoded YUV and the BT.709 video-range equations,
+matching the existing shader contract. The first GPU comparison against CLI RGB
+failed at 3/255 (mean 1.77): libswscale's integer RGB conversion differs from the
+floating-point conversion. The independent equation check matched all 935,088
+channel values exactly; CPU output matched CLI exactly. The test preserves the
+separate CLI deviation and tightens the GPU equation tolerance to 1/255; it does
+not hide the failed comparison by increasing a tolerance.
+
+Temporary-sequence native commands (use the local no-VR GL display on macOS;
+Linux defaults to Xvfb):
+
+```sh
+clang++ -std=c++17 -O2 -isystem /opt/homebrew/include \
+  native/tests_direct_protocol.cpp -o /tmp/direct-protocol-test
+/tmp/direct-protocol-test
+python3 native/tests_direct_negotiation.py /tmp/native-candidate --use-display
+python3 native/tests_direct_capture.py /tmp/native-candidate \
+  /tmp/frame-direct-evidence/direct-host.sequence --use-display --conversion gpu
+python3 native/tests_direct_capture.py /tmp/native-candidate \
+  /tmp/frame-direct-evidence/direct-host.sequence --use-display --conversion cpu
+```
+
+Current direct support is **display-only**. Independent windows, Separate and
+TestSource are rejected rather than substituted. Crop replacement is capped at
+10Hz even though eye acquisition runs near 60Hz. A replacement must start a new
+SCK stream, so this is a correctness prototype with material crop-following
+latency, not an accepted 60fps or gaze-to-photon optimization. A mostly static
+fixture does not measure moving-desktop throughput; long overall output gaps
+include intentionally unchanged periods. Device/worn evidence is separate.
+
+### Initial off-head comparison
+
+The first installed candidate (Mac `394c0c25…`, native `42f9c8ad…`) was compared
+with one ordinary/full, one centre and one moving-diagnostic 30-second scrolling
+run, in that order. Source/coded dimensions stayed 2880×2560; each used the same
+2880×2530 Chrome fixture, 8-second startup warmup, requested 60fps, V4L2 and GPU
+conversion, with no concurrent builds/tests. These are desktop texture updates,
+not compositor or optical FPS, and one ordered trial is not a sustained benchmark.
+
+| Mode | Fresh drawn/s | H264 payload Mbps | Errors | Format reopens |
+| --- | ---: | ---: | ---: | ---: |
+| Ordinary full |41.85|3.11|0|0|
+| Direct centre |41.80|4.69|0|0|
+| Direct moving diagnostic |38.27|6.28|0|0|
+
+Source capture/sending remained approximately 55/s in the first two cases; the
+loss is later in the pipeline. Full-size encoding/decoding remains unchanged,
+so this capture prototype has not demonstrated a route to 60fps. The moving run
+accepted 2000 diagnostic samples but also recorded 36 stale arrivals, 15 expiry
+checks and 4 fallback transitions; there were no layout-driven decoder resets.
+No actual valid-eye/worn claim follows from synthetic gaze.
+
+Ordinary streaming was restored with the saved pose hash unchanged. The native
+receiver completed about 55 packets/s, decoded about 50 pictures/s and uploaded
+about 41/s in the full/centre runs. The latest-only picture slot deliberately
+replaces unconsumed decoded pictures; received/decoded/uploaded counts need not
+match. Both TCP endpoints already disable Nagle. The synchronous GL handoff and
+render-loop scheduling/bursts need per-frame profiling to explain the remaining
+loss; low decoder API timings alone do not identify the limiting stage.
+
+A subsequent review flagged the 150ms cross-stream age gate: without a newer ROI
+confirmation it intentionally holds composition. Public SCK idle events have no
+guaranteed heartbeat cadence. Targeted tests with an unchanged centre and a
+separately animated window wholly outside it nevertheless progressed correctly
+on this Mac: 118 outputs in 2.6s, all 8 peripheral levels, unchanged centre,
+78.58ms maximum output gap and no skew holds. ROI idle callbacks carried current
+displayTime/PTS. A later latency check observed a 387.75ms output gap even with
+fresh ROI idle events and no skew holds: the base callback itself was 342.5ms
+old. The matched full-capture baseline also exceeded 150ms (189.46ms). An
+absolute output-gap limit is therefore different from the 150ms emitted-pair
+skew contract. The regression checks actual pair skew, correct pixels and
+continued late-stage progression; output gaps remain reported latency limits.
+An animated-centre control also progressed. No normal-operation
+freeze was reproduced, so the capture behavior was retained and the case added
+as a regression. The screenshot-sample alternative returned correct 322×242 NV12
+pixels but cost 51.7ms median/81.75ms p95/115.25ms maximum; it was not adopted.
+
+The final regression delivered all eight peripheral animation levels in 67
+outputs over 2.6 seconds while preserving the exact unchanged focal pixels.
+The animated-centre control delivered 100 outputs and all eight levels in both
+regions. Maximum emitted pair skew was 33.334ms; observed output gaps were
+177.458ms and 112.458ms. The final moving-crop probe checked 194 outputs at 32
+positions with zero pixel errors (maximum luma difference 1/255).
+
+The final installed Mac binary is `48a3e139…`; the native ARM64 binary remains
+`42f9c8ad…`. The follow-up only adds optional diagnostics and the regression;
+capture behavior is unchanged. Its installed direct path negotiated successfully,
+kept 2880×2560 and selected centre detail with unavailable off-head eye tracking.
+Ordinary streaming is the restored default. Latest pre-change executables and
+pose/metadata are retained in `/tmp/frame-workspace-direct-rollback` on each
+machine until wearer acceptance. Exact hashes and aggregate evidence are in
+[FOVEATION-VALIDATION.json](FOVEATION-VALIDATION.json). Temporary worktrees, builds,
+logs and captures were removed after consolidation (82.57 MB of files across
+this task; local free space increased 67.10 MB during final cleanup). Current
+executables, the active companion and latest rollback were preserved.
+
+### Gaze producer verification
+
+The standalone lifecycle test passes under ThreadSanitizer: bounded cadence,
+main/render thread blocked300ms, provider exceptions, original acquisition
+stamp on delayed calls, stop/join, restart and exception unwinding. Production
+WS→decode→GL with three injected stalls measured301.09/301.05/301.06ms,
+15 fresh socket-received samples in each, maximum gaps31.89/28.92/27.09ms and
+mapped arrival ages−0.17…17.40ms. The matched previous render-loop producer,
+using the same warmup and direct protocol, received zero fresh samples in a stall.
+
+Reconnect/clock-jitter and partial-message regressions also pass. This proof does
+not establish global startup freshness: before first-GL warmup, a separate
+observation found eight arrivals up to283.27ms old (mapped age283.24ms). None
+occurred during/after the measured stall windows. The exact startup scheduling
+cause remains unresolved; sender100ms and receiver150ms freshness checks are
+unchanged, so stale arrivals still select centre fallback. OpenVR calls have no
+cancellation API: shutdown joining depends on an in-flight call returning.
+Real eye sampling, runtime geometry/curvature and wearer acceptance remain open.
+
+For local macOS checks with the existing Homebrew dependencies (no native
+pkg-config installation), build the same source with:
+
+```sh
+host_flags=(-std=c++17 -O1 -g -pthread -Wno-unused-function
+  -I/opt/homebrew/opt/sdl2/include/SDL2 -I/opt/homebrew/opt/json-c/include
+  -I/opt/homebrew/opt/ffmpeg/include -I/opt/homebrew/opt/openssl/include
+  -DMSG_NOSIGNAL=0 -L/opt/homebrew/opt/sdl2/lib -L/opt/homebrew/opt/json-c/lib
+  -L/opt/homebrew/opt/ffmpeg/lib -L/opt/homebrew/opt/openssl/lib
+  -lSDL2 -ljson-c -lavcodec -lavutil -lswscale -lssl -lcrypto -framework OpenGL)
+clang++ "${host_flags[@]}" native/main.cpp native/gaze_bridge.cpp -o /tmp/native-candidate
+/tmp/native-candidate --self-test
+```
+
+`MSG_NOSIGNAL=0` is only the macOS build adaptation; the program already ignores
+SIGPIPE. Linux ARM64 uses `scripts/build-workspace-native.sh` unchanged.
+
+Reproduce the producer checks using the normal native build flags, adding
+`-DglFinish=fwTestGlFinish native/tests_gaze_render_stall.cpp` for a separate
+test binary only, then run `native/tests_gaze_render_stall.py`. Run
+`native/tests_gaze_producer.cpp` with `-fsanitize=thread` for lifecycle coverage.
+No timing injection enters the production executable; GL synchronization stays.
+
+## Historical packed-stream experiment (through fc2cfb9)
+
+The following measurements and reproduction commands describe the previous
+axis/atlas implementation and its then-current binaries. They are retained as
+negative performance evidence, not as instructions to enable the current direct
+path. In particular, the old native packing fixture runner needs that historical
+binary; a current direct client intentionally refuses that server handshake.
 
 One Mac H.264 stream and one reconstructed OpenVR overlay texture. Default
 behavior remains ordinary full-frame H.264. This is implemented and tested through
@@ -9,7 +227,7 @@ updates do not establish compositor refresh or optical latency.
 
 **Runtime decision:** keep this experimental and opt-in. Final matched runs did
 not show a sustained frame-rate or bandwidth benefit. Ordinary full-quality
-Workspace remains the normal mode; this is not an accepted60fps optimization.
+Workspace remains the normal mode; this is not an accepted 60fps optimization.
 
 ## Enable and fallback
 

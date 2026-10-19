@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
-"""Production Mac Metal/VT fixtures -> WebSocket -> libavcodec -> GL oracle.
+"""Historical packed Mac Metal/VT fixtures -> WS -> decoder -> GL oracle.
 Generate fixtures with mac/frame-mac-view/tests/FoveationTests.swift first.
+Use the fc2cfb9 native binary: current --foveation requires direct capture and
+intentionally rejects this legacy handshake. See docs/frame-workspace/FOVEATION.md.
 No VR, no persistent gaze data. Requires ffmpeg and Xvfb on Linux.
 """
 import argparse, base64, hashlib, json, pathlib, select, socket, struct, subprocess, tempfile, threading, time

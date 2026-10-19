@@ -1,4 +1,5 @@
 #include "overlay.hpp"
+#include "gaze_producer.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -405,8 +406,7 @@ int main(int argc, char **argv) {
   double diagnosticU = 0, diagnosticV = 0;
   uint32_t dumpSequence = 0;
   int dumpWidth = 0, dumpHeight = 0;
-  double seconds = 0, lastGazeSample = 0;
-  const char *gazeState = "disabled";
+  double seconds = 0;
   try {
     for (int i = 1; i < argc; i++) {
       std::string a = argv[i];
@@ -567,6 +567,21 @@ int main(int argc, char **argv) {
       pipe.start(endpoint);
     double start = nowMs(), lastState = start, lastLog = start, lastControl = 0,
            lastPattern = 0, previousState = start;
+    // Destruction order is producer, pipeline, overlay, including exceptions.
+    // No gaze acquisition or delivery depends on the render loop making progress.
+    GazeProducer gazeProducer;
+    if (foveation) {
+      gazeProducer.start([&](double sampled) {
+        if (diagnosticGaze)
+          return diagnosticGazeReading(sampled, start, diagnosticScan, diagnosticU, diagnosticV);
+        GazeReading reading;
+        reading.status = overlay.gaze(reading.u, reading.v);
+        reading.valid = std::strcmp(reading.status, "valid") == 0;
+        return reading;
+      }, [&](const GazeReading &reading, double sampled) {
+        pipe.gaze(reading.u, reading.v, reading.valid, sampled, reading.diagnostic);
+      });
+    }
     uint64_t uploads = 0, lastUploads = 0, lastDecoded = 0, submitErrors = 0;
     int w = 0, h = 0, encodedW = 0, encodedH = 0;
     bool foveationActive = false;
@@ -656,7 +671,7 @@ int main(int argc, char **argv) {
              ",\"submitError\":" + std::to_string(overlay.lastSubmitError) +
              ",\"decoder\":\"" + pipe.decoderIdentity() + "\"" +
              ",\"decoderRequested\":\"" + decoderMode + "\"" +
-             ",\"gazeState\":\"" + gazeState + "\"" +
+             ",\"gazeState\":\"" + gazeProducer.status() + "\"" +
              ",\"foveationRequested\":" + (foveation ? "true" : "false") +
              ",\"foveationNegotiated\":" + (pipe.foveationNegotiated ? "true" : "false") +
              ",\"diagnosticGaze\":" + (diagnosticGaze ? "true" : "false") +
@@ -702,17 +717,6 @@ int main(int argc, char **argv) {
     while (!interrupted && !pipe.stop &&
            (seconds == 0 || nowMs() - start < seconds * 1000)) {
       double now = nowMs();
-      if (foveation && now - lastGazeSample >= 1000.0 / 60) {
-        double u=0,v=0;
-        if (diagnosticGaze) {
-          u=diagnosticScan ? .5+.3*std::sin((now-start)*.0015707963267948966) : diagnosticU;
-          v=diagnosticScan ? .5+.3*std::cos((now-start)*.0015707963267948966) : diagnosticV;
-          gazeState=diagnosticScan ? "diagnostic-scan" : "diagnostic";
-        }
-        else gazeState=overlay.gaze(u,v);
-        pipe.gaze(u,v,diagnosticGaze || std::string(gazeState)=="valid",now,diagnosticGaze);
-        lastGazeSample=now;
-      }
       if (!overlay.events()) {
         exitReason = overlay.exitReason;
         break;
@@ -798,7 +802,7 @@ int main(int argc, char **argv) {
           ++uploads;
           w = picture->outputWidth();
           h = picture->outputHeight();
-          encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.warped;
+          encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.direct || picture->layout.warped;
           ageMs = nowMs() - picture->received;
           pipe.report(*picture, nowMs());
           retryPicture.reset();
@@ -848,6 +852,7 @@ int main(int argc, char **argv) {
       else
         exitReason = "timer";
     }
+    gazeProducer.finish();
     pipe.finish();
     ready = false;
     fprintf(stderr,

@@ -59,7 +59,7 @@ def serve():
                    if line.lower().startswith(b"sec-websocket-key:"))
         accept = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
         c.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n\r\n")
-        send(c, {"t": "hello", "r": "test-reconnect", "foveation": 1, "gazeSession": "slow-read-test"})
+        send(c, {"t": "hello", "r": "test-reconnect", "foveation": 1, "direct": 1, "gazeSession": "slow-read-test"})
         pings = queue.SimpleQueue()
         def receive():
             try:

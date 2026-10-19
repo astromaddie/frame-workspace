@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='fw-gaze-') as folder:
                 key=next(x.split(b':',1)[1].strip() for x in request.split(b'\r\n') if x.lower().startswith(b'sec-websocket-key:'))
                 accept=base64.b64encode(hashlib.sha1(key+b'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest())
                 c.sendall(b'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: '+accept+b'\r\n\r\n')
-                nonce=f'session-{attempt}';send(c,{'t':'hello','r':'reconnect','foveation':1,'gazeSession':nonce})
+                nonce=f'session-{attempt}';send(c,{'t':'hello','r':'reconnect','foveation':1,'direct':1,'gazeSession':nonce})
                 pending=None;clock=False;start=time.monotonic();lastStamp=0;lastHost=0;lastArrival=None;count=0;pingCount=0;regressions=0
                 while time.monotonic()-start<duration:
                     now=time.monotonic()

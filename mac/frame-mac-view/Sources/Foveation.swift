@@ -8,7 +8,8 @@ struct FoveationLayout: Equatable {
     let width: Int, height: Int, encodedWidth: Int, encodedHeight: Int
     let left: Int, top: Int, coreWidth: Int, coreHeight: Int
     var atlas = false
-    var warped: Bool { coreWidth != 0 }
+    var direct = false
+    var warped: Bool { !direct && coreWidth != 0 }
     static func full(_ w: Int, _ h: Int) -> Self {
         Self(width: w, height: h, encodedWidth: w, encodedHeight: h,
              left: 0, top: 0, coreWidth: 0, coreHeight: 0)
@@ -31,9 +32,18 @@ struct FoveationLayout: Equatable {
         return Self(width: w, height: h, encodedWidth: w, encodedHeight: h / 2,
                     left: x, top: y, coreWidth: cw, coreHeight: ch, atlas: true)
     }
+    // Direct capture uses ordinary image coordinates and a fixed coded canvas.
+    // Dimensions are negotiated once, aligned to four for half-size NV12 inputs.
+    static func makeDirect(_ w: Int, _ h: Int, u: Double, v: Double) -> Self {
+        precondition(w >= 16 && h >= 16 && w <= 4096 && h <= 4096 && w % 4 == 0 && h % 4 == 0)
+        let valid = u.isFinite && v.isFinite && (0...1).contains(u) && (0...1).contains(v)
+        let roi = makeAtlas(w, h, u: valid ? u : 0.5, v: valid ? v : 0.5)
+        return Self(width: w, height: h, encodedWidth: w, encodedHeight: h,
+                    left: roi.left, top: roi.top, coreWidth: roi.coreWidth, coreHeight: roi.coreHeight, direct: true)
+    }
     // The extension is 20 bytes: version, mode, reserved u16, then eight BE u16s.
     var wire: Data {
-        var out = Data([1, atlas ? 2 : (warped ? 1 : 0), 0, 0])
+        var out = Data([1, direct ? 3 : (atlas ? 2 : (warped ? 1 : 0)), 0, 0])
         for n in [width, height, encodedWidth, encodedHeight, left, top, coreWidth, coreHeight] {
             var be = UInt16(n).bigEndian
             out.append(Data(bytes: &be, count: 2))
@@ -42,8 +52,8 @@ struct FoveationLayout: Equatable {
     }
 }
 
-// Serialised by Session.lock. A stale sample immediately falls back to full
-// quality; reentry requires 500 ms of continuous samples and 2 s since a loss.
+// Serialised by Session.lock. Loss selects centre for direct capture, or
+// full quality for legacy packing; reentry requires 500 ms of continuous samples and 2 s since a loss.
 struct FoveationGaze {
     private var sample: (u: Double, v: Double, time: Int64, stamp: Int64)?
     private var firstValid: Int64 = 0
@@ -105,15 +115,17 @@ struct FoveationGaze {
         nativeSampleClock = usesNativeClock
         lastStamp = stamp; sample = (u, v, Int64(t), stamp); count("accepted")
     }
-    mutating func layout(width: Int, height: Int, now: Int64, atlas: Bool = false) -> FoveationLayout {
-        guard let s = sample else { return .full(width, height) }
-        guard now - s.time <= 150_000 else { reject("expired", now: now); return .full(width, height) }
-        guard now >= s.time - 50_000 else { reject("clockFuture", now: now); return .full(width, height) }
-        guard now >= resumeAfter, now - firstValid >= 500_000 else { return .full(width, height) }
-        let result = atlas ? FoveationLayout.makeAtlas(width, height, u: s.u, v: s.v)
+    mutating func layout(width: Int, height: Int, now: Int64, atlas: Bool = false, direct: Bool = false) -> FoveationLayout {
+        let fallback: FoveationLayout = direct ? .makeDirect(width, height, u: 0.5, v: 0.5) : .full(width, height)
+        guard let s = sample else { return fallback }
+        guard now - s.time <= 150_000 else { reject("expired", now: now); return fallback }
+        guard now >= s.time - 50_000 else { reject("clockFuture", now: now); return fallback }
+        guard now >= resumeAfter, now - firstValid >= 500_000 else { return fallback }
+        let result = direct ? FoveationLayout.makeDirect(width, height, u: s.u, v: s.v)
+                           : atlas ? FoveationLayout.makeAtlas(width, height, u: s.u, v: s.v)
                            : FoveationLayout.make(width, height, u: s.u, v: s.v)
-        if result.warped && !active { count("activations") }
-        active = result.warped
+        if (result.direct || result.warped) && !active { count("activations") }
+        active = result.direct || result.warped
         return result
     }
 }
