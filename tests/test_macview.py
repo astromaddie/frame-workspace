@@ -11,6 +11,7 @@ import sandbox  # noqa: F401  (first: keeps tests off real data and services)
 import base64
 import http.client
 import json
+import math
 import io
 import os
 import re
@@ -88,6 +89,56 @@ class Helpers(unittest.TestCase):
             mv.route = "network"
             mv._apply_link_cap()
         self.assertEqual(calls, [("/link", "12000000"), ("/link", "0"), ("/link", "12000000")])
+
+    def test_window_panel_opens_beside_the_workspace_facing_the_viewer(self):
+        workspace = [1, 0, 0, 0, 0, 1, 0, 1.3, 0, 0, 1, -2]  # 2 m ahead of a viewer at (0, 1.3, 0)
+        viewer = [0, 1.3, 0]
+        sides = []
+        for slot in range(3):
+            pose = json.loads(frame_macview.beside_workspace_pose(workspace, 2.4, 2.0, 2880, 1200, slot))
+            m = pose["matrix"]
+            centre, normal = [m[3], m[7], m[11]], [m[2], m[6], m[10]]
+            self.assertAlmostEqual(pose["width"], 1.0, places=3)  # same scale as the Workspace
+            self.assertAlmostEqual(math.dist(centre, viewer), 2.0, places=3)
+            to_viewer = [v - c for v, c in zip(viewer, centre)]
+            self.assertAlmostEqual(sum(a * b for a, b in zip(normal, to_viewer)) / 2.0, 1.0, places=4)
+            for a in range(3):  # orthonormal rotation
+                for b in range(3):
+                    dot = sum(m[r * 4 + a] * m[r * 4 + b] for r in range(3))
+                    self.assertAlmostEqual(dot, 1.0 if a == b else 0.0, places=4)
+            # Seen from the viewer, the panel's inner edge is past the
+            # Workspace's edge (no overlap).
+            side = [m[0], m[4], m[8]]
+            sign = 1 if slot % 2 == 0 else -1
+            inner = [c - sign * s * pose["width"] / 2 for c, s in zip(centre, side)]
+            sides.append(sign * math.atan2(inner[0], -inner[2]))
+        edge = math.atan2(1.2, 2.0)
+        self.assertGreater(sides[0], edge)  # right of the Workspace
+        self.assertGreater(sides[1], edge)  # left of it
+        self.assertGreater(sides[2], sides[0])  # further right
+
+    def test_native_window_show_uses_own_panel_at_window_size(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        runs = []
+
+        def run(cmd, **kwargs):
+            runs.append(cmd)
+            if cmd.startswith("cat "):
+                return json.dumps({"ready": True, "placement": {"width": 2.4, "distance": 2.0,
+                                                                "matrix": [1, 0, 0, 0, 0, 1, 0, 1.3, 0, 0, 1, -2]}})
+            return "Native Workspace ready: registered OpenVR key com.frame-workspace.native.1000.panel-w42 in unit"
+        mv.run = run
+        mv.call = lambda path, **kw: {"windows": [{"src": "window:42", "title": "Terminal\tzsh", "w": 1200, "h": 800}]}
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2",
+                                          "FRAME_WORKSPACE_CONVERSION": "gpu"}):
+            mv._show_native_window("window:42", "http://127.0.0.1:1/view?x", "fc12345678", 1200, 800)
+        args = shlex.split(runs[-1])[3:]
+        self.assertEqual(args[:4], ["--panel", "w42", "--name", "Terminal zsh"])
+        self.assertEqual(args[4], "--initial-pose")
+        self.assertEqual(json.loads(args[5])["width"], 1.0)
+        self.assertEqual(args[6:8], ["start", "http://127.0.0.1:1/view?x"])
+        self.assertEqual(args[-2:], ["v4l2", "gpu"])
+        self.assertEqual(mv.native_panels["window:42"]["key"], "com.frame-workspace.native.1000.panel-w42")
 
     def test_workspace_display_defaults_to_120_hz(self):
         with mock.patch.dict(os.environ, {}, clear=False):

@@ -6,8 +6,42 @@ unit="frame-workspace-viewer-$uid.service"
 runtime="${XDG_RUNTIME_DIR:-/run/user/$uid}/frame-workspace"
 install="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native"
 key="com.frame-workspace.native.$uid.workspace"
+pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.json"
+# Window panels: `--panel ID` selects one native viewer of its own (unit,
+# runtime files, OpenVR key and saved pose); without it this is the Workspace.
+# `--name` is the panel title SteamVR shows; `--initial-pose JSON` places a new
+# panel (for example beside the Workspace) until it has a saved pose.
+panel="" panel_name="" initial_pose=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --panel) [ "$#" -ge 2 ] || exit 2; panel=$2; shift 2 ;;
+    --name) [ "$#" -ge 2 ] || exit 2; panel_name=$2; shift 2 ;;
+    --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; shift 2 ;;
+    *) break ;;
+  esac
+done
+if [ -n "$panel" ]; then
+  case "$panel" in *[!a-z0-9]*) echo 'Panel IDs are lowercase letters and digits.' >&2; exit 2 ;; esac
+  [ "${#panel}" -le 16 ] || exit 2
+  unit="frame-workspace-panel-$uid-$panel.service"
+  runtime="${XDG_RUNTIME_DIR:-/run/user/$uid}/frame-workspace/panel-$panel"
+  key="com.frame-workspace.native.$uid.panel-$panel"
+  pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/panels/$panel-pose.json"
+fi
+[ "${#panel_name}" -le 64 ] || exit 2
+case "$panel_name" in *$'\n'*|*$'\r'*|*$'\t'*) exit 2 ;; esac
+[ "${#initial_pose}" -le 1024 ] || exit 2
 
 case "${1:-}" in
+  stop)
+    # Stops this viewer (a window panel, or the Workspace) and removes its
+    # runtime files; its saved pose stays for next time.
+    [ "$#" -eq 1 ] || exit 2
+    systemctl --user stop "$unit" >/dev/null 2>&1 || true
+    if [ -n "$panel" ]; then rm -rf "$runtime"; fi
+    echo "Stopped $unit"
+    exit 0
+    ;;
   focus)
     [ "$#" -eq 1 ] || exit 2
     python3 - "$runtime" "$unit" "$key" focus <<'PY'
@@ -311,7 +345,7 @@ PY
     exit $?
     ;;
   start) ;;
-  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | pose RIGHT UP CLOSER YAW PITCH ROLL | curvature VALUE' >&2; exit 2 ;;
+  *) echo 'usage: workspace-native-on-frame.sh [--panel ID [--name TITLE] [--initial-pose JSON]] start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | pose RIGHT UP CLOSER YAW PITCH ROLL | curvature VALUE | stop' >&2; exit 2 ;;
 esac
 [ "$#" -ge 5 ] && [ "$#" -le 9 ] || exit 2
 url=$2
@@ -392,7 +426,11 @@ control="$runtime/control.json"
 printf '%s\n' "$url" > "$secret"
 rm -f "$state" "$control"
 trap 'rm -f "$secret"' EXIT
-pose="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.json"
+pose="$pose_file"
+mkdir -p "$(dirname "$pose")"
+panel_args=()
+if [ -n "$panel_name" ]; then panel_args+=(--overlay-name "$panel_name"); fi
+if [ -n "$initial_pose" ]; then panel_args+=(--initial-pose "$initial_pose"); fi
 vrcmd=/opt/steamvr/bin/linuxarm64/vrcmd
 if ! systemd-run --user --unit="$unit" --description='Frame Workspace native viewer' --collect \
   --property=Type=exec --property=KillMode=control-group --property=Restart=no --property=TimeoutStopSec=3s \
@@ -400,7 +438,7 @@ if ! systemd-run --user --unit="$unit" --description='Frame Workspace native vie
   --setenv=DISPLAY=:0 --setenv=LC_ALL=C.UTF-8 \
   "$binary" --url-file "$secret" --overlay-key "$key" --control-file "$control" \
     --state-file "$state" --pose-file "$pose" --decoder "$decoder" \
-    --conversion "$conversion" "${foveation_args[@]}" >/dev/null 2>&1; then
+    --conversion "$conversion" "${foveation_args[@]}" "${panel_args[@]}" >/dev/null 2>&1; then
   echo 'Could not start the native Workspace service.' >&2
   exit 1
 fi

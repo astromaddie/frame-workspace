@@ -129,6 +129,25 @@ receive-to-dequeue time. `emptyReceives`, `emptyReceiveTotalMs` and
 `emptyReceiveMaxMs` separately measure receive calls returning EAGAIN; they are
 not successful decode or GPU execution timings.
 
+## Window panels
+
+With the native Workspace viewer selected, Show for a Mac window starts a native
+viewer of its own instead of a Chrome panel. It has its own unit, runtime files,
+OpenVR key `com.frame-workspace.native.UID.panel-wID`, saved pose and hardware
+decoder session (`--panel ID [--name TITLE] [--initial-pose JSON]` before the
+launcher command, plus `stop`). The window is captured as itself at its own size
+and backing scale; it is not moved onto a separate display or resized. Its first
+position is beside the Workspace: on the circle around the viewing point at the
+Workspace's distance, just past its edge (right, then left, then further out),
+turned to face the viewer, and as wide as the window would be at the Workspace's
+scale, so text matches. Without a running Workspace it recenters ahead. Closing
+the window's stream ends its viewer, and the companion removes its runtime files.
+Verified on the Frame 2026-10-19 with a 986×729-point Terminal window: a
+1984×1472 texture with V4L2 decoding at ~56 updates/s beside the running
+Workspace, with clean removal on Stop. `FRAME_WINDOW_VIEWER=browser` keeps the
+older Chrome panels. Moving panels in the headset (visionOS-style grab pill,
+resize corners and curve bars) is the next FW-14 stage.
+
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder

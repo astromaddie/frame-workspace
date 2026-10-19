@@ -94,11 +94,21 @@ inline void rotatePlacement(Placement &placement, float yaw, float pitch, float 
       m[r][2] = float(z[r]);
     }
   }
+inline bool parsePlacement(const std::string &text, Placement &p);
 inline bool loadPlacement(const std::string &path, Placement &p) {
   if (path.empty())
     return false;
   try {
-    auto j = json(readFile(path));
+    return parsePlacement(readFile(path), p);
+  } catch (...) {
+    return false;
+  }
+}
+// A placement in the pose-file format (version, width, distance, optional
+// curvature, 12-value matrix with an orthonormal rotation).
+inline bool parsePlacement(const std::string &text, Placement &p) {
+  try {
+    auto j = json(text);
     auto a = field(j, "matrix");
     if (num(j, "version") != 1 || !a || json_object_array_length(a) != 12)
       return false;
@@ -467,8 +477,12 @@ public:
   std::string present = "paced";
   uint64_t pacedDrops = 0, pacedFallbacks = 0;
   uint64_t presentGaps[5] = {}; // refreshes between submissions: 1, 2, 3, 4+ (0 unused)
-  Overlay(bool test, const std::string &overlayKey, bool foveation = false)
+  std::string name = "Frame Workspace"; // shown by SteamVR
+  Overlay(bool test, const std::string &overlayKey, bool foveation = false,
+          const std::string &overlayName = "")
       : noVR(test), key(overlayKey) {
+    if (!overlayName.empty())
+      name = overlayName;
     if (SDL_Init(SDL_INIT_VIDEO))
       throw std::runtime_error("SDL video unavailable");
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
@@ -519,8 +533,7 @@ public:
     if (error || !system)
       throw std::runtime_error("OpenVR system 022 unavailable");
     if (foveation) gazeBridge = std::make_unique<GazeBridge>(library);
-    char name[] = "Frame Workspace";
-    check(overlay->CreateOverlay(key.data(), name, &handle), "CreateOverlay");
+    check(overlay->CreateOverlay(key.data(), name.data(), &handle), "CreateOverlay");
     check(overlay->SetOverlayTextureColorSpace(handle,
                                                EColorSpace_ColorSpace_Gamma),
           "color space");

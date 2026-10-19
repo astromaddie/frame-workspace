@@ -522,6 +522,32 @@ def panel_id(src):
     return 2_001_000_000 + zlib.crc32(f"mac:{src}".encode()) % 1_000_000
 
 
+def beside_workspace_pose(matrix, width, distance, logical_width, window_width, slot):
+    """A native window panel's first pose, beside the Workspace.
+
+    `matrix` is the Workspace's 3x4 row-major transform (columns: right, up,
+    normal toward the viewer, centre). The panel sits on the circle around
+    the viewing point at the Workspace's distance, just past its edge (slot 0
+    right, 1 left, 2 further right, ...), turned to face the viewer, and as
+    wide as the window would be at the Workspace's scale (same text size)."""
+    m = [float(v) for v in matrix]
+    right, up, normal = [m[0], m[4], m[8]], [m[1], m[5], m[9]], [m[2], m[6], m[10]]
+    centre = [m[3], m[7], m[11]]
+    d = min(max(float(distance), 0.4), 10.0)
+    panel = min(max(float(window_width) / max(float(logical_width), 1.0) * float(width), 0.3), 3.0)
+    gap = 0.1
+    arc = float(width) / 2 + gap + panel / 2 + (slot // 2) * (panel + gap)
+    angle = (1 if slot % 2 == 0 else -1) * min(arc / d, 1.4)
+    viewer = [c + n * d for c, n in zip(centre, normal)]
+    facing = [n * math.cos(angle) - r * math.sin(angle) for n, r in zip(normal, right)]
+    position = [v - f * d for v, f in zip(viewer, facing)]
+    side = [up[1] * facing[2] - up[2] * facing[1], up[2] * facing[0] - up[0] * facing[2],
+            up[0] * facing[1] - up[1] * facing[0]]
+    rows = [[side[i], up[i], facing[i], position[i]] for i in range(3)]
+    return json.dumps({"version": 1, "width": round(panel, 4), "distance": round(d, 4), "curvature": 0,
+                       "matrix": [round(v, 6) for row in rows for v in row]})
+
+
 def fit(w, h, box=PANEL_BOX):
     s = min(box[0] / max(w, 1), box[1] / max(h, 1))
     return max(320, round(w * s)), max(200, round(h * s))
@@ -558,6 +584,7 @@ class MacView:
         self.prefer_usb = os.environ.get("FRAME_MACVIEW_USB") != "0"
         self.route = "network"
         self.usb_ip, self._usb_misses = None, 0
+        self.native_panels = {}  # src -> {"panel", "key", "slot"}
         self._link_applied = None
         self.shown = set()  # sources with a viewer out there, connected or retrying
         self.browser_flags = list(BROWSER_FLAGS)
@@ -870,6 +897,10 @@ class MacView:
     # ---- viewers on the Frame ----
 
     def show(self, src, quality="balanced", width=None, height=None):
+        if src.startswith("separate:") and self._native_windows():
+            # Native panels show the window at its own size; moving it onto a
+            # display of its own (which resizes it) is not needed.
+            src = "window:" + src.split(":", 1)[1]
         with self.viewer_lock:
             self.launching += 1
         try:
@@ -942,6 +973,8 @@ class MacView:
             if not match:
                 raise MacViewError("The dedicated Workspace launcher did not report its registered OpenVR panel key.")
             self.workspace_panel_key = match.group(1)
+        elif self._native_windows() and q["codec"] == "h264" and src.startswith("window:"):
+            out = self._show_native_window(src, url, tag, width, height)
         else:
             w, h = fit(width or 1280, height or 720)
             args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
@@ -956,8 +989,69 @@ class MacView:
                                            "(com.google.Chrome) for this.")
                     raise MacViewError(str(e))
         self.shown.add(src)
-        panel = self.workspace_panel_key if workspace_viewer else f"valve.steam.desktopgame.{appid}"
+        native = self.native_panels.get(src)
+        panel = (self.workspace_panel_key if workspace_viewer else
+                 native["key"] if native else f"valve.steam.desktopgame.{appid}")
         return {"panel": panel, "src": public_src, "captureSrc": src, "detail": out.strip()}
+
+    def _native_windows(self):
+        """Window panels use the native viewer when the Workspace does: their
+        own OpenVR panel and hardware decoder, at the window's own size (no
+        separate display), placed beside the Workspace. FRAME_WINDOW_VIEWER=
+        browser keeps the older Chrome panels."""
+        return (workspace_viewer_backend() == "native" and
+                os.environ.get("FRAME_WINDOW_VIEWER", "native") == "native")
+
+    def _workspace_frame_placement(self):
+        """The Workspace's live transform, width and distance on the Frame, or None."""
+        try:
+            state = json.loads(self.run("cat \"${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/frame-workspace/state.json\"",
+                                        timeout=8))
+            placement = state.get("placement") if state.get("ready") else None
+            if isinstance(placement, dict) and len(placement.get("matrix") or []) == 12:
+                return placement
+        except Exception:  # noqa: BLE001 - no Workspace: the panel recenters ahead instead
+            pass
+        return None
+
+    def _show_native_window(self, src, url, tag, width, height):
+        digits = re.sub(r"\D", "", src.split(":", 1)[1])[:15]
+        if not digits:
+            raise MacViewError("Pick a window to show.")
+        panel = "w" + digits
+        info = next((w for w in self.call("/windows").get("windows", []) if w.get("src") == src), {})
+        title = re.sub(r"[\r\n\t]", " ", str(info.get("title") or info.get("app") or "Mac Window"))[:64]
+        used = {p["slot"] for s, p in self.native_panels.items() if s != src}
+        slot = next(i for i in range(64) if i not in used)
+        pose = ""
+        placement = self._workspace_frame_placement()
+        if placement:
+            logical = (self.workspace_manager.state().get("display") or {}).get("logicalWidth") or 2880
+            pose = beside_workspace_pose(placement["matrix"], placement["width"], placement["distance"],
+                                         logical, info.get("w") or width or 1280, slot)
+        w, h = fit(width or info.get("w") or 1280, height or info.get("h") or 720)
+        args = ["--panel", panel, "--name", title] + (["--initial-pose", pose] if pose else []) + \
+               ["start", url, w, h, tag, workspace_decoder(), workspace_conversion()]
+        out = self.run("bash -s -- " + " ".join(_quote(str(a)) for a in args),
+                       stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=60)
+        match = re.search(r"registered OpenVR key (com\.frame-workspace\.native\.\d+\.panel-" + panel + r")\b", out)
+        if not match:
+            raise MacViewError("The native window panel did not report its registered OpenVR panel key.")
+        self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot}
+        return out
+
+    def _stop_native_panels(self, src=None):
+        """Best-effort: native panels already exit when their stream closes;
+        this also removes their runtime files. Saved poses stay."""
+        for s in ([src] if src else list(self.native_panels)):
+            info = self.native_panels.pop(s, None)
+            if not info:
+                continue
+            try:
+                self.run("bash -s -- " + " ".join(_quote(a) for a in ("--panel", info["panel"], "stop")),
+                         stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=10)
+            except Exception:  # noqa: BLE001 - the viewer is gone either way
+                pass
 
     def _stop_workspace_viewer(self):
         try:
@@ -1290,6 +1384,8 @@ class MacView:
                 raise workspace_error
             return {"closed": 0}
         out = self.call("/close", method="POST", **({"src": src} if src else {}))
+        if self.native_panels:
+            threading.Thread(target=self._stop_native_panels, args=(src,), daemon=True).start()
         if not self.shown:
             threading.Thread(target=self._end_viewer_browser, args=(self.shows,), daemon=True).start()
         if workspace_error:

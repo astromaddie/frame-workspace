@@ -425,7 +425,7 @@ static void convertYuvOracle(Picture &p) {
   p.uv.clear();
 }
 int main(int argc, char **argv) {
-  std::string urlFile, controlFile, stateFile, poseFile, dumpPath,
+  std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -468,6 +468,10 @@ int main(int argc, char **argv) {
         poseFile = value();
       else if (a == "--overlay-key")
         key = value();
+      else if (a == "--overlay-name")
+        overlayName = value();
+      else if (a == "--initial-pose")
+        initialPose = value();
       else if (a == "--inspect-h264")
         inspectFiles.push_back(value());
       else if (a == "--decoder")
@@ -552,7 +556,7 @@ int main(int argc, char **argv) {
       else if (a == "--help") {
         std::cout
             << "frame-workspace-native --url-file PATH [--control-file PATH] "
-               "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] "
+               "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] [--overlay-name NAME] [--initial-pose JSON] "
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
@@ -622,10 +626,19 @@ int main(int argc, char **argv) {
     av_log_set_level(AV_LOG_ERROR);
     endpoint.foveation = foveation;
     endpoint.gaze = gaze;
-    Overlay overlay(noVR, key, (foveation || gaze) && !diagnosticGaze);
+    if (overlayName.size() > 64 || overlayName.find_first_of("\r\n\t") != std::string::npos)
+      throw std::runtime_error("invalid overlay name");
+    Overlay overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName);
     overlay.handoff = handoffMode;
     overlay.present = presentMode;
     bool persisted = loadPlacement(poseFile, overlay.placement);
+    // A new panel's first position (for example beside the Workspace) when
+    // it has no saved pose of its own.
+    if (!persisted && !initialPose.empty()) {
+      if (!parsePlacement(initialPose, overlay.placement))
+        throw std::runtime_error("invalid initial pose");
+      persisted = true;
+    }
     bool pendingRecenter = !persisted;
     if (pendingRecenter)
       pendingRecenter = !overlay.recenter();
