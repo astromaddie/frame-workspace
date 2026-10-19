@@ -126,6 +126,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     private var config = SCStreamConfiguration()
     private var maxLong = 1920
     private var maxFps = 60
+    private var lastShown: Int64 = 0  // display time of the last kept frame
     private var scale = 2.0
     private var poll: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "frame-mac-view.capture", qos: .userInteractive)
@@ -368,13 +369,24 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         }
     }
 
-    /// Display frames arrive on a vsync grid with jitter. An interval of
-    /// exactly 1/fps rejects every frame that lands slightly early, which held
-    /// a 60 Hz display near 55/s at a 60 fps target. Allow 2 ms of jitter;
-    /// rate caps (30, 10 fps) still land on the same vsync multiples.
+    /// ScreenCaptureKit's interval gate uses arrival time, and arrival jitter
+    /// let it pick frames one 120 Hz refresh apart and then three: only 50-80%
+    /// of captures were evenly spaced, which the Frame showed as hiccups. Let
+    /// every refresh through here and choose by display time in `keep`.
     private func minimumInterval(fps: Int) -> CMTime {
         let period = 1_000_000 / Int64(max(1, fps))
-        return CMTime(value: max(period - 2_000, period / 2), timescale: 1_000_000)
+        return CMTime(value: max(period / 2 - 1_000, 1_000), timescale: 1_000_000)
+    }
+
+    /// Keeps one frame per content period by display time. Half a 120 Hz
+    /// refresh of slack makes 60 fps take every other refresh and 30/10 fps
+    /// caps land on whole refreshes, at 60 or 120 Hz.
+    private func keep(shown: Int64) -> Bool {
+        let period = 1_000_000 / Int64(max(1, maxFps))
+        let gate = max(period - 4_167, period / 2)
+        guard lastShown == 0 || shown - lastShown >= gate || shown < lastShown else { return false }
+        lastShown = shown
+        return true
     }
 
     func setMaxFps(_ fps: Int) {
@@ -416,6 +428,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         let pts = CMSampleBufferGetPresentationTimeStamp(sample)
         // When WindowServer composited it: the moment it showed on the Mac.
         let shown = (info?[.displayTime] as? UInt64).map(hostUs) ?? hostUs(pts)
+        guard keep(shown: shown) else { return }
         onFrame?(pb, pts, shown)
     }
 
