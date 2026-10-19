@@ -474,6 +474,19 @@ is symmetric and horizontal only. Vertical curvature needs a 90° panel roll wit
 the picture counter-rotated. One-sided or custom bends need the screen split
 across several angled overlay strips.
 
+**Interaction decision (2026-10-19, from the user):** VR-first, with visionOS as
+the reference plus enhancements such as curving. The Mac page is only a fallback.
+Handles sit outside the window and stay hidden until the laser moves past the
+window's edge towards them:
+- corners outside the window resize it;
+- bars on the sides curve it (left/right bend horizontally, top/bottom vertically);
+- a pill below the window moves it in 3D while held, position and angle together.
+
+A physical "chrome" frame around windows comes later. Native window panels now
+open beside the Workspace (commit 29b8456) and will use the same handles. Next:
+a worn run of `native/spike_overlay_input.c` to confirm laser hover and click
+delivery to a third-party world overlay on the Frame.
+
 ## Implementation / investigation
 - Add live position controls beside Width and Distance: Move Left / Right / Up / Down, Rotate Left / Right and Tilt Up / Down, with sensible steps and limits, plus Recenter. These use the native owner's existing control file. They must not restart the viewer or the Mac display, and must not take typing focus.
 - Add a Curvature control (for example Flat, then gentle steps up to the supported maximum), backed by the existing readback. Show only confirmed values; an unsupported runtime shows a sentence, not a guessed state.
