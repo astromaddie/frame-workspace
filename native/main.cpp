@@ -1,6 +1,5 @@
 #include "overlay.hpp"
 #include "gaze_producer.hpp"
-#include "handles.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -472,7 +471,7 @@ static void convertYuvOracle(Picture &p) {
   p.uv.clear();
 }
 int main(int argc, char **argv) {
-  std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose,
+  std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -519,6 +518,8 @@ int main(int argc, char **argv) {
         overlayName = value();
       else if (a == "--initial-pose")
         initialPose = value();
+      else if (a == "--action-manifest")
+        actionManifest = value();
       else if (a == "--inspect-h264")
         inspectFiles.push_back(value());
       else if (a == "--decoder")
@@ -697,7 +698,21 @@ int main(int argc, char **argv) {
     endpoint.gaze = gaze;
     if (overlayName.size() > 64 || overlayName.find_first_of("\r\n\t") != std::string::npos)
       throw std::runtime_error("invalid overlay name");
-    Overlay overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName);
+    // VR placement input: the action manifest installed beside the binary
+    // (input/actions.json), unless --action-manifest names another or "none".
+    if (actionManifest.empty()) {
+      char exe[4096];
+      ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+      if (n > 0) {
+        exe[n] = 0;
+        std::string dir(exe);
+        dir = dir.substr(0, dir.find_last_of('/'));
+        std::ifstream probe(dir + "/input/actions.json");
+        if (probe) actionManifest = dir + "/input/actions.json";
+      }
+    } else if (actionManifest == "none")
+      actionManifest.clear();
+    Overlay overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName, actionManifest);
     overlay.handoff = handoffMode;
     overlay.present = presentMode;
     bool persisted = loadPlacement(poseFile, overlay.placement);
@@ -897,6 +912,8 @@ int main(int argc, char **argv) {
         exitReason = overlay.exitReason;
         break;
       }
+      if (overlay.updatePlacementInput())
+        atomicWrite(poseFile, placementJSON(overlay.placement));
       if (now - lastControl > 100) {
         lastControl = now;
         if (!controlFile.empty()) {

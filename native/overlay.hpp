@@ -5,6 +5,8 @@
 #pragma GCC diagnostic pop
 #include "video.hpp"
 #include "gaze_bridge.hpp"
+#include "placement.hpp"
+#include "handles.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
@@ -23,122 +25,6 @@ inline void atomicWrite(const std::string &path, const std::string &text) {
   chmod(tmp.c_str(), 0600);
   if (rename(tmp.c_str(), path.c_str()))
     throw std::runtime_error("state replace failed");
-}
-struct Placement {
-  float width = 2.4f, distance = 2.0f;
-  float curvature = 0; // OpenVR curvature 0-1, re-applied at startup
-  HmdMatrix34_t matrix{{{1, 0, 0, 0}, {0, 1, 0, 1.3f}, {0, 0, 1, -2}}};
-};
-inline std::string placementJSON(const Placement &p) {
-  std::string s = "{\"version\":1,\"width\":" + std::to_string(p.width) +
-                  ",\"distance\":" + std::to_string(p.distance) +
-                  ",\"curvature\":" + std::to_string(p.curvature) +
-                  ",\"matrix\":[";
-  for (int r = 0; r < 3; r++)
-    for (int c = 0; c < 4; c++) {
-      if (r || c)
-        s += ",";
-      s += std::to_string(p.matrix.m[r][c]);
-    }
-  return s + "]}";
-}
-  // Moves the panel in its own frame (meters): x right, y up, z toward the
-  // viewer. False (unchanged) if that would leave it over 10 m from the room
-  // origin.
-inline bool movePlacement(Placement &placement, float dx, float dy, float dz) {
-  auto &m = placement.matrix.m;
-    float t[3];
-    for (int r = 0; r < 3; r++)
-      t[r] = m[r][3] + m[r][0] * dx + m[r][1] * dy + m[r][2] * dz;
-    if (std::hypot(t[0], t[1], t[2]) > 10.f)
-      return false;
-    for (int r = 0; r < 3; r++)
-      m[r][3] = t[r];
-    placement.distance = std::clamp(placement.distance - dz, .4f, 10.f);
-    return true;
-  }
-  // Turns the panel about its own centre (degrees): yaw about its up axis,
-  // pitch about its right axis, roll about its normal. The rotation is
-  // re-orthonormalised so repeated nudges cannot shear the panel.
-inline void rotatePlacement(Placement &placement, float yaw, float pitch, float roll) {
-    const double d = M_PI / 180;
-    const double cy = std::cos(yaw * d), sy = std::sin(yaw * d);
-    const double cp = std::cos(pitch * d), sp = std::sin(pitch * d);
-    const double cr = std::cos(roll * d), sr = std::sin(roll * d);
-    // Local rotation Ry * Rx * Rz, applied on the right (in the panel's frame).
-    const double local[3][3] = {
-        {cy * cr + sy * sp * sr, -cy * sr + sy * sp * cr, sy * cp},
-        {cp * sr, cp * cr, -sp},
-        {-sy * cr + cy * sp * sr, sy * sr + cy * sp * cr, cy * cp}};
-    auto &m = placement.matrix.m;
-    double out[3][3]{};
-    for (int r = 0; r < 3; r++)
-      for (int c = 0; c < 3; c++)
-        for (int k = 0; k < 3; k++)
-          out[r][c] += m[r][k] * local[k][c];
-    // Gram-Schmidt on the columns: right, then up, then normal = right x up.
-    auto column = [&](int c) { return std::array<double, 3>{out[0][c], out[1][c], out[2][c]}; };
-    auto x = column(0), y = column(1);
-    auto norm = [](std::array<double, 3> &v) {
-      double l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-      for (auto &e : v) e /= l;
-    };
-    norm(x);
-    double dot = x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
-    for (int i = 0; i < 3; i++) y[i] -= dot * x[i];
-    norm(y);
-    std::array<double, 3> z{x[1] * y[2] - x[2] * y[1], x[2] * y[0] - x[0] * y[2], x[0] * y[1] - x[1] * y[0]};
-    for (int r = 0; r < 3; r++) {
-      m[r][0] = float(x[r]);
-      m[r][1] = float(y[r]);
-      m[r][2] = float(z[r]);
-    }
-  }
-inline bool parsePlacement(const std::string &text, Placement &p);
-inline bool loadPlacement(const std::string &path, Placement &p) {
-  if (path.empty())
-    return false;
-  try {
-    return parsePlacement(readFile(path), p);
-  } catch (...) {
-    return false;
-  }
-}
-// A placement in the pose-file format (version, width, distance, optional
-// curvature, 12-value matrix with an orthonormal rotation).
-inline bool parsePlacement(const std::string &text, Placement &p) {
-  try {
-    auto j = json(text);
-    auto a = field(j, "matrix");
-    if (num(j, "version") != 1 || !a || json_object_array_length(a) != 12)
-      return false;
-    Placement candidate;
-    candidate.width = std::clamp(num(j, "width", 2.4), .4, 8.0);
-    candidate.distance = std::clamp(num(j, "distance", 2), .4, 10.0);
-    // Optional: pose files written before curvature persistence omit it.
-    const double curvature = num(j, "curvature", 0);
-    candidate.curvature = std::isfinite(curvature) ? float(std::clamp(curvature, 0.0, 1.0)) : 0.f;
-    for (int r = 0; r < 3; r++)
-      for (int c = 0; c < 4; c++) {
-        double v =
-            json_object_get_double(json_object_array_get_idx(a, r * 4 + c));
-        if (!std::isfinite(v) || fabs(v) > 100)
-          return false;
-        candidate.matrix.m[r][c] = v;
-      }
-    for (int r = 0; r < 3; r++)
-      for (int s = 0; s < 3; s++) {
-        double dot = 0;
-        for (int c = 0; c < 3; c++)
-          dot += candidate.matrix.m[r][c] * candidate.matrix.m[s][c];
-        if (fabs(dot - (r == s ? 1 : 0)) > .02)
-          return false;
-      }
-    p = candidate;
-    return true;
-  } catch (...) {
-    return false;
-  }
 }
 class Overlay {
   SDL_Window *window = nullptr;
@@ -174,6 +60,21 @@ class Overlay {
   GLuint texture = 0;          // the last submitted texture
   GLuint yuvFramebuffer = 0, yuvProgram = 0;
   int width = 0, height = 0;   // dimensions of the last submitted texture
+  // VR-first placement (FW-14): the viewer reads the controllers itself through
+  // SteamVR Input (SteamVR's own laser only serves its dashboard), draws a
+  // cursor dot, and shows visionOS-style handles on a transparent "chrome"
+  // overlay just behind the window.
+  VR_IVRInput_FnTable *input = nullptr;
+  VRActionSetHandle_t actionSet = 0;
+  VRActionHandle_t aimAction = 0, grabAction = 0;
+  VRInputValueHandle_t hands[2] = {};
+  VROverlayHandle_t chromeHandle = 0, cursorHandle = 0;
+  GLuint chromeTexture = 0, cursorTexture = 0;
+  Handle shownHandle = Handle::None;
+  bool shownHeld = false, chromeVisible = false, cursorVisible = false;
+  HandleDrag drag;
+  int dragHand = -1;
+  bool grabWas[2] = {};
   bool noVR = false;
   std::unique_ptr<GazeBridge> gazeBridge;
   // The render thread owns placement and texture dimensions. Gaze uses only
@@ -479,7 +380,7 @@ public:
   uint64_t presentGaps[5] = {}; // refreshes between submissions: 1, 2, 3, 4+ (0 unused)
   std::string name = "Frame Workspace"; // shown by SteamVR
   Overlay(bool test, const std::string &overlayKey, bool foveation = false,
-          const std::string &overlayName = "")
+          const std::string &overlayName = "", const std::string &actionManifest = "")
       : noVR(test), key(overlayKey) {
     if (!overlayName.empty())
       name = overlayName;
@@ -544,6 +445,188 @@ public:
     // desktop is upright in the headset; readback dumps are unaffected.
     VRTextureBounds_t bounds{0, 1, 1, 0};
     check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
+    if (!actionManifest.empty())
+      initPlacementInput(get, actionManifest);
+  }
+  // Loads the viewer's action set (aim pose + trigger "grab" per hand) and
+  // creates the chrome and cursor overlays. Any failure leaves placement
+  // input off; the window itself is unaffected.
+  template <class Get> void initPlacementInput(Get get, const std::string &manifest) {
+    EVRInitError error = EVRInitError_VRInitError_None;
+    auto table = reinterpret_cast<VR_IVRInput_FnTable *>(get("FnTable:IVRInput_010", &error));
+    std::string path = manifest;
+    if (error || !table || table->SetActionManifestPath(path.data()) ||
+        table->GetActionSetHandle((char *)"/actions/workspace", &actionSet) ||
+        table->GetActionHandle((char *)"/actions/workspace/in/aim", &aimAction) ||
+        table->GetActionHandle((char *)"/actions/workspace/in/grab", &grabAction) ||
+        table->GetInputSourceHandle((char *)"/user/hand/left", &hands[0]) ||
+        table->GetInputSourceHandle((char *)"/user/hand/right", &hands[1])) {
+      fprintf(stderr, "[native] placement input unavailable\n");
+      return;
+    }
+    std::string chromeKey = key + ".handles", cursorKey = key + ".cursor";
+    std::string chromeName = name + " Handles", cursorName = name + " Cursor";
+    if (overlay->CreateOverlay(chromeKey.data(), chromeName.data(), &chromeHandle) ||
+        overlay->CreateOverlay(cursorKey.data(), cursorName.data(), &cursorHandle)) {
+      fprintf(stderr, "[native] placement overlays unavailable\n");
+      return;
+    }
+    VRTextureBounds_t bounds{0, 1, 1, 0};
+    for (auto h : {chromeHandle, cursorHandle}) {
+      overlay->SetOverlayTextureBounds(h, &bounds);
+      overlay->SetOverlayInputMethod(h, VROverlayInputMethod_None);
+    }
+    // Window above its handles; the cursor above both.
+    overlay->SetOverlaySortOrder(chromeHandle, 0);
+    overlay->SetOverlaySortOrder(handle, 1);
+    overlay->SetOverlaySortOrder(cursorHandle, 2);
+    overlay->SetOverlayWidthInMeters(cursorHandle, 0.022f);
+    // A soft white dot with a darker rim, readable on any content.
+    const int n = 64;
+    std::vector<uint8_t> dot(size_t(n) * n * 4, 0);
+    for (int y = 0; y < n; y++)
+      for (int x = 0; x < n; x++) {
+        const float d = std::hypot(x + 0.5f - n / 2.f, y + 0.5f - n / 2.f) / (n / 2.f);
+        uint8_t *o = &dot[(size_t(y) * n + x) * 4];
+        const float a = std::clamp((1.f - d) * 12.f, 0.f, 1.f);
+        const float v = d < 0.72f ? 245.f : 40.f;
+        o[0] = o[1] = o[2] = uint8_t(v);
+        o[3] = uint8_t(a * 235);
+      }
+    glGenTextures(1, &cursorTexture);
+    glBindTexture(GL_TEXTURE_2D, cursorTexture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, dot.data());
+    glGenTextures(1, &chromeTexture);
+    glFinish();
+    Texture_t t{reinterpret_cast<void *>(uintptr_t(cursorTexture)), ETextureType_TextureType_OpenGL,
+                EColorSpace_ColorSpace_Gamma};
+    overlay->SetOverlayTexture(cursorHandle, &t);
+    input = table;
+    fprintf(stderr, "[native] placement input ready\n");
+  }
+  // The window's height in meters from its texture aspect (9:8 until the
+  // first picture).
+  float panelHeight() const {
+    return placement.width * (width > 0 && height > 0 ? float(height) / float(width) : 2560.f / 2880.f);
+  }
+  void setPanelTransform(VROverlayHandle_t h, float x, float y, float z, float overlayWidth) {
+    HmdMatrix34_t m = placement.matrix;
+    for (int r = 0; r < 3; r++)
+      m.m[r][3] += m.m[r][0] * x + m.m[r][1] * y + m.m[r][2] * z;
+    overlay->SetOverlayTransformAbsolute(h, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
+    if (overlayWidth > 0)
+      overlay->SetOverlayWidthInMeters(h, overlayWidth);
+  }
+  void showHandle(const HandleLayout &l, Handle h, bool held) {
+    if (h == Handle::None) {
+      if (chromeVisible) overlay->HideOverlay(chromeHandle);
+      chromeVisible = false;
+      shownHandle = Handle::None;
+      return;
+    }
+    setPanelTransform(chromeHandle, 0, 0, -0.004f, l.chromeWidth());
+    if (h != shownHandle || held != shownHeld) {
+      std::vector<uint8_t> image;
+      int high = 0;
+      const int wide = 768;
+      drawHandle(l, h, held, wide, image, high);
+      glBindTexture(GL_TEXTURE_2D, chromeTexture);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, wide, high, 0, GL_RGBA, GL_UNSIGNED_BYTE, image.data());
+      glFinish(); // SteamVR copies it on submission; it must be complete.
+      Texture_t t{reinterpret_cast<void *>(uintptr_t(chromeTexture)), ETextureType_TextureType_OpenGL,
+                  EColorSpace_ColorSpace_Gamma};
+      overlay->SetOverlayTexture(chromeHandle, &t);
+      shownHandle = h;
+      shownHeld = held;
+    }
+    if (!chromeVisible) overlay->ShowOverlay(chromeHandle);
+    chromeVisible = true;
+  }
+  // One step of VR placement: reads both hands, moves the cursor, shows the
+  // handle the laser points towards, and drives a drag while the trigger is
+  // held. Returns true when a drag ended, so the caller saves the pose.
+  bool updatePlacementInput() {
+    if (!input || noVR) return false;
+    VRActiveActionSet_t active{};
+    active.ulActionSet = actionSet;
+    active.nPriority = 0x01000000; // k_nActionSetOverlayGlobalPriorityMin: works beside scene apps
+    if (input->UpdateActionState(&active, sizeof active, 1)) return false;
+    HandleLayout l;
+    l.width = placement.width;
+    l.height = panelHeight();
+    struct HandRay { bool valid = false, grab = false, hit = false; HmdMatrix34_t pose{}; float x = 0, y = 0; };
+    HandRay rays[2];
+    for (int i = 0; i < 2; i++) {
+      InputPoseActionData_t pose{};
+      InputDigitalActionData_t grab{};
+      input->GetPoseActionDataForNextFrame(aimAction, ETrackingUniverseOrigin_TrackingUniverseStanding, &pose,
+                                           sizeof pose, hands[i]);
+      input->GetDigitalActionData(grabAction, &grab, sizeof grab, hands[i]);
+      rays[i].valid = pose.bActive && pose.pose.bPoseIsValid;
+      rays[i].grab = grab.bActive && grab.bState;
+      if (rays[i].valid) {
+        rays[i].pose = pose.pose.mDeviceToAbsoluteTracking;
+        rays[i].hit = HandleDrag::rayHit(placement, rays[i].pose, rays[i].x, rays[i].y);
+      }
+    }
+    bool ended = false;
+    if (dragHand >= 0) {
+      HandRay &r = rays[dragHand];
+      if (r.valid && r.grab) {
+        const float curvature = placement.curvature;
+        placement = drag.update(r.pose);
+        apply();
+        if (std::fabs(placement.curvature - curvature) > 1e-4f)
+          setCurvature(placement.curvature);
+        l.width = placement.width;
+        l.height = panelHeight();
+        showHandle(l, drag.handle, true);
+      } else {
+        dragHand = -1;
+        ended = true;
+        showHandle(l, Handle::None, false);
+      }
+    } else {
+      // The hand pointing at this panel (right first) shows its handle.
+      int h = -1;
+      Handle zone = Handle::None;
+      for (int i : {1, 0}) {
+        if (!rays[i].hit) continue;
+        const bool near = std::fabs(rays[i].x) <= l.chromeWidth() / 2 && std::fabs(rays[i].y) <= l.chromeHeight() / 2;
+        if (!near) continue;
+        h = i;
+        zone = l.zone(rays[i].x, rays[i].y);
+        break;
+      }
+      if (h >= 0 && zone != Handle::None && rays[h].grab && !grabWas[h]) {
+        drag.start(zone, rays[h].pose, placement);
+        dragHand = h;
+        showHandle(l, zone, true);
+      } else {
+        showHandle(l, zone, false);
+      }
+      // Cursor dot where the pointing hand meets the panel plane.
+      if (h >= 0) {
+        setPanelTransform(cursorHandle, rays[h].x, rays[h].y, 0.006f, 0);
+        if (!cursorVisible) overlay->ShowOverlay(cursorHandle);
+        cursorVisible = true;
+      } else if (cursorVisible) {
+        overlay->HideOverlay(cursorHandle);
+        cursorVisible = false;
+      }
+    }
+    for (int i = 0; i < 2; i++) grabWas[i] = rays[i].grab;
+    if (dragHand >= 0 && cursorVisible) {
+      overlay->HideOverlay(cursorHandle);
+      cursorVisible = false;
+    }
+    return ended;
   }
   const char *gaze(double &u, double &v) {
     if(!gazeBridge) return "unavailable";
@@ -565,6 +648,10 @@ public:
   }
   ~Overlay() {
     // The main-scope GazeProducer has already joined before this object dies.
+    for (auto h : {chromeHandle, cursorHandle})
+      if (h) overlay->DestroyOverlay(h);
+    for (auto t : {chromeTexture, cursorTexture})
+      if (t) glDeleteTextures(1, &t);
     if (handle) {
       overlay->HideOverlay(handle);
       overlay->ClearOverlayTexture(handle);
@@ -718,6 +805,10 @@ public:
         exitReason = "openvr-overlay-quit";
         return false;
       }
+    for (auto h : {chromeHandle, cursorHandle})
+      if (h)
+        while (overlay->PollNextOverlayEvent(h, &e, sizeof(e))) {
+        }
     return true;
   }
   bool fenced() const { return handoff == "fence"; }

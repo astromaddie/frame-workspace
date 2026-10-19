@@ -8,7 +8,7 @@
 //
 // This file is the input-independent part: zones, drag maths and drawing.
 // Coordinates are panel-local meters: x right, y up, origin at the window centre.
-#include "overlay.hpp"
+#include "placement.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>

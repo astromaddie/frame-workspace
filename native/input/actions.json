@@ -1,0 +1,10 @@
+{
+  "default_bindings": [{"controller_type": "frame_controller", "binding_url": "bindings_frame_controller.json"}],
+  "actions": [
+    {"name": "/actions/workspace/in/aim", "type": "pose"},
+    {"name": "/actions/workspace/in/grab", "type": "boolean"}
+  ],
+  "action_sets": [{"name": "/actions/workspace", "usage": "leftright"}],
+  "localization": [{"language_tag": "en_US", "/actions/workspace": "Frame Workspace",
+                    "/actions/workspace/in/aim": "Point at Windows", "/actions/workspace/in/grab": "Grab Handle"}]
+}

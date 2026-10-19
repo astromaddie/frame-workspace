@@ -148,6 +148,26 @@ Workspace, with clean removal on Stop. `FRAME_WINDOW_VIEWER=browser` keeps the
 older Chrome panels. Moving panels in the headset (visionOS-style grab pill,
 resize corners and curve bars) is the next FW-14 stage.
 
+## In-headset placement (FW-14)
+
+SteamVR's own laser only serves its dashboard: a probe overlay with mouse input
+and `MakeOverlaysInteractiveIfVisible` received no laser events on the Frame
+(2026-10-19). The viewer therefore reads the controllers itself through SteamVR
+Input, using `input/actions.json` installed beside the binary: an `aim` pose
+(controller tip) and a trigger `grab` per hand, bound for `frame_controller`.
+The action set uses the global overlay priority, and SteamVR's event queue is
+pumped every loop; without that, the actions stayed inactive. A probe then
+received a continuous aim pose and exact trigger presses.
+
+Each viewer draws its own cursor dot where a controller's ray meets its panel,
+and shows visionOS-style handles on a transparent overlay just behind the window
+(`handles.hpp`). They stay hidden until the ray passes the window edge towards
+them. The pill below carries the window rigidly with the controller, corners
+resize it about its centre, and the left/right bars curve it as they are pulled
+towards the viewer. Handles are frosted white when shown and Steam blue while
+held. A finished drag saves the pose. `--action-manifest PATH|none` overrides
+or disables input. Worn use is not yet verified.
+
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder
