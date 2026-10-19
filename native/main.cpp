@@ -397,6 +397,9 @@ int main(int argc, char **argv) {
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
                           : "cpu",
+      presentMode = std::getenv("FRAME_WORKSPACE_PRESENT")
+                        ? std::getenv("FRAME_WORKSPACE_PRESENT")
+                        : "paced",
       handoffMode = std::getenv("FRAME_WORKSPACE_HANDOFF")
                         ? std::getenv("FRAME_WORKSPACE_HANDOFF")
                         : "fence",
@@ -406,6 +409,8 @@ int main(int argc, char **argv) {
   std::vector<std::string> inspectFiles;
   bool test = false, noVR = false, testYuvOracle = false;
   bool foveation = false, diagnosticGaze = false, diagnosticScan = false;
+  bool pocRewrite = !std::getenv("FRAME_WORKSPACE_V4L2_POC_REWRITE") ||
+                    std::string(std::getenv("FRAME_WORKSPACE_V4L2_POC_REWRITE")) != "off";
   double diagnosticU = 0, diagnosticV = 0;
   uint32_t dumpSequence = 0;
   int dumpWidth = 0, dumpHeight = 0;
@@ -438,6 +443,23 @@ int main(int argc, char **argv) {
         conversionMode = value();
       else if (a == "--handoff")
         handoffMode = value();
+      else if (a == "--present")
+        presentMode = value();
+      else if (a == "--v4l2-poc-rewrite") {
+        auto v = value();
+        if (v != "on" && v != "off") throw std::runtime_error("--v4l2-poc-rewrite must be on or off");
+        pocRewrite = v == "on";
+      } else if (a == "--rewrite-poc") {
+        // Diagnostic: rewrite an Annex B file to POC type 2 (one access unit
+        // per call is not required; the rewriter splits on start codes).
+        std::string in = value(), outPath = value();
+        auto data = readFile(in, 256 * 1024 * 1024);
+        std::vector<uint8_t> bytes(data.begin(), data.end()), out;
+        H264PocRewriter rewriter;
+        if (!rewriter.rewrite(bytes, out)) throw std::runtime_error("POC rewrite unsupported");
+        std::ofstream(outPath, std::ios::binary).write(reinterpret_cast<const char *>(out.data()), long(out.size()));
+        return 0;
+      }
       else if (a == "--foveation")
         foveation = true;
       else if (a == "--diagnostic-gaze") {
@@ -496,7 +518,7 @@ int main(int argc, char **argv) {
         std::cout
             << "frame-workspace-native --url-file PATH [--control-file PATH] "
                "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] "
-               "[--decoder software|v4l2] [--conversion cpu|gpu] [--handoff fence|finish] [--foveation] "
+               "[--decoder software|v4l2] [--conversion cpu|gpu] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
                "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | "
@@ -524,6 +546,8 @@ int main(int argc, char **argv) {
       throw std::runtime_error("conversion must be cpu or gpu");
     if (handoffMode != "fence" && handoffMode != "finish")
       throw std::runtime_error("handoff must be fence or finish");
+    if (presentMode != "paced" && presentMode != "immediate")
+      throw std::runtime_error("present must be paced or immediate");
     if (!testYuvFormat.empty() && testYuvFormat != "nv12" &&
         testYuvFormat != "yuv420p")
       throw std::runtime_error("test YUV format must be nv12 or yuv420p");
@@ -563,6 +587,7 @@ int main(int argc, char **argv) {
     endpoint.foveation = foveation;
     Overlay overlay(noVR, key, foveation && !diagnosticGaze);
     overlay.handoff = handoffMode;
+    overlay.present = presentMode;
     bool persisted = loadPlacement(poseFile, overlay.placement);
     bool pendingRecenter = !persisted;
     if (pendingRecenter)
@@ -571,6 +596,7 @@ int main(int argc, char **argv) {
     if (!pendingRecenter)
       atomicWrite(poseFile, placementJSON(overlay.placement));
     Pipeline pipe(decoderMode, conversionMode);
+    pipe.pocRewrite = pocRewrite;
     if (!test)
       pipe.start(endpoint);
     double start = nowMs(), lastState = start, lastLog = start, lastControl = 0,
@@ -628,10 +654,20 @@ int main(int argc, char **argv) {
              ",\"syncMs\":" + std::to_string(overlay.syncMs) +
              ",\"submitMs\":" + std::to_string(overlay.submitMs) +
              ",\"decodeStepMaxMs\":" + std::to_string(pipe.decodeStepMaxMs.exchange(0)) +
+             ",\"decoderHoldMs\":" + std::to_string(pipe.decoderHoldMs) +
+             ",\"decoderHoldMaxMs\":" + std::to_string(pipe.decoderHoldMaxMs.exchange(0)) +
+             ",\"decoderOutputLag\":" + std::to_string(pipe.decoderOutputLag) +
+             ",\"decoderOutputLagMax\":" + std::to_string(pipe.decoderOutputLagMax.exchange(0)) +
              ",\"arrivalGapMaxMs\":" + std::to_string(pipe.arrivalGapMaxMs.exchange(0)) +
              ",\"handoff\":\"" + overlay.handoff +
              "\",\"gpuLatencyMs\":" + std::to_string(overlay.gpuLatencyMs) +
              ",\"handoffBlockingWaits\":" + std::to_string(overlay.blockingWaits) +
+             ",\"present\":\"" + (overlay.paced() ? std::string("paced") : std::string("immediate")) +
+             "\",\"pacedDrops\":" + std::to_string(overlay.pacedDrops) +
+             ",\"pacedFallbacks\":" + std::to_string(overlay.pacedFallbacks) +
+             ",\"presentGaps\":[" + std::to_string(overlay.presentGaps[1]) + "," +
+                 std::to_string(overlay.presentGaps[2]) + "," + std::to_string(overlay.presentGaps[3]) + "," +
+                 std::to_string(overlay.presentGaps[4]) + "]" +
              ",\"queueAgeMs\":" + std::to_string(ageMs) +
              ",\"droppedEncoded\":" + std::to_string(pipe.droppedEncoded) +
              ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
@@ -767,6 +803,12 @@ int main(int argc, char **argv) {
                   curvatureResult = overlay.setCurvature(float(curvature));
                 if (flag(j, "recenter"))
                   pendingRecenter = true;
+                if (auto requested = field(j, "present"))
+                  if (json_object_is_type(requested, json_type_string)) {
+                    std::string mode = json_object_get_string(requested);
+                    if (mode == "paced" || mode == "immediate")
+                      overlay.present = mode;
+                  }
                 if (flag(j, "focus")) {
                   pipe.focus = true;
                   overlay.focus();
@@ -810,6 +852,8 @@ int main(int argc, char **argv) {
       auto finished = [&] {
         for (auto &c : done) {
           const auto &picture = c.picture;
+          if (c.dropped)
+            continue;
           if (c.submitted) {
             ready = true;
             ++uploads;
@@ -839,6 +883,7 @@ int main(int argc, char **argv) {
         uploadMs = nowMs() - before;
       }
       overlay.complete(0, done);
+      overlay.presentReady(done);
       finished();
       if (now - lastState >= 1000) {
         double dt = (now - previousState) / 1000;
@@ -866,7 +911,14 @@ int main(int argc, char **argv) {
       }
       // Sleep until the GPU finishes in-flight work or a new picture arrives,
       // rather than a fixed interval after every upload.
-      if (overlay.busy()) {
+      if (overlay.waiting()) {
+        // A finished picture waits for its paced refresh; a new arrival
+        // still wakes the loop.
+        pipe.waitForPicture(overlay.untilNextSlotMs(overlay.busy() ? 2 : 8));
+        overlay.complete(0, done);
+        overlay.presentReady(done);
+        finished();
+      } else if (overlay.busy()) {
         overlay.complete(2, done);
         finished();
       } else

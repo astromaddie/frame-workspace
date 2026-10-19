@@ -164,7 +164,29 @@ decoded picture arrives or in-flight work completes, rather than on a fixed
 interval. State reports `handoff`, `gpuLatencyMs` (issue to observed
 completion), `handoffBlockingWaits`, and the per-second maxima
 `decodeStepMaxMs` and `arrivalGapMaxMs`, which separate decoder stalls from
-network bursts. Texture names change on resolution changes, avoiding stale
+network bursts.
+
+The default `paced` presentation (`--present paced|immediate`, also
+`{"present": ...}` in the control file at runtime) submits finished pictures in
+order on headset refresh boundaries, using `GetTimeSinceLastVsync`. At 120 Hz,
+60 fps content then shows for an even two refreshes each. When pictures queue
+up behind a delivery burst, the next follows after one refresh so the queue
+drains without skipping motion; only a backlog beyond three is dropped
+(`pacedDrops`). If the refresh counter stalls (headset asleep), it submits
+immediately (`pacedFallbacks`). `presentGaps` counts refreshes between
+submissions: 1, 2, 3, 4+.
+
+The Frame's iris V4L2 decoder held every picture of the Mac's stream until the
+next access unit arrived (output lag 1, ~23 ms hold), even though the SPS
+declares no reordering. The cause is `pic_order_cnt_type 0`. x264's POC type 2
+streams, and the same Mac stream rewritten to type 2, were released about 5 ms
+after queueing at 2880×2560. The V4L2 path therefore rewrites each access unit
+to POC type 2 (`h264_poc.hpp`; `--v4l2-poc-rewrite off` disables it). Only SPS
+POC fields and slice-header `pic_order_cnt_lsb` change; FFmpeg decodes the
+rewrite bit-identically (`native/tests_h264_poc.py BINARY`, macOS). A stream
+feature the rewriter does not handle turns it off and restarts at the next IDR.
+`decoderHoldMs`, `decoderOutputLag` and their per-second maxima report the hold.
+`--rewrite-poc IN OUT` rewrites a file for diagnosis. Texture names change on resolution changes, avoiding stale
 SteamVR texture metadata. No per-eye rendering, synchronous steady-state GPU readback or display
 refresh loop is involved. `--dump PATH.ppm` performs one explicit diagnostic
 readback of the first successfully submitted application texture.

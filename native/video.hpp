@@ -7,6 +7,7 @@ extern "C" {
 #include <libswscale/swscale.h>
 }
 #include "h264_crop.hpp"
+#include "h264_poc.hpp"
 #include <condition_variable>
 #include <utility>
 
@@ -35,6 +36,7 @@ struct PacketTiming {
   double received;
   FoveationLayout layout;
   H264Crop crop{};
+  double sent = 0; // handed to the decoder
 };
 enum class RecoveryAction {
   KeepContext,
@@ -171,7 +173,13 @@ struct Pipeline {
   // Per-state-interval maxima (the owner resets them after each state write):
   // one packet's parse/send/receive/copy step, and the gap between packet
   // arrivals. They distinguish decoder stalls from network delivery bursts.
-  std::atomic<double> decodeStepMaxMs{0}, arrivalGapMaxMs{0};
+  std::atomic<double> decodeStepMaxMs{0}, arrivalGapMaxMs{0}, decoderHoldMaxMs{0},
+      decoderHoldMs{0};
+  std::atomic<int64_t> decoderOutputLag{0}, decoderOutputLagMax{0};
+  int64_t lastSentToken = 0;
+  bool pocRewrite = true;
+  H264PocRewriter pocRewriter;
+  std::vector<uint8_t> rewrittenBytes;
   double lastArrival = 0;
   static void raiseMax(std::atomic<double> &value, double sample) {
     double current = value.load();
@@ -635,6 +643,14 @@ struct Pipeline {
         }
         pic->seq = it->second.seq;
         pic->received = it->second.received;
+        // How long the decoder held this picture, and how many later packets
+        // it needed first (0 = released by its own packet).
+        if (it->second.sent > 0)
+          raiseMax(decoderHoldMaxMs, nowMs() - it->second.sent);
+        decoderHoldMs = it->second.sent > 0 ? nowMs() - it->second.sent : 0;
+        decoderOutputLag = lastSentToken - frame->pts;
+        if (decoderOutputLag > decoderOutputLagMax)
+          decoderOutputLagMax = decoderOutputLag.load();
         pic->colorSpace = frame->colorspace;
         pic->colorRange = frame->color_range;
         timing.erase(it);
@@ -846,12 +862,32 @@ struct Pipeline {
         submitted = false;
       }
       av_packet_unref(avp);
-      int result = av_new_packet(avp, p.bytes.size());
+      // The Frame's V4L2 decoder holds POC-type-0 pictures for one frame
+      // interval; rewrite to POC type 2 so each is released when decoded
+      // (h264_poc.hpp). Anything the rewriter cannot handle turns it off and
+      // restarts at the next IDR, never decoding a half-rewritten sequence.
+      const std::vector<uint8_t> *bytes = &p.bytes;
+      if (decoderRequested == "v4l2" && pocRewrite) {
+        if (pocRewriter.rewrite(p.bytes, rewrittenBytes)) {
+          bytes = &rewrittenBytes;
+        } else {
+          pocRewrite = false;
+          fprintf(stderr, "[native] POC rewrite unsupported for this stream; using it unchanged from the next IDR\n");
+          ++droppedEncoded;
+          requestKey = true;
+          std::lock_guard<std::mutex> lock(mutex);
+          requireKeyLocked(ResetReason::FormatChange);
+          droppedEncoded += packets.size();
+          packets.clear();
+          continue;
+        }
+      }
+      int result = av_new_packet(avp, int(bytes->size()));
       if (result < 0) {
         fail("packet-allocation", result);
         break;
       }
-      memcpy(avp->data, p.bytes.data(), p.bytes.size());
+      memcpy(avp->data, bytes->data(), bytes->size());
       avp->pts = avp->dts = ++token;
       if (p.key)
         avp->flags |= AV_PKT_FLAG_KEY;
@@ -865,6 +901,8 @@ struct Pipeline {
       if (timing.size() > highWater)
         decoderTimingHighWater = timing.size();
       double before = nowMs();
+      timing[token].sent = before;
+      lastSentToken = token;
       result = avcodec_send_packet(context, avp);
       sendMs = nowMs() - before;
       if (result == AVERROR(EAGAIN)) {

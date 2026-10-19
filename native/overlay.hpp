@@ -95,9 +95,13 @@ class Overlay {
     std::shared_ptr<Picture> picture;
     double staged = 0;
   };
-  static constexpr int maxSlots = 3;
+  static constexpr int maxSlots = 4;
   Slot slots[maxSlots];
-  std::deque<int> inFlight; // oldest first
+  std::deque<int> inFlight; // GL work issued, fence pending; oldest first
+  std::deque<int> ready;    // GL work complete, waiting for a paced slot
+  uint64_t lastPresentVsync = 0, lastVsyncCounter = 0;
+  bool havePresentVsync = false;
+  double lastVsyncChange = 0, vsyncPeriodMs = 0, lastPeriodRead = 0;
   int displayed = -1;
   std::vector<GLuint> retired; // previous-size textures, deleted after a submit
   GLuint texture = 0;          // the last submitted texture
@@ -398,7 +402,14 @@ public:
     bool submitted = false;
     GLuint texture = 0;
     int width = 0, height = 0;
+    bool dropped = false; // superseded before its paced slot; not an error
   };
+  // "paced" submits finished pictures in order on refresh boundaries, one per
+  // contentRefreshes() headset refreshes, so 60 fps content shows for an even
+  // two 120 Hz refreshes each. "immediate" submits as soon as GL work ends.
+  std::string present = "paced";
+  uint64_t pacedDrops = 0, pacedFallbacks = 0;
+  uint64_t presentGaps[5] = {}; // refreshes between submissions: 1, 2, 3, 4+ (0 unused)
   Overlay(bool test, const std::string &overlayKey, bool foveation = false)
       : noVR(test), key(overlayKey) {
     if (SDL_Init(SDL_INIT_VIDEO))
@@ -632,17 +643,34 @@ public:
   // Issues one picture's upload and conversion. The finish handoff completes
   // and submits it here. The fence handoff returns once the work is flushed;
   // it completes the oldest in-flight picture first only if no slot is free.
+  int freeSlot() const {
+    for (int index = 0; index < maxSlots; ++index)
+      if (index != displayed &&
+          std::find(inFlight.begin(), inFlight.end(), index) == inFlight.end() &&
+          std::find(ready.begin(), ready.end(), index) == ready.end())
+        return index;
+    return -1;
+  }
+  void dropOldestReady(std::vector<Completion> &done) {
+    Slot &old = slots[ready.front()];
+    ready.pop_front();
+    Completion c{std::move(old.picture), false, old.texture, old.width, old.height, true};
+    ++pacedDrops;
+    done.push_back(std::move(c));
+  }
   void stage(std::shared_ptr<Picture> picture, std::vector<Completion> &done) {
     const Picture &p = *picture;
-    if (fenced() && int(inFlight.size()) >= maxSlots - 1)
-      complete(-1, done);
     int index = 0;
-    if (fenced())
-      while (index < maxSlots &&
-             (index == displayed ||
-              std::find(inFlight.begin(), inFlight.end(), index) != inFlight.end()))
-        ++index;
-    if (index >= maxSlots)
+    if (fenced()) {
+      // Every other slot is busy: a newer picture supersedes the oldest one
+      // still waiting for its slot, else wait for the oldest GL work.
+      if (freeSlot() < 0 && ready.empty())
+        complete(-1, done);
+      if (freeSlot() < 0 && !ready.empty())
+        dropOldestReady(done);
+      index = freeSlot();
+    }
+    if (index < 0)
       throw std::runtime_error("no free texture slot");
     Slot &s = slots[index];
     if (!s.texture || p.outputWidth() != s.width || p.outputHeight() != s.height) {
@@ -728,9 +756,81 @@ public:
       s.fence = nullptr;
       gpuLatencyMs = nowMs() - s.staged;
       inFlight.pop_front();
-      done.push_back(submit(index));
+      ready.push_back(index);
       waitMs = 0;
     }
+    presentReady(done);
+  }
+  bool paced() const { return fenced() && present == "paced" && !noVR; }
+  bool waiting() const { return !ready.empty(); }
+  // Headset refreshes per content frame: 2 at 120 Hz, 1 at 90 Hz (60 fps).
+  int contentRefreshes() const {
+    return vsyncPeriodMs > 0 ? std::max(1, int(std::floor(1000.0 / vsyncPeriodMs / 60.0 + 0.25))) : 1;
+  }
+  // The compositor's refresh counter, and milliseconds since its last
+  // refresh. False when unavailable or stalled (headset asleep), so pacing
+  // never holds a picture back indefinitely.
+  bool vsync(uint64_t &counter, double &sinceMs) {
+    if (noVR || !system || !system->GetTimeSinceLastVsync)
+      return false;
+    double now = nowMs();
+    if (now - lastPeriodRead > 1000) {
+      lastPeriodRead = now;
+      ETrackedPropertyError error = ETrackedPropertyError_TrackedProp_Success;
+      float hz = system->GetFloatTrackedDeviceProperty(0, ETrackedDeviceProperty_Prop_DisplayFrequency_Float, &error);
+      vsyncPeriodMs = error == ETrackedPropertyError_TrackedProp_Success && hz > 20 && hz < 500 ? 1000.0 / hz : 0;
+    }
+    float since = 0;
+    if (!system->GetTimeSinceLastVsync(&since, &counter) || vsyncPeriodMs <= 0)
+      return false;
+    if (counter != lastVsyncCounter) {
+      lastVsyncCounter = counter;
+      lastVsyncChange = now;
+    }
+    sinceMs = since * 1000.0;
+    return now - lastVsyncChange < 4 * vsyncPeriodMs;
+  }
+  // Milliseconds until the next refresh plus a small margin, when a paced
+  // picture is waiting; otherwise a default.
+  double untilNextSlotMs(double otherwise) {
+    uint64_t counter = 0;
+    double since = 0;
+    if (!paced() || ready.empty() || !vsync(counter, since))
+      return otherwise;
+    return std::clamp(vsyncPeriodMs - since + 0.5, 0.5, otherwise);
+  }
+  void presentReady(std::vector<Completion> &done) {
+    if (ready.empty())
+      return;
+    uint64_t counter = 0;
+    double since = 0;
+    if (!paced() || !vsync(counter, since)) {
+      if (paced())
+        ++pacedFallbacks;
+      while (!ready.empty()) {
+        int index = ready.front();
+        ready.pop_front();
+        done.push_back(submit(index));
+      }
+      return;
+    }
+    // In order, one picture per content period. When pictures are queued
+    // behind (a delivery burst), the next one may follow after a single
+    // refresh so the queue drains without skipping motion; only a backlog
+    // beyond three pictures is dropped.
+    const uint64_t gap = havePresentVsync ? counter - lastPresentVsync : 0;
+    const uint64_t needed = ready.size() >= 2 ? 1 : uint64_t(contentRefreshes());
+    if (havePresentVsync && gap < needed)
+      return;
+    while (ready.size() > 3)
+      dropOldestReady(done);
+    int index = ready.front();
+    ready.pop_front();
+    if (havePresentVsync)
+      ++presentGaps[std::min<uint64_t>(gap, 4)];
+    lastPresentVsync = counter;
+    havePresentVsync = true;
+    done.push_back(submit(index));
   }
   Completion submit(int index) {
     Slot &s = slots[index];

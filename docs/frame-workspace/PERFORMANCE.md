@@ -198,6 +198,33 @@ a direct test run), then Show Workspace again. Alternatively, restart the
 companion with `FRAME_MAC_VIEW_VD_HZ=60`. Keep everything else matched. A pass shows fresh drawn updates within about
 2/s of Mac capture, zero queue overflows, zero encoded drops and zero errors.
 
+## Judder and input delay, 2026-10-19
+
+After the first worn check, matched 30 s off-head runs isolated each stage
+using the benchmark's per-frame stage times. Each fix addressed a measured cause:
+
+| Change | Stage it fixed | Capture-to-draw p50/p95 ms |
+|---|---|---:|
+| Start of day | — | 62.9/252.7 |
+| Low-delay SSH tunnel (`TCP_NODELAY`, interactive QoS) | Network p95 185 → 13 ms | 53.4/79.7 |
+| Capture by display time | Even captures 80.7% → 96.9% | 46.6/88.0 |
+| POC type 2 rewrite before V4L2 | Frame decode p50 24.4 → 7.8 ms | 31.3/69.9 |
+
+The Mac's VideoToolbox encode takes about 15.5 ms for a 2880×2560 frame
+whatever its settings. Low-latency rate control, `MaxFrameDelayCount 0`,
+speed priority, expected frame rate and real-time mode were each tested in an
+isolated benchmark; it scales with pixels. Long-term references (`EnableLTR`)
+and a trailing access unit delimiter did not change the decoder hold.
+
+Worn, the network got much worse: the Frame's Wi-Fi fell from −57 to −64 dBm
+and one spatial stream, with Frame → router p99 95 ms and stalls up to about
+800 ms in some 30 s windows (Mac → router stayed clean). Paced presentation
+reached 93% evenly spaced submissions in a clean worn window, against 72%
+immediate. The user still saw small hiccups. Its first policy (newest picture
+wins) dropped frames after bursts. It now plays in order with one-refresh
+catch-up. That revised policy, and the latency after the POC fix, still need a
+worn check. A USB-C link remains the way to remove the worn Wi-Fi stalls.
+
 ## Remaining acceptance and reproduction
 
 This mixed route exercises one native overlay and real Frame browser viewers.
