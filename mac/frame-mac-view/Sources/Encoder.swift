@@ -118,9 +118,11 @@ final class Encoder {
             set(kVTCompressionPropertyKey_ExpectedFrameRate, fps)
             if Encoder.options.contains("nodelay") { set(kVTCompressionPropertyKey_MaxFrameDelayCount, 0) }
             if Encoder.options.contains("speed") { set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, true) }
-            // A keyframe every 10 s at most, so a viewer that lost one recovers
-            // even if it never asks. Viewers ask for one when they start.
-            set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 10)
+            // Viewers ask for a keyframe when they start and after an error, and
+            // the link is TCP, so periodic ones are only a backstop. Each one is
+            // ~40 times a normal frame (~340 KB vs ~8 KB at 2880x2560) and took
+            // 110-230 ms over the worn Frame's Wi-Fi: a visible hitch every 10 s.
+            set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 120)
         } else {
             set(kVTCompressionPropertyKey_Quality, 0.8)
         }

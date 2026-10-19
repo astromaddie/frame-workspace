@@ -536,6 +536,7 @@ class MacView:
         # _usb_route); FRAME_MACVIEW_USB=0 turns that off.
         self.prefer_usb = os.environ.get("FRAME_MACVIEW_USB") != "0"
         self.route = "network"
+        self.usb_ip, self._usb_misses = None, 0
         self.shown = set()  # sources with a viewer out there, connected or retrying
         self.browser_flags = list(BROWSER_FLAGS)
         self.browser_lock = threading.Lock()
@@ -732,6 +733,7 @@ class MacView:
             socket.create_connection((ip, 22), timeout=1).close()
         except OSError:
             return []  # not plugged into this Mac
+        self.usb_ip = ip
         if any(o.startswith("HostKeyAlias=") for o in self.host_opts):
             return ["-o", f"HostName={ip}"]  # checked against the headset's own pinned key
         alias = self.frame
@@ -750,9 +752,16 @@ class MacView:
             return
 
         def loop():
+            tick = 0
             while not self.closing:
-                time.sleep(5)
-                if self.closing or self.tunnel_up() or not (self.agent and self.agent.poll() is None):
+                time.sleep(1)
+                tick += 1
+                if self.closing or not (self.agent and self.agent.poll() is None):
+                    continue
+                if self.tunnel_up():
+                    self._follow_best_route(tick)
+                    continue
+                if tick % 5:
                     continue
                 try:
                     self.ensure_tunnel()
@@ -761,6 +770,48 @@ class MacView:
 
         self.supervisor = threading.Thread(target=loop, daemon=True)
         self.supervisor.start()
+
+    def _usb_reachable(self):
+        """Whether the Frame's USB-C address still answers (cheap: no ssh)."""
+        if not self.usb_ip:
+            return False
+        try:
+            socket.create_connection((self.usb_ip, 22), timeout=0.5).close()
+            return True
+        except OSError:
+            return False
+
+    def _follow_best_route(self, tick):
+        """Keep the tunnel on the best link while viewers use it: move to USB-C
+        when it is plugged in, and back to the network within ~2 s when it is
+        pulled, instead of waiting ~15 s for ssh keepalives. Viewers keep the
+        same port and reconnect on their own, so a switch is a brief blink.
+        Worn on Wi-Fi the Mac -> Frame link carried only ~20 Mbit/s, which
+        video and animations saturate; USB-C removes that (2026-10-19)."""
+        if self.route == "usb":
+            if self._usb_reachable():
+                self._usb_misses = 0
+                return
+            self._usb_misses += 1
+            if self._usb_misses < 2:
+                return
+        elif not self.prefer_usb or tick % 5 or not self._usb_route():
+            return
+        self._usb_misses = 0
+        with self.lock:
+            old, self.tunnel = self.tunnel, None
+        if old is not None and old.poll() is None:
+            old.terminate()
+            try:
+                old.wait(3)
+            except subprocess.TimeoutExpired:
+                old.kill()
+        for _ in range(3):  # the Frame may take a moment to release the forwarded port
+            try:
+                self.ensure_tunnel()
+                return
+            except MacViewError:
+                time.sleep(0.5)
 
     def _probe(self, port):
         """Whether the Frame reaches the agent through the tunnel on `port`."""

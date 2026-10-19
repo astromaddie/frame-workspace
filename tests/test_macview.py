@@ -41,6 +41,38 @@ class Helpers(unittest.TestCase):
             self.assertNotIn(" ", value)
             self.assertEqual(list(map(float, value.split(","))), [0.5, 0.1])
 
+    def test_tunnel_follows_usb_in_and_falls_back_when_pulled(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+
+        class Tunnel:
+            def __init__(self): self.alive = True
+            def poll(self): return None if self.alive else 0
+            def terminate(self): self.alive = False
+            def wait(self, timeout=None): return 0
+
+        opened = []
+
+        def ensure(allow_new_port=False):
+            mv.tunnel = Tunnel()
+            mv.route = "usb" if mv._usb_route() else "network"
+            opened.append(mv.route)
+
+        usb = {"present": True}
+        mv.ensure_tunnel = ensure
+        mv._usb_route = lambda: ["-o", "HostName=10.86.200.233"] if usb["present"] else []
+        mv._usb_reachable = lambda: usb["present"]
+        mv.tunnel, mv.route = Tunnel(), "network"
+        mv._follow_best_route(tick=3)  # USB is only looked for every 5 s
+        self.assertEqual(opened, [])
+        mv._follow_best_route(tick=5)
+        self.assertEqual(opened, ["usb"])
+        usb["present"] = False
+        mv._follow_best_route(tick=6)  # one miss is tolerated
+        self.assertEqual(opened, ["usb"])
+        mv._follow_best_route(tick=7)
+        self.assertEqual(opened, ["usb", "network"])
+        self.assertEqual(mv.route, "network")
+
     def test_workspace_display_defaults_to_120_hz(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("FRAME_MAC_VIEW_VD_HZ", None)
