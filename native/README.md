@@ -84,12 +84,21 @@ shows the owned overlay and sends the existing Mac window-focus message.
 this process's overlay. SteamVR Quit events are acknowledged. State and pose
 files are atomically replaced with mode 0600.
 
+`{"revision":4,"move":[0.1,0,0]}` moves the screen in its own frame (meters:
+right, up, toward the viewer; each value within 2 m, and never beyond 10 m from
+the room origin). `{"revision":5,"rotate":[5,0,0]}` turns it about its own
+centre (degrees: yaw, pitch, roll; each within 90°), keeping the rotation
+orthonormal. Both apply live and are saved to the pose file. The launcher's
+`pose RIGHT UP CLOSER YAW PITCH ROLL` and the companion's `workspace_pose`
+action send them.
+
 `{"revision":3,"curvature":0.25}` requests OpenVR curvature 0–1. The owner
 sets and reads back the value; `controlResultRevision` acknowledges the exact
 request and `curvatureResult` reports supported/applied/value/errorCode.
 Unsupported curvature is nonfatal. Width/distance-only requests do not alter
-curvature or request focus/recenter. Curvature is not stored in the pose file
-or changed at startup. The current Frame accepted 0.25 and restored 0.0;
+curvature or request focus/recenter. Confirmed curvature is saved in the pose
+file and re-applied at startup (verified on the Frame 2026-10-19: 0.15 read back
+after a viewer restart); older pose files without it stay flat. The current Frame accepted 0.25 and restored 0.0;
 this does not establish worn optical behavior.
 
 `ready` becomes true only after a successful texture submission and overlay

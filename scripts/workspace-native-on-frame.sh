@@ -148,6 +148,86 @@ with os.fdopen(lock_fd, 'r+') as lock:
 PY
     exit $?
     ;;
+  pose)
+    # Relative moves (m: right, up, toward the viewer) and turns (degrees:
+    # yaw, pitch, roll) in the panel's own frame.
+    [ "$#" -eq 7 ] || exit 2
+    python3 - "$runtime" "$unit" "$key" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+import fcntl, json, math, os, pathlib, re, subprocess, sys, time
+p = pathlib.Path(sys.argv[1])
+unit, key = sys.argv[2:4]
+def number(raw, label, limit, unit_name):
+    if not re.fullmatch(r'-?[0-9]+(?:\.[0-9]+)?', raw):
+        raise SystemExit(f'{label} must be a finite number.')
+    value = float(raw)
+    if not math.isfinite(value) or abs(value) > limit:
+        raise SystemExit(f'{label} must be within {limit:g} {unit_name}.')
+    return value
+move = [number(v, n, 2, 'meters') for v, n in zip(sys.argv[4:7], ('Move right', 'Move up', 'Move closer'))]
+rotate = [number(v, n, 90, 'degrees') for v, n in zip(sys.argv[7:10], ('Yaw', 'Pitch', 'Roll'))]
+def systemd(prop):
+    try:
+        r = subprocess.run(['systemctl', '--user', 'show', unit, '--property=' + prop, '--value'],
+                           capture_output=True, text=True, timeout=4)
+    except (OSError, subprocess.TimeoutExpired):
+        return ''
+    return r.stdout.strip() if r.returncode == 0 else ''
+def owner():
+    if systemd('ActiveState') != 'active':
+        return None
+    try:
+        if int(systemd('MainPID')) <= 0:
+            return None
+        s = json.loads((p / 'state.json').read_text())
+        placement = s.get('placement')
+        if (s.get('ready') is not True or s.get('overlayKey') != key or
+                not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        return s
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+def next_revision(target):
+    try:
+        data = json.loads(target.read_text())
+        old = data.get('revision') if isinstance(data, dict) else None
+        if (type(old) not in (int, float) or
+                (type(old) is float and (not math.isfinite(old) or not old.is_integer())) or
+                old < 0 or old >= (1 << 53) - 1):
+            return 1
+        return int(old) + 1
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 1
+if owner() is None:
+    raise SystemExit('The native Workspace viewer is stopped or not ready; use Show Workspace again.')
+lock_fd = os.open(p / 'control.lock', os.O_CREAT | os.O_RDWR, 0o600)
+with os.fdopen(lock_fd, 'r+') as lock:
+    os.fchmod(lock.fileno(), 0o600)
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    target = p / 'control.json'
+    revision = next_revision(target)
+    tmp = p / ('control.' + str(os.getpid()) + '.tmp')
+    # Live and relative; never requests focus/recenter or restarts anything.
+    tmp.write_text(json.dumps({'revision': revision, 'move': move, 'rotate': rotate}))
+    os.chmod(tmp, 0o600)
+    tmp.replace(target)
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        s = owner()
+        if s is None:
+            raise SystemExit('The native Workspace owner stopped before confirming placement.')
+        try:
+            applied_revision = s.get('controlRevision')
+            if type(applied_revision) in (int, float) and applied_revision == revision:
+                print(json.dumps({'ready': True, 'state': s['state'], 'overlayKey': key,
+                                  'placement': s['placement']}))
+                raise SystemExit(0)
+        except (KeyError, TypeError, ValueError):
+            pass
+        time.sleep(0.1)
+    raise SystemExit('The native Workspace owner did not confirm the move.')
+PY
+    exit $?
+    ;;
   curvature)
     [ "$#" -eq 2 ] || exit 2
     python3 - "$runtime" "$unit" "$key" "$2" <<'PY'
@@ -231,7 +311,7 @@ PY
     exit $?
     ;;
   start) ;;
-  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | curvature VALUE' >&2; exit 2 ;;
+  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | pose RIGHT UP CLOSER YAW PITCH ROLL | curvature VALUE' >&2; exit 2 ;;
 esac
 [ "$#" -ge 5 ] && [ "$#" -le 9 ] || exit 2
 url=$2

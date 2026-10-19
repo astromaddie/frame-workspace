@@ -272,8 +272,41 @@ static int selfTest() {
   pipe.publish(a);
   pipe.publish(b);
   require(pipe.take()->seq == 2 && pipe.droppedDecoded == 1, "newest picture");
+  {
+    // Spatial placement: nudges are in the panel's own frame, inverse nudges
+    // restore it, and many rotations stay orthonormal.
+    Placement original, p;
+    original.matrix = {{{0.8f, 0, 0.6f, -1.2f}, {0, 1, 0, 1.6f}, {-0.6f, 0, 0.8f, -1.6f}}};
+    p = original;
+    require(movePlacement(p, 0.5f, -0.2f, 0.3f), "move accepted");
+    require(std::fabs(p.matrix.m[0][3] - (-1.2f + 0.8f * 0.5f + 0.6f * 0.3f)) < 1e-5 &&
+                std::fabs(p.matrix.m[1][3] - 1.4f) < 1e-5 && std::fabs(p.distance - 1.7f) < 1e-5,
+            "move follows the panel's right, up and normal");
+    movePlacement(p, -0.5f, 0.2f, -0.3f);
+    rotatePlacement(p, 30, -15, 10);
+    rotatePlacement(p, 0, 0, -10);
+    rotatePlacement(p, 0, 15, 0);
+    rotatePlacement(p, -30, 0, 0);
+    double worst = 0;
+    for (int r = 0; r < 3; r++)
+      for (int c = 0; c < 4; c++)
+        worst = std::max(worst, double(std::fabs(p.matrix.m[r][c] - original.matrix.m[r][c])));
+    require(worst < 1e-4, "inverse rotations and moves restore the placement");
+    for (int i = 0; i < 1000; i++)
+      rotatePlacement(p, 7, 3, -2);
+    for (int a = 0; a < 3; a++)
+      for (int b = 0; b < 3; b++) {
+        double dot = 0;
+        for (int r = 0; r < 3; r++)
+          dot += p.matrix.m[r][a] * p.matrix.m[r][b];
+        require(std::fabs(dot - (a == b)) < 1e-4, "rotation stays orthonormal");
+      }
+    Placement far = original;
+    far.matrix.m[0][3] = 9.5f;
+    require(!movePlacement(far, 0.8f, 0, 0), "moves beyond 10 m are refused");
+  }
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -597,6 +630,13 @@ int main(int argc, char **argv) {
     if (pendingRecenter)
       pendingRecenter = !overlay.recenter();
     overlay.apply();
+    // Curvature is part of the saved placement; re-apply it (OpenVR readback
+    // confirms it, and an unsupported runtime just stays flat).
+    if (overlay.placement.curvature > 0) {
+      const float saved = overlay.placement.curvature;
+      if (!overlay.setCurvature(saved).applied)
+        overlay.placement.curvature = saved; // keep the user's choice for a later runtime
+    }
     if (!pendingRecenter)
       atomicWrite(poseFile, placementJSON(overlay.placement));
     Pipeline pipe(decoderMode, conversionMode);
@@ -806,6 +846,33 @@ int main(int argc, char **argv) {
                                  num(j, "distance", overlay.placement.distance));
                 if (requestedCurvature)
                   curvatureResult = overlay.setCurvature(float(curvature));
+                // Spatial nudges in the panel's own frame: {"move":[x,y,z]}
+                // meters (right, up, toward the viewer) and {"rotate":[yaw,
+                // pitch, roll]} degrees. Each is bounded per command.
+                auto triple = [&](const char *name, double limit, double out[3]) {
+                  auto a = field(j, name);
+                  if (!a || !json_object_is_type(a, json_type_array) || json_object_array_length(a) != 3)
+                    return false;
+                  for (int i = 0; i < 3; ++i) {
+                    auto v = json_object_array_get_idx(a, i);
+                    if (!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double))
+                      return false;
+                    out[i] = json_object_get_double(v);
+                    if (!std::isfinite(out[i]) || std::fabs(out[i]) > limit)
+                      return false;
+                  }
+                  return true;
+                };
+                double delta[3];
+                bool spatial = false;
+                if (triple("rotate", 90, delta)) {
+                  overlay.rotate(float(delta[0]), float(delta[1]), float(delta[2]));
+                  spatial = true;
+                }
+                if (triple("move", 2, delta))
+                  spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
+                if (spatial || (requestedCurvature && curvatureResult.applied))
+                  atomicWrite(poseFile, placementJSON(overlay.placement));
                 if (flag(j, "recenter"))
                   pendingRecenter = true;
                 if (auto requested = field(j, "present"))

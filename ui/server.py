@@ -2424,6 +2424,10 @@ def macview_action(body):
             return macview.adjust_workspace(body["width"], body["distance"])
         if action == "workspace_curvature":
             return macview.set_workspace_curvature(body["curvature"])
+        if action == "workspace_pose":
+            if not set(body) <= {"action", "move", "rotate"} or not ({"move", "rotate"} & set(body)):
+                raise Failure("workspace_pose takes move and/or rotate, each three numbers.", 400)
+            return macview.move_workspace(body.get("move", [0, 0, 0]), body.get("rotate", [0, 0, 0]))
         if action == "gaze_sharpen":
             if set(body) != {"action", "mode"}:
                 raise Failure("gaze_sharpen takes only a mode (auto, on or off).", 400)

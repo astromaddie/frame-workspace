@@ -1003,6 +1003,41 @@ class MacView:
             # Unreachable or unready owners must not expose guessed dimensions.
             return None
 
+    def move_workspace(self, move=(0, 0, 0), rotate=(0, 0, 0)):
+        """Move (m: right, up, toward the viewer) and turn (degrees: yaw, pitch,
+        roll) the native Workspace in its own frame, live, without restarting."""
+        def triple(values, limit, name):
+            if not isinstance(values, (list, tuple)) or len(values) != 3:
+                raise MacViewError(f"Workspace {name} takes three numbers.")
+            out = []
+            for v in values:
+                if type(v) not in (int, float) or not math.isfinite(v) or abs(v) > limit:
+                    raise MacViewError(f"Workspace {name} values must be within {limit:g}.")
+                out.append(float(v))
+            return out
+        move, rotate = triple(move, 2, "move"), triple(rotate, 90, "rotation")
+        with self.workspace_lock:
+            workspace = self.workspace_manager.state()
+            if workspace.get("state") != "running":
+                raise MacViewError("The Workspace display is stopped; start Workspace before moving it.")
+            key = self.workspace_panel_key or ""
+            if not re.fullmatch(r"com\.frame-workspace\.native\.\d+\.workspace", key):
+                raise MacViewError("Placement controls require the active native Workspace viewer.")
+            args = " ".join(f"{v:.6f}" for v in (*move, *rotate))
+            try:
+                out = self.run("bash -s -- pose " + args,
+                               stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=10)
+                lines = [line for line in out.splitlines() if line.strip()]
+                result = json.loads(lines[-1]) if lines else {}
+                if result.get("ready") is not True or result.get("overlayKey") != key:
+                    raise MacViewError("The native Workspace owner did not confirm the move.")
+                return {"ready": True, "state": result.get("state"), "overlayKey": key,
+                        "placement": result.get("placement")}
+            except MacViewError:
+                raise
+            except Exception as e:  # noqa: BLE001 - preserve the helper's ownership/readiness error
+                raise MacViewError(f"Could not move the Workspace: {e}") from e
+
     def adjust_workspace(self, width, distance):
         """Change placement through the active native owner without restarting it."""
         width = self._placement_number(width, "width", 0.4, 8.0)

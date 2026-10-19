@@ -464,6 +464,16 @@ Let the user put the Workspace exactly where it is comfortable to work, and keep
 - **Curvature:** the companion API sets 0–1 with OpenVR readback (0.25 was accepted on the Frame). There is no control in the UI, and curvature is neither saved nor restored on restart. In the first worn check the user preferred 0.15 to 0.25 on the 9:8 Workspace; 0.25 may suit an ultrawide. A viewer restart reset it to flat.
 - **Ownership:** the installed Frame Control app and the preview companion can both start the one Frame viewer. Only the owning companion's controls take effect.
 
+**Scope update (2026-10-19, from the user):** placement should be truly spatial:
+move in 3DOF, rotate in 3DOF, resize, and curve (both sides or one side, either
+horizontally or vertically). Window panels should open beside the Workspace and
+be movable the same way. Delivered so far: live 3DOF move and rotate in the
+panel's own frame (viewer, launcher `pose`, companion `workspace_pose`), saved
+with the pose; curvature saved and re-applied at startup. OpenVR's own curvature
+is symmetric and horizontal only. Vertical curvature needs a 90° panel roll with
+the picture counter-rotated. One-sided or custom bends need the screen split
+across several angled overlay strips.
+
 ## Implementation / investigation
 - Add live position controls beside Width and Distance: Move Left / Right / Up / Down, Rotate Left / Right and Tilt Up / Down, with sensible steps and limits, plus Recenter. These use the native owner's existing control file. They must not restart the viewer or the Mac display, and must not take typing focus.
 - Add a Curvature control (for example Flat, then gentle steps up to the supported maximum), backed by the existing readback. Show only confirmed values; an unsupported runtime shows a sentence, not a guessed state.
