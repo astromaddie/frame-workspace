@@ -1,5 +1,6 @@
 #include "overlay.hpp"
 #include "gaze_producer.hpp"
+#include "handles.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -305,8 +306,54 @@ static int selfTest() {
     far.matrix.m[0][3] = 9.5f;
     require(!movePlacement(far, 0.8f, 0, 0), "moves beyond 10 m are refused");
   }
+  {
+    // VR handles: zones around a 2.4 x 2.13 m window, and the drag maths.
+    HandleLayout l;
+    const float hx = l.width / 2, hy = l.height / 2, m = l.margin();
+    require(l.zone(0, 0) == Handle::None && l.zone(hx - 0.01f, hy - 0.01f) == Handle::None, "inside: no handle");
+    require(l.zone(0, -hy - 0.5f * m) == Handle::Pill, "below the centre: pill");
+    require(l.zone(l.pillWidth() + 0.05f, -hy - 0.5f * m) == Handle::None, "below but off the pill");
+    require(l.zone(hx + 0.5f * m, 0) == Handle::BarRight && l.zone(-hx - 0.5f * m, 0.3f) == Handle::BarLeft, "sides: curve bars");
+    require(l.zone(hx + 0.5f * m, -hy - 0.5f * m) == Handle::CornerBR && l.zone(-hx - 0.3f * m, hy + 0.3f * m) == Handle::CornerTL,
+            "corners");
+    require(l.zone(hx + 2 * m, 0) == Handle::None, "far outside: nothing");
+    Placement start;  // 2 m ahead of the origin, facing it
+    start.matrix = {{{1, 0, 0, 0}, {0, 1, 0, 1.5f}, {0, 0, 1, -2}}};
+    // Controller at the origin pointing ahead (-z) at the pill.
+    HmdMatrix34_t c0 = {{{1, 0, 0, 0.1f}, {0, 1, 0, 1.0f}, {0, 0, 1, 0}}};
+    HandleDrag drag;
+    drag.start(Handle::Pill, c0, start);
+    const double a = 30 * M_PI / 180;
+    HmdMatrix34_t c1 = {{{float(std::cos(a)), 0, float(std::sin(a)), 0.6f}, {0, 1, 0, 1.2f},
+                         {float(-std::sin(a)), 0, float(std::cos(a)), -0.3f}}};
+    Placement moved = drag.update(c1);
+    auto before = multiply(inverseRigid(c0), start.matrix), after = multiply(inverseRigid(c1), moved.matrix);
+    double worst = 0;
+    for (int r = 0; r < 3; r++)
+      for (int c = 0; c < 4; c++) worst = std::max(worst, double(std::fabs(before.m[r][c] - after.m[r][c])));
+    require(worst < 1e-4, "pill: the window follows the controller rigidly");
+    // Corner: the ray hit moves from 1.0 m to 1.5 m from the centre.
+    HmdMatrix34_t aimA = {{{1, 0, 0, 0.6f}, {0, 1, 0, 1.5f + 0.8f}, {0, 0, 1, 0}}};
+    HmdMatrix34_t aimB = {{{1, 0, 0, 0.9f}, {0, 1, 0, 1.5f + 1.2f}, {0, 0, 1, 0}}};
+    drag.start(Handle::CornerTR, aimA, start);
+    require(std::fabs(drag.update(aimB).width - start.width * 1.5f) < 1e-3, "corner: resize about the centre");
+    // Bar: pulled 0.3 m towards the viewer on a 2.4 m window.
+    drag.start(Handle::BarRight, c0, start);
+    HmdMatrix34_t pulled = c0;
+    pulled.m[2][3] += 0.3f;
+    require(std::fabs(drag.update(pulled).curvature - 0.5f) < 1e-3, "bar: pulling it curves the window");
+    std::vector<uint8_t> image;
+    int high = 0;
+    drawHandle(l, Handle::None, false, 256, image, high);
+    require(std::all_of(image.begin(), image.end(), [](uint8_t v) { return v == 0; }), "no handle: transparent");
+    drawHandle(l, Handle::Pill, true, 256, image, high);
+    size_t lit = 0, blue = 0;
+    for (size_t i = 0; i < image.size(); i += 4)
+      if (image[i + 3] > 128) { ++lit; blue += image[i + 2] > image[i] * 2; }
+    require(lit > 20 && blue == lit, "held pill is drawn in Steam blue");
+  }
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -486,6 +533,28 @@ int main(int argc, char **argv) {
         auto v = value();
         if (v != "on" && v != "off") throw std::runtime_error("--v4l2-poc-rewrite must be on or off");
         pocRewrite = v == "on";
+      } else if (a == "--draw-handle") {
+        // Diagnostic: --draw-handle pill|corner|bar rest|held OUT.ppm draws one
+        // handle on grey around a 2.4 m Workspace outline.
+        std::string which = value(), state = value(), outPath = value();
+        Handle h = which == "pill" ? Handle::Pill : which == "corner" ? Handle::CornerBR : which == "bar" ? Handle::BarRight : Handle::None;
+        HandleLayout l;
+        std::vector<uint8_t> image;
+        int high = 0;
+        const int wide = 900;
+        drawHandle(l, h, state == "held", wide, image, high);
+        std::ofstream f(outPath, std::ios::binary);
+        f << "P6\n" << wide << " " << high << "\n255\n";
+        const float mpp = l.chromeWidth() / wide;
+        for (int py = 0; py < high; py++)
+          for (int px = 0; px < wide; px++) {
+            const float x = (px + 0.5f) * mpp - l.chromeWidth() / 2, y = l.chromeHeight() / 2 - (py + 0.5f) * mpp;
+            const bool window = std::fabs(x) <= l.width / 2 && std::fabs(y) <= l.height / 2;
+            const uint8_t *p = &image[(size_t(py) * wide + px) * 4];
+            const float a = p[3] / 255.f, base = window ? 52.f : 18.f;
+            for (int k = 0; k < 3; k++) f.put(char(std::lround(base * (1 - a) + p[k] * a)));
+          }
+        return 0;
       } else if (a == "--rewrite-poc") {
         // Diagnostic: rewrite an Annex B file to POC type 2 (one access unit
         // per call is not required; the rewriter splits on start codes).
