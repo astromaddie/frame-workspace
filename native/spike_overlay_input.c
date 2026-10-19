@@ -74,13 +74,25 @@ int main(int argc, char **argv) {
   printf("strip shown; point the laser at it, hover, press and drag for %d s\n", seconds);
   fflush(stdout);
 
-  double end = now() + seconds;
+  double end = now() + seconds, lastShow = 0;
   int counts[400] = {0};
   while (now() < end) {
+    // SteamVR hides overlays on standby and app switches; keep the strip up
+    // and report its visibility once a second.
+    if (now() - lastShow >= 1) {
+      lastShow = now();
+      ov->ShowOverlay(h);
+      printf("%7.2fs strip visible %d\n", seconds - (end - now()), ov->IsOverlayVisible(h));
+      fflush(stdout);
+    }
     struct VREvent_t ev;
     while (ov->PollNextOverlayEvent(h, &ev, sizeof ev)) {
       if (ev.eventType < 400) counts[ev.eventType]++;
       if (ev.eventType == EVREventType_VREvent_MouseMove && counts[ev.eventType] % 15 != 1) continue;
+      if (ev.eventType != EVREventType_VREvent_MouseMove && ev.eventType != EVREventType_VREvent_MouseButtonDown &&
+          ev.eventType != EVREventType_VREvent_MouseButtonUp && ev.eventType != EVREventType_VREvent_FocusEnter &&
+          ev.eventType != EVREventType_VREvent_FocusLeave && ev.eventType != EVREventType_VREvent_ScrollSmooth &&
+          ev.eventType != EVREventType_VREvent_OverlayHidden && ev.eventType != EVREventType_VREvent_OverlayShown) continue;
       TrackedDevicePose_t poses[16];
       sys->GetDeviceToAbsoluteTrackingPose(ETrackingUniverseOrigin_TrackingUniverseStanding, 0, poses, 16);
       unsigned d = ev.trackedDeviceIndex < 16 ? ev.trackedDeviceIndex : 0;
