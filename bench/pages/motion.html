@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Benchmark content: full-window motion with fine detail, like video
+     playback or a window animation, so the encoder needs a high bitrate. -->
+<html lang="en"><head><meta charset="utf-8"><title>fmv-bench motion</title>
+<style>html, body { margin: 0; height: 100%; overflow: hidden; background: #000; } canvas { display: block; }</style>
+</head><body><canvas id="c"></canvas>
+<script>
+const c = document.getElementById("c"), g = c.getContext("2d");
+const resize = () => { c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio; };
+addEventListener("resize", resize); resize();
+// A detailed tile (fixed noise and stripes) that pans and rotates: every
+// frame changes everywhere, but predictably, as camera motion does.
+const tile = document.createElement("canvas"); tile.width = tile.height = 512;
+const t = tile.getContext("2d"), img = t.createImageData(512, 512);
+let seed = 11; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+for (let i = 0; i < img.data.length; i += 4) {
+  const x = (i / 4) % 512, y = Math.floor(i / 4 / 512), v = rnd() * 90;
+  img.data[i] = 80 + v + 60 * Math.sin(x / 9); img.data[i + 1] = 60 + v + 60 * Math.sin(y / 13);
+  img.data[i + 2] = 120 + v; img.data[i + 3] = 255;
+}
+t.putImageData(img, 0, 0);
+const pattern = g.createPattern(tile, "repeat");
+let frames = 0, since = performance.now();
+function step(now) {
+  if (++frames && now - since >= 1000) { document.title = `fmv-bench motion ${frames} fps`; frames = 0; since = now; }
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.translate(c.width / 2, c.height / 2); g.rotate(now / 6000); g.translate(now / 4 % 512, now / 7 % 512);
+  g.fillStyle = pattern; g.fillRect(-c.width * 2, -c.height * 2, c.width * 4, c.height * 4);
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script></body></html>

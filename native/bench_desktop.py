@@ -29,6 +29,8 @@ def main():
     parser.add_argument("--frame", default="frame", help="SSH alias")
     parser.add_argument("--seconds", type=int, default=30)
     parser.add_argument("--label", required=True)
+    parser.add_argument("--page", choices=("scroll", "motion"), default="scroll",
+                        help="scroll: reading-like text; motion: video-like full-window motion")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if not 10 <= args.seconds <= 120:
@@ -47,13 +49,13 @@ def main():
     fixture_size = None
     fixture_rate = None
     with tempfile.TemporaryDirectory(prefix="frame-workspace-native-motion-") as profile:
-        fixture = bench.chrome_window("scroll.html", profile=profile,
+        fixture = bench.chrome_window(f"{args.page}.html", profile=profile,
                                       size=(int(bounds["width"]), int(bounds["height"])),
                                       position=(int(bounds["x"]), int(bounds["y"])))
         try:
             time.sleep(5)
             owned = [w for w in client.request("/api/macview").get("windows", [])
-                     if str(w.get("title", "")).startswith("fmv-bench scroll")]
+                     if str(w.get("title", "")).startswith(f"fmv-bench {args.page}")]
             if len(owned) != 1:
                 raise RuntimeError("Expected exactly one owned scrolling fixture; close other benchmarks.")
             fixture_size = [int(owned[0]["w"]), int(owned[0]["h"])]

@@ -73,6 +73,22 @@ class Helpers(unittest.TestCase):
         self.assertEqual(opened, ["usb", "network"])
         self.assertEqual(mv.route, "network")
 
+    def test_link_cap_follows_route_and_agent(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        calls = []
+        mv.call = lambda path, method="GET", **q: calls.append((path, q["maxbps"]))
+        mv.agent, mv.route = object(), "network"
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("FRAME_MACVIEW_WIFI_MBPS", None)
+            mv._apply_link_cap()
+            mv._apply_link_cap()  # unchanged: not resent
+            mv.route = "usb"
+            mv._apply_link_cap()
+            mv.agent = object()  # a restarted agent starts uncapped
+            mv.route = "network"
+            mv._apply_link_cap()
+        self.assertEqual(calls, [("/link", "12000000"), ("/link", "0"), ("/link", "12000000")])
+
     def test_workspace_display_defaults_to_120_hz(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("FRAME_MAC_VIEW_VD_HZ", None)

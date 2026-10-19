@@ -417,6 +417,7 @@ final class Session {
     private func adapt(maxLong: Int) {
         let now = nowUs()
         if let bps = controller.update(now: now) { encoder.setBitrate(bps) }
+        encoder.applyLinkCap()
         let scale = controller.scale
         if !foveationDirect && scale != appliedScale {
             appliedScale = scale
@@ -754,6 +755,14 @@ final class Agent {
                  "captured": s.stats.withLock { s.stats.captured }, "controller": s.controller.state(),
                  "events": s.controller.eventList()]
             }])
+        case ("POST", "/link"):
+            // ?maxbps=N: a ceiling for every H.264 stream on the current route
+            // (0 removes it). Applied by each session within its next 100 ms tick.
+            guard let bps = Int(req.query["maxbps"] ?? ""), bps >= 0, bps <= 1_000_000_000 else {
+                return c.respond(400, text: "maxbps=N")
+            }
+            Encoder.linkCap = bps
+            c.respond(json: ["maxbps": bps])
         case ("POST", "/bench"):
             lock.lock()
             let list = sessions.values.filter { $0.source.key == req.query["src"] }

@@ -117,6 +117,17 @@ def workspace_diagnostic_gaze():
     return f"{uv[0]:.17g},{uv[1]:.17g}"
 
 
+def wifi_mbps():
+    """Bitrate ceiling on the network route, in Mbit/s (0 = none)."""
+    try:
+        value = float(os.environ.get("FRAME_MACVIEW_WIFI_MBPS", "12"))
+    except ValueError:
+        value = -1
+    if not 0 <= value <= 1000:
+        raise MacViewError("FRAME_MACVIEW_WIFI_MBPS must be 0 (no cap) to 1000.")
+    return value
+
+
 def workspace_refresh_hz():
     """The Workspace display's refresh rate, for the Swift helper.
 
@@ -537,6 +548,7 @@ class MacView:
         self.prefer_usb = os.environ.get("FRAME_MACVIEW_USB") != "0"
         self.route = "network"
         self.usb_ip, self._usb_misses = None, 0
+        self._link_applied = None
         self.shown = set()  # sources with a viewer out there, connected or retrying
         self.browser_flags = list(BROWSER_FLAGS)
         self.browser_lock = threading.Lock()
@@ -760,6 +772,7 @@ class MacView:
                     continue
                 if self.tunnel_up():
                     self._follow_best_route(tick)
+                    self._apply_link_cap()
                     continue
                 if tick % 5:
                     continue
@@ -770,6 +783,22 @@ class MacView:
 
         self.supervisor = threading.Thread(target=loop, daemon=True)
         self.supervisor.start()
+
+    def _apply_link_cap(self):
+        """Tell the agent the bitrate ceiling for the route in use, whenever the
+        route or the agent process changes: none on USB-C, and
+        FRAME_MACVIEW_WIFI_MBPS (default 12) on the network. Worn Wi-Fi carried
+        only ~20 Mbit/s Mac -> Frame (2026-10-19), and the quality presets allow
+        up to 60, so video and animations queued frames for 50-300 ms."""
+        key = (self.route, id(self.agent))
+        if key == self._link_applied:
+            return
+        mbps = 0 if self.route == "usb" else wifi_mbps()
+        try:
+            self.call("/link", method="POST", maxbps=str(int(mbps * 1_000_000)))
+            self._link_applied = key
+        except MacViewError:
+            pass  # an older agent without /link, or not answering yet; retried next second
 
     def _usb_reachable(self):
         """Whether the Frame's USB-C address still answers (cheap: no ssh)."""
