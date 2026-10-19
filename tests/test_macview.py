@@ -1269,7 +1269,11 @@ class WorkspaceLifecycle(unittest.TestCase):
                 self.assertEqual(query["t"], ["one-use"])
                 self.assertEqual(query["max"], ["4096"])
                 self.assertEqual(args[5:7], ["3840", "2160"])
-                self.assertEqual(args[-2:], ["v4l2", "gpu"])
+                # Gaze-directed detail is requested by default (the agent applies
+                # it only on capped links); FRAME_WORKSPACE_GAZE=0 leaves it out.
+                self.assertEqual(args[-3:], ["v4l2", "gpu", "gaze"])
+                with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_GAZE": "0"}):
+                    self.assertEqual(frame_macview.workspace_gaze(), "0")
                 self.assertNotIn("--remote-debugging-port=9999", args)
                 self.assertEqual(calls[0][1]["stdin"], frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text())
                 self.assertEqual(shown["panel"], "com.frame-workspace.native.1000.workspace")

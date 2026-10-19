@@ -116,6 +116,13 @@ final class Session {
     private let foveation: Bool
     private let foveationAtlas: Bool
     private let foveationDirect: Bool
+    /// The viewer sends gaze for gaze-directed detail (GazeSharpen.swift) on an
+    /// ordinary full-frame stream.
+    private let gazeSharpen: Bool
+    private var sharpener: GazeSharpener?
+    private var sharpenFailed = false
+    private var sharpenedFrames = 0
+    private var sharpenMs = 0.0, sharpenMaxMs = 0.0
     private let gazeSession = UUID().uuidString
     private var gaze = FoveationGaze()
     private var packer: FoveationPacker?
@@ -142,8 +149,10 @@ final class Session {
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
-         reconnectKey: String, activity: StreamActivityRegistry, foveation: Bool = false, foveationAtlas: Bool = false, foveationDirect: Bool = false) {
+         reconnectKey: String, activity: StreamActivityRegistry, foveation: Bool = false, foveationAtlas: Bool = false, foveationDirect: Bool = false,
+         gazeSharpen: Bool = false) {
         self.foveationDirect = foveation && foveationDirect
+        self.gazeSharpen = gazeSharpen && !foveation
         self.foveation = foveation
         self.foveationAtlas = foveation && foveationAtlas
         self.id = id
@@ -246,6 +255,24 @@ final class Session {
                 }
                 if self.packingFailed { chosen = .full(chosen.width, chosen.height) }
                 layout = chosen
+            } else if self.gazeSharpen, GazeSharpener.wanted, !self.sharpenFailed {
+                self.lock.lock()
+                let point = self.gaze.point(now: nowUs())
+                self.lock.unlock()
+                if let point {
+                    do {
+                        if self.sharpener == nil { self.sharpener = try GazeSharpener() }
+                        let started = nowUs()
+                        buffer = try self.sharpener!.apply(p.pb, u: point.u, v: point.v)
+                        let took = Double(nowUs() - started) / 1000
+                        self.sharpenedFrames += 1
+                        self.sharpenMs = took
+                        self.sharpenMaxMs = max(self.sharpenMaxMs, took)
+                    } catch {
+                        // Sharp everywhere from now on; the stream itself is unaffected.
+                        self.sharpenFailed = true
+                    }
+                }
             }
             self.submittedLayout = layout
             if !self.encoder.encode(buffer, pts: p.pts, seq: seq, layout: layout) { self.finished() }
@@ -341,6 +368,7 @@ final class Session {
         // Reconnect with this (kept in the page's memory, never on a command line).
         var hello: [String: Any] = ["t": "hello", "r": reconnectKey]
         if foveation { hello["foveation"] = 1; hello["gazeSession"] = gazeSession }
+        if gazeSharpen { hello["gaze"] = 1; hello["gazeSession"] = gazeSession }
         if foveationAtlas { hello["atlas"] = 1 }
         // Direct capability is advertised only after both actual SCK streams
         // have supplied validated buffers and the first composition succeeded.
@@ -520,6 +548,15 @@ final class Session {
     // Authenticated HTTP stats only; no diagnostics are added to viewer UI.
     func streamSummary() -> [String: Any] {
         var result = stats.summary()
+        if gazeSharpen {
+            lock.lock()
+            var g = gaze.diagnostics
+            g["sharpen"] = ["mode": GazeSharpener.mode, "applying": GazeSharpener.wanted && !sharpenFailed,
+                            "failed": sharpenFailed, "frames": sharpenedFrames,
+                            "lastMs": sharpenMs, "maxMs": sharpenMaxMs]
+            result["gaze"] = g
+            lock.unlock()
+        }
         if foveation {
             lock.lock(); result["gaze"] = gaze.diagnostics; lock.unlock()
         }
@@ -534,7 +571,7 @@ final class Session {
         guard !isStopped, let d = text.data(using: .utf8),
               let m = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let t = m["t"] as? String else { return }
         if t == "gaze" {
-            guard foveation else { return }
+            guard foveation || gazeSharpen else { return }
             lock.lock(); gaze.receive(m, session: gazeSession, now: nowUs(), allowDiagnostic: allowDiagnosticGaze); lock.unlock()
             return
         }
@@ -758,11 +795,15 @@ final class Agent {
         case ("POST", "/link"):
             // ?maxbps=N: a ceiling for every H.264 stream on the current route
             // (0 removes it). Applied by each session within its next 100 ms tick.
-            guard let bps = Int(req.query["maxbps"] ?? ""), bps >= 0, bps <= 1_000_000_000 else {
-                return c.respond(400, text: "maxbps=N")
+            if let mode = req.query["sharpen"] {
+                guard GazeSharpener.modes.contains(mode) else { return c.respond(400, text: "sharpen=auto|on|off") }
+                GazeSharpener.mode = mode
             }
-            Encoder.linkCap = bps
-            c.respond(json: ["maxbps": bps])
+            if let raw = req.query["maxbps"] {
+                guard let bps = Int(raw), bps >= 0, bps <= 1_000_000_000 else { return c.respond(400, text: "maxbps=N") }
+                Encoder.linkCap = bps
+            }
+            c.respond(json: ["maxbps": Encoder.linkCap, "sharpen": GazeSharpener.mode])
         case ("POST", "/bench"):
             lock.lock()
             let list = sessions.values.filter { $0.source.key == req.query["src"] }
@@ -815,7 +856,8 @@ final class Agent {
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
                               bitsPerPixel: bpp, reconnectKey: key, activity: activity,
                               foveation: foveation,
-                              foveationAtlas: !wantsDirect && req.query["atlas"] == "1", foveationDirect: wantsDirect)
+                              foveationAtlas: !wantsDirect && req.query["atlas"] == "1", foveationDirect: wantsDirect,
+                              gazeSharpen: codec == .h264 && req.query["gaze"] == "1")
         nextId += 1
         sessions[session.id] = session
         lock.unlock()

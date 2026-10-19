@@ -202,7 +202,8 @@ struct Pipeline {
     gazeSample = {u, v, sampled, valid && std::isfinite(u) && std::isfinite(v) &&
         u >= 0 && u <= 1 && v >= 0 && v <= 1 && std::isfinite(sampled), diagnostic};
   }
-  std::atomic<bool> foveationNegotiated{false}, atlasNegotiated{false}, directNegotiated{false};
+  std::atomic<bool> foveationNegotiated{false}, atlasNegotiated{false}, directNegotiated{false},
+      gazeNegotiated{false};
   bool needKey = true;
   // Absorb transport bursts without throwing away an H.264 reference chain.
   // Frame Wi-Fi delivery gaps reached ~210 ms at p95 (about 13 packets at
@@ -317,7 +318,7 @@ struct Pipeline {
       try {
         WebSocket ws(stop);
         bool resumed = !reconnect.empty();
-        if (endpoint.foveation) {
+        if (endpoint.sendsGaze()) {
           ws.idlePollMs = 8;
           ws.serviceIdleWhileReading = true;
         }
@@ -327,6 +328,7 @@ struct Pipeline {
         connectionOpened(resumed);
         clockValid = false;
         foveationNegotiated = false; atlasNegotiated = false; directNegotiated = false;
+        gazeNegotiated = false;
         std::string gazeSession;
         int directWidth = 0, directHeight = 0;
         FoveationClock gazeClock;
@@ -335,7 +337,7 @@ struct Pipeline {
         bool lastSentValid = false;
         ws.idle = [&] {
           double now = nowMs();
-          if (endpoint.foveation) {
+          if (endpoint.sendsGaze()) {
             double estimate = 0;
             const bool valid = gazeClock.estimate(now, estimate);
             if (valid) clockOffset = estimate;
@@ -353,7 +355,7 @@ struct Pipeline {
           }
           if (focus.exchange(false))
             ws.sendText("{\"t\":\"focus\"}");
-          if (directNegotiated && clockValid && now - lastGaze >= 16) {
+          if ((directNegotiated || gazeNegotiated) && clockValid && now - lastGaze >= 16) {
             GazeSample g;
             { std::lock_guard<std::mutex> l(outMutex); g = gazeSample; }
             const bool valid = g.valid && now >= g.sampled && now - g.sampled <= 100;
@@ -413,6 +415,17 @@ struct Pipeline {
                 fprintf(stderr, "[native] companion does not support direct foveated capture\n");
                 break;
               }
+              if (endpoint.gaze && !endpoint.foveation) {
+                // Optional: a companion without gaze-directed detail simply
+                // streams full detail, so this is not an error.
+                auto nonce = str(j, "gazeSession");
+                const bool offered = json_object_is_type(field(j, "gaze"), json_type_int) && num(j, "gaze") == 1;
+                if (offered && !nonce.empty() && nonce.size() <= 64 &&
+                    nonce.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") == std::string::npos) {
+                  gazeSession = nonce;
+                  gazeNegotiated = true;
+                }
+              }
               if (endpoint.foveation) {
                 auto nonce = str(j, "gazeSession");
                 if (nonce.empty() || nonce.size() > 64 ||
@@ -428,7 +441,7 @@ struct Pipeline {
               double c = num(j, "c") / 1000, a = num(j, "a") / 1000;
               if (c > 0 && a > 0 && receivedAt - c >= 0 &&
                   receivedAt - c < 1000) {
-                if (endpoint.foveation) {
+                if (endpoint.sendsGaze()) {
                   gazeClock.observe(c, a, receivedAt);
                   double estimate = 0;
                   const bool valid = gazeClock.estimate(receivedAt, estimate);
@@ -458,7 +471,7 @@ struct Pipeline {
       } catch (const std::exception &) {
         connected = false;
         clockValid = false;
-        foveationNegotiated = false; atlasNegotiated = false; directNegotiated = false;
+        foveationNegotiated = false; atlasNegotiated = false; directNegotiated = false; gazeNegotiated = false;
         if (stop)
           break;
         ++errors;

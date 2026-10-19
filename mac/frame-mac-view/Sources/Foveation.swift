@@ -115,6 +115,14 @@ struct FoveationGaze {
         nativeSampleClock = usesNativeClock
         lastStamp = stamp; sample = (u, v, Int64(t), stamp); count("accepted")
     }
+    /// The current gaze point for gaze-directed detail, or nil. Losing gaze
+    /// only means "sharp everywhere" there and costs no decoder reset, so this
+    /// applies the freshness checks without the packed layouts' 2 s re-entry
+    /// cooldown (a blink would otherwise disable it for seconds).
+    func point(now: Int64) -> (u: Double, v: Double)? {
+        guard let s = sample, now - s.time <= 150_000, now >= s.time - 50_000 else { return nil }
+        return (s.u, s.v)
+    }
     mutating func layout(width: Int, height: Int, now: Int64, atlas: Bool = false, direct: Bool = false) -> FoveationLayout {
         let fallback: FoveationLayout = direct ? .makeDirect(width, height, u: 0.5, v: 0.5) : .full(width, height)
         guard let s = sample else { return fallback }

@@ -68,7 +68,8 @@ def quality_settings(name, workspace=False):
             workspace_decoder()  # fail before creating the owned display
             workspace_conversion()  # keep backend selection explicit
             workspace_foveation()
-            workspace_diagnostic_gaze()
+            workspace_gaze()
+            workspace_diagnostic_gaze(gaze=workspace_foveation() != "1" and workspace_gaze() == "1")
         if backend == "native" and settings["codec"] != "h264":
             raise MacViewError("The native Workspace viewer needs H.264. Choose Sharp, Balanced or Light.")
     if workspace and name == "sharp":
@@ -100,12 +101,21 @@ def workspace_foveation():
     return value
 
 
-def workspace_diagnostic_gaze():
+def workspace_gaze():
+    """Gaze-directed detail for the native Workspace (on by default)."""
+    value = os.environ.get("FRAME_WORKSPACE_GAZE", "1")
+    if value not in ("0", "1"):
+        raise MacViewError("FRAME_WORKSPACE_GAZE must be 0 or 1.")
+    return value
+
+
+def workspace_diagnostic_gaze(gaze=False):
     value = os.environ.get("FRAME_WORKSPACE_DIAGNOSTIC_GAZE", "")
     if not value:
         return None
-    if workspace_foveation() != "1" or os.environ.get("FRAME_MAC_VIEW_DIAGNOSTIC_GAZE") != "1":
-        raise MacViewError("Diagnostic gaze requires FRAME_WORKSPACE_FOVEATION=1 and FRAME_MAC_VIEW_DIAGNOSTIC_GAZE=1.")
+    if (workspace_foveation() != "1" and not gaze) or os.environ.get("FRAME_MAC_VIEW_DIAGNOSTIC_GAZE") != "1":
+        raise MacViewError("Diagnostic gaze requires FRAME_WORKSPACE_FOVEATION=1 or FRAME_WORKSPACE_GAZE=1, "
+                           "and FRAME_MAC_VIEW_DIAGNOSTIC_GAZE=1.")
     if value == "scan":
         return value
     try:
@@ -800,6 +810,12 @@ class MacView:
         except MacViewError:
             pass  # an older agent without /link, or not answering yet; retried next second
 
+    def set_gaze_sharpen(self, mode):
+        """Diagnostic: auto (Wi-Fi only), on or off, live on the agent."""
+        if mode not in ("auto", "on", "off"):
+            raise MacViewError("Gaze sharpening must be auto, on or off.")
+        return self.call("/link", method="POST", sharpen=mode)
+
     def _usb_reachable(self):
         """Whether the Frame's USB-C address still answers (cheap: no ssh)."""
         if not self.usb_ip:
@@ -910,6 +926,13 @@ class MacView:
             if native and workspace_foveation() == "1":
                 flags.append("1")
                 diagnostic = workspace_diagnostic_gaze()
+                if diagnostic:
+                    flags.append(diagnostic)
+            elif native and workspace_gaze() == "1":
+                # Gaze-directed detail: the agent softens away from gaze only
+                # while the link is capped (Wi-Fi) unless told otherwise.
+                flags.append("gaze")
+                diagnostic = workspace_diagnostic_gaze(gaze=True)
                 if diagnostic:
                     flags.append(diagnostic)
             script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *flags))

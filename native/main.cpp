@@ -408,7 +408,7 @@ int main(int argc, char **argv) {
       exitReason = "running";
   std::vector<std::string> inspectFiles;
   bool test = false, noVR = false, testYuvOracle = false;
-  bool foveation = false, diagnosticGaze = false, diagnosticScan = false;
+  bool foveation = false, gaze = false, diagnosticGaze = false, diagnosticScan = false;
   bool pocRewrite = !std::getenv("FRAME_WORKSPACE_V4L2_POC_REWRITE") ||
                     std::string(std::getenv("FRAME_WORKSPACE_V4L2_POC_REWRITE")) != "off";
   double diagnosticU = 0, diagnosticV = 0;
@@ -462,6 +462,8 @@ int main(int argc, char **argv) {
       }
       else if (a == "--foveation")
         foveation = true;
+      else if (a == "--gaze")
+        gaze = true;
       else if (a == "--diagnostic-gaze") {
         auto uv = value();
         if (uv == "scan") { diagnosticGaze = true; diagnosticScan = true; continue; }
@@ -518,7 +520,7 @@ int main(int argc, char **argv) {
         std::cout
             << "frame-workspace-native --url-file PATH [--control-file PATH] "
                "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] "
-               "[--decoder software|v4l2] [--conversion cpu|gpu] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
+               "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
                "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | "
@@ -532,7 +534,8 @@ int main(int argc, char **argv) {
       } else
         throw std::runtime_error("unknown option");
     }
-    if (diagnosticGaze && !foveation) throw std::runtime_error("diagnostic gaze requires --foveation");
+    if (diagnosticGaze && !foveation && !gaze) throw std::runtime_error("diagnostic gaze requires --foveation or --gaze");
+    if (foveation && gaze) throw std::runtime_error("--gaze and --foveation are alternatives");
     if (diagnosticGaze) fprintf(stderr, "[native] SYNTHETIC diagnostic gaze enabled; not eye tracking\n");
     if (key.empty() || key.size() > 128 ||
         key.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"
@@ -585,7 +588,8 @@ int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     av_log_set_level(AV_LOG_ERROR);
     endpoint.foveation = foveation;
-    Overlay overlay(noVR, key, foveation && !diagnosticGaze);
+    endpoint.gaze = gaze;
+    Overlay overlay(noVR, key, (foveation || gaze) && !diagnosticGaze);
     overlay.handoff = handoffMode;
     overlay.present = presentMode;
     bool persisted = loadPlacement(poseFile, overlay.placement);
@@ -604,7 +608,7 @@ int main(int argc, char **argv) {
     // Destruction order is producer, pipeline, overlay, including exceptions.
     // No gaze acquisition or delivery depends on the render loop making progress.
     GazeProducer gazeProducer;
-    if (foveation) {
+    if (foveation || gaze) {
       gazeProducer.start([&](double sampled) {
         if (diagnosticGaze)
           return diagnosticGazeReading(sampled, start, diagnosticScan, diagnosticU, diagnosticV);
@@ -723,6 +727,7 @@ int main(int argc, char **argv) {
              ",\"gazeState\":\"" + gazeProducer.status() + "\"" +
              ",\"foveationRequested\":" + (foveation ? "true" : "false") +
              ",\"foveationNegotiated\":" + (pipe.foveationNegotiated ? "true" : "false") +
+             ",\"gazeNegotiated\":" + (pipe.gazeNegotiated ? "true" : "false") +
              ",\"diagnosticGaze\":" + (diagnosticGaze ? "true" : "false") +
              ",\"conversionRequested\":\"" + conversionMode + "\"" +
              ",\"conversionActive\":\"" + pipe.conversionActive.load() +

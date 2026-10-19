@@ -92,10 +92,12 @@ struct Endpoint {
   int port = 0, max = 4096, fps = 30;
   double bpp = .14;
   bool foveation = false;
+  bool gaze = false; // gaze-directed detail on an ordinary full-frame stream
+  bool sendsGaze() const { return foveation || gaze; }
   std::string path(const std::string &reconnect) const {
     return "/stream?src=" + quote(source) +
            "&codec=h264&max=" + std::to_string(max) +
-           (foveation ? "&foveation=1&direct=1" : "") +
+           (foveation ? "&foveation=1&direct=1" : gaze ? "&gaze=1" : "") +
            "&fps=" + std::to_string(fps) + "&bpp=" + std::to_string(bpp) +
            (reconnect.empty() ? "&t=" + quote(ticket)
                               : "&r=" + quote(reconnect));
