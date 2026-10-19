@@ -496,6 +496,9 @@ final class TestSource: CaptureSource {
     }
 
     private func draw() {
+        // Explicit diagnostic only: exercise gaze-driven repacking when the
+        // production Session receives no subsequent capture callbacks.
+        if n > 0 && ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_TEST_STATIC"] == "1" { return }
         guard let pool else { return }
         var out: CVPixelBuffer?
         CVPixelBufferPoolCreatePixelBuffer(nil, pool, &out)

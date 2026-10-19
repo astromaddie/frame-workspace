@@ -231,15 +231,38 @@ PY
     exit $?
     ;;
   start) ;;
-  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] | focus | adjust WIDTH DISTANCE | curvature VALUE' >&2; exit 2 ;;
+  *) echo 'usage: workspace-native-on-frame.sh start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1 foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | curvature VALUE' >&2; exit 2 ;;
 esac
-[ "$#" -ge 5 ] && [ "$#" -le 7 ] || exit 2
+[ "$#" -ge 5 ] && [ "$#" -le 9 ] || exit 2
 url=$2
 w=$3
 h=$4
 tag=$5
 decoder=${6:-software}
 case "$decoder" in software|v4l2) ;; *) echo 'Decoder must be software or v4l2.' >&2; exit 2 ;; esac
+foveation=${8:-0}
+case "$foveation" in 0|1) ;; *) echo 'Foveation must be 0 or 1.' >&2; exit 2 ;; esac
+foveation_args=()
+if [ "$foveation" = 1 ]; then foveation_args=(--foveation); fi
+diagnostic_gaze=${9:-}
+if [ -n "$diagnostic_gaze" ]; then
+  [ "$foveation" = 1 ] || { echo 'Diagnostic gaze requires foveation.' >&2; exit 2; }
+  diagnostic_gaze=$(python3 - "$diagnostic_gaze" <<'PYGAZE'
+import math, sys
+value = sys.argv[1]
+if value != 'scan':
+    try:
+        uv = list(map(float, value.split(',')))
+        assert len(uv) == 2 and all(math.isfinite(v) and 0 <= v <= 1 for v in uv)
+    except (ValueError, AssertionError):
+        raise SystemExit('Diagnostic gaze must be scan or finite U,V in [0,1].')
+    print(f'{uv[0]:.17g},{uv[1]:.17g}')
+else:
+    print('scan')
+PYGAZE
+  )
+  foveation_args+=(--diagnostic-gaze "$diagnostic_gaze")
+fi
 conversion=${7:-cpu}
 case "$conversion" in cpu|gpu) ;; *) echo 'Conversion must be cpu or gpu.' >&2; exit 2 ;; esac
 case "$w:$h" in *[!0-9:]*) exit 2 ;; esac
@@ -258,7 +281,12 @@ binary="$install/frame-workspace-native"
 # Same reserved service as the browser route. Confirm complete shutdown before
 # replacing it, including an orphan left by a previous companion process.
 stopped() {
-  load=$(systemctl --user show "$unit" --property=LoadState --value 2>/dev/null) || return 1
+  # systemd returns nonzero for an unloaded transient unit even though its
+  # LoadState is explicitly not-found. That is a confirmed stopped owner.
+  load=$(systemctl --user show "$unit" --property=LoadState --value 2>/dev/null) || {
+    [ "$load" = not-found ] && return 0
+    return 1
+  }
   [ "$load" = not-found ] && return 0
   active=$(systemctl --user show "$unit" --property=ActiveState --value) || return 1
   pid=$(systemctl --user show "$unit" --property=MainPID --value) || return 1
@@ -287,7 +315,7 @@ if ! systemd-run --user --unit="$unit" --description='Frame Workspace native vie
   --setenv=DISPLAY=:0 --setenv=LC_ALL=C.UTF-8 \
   "$binary" --url-file "$secret" --overlay-key "$key" --control-file "$control" \
     --state-file "$state" --pose-file "$pose" --decoder "$decoder" \
-    --conversion "$conversion" >/dev/null 2>&1; then
+    --conversion "$conversion" "${foveation_args[@]}" >/dev/null 2>&1; then
   echo 'Could not start the native Workspace service.' >&2
   exit 1
 fi

@@ -67,6 +67,8 @@ def quality_settings(name, workspace=False):
         if backend == "native":
             workspace_decoder()  # fail before creating the owned display
             workspace_conversion()  # keep backend selection explicit
+            workspace_foveation()
+            workspace_diagnostic_gaze()
         if backend == "native" and settings["codec"] != "h264":
             raise MacViewError("The native Workspace viewer needs H.264. Choose Sharp, Balanced or Light.")
     if workspace and name == "sharp":
@@ -89,6 +91,30 @@ def workspace_decoder():
     if decoder not in ("software", "v4l2"):
         raise MacViewError("FRAME_WORKSPACE_DECODER must be software or v4l2.")
     return decoder
+
+
+def workspace_foveation():
+    value = os.environ.get("FRAME_WORKSPACE_FOVEATION", "0")
+    if value not in ("0", "1"):
+        raise MacViewError("FRAME_WORKSPACE_FOVEATION must be 0 or 1.")
+    return value
+
+
+def workspace_diagnostic_gaze():
+    value = os.environ.get("FRAME_WORKSPACE_DIAGNOSTIC_GAZE", "")
+    if not value:
+        return None
+    if workspace_foveation() != "1" or os.environ.get("FRAME_MAC_VIEW_DIAGNOSTIC_GAZE") != "1":
+        raise MacViewError("Diagnostic gaze requires FRAME_WORKSPACE_FOVEATION=1 and FRAME_MAC_VIEW_DIAGNOSTIC_GAZE=1.")
+    if value == "scan":
+        return value
+    try:
+        uv = [float(part) for part in value.split(",")]
+        if len(uv) != 2 or any(not math.isfinite(v) or not 0 <= v <= 1 for v in uv):
+            raise ValueError()
+    except ValueError:
+        raise MacViewError("FRAME_WORKSPACE_DIAGNOSTIC_GAZE must be scan or finite U,V in [0,1].") from None
+    return f"{uv[0]:.17g},{uv[1]:.17g}"
 
 
 def workspace_conversion():
@@ -774,6 +800,11 @@ class MacView:
             native = workspace_viewer_backend() == "native"
             script = WORKSPACE_NATIVE_SCRIPT if native else WORKSPACE_VIEWER_SCRIPT
             flags = [workspace_decoder(), workspace_conversion()] if native else self.browser_flags
+            if native and workspace_foveation() == "1":
+                flags.append("1")
+                diagnostic = workspace_diagnostic_gaze()
+                if diagnostic:
+                    flags.append(diagnostic)
             script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *flags))
             out = self.run("bash -s -- " + script_args, stdin=script.read_text(encoding="utf-8"),
                            timeout=60)

@@ -15,6 +15,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,6 +42,8 @@ def main():
     bench = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(bench)
     samples = []
+    mac_frames = {}
+    mac_start = mac_end = None
     fixture_size = None
     fixture_rate = None
     with tempfile.TemporaryDirectory(prefix="frame-workspace-native-motion-") as profile:
@@ -59,13 +62,41 @@ def main():
                 raise RuntimeError("The owned fixture is too small for this Workspace; check its display placement.")
             cadence = re.search(r"(\d+) fps", owned[0].get("title", ""))
             fixture_rate = int(cadence.group(1)) if cadence else None
+            streams = client.request("/api/macview")["streams"]
+            sources = [s for s in streams if s.get("title") == "Frame Workspace"]
+            if len(sources) != 1:
+                raise RuntimeError("Expected one owned Workspace stream.")
+            stream_id = sources[0]["id"]
+            def mac_snapshot(since=0):
+                response = client.request("/api/macview", {"action": "stream_stats", "id": stream_id,
+                                                          "since": since, "settle": 0})
+                stream = next(s for s in response["streams"] if s["id"] == stream_id)
+                return response["now"], stream
+            mac_start = mac_snapshot()
+            first_seq = max((r["s"] for r in mac_start[1]["frames"]), default=0)
+            last_seq = first_seq
+            collector_stop = threading.Event()
+            collector_errors = []
+            def collect():
+                nonlocal last_seq
+                try:
+                    while not collector_stop.wait(1):
+                        _, stream = mac_snapshot(max(first_seq, last_seq - 120))
+                        for row in stream["frames"]:
+                            mac_frames[row["s"]] = row
+                            last_seq = max(last_seq, row["s"])
+                except Exception as error:
+                    collector_errors.append(error)
+            collector = threading.Thread(target=collect, daemon=True)
+            collector.start()
             # Deliberately omit placement, credentials and window inventories.
             remote = """import json,pathlib,time
 p=pathlib.Path('/run/user/1000/frame-workspace/state.json')
 for _ in range(COUNT):
  s=json.loads(p.read_text())
  s={k:v for k,v in s.items() if k.endswith('Ms') or k in (
-  'ready','connected','textureWidth','textureHeight','received','decoded','uploaded',
+  'ready','connected','textureWidth','textureHeight','encodedWidth','encodedHeight',
+  'foveationActive','foveationNegotiated','diagnosticGaze','gazeState','received','decoded','uploaded',
   'errors','networkErrors','serverErrors','decoderSendErrors','decoderReceiveErrors',
   'decoderFatalErrors','submitErrors','droppedEncoded','droppedDecoded','decoderActive','decoderCodec',
   'queueOverflows','packetQueueLimit','packetQueueHighWater','emptyReceives',
@@ -79,9 +110,23 @@ for _ in range(COUNT):
  print(json.dumps(s),flush=True)
  time.sleep(1)
 """.replace("COUNT", str(args.seconds + 1))
-            result = subprocess.run(
-                ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", args.frame, "python3 -"],
-                input=remote, text=True, capture_output=True, timeout=args.seconds + 35, check=True)
+            try:
+                result = subprocess.run(
+                    ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", args.frame, "python3 -"],
+                    input=remote, text=True, capture_output=True, timeout=args.seconds + 35, check=True)
+            finally:
+                collector_stop.set()
+                collector.join(timeout=15)
+            if collector.is_alive() or collector_errors:
+                raise RuntimeError("Could not collect Mac stream statistics.") from (collector_errors or [None])[0]
+            mac_end = mac_snapshot(max(first_seq, last_seq - 120))
+            for row in mac_end[1]["frames"]:
+                mac_frames[row["s"]] = row
+            # Let asynchronous frame-drawn reports settle without extending the
+            # measurement window or retaining credentials/raw frame records.
+            time.sleep(1)
+            for row in mac_snapshot(max(first_seq, last_seq - 120))[1]["frames"]:
+                mac_frames[row["s"]] = row
             samples = [json.loads(line) for line in result.stdout.splitlines()]
         finally:
             fixture.terminate()
@@ -132,6 +177,10 @@ for _ in range(COUNT):
               "uploadedFps": delta["uploaded"] / duration,
               "counters": delta, "timings": timings,
               "textureSizes": sorted({(s["textureWidth"], s["textureHeight"]) for s in samples}),
+              "encodedSizes": sorted({(s.get("encodedWidth"), s.get("encodedHeight")) for s in samples}),
+              "foveationStates": sorted({s.get("foveationActive", False) for s in samples}),
+              "gazeStates": sorted({s.get("gazeState", "unknown") for s in samples}),
+              "diagnosticGaze": last.get("diagnosticGaze", False),
               "decoder": last.get("decoderCodec"),
               "decoderPixelFormat": last.get("decoderPixelFormat"),
               "decoderColorSpace": last.get("decoderColorSpace"),
@@ -145,6 +194,40 @@ for _ in range(COUNT):
               "packetQueueHighWater": last.get("packetQueueHighWater"),
               "emptyReceiveMaxMs": last.get("emptyReceiveMaxMs"),
               "note": "Stage percentiles summarize one-second observations, not every frame."}
+    start_us, start_stream = mac_start
+    end_us, end_stream = mac_end
+    mac_duration = (end_us - start_us) / 1_000_000
+    rows = sorted((r for r in mac_frames.values() if start_us <= r["snd"] < end_us), key=lambda r: r["s"])
+    seen = {(r["cap"], r["arr"]) for r in start_stream["frames"]}
+    unique, repacks = [], []
+    for row in rows:
+        capture = (row["cap"], row["arr"])
+        (repacks if capture in seen else unique).append(row)
+        seen.add(capture)
+    # A capture's first sent copy can be dropped while a later gaze repack is
+    # drawn. Count its first actual draw exactly once across all sent copies.
+    shown = {}
+    for row in sorted((r for r in rows if r["drw"] > 0), key=lambda r: r["drw"]):
+        if row["cap"] >= start_us:
+            shown.setdefault((row["cap"], row["arr"]), row)
+    def latency(records):
+        values = sorted((r["drw"] - r["cap"]) / 1000 for r in records
+                        if r["cap"] >= start_us and r["drw"] >= r["cap"] > 0)
+        return {"n": len(values), **({"p50": statistics.median(values),
+                 "p95": values[round(.95 * (len(values) - 1))]} if values else {})}
+    report["mac"] = {"duration": mac_duration,
+                     "desktopCaptureFps": (end_stream["captured"] - start_stream["captured"]) / mac_duration,
+                     "uniqueSentCaptureFps": len(unique) / mac_duration,
+                     "uniqueDrawnCaptureFps": len(shown) / mac_duration,
+                     "sentFps": len(rows) / mac_duration,
+                     "repeatedCaptureSubmissions": len(repacks),
+                     "h264Mbps": sum(r["b"] for r in rows) * 8 / mac_duration / 1_000_000,
+                     "contentToDrawMs": latency(shown.values()), "repeatContentAgeMs": latency(repacks),
+                     "gazeCounters": {k: v - start_stream.get("summary", {}).get("gaze", {}).get("counts", {}).get(k, 0)
+                                      for k, v in end_stream.get("summary", {}).get("gaze", {}).get("counts", {}).items()},
+                     "note": "Mac host-clock window brackets the native sampling window; H264 payload only. "
+                             "Unique captures are separate from repeats caused by gaze or backlog. "
+                             "Clock-synchronized cap-to-draw excludes compositor and optical latency."}
     args.out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report))
 

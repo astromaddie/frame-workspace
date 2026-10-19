@@ -97,6 +97,7 @@ final class Session {
     let controller: RateController
     private var appliedScale = 1.0
     private var appliedCaptureFps: Int
+    private let testCaptureFps: Int?
     private var appliedPriorityRole: String?
     private var lastSubmit: Int64 = 0
     private var paceScheduled = false
@@ -110,6 +111,13 @@ final class Session {
         var echo: UInt32  // the input this picture is the first reply to
     }
     private var last: Picture?
+    private let foveation: Bool
+    private let foveationAtlas: Bool
+    private let gazeSession = UUID().uuidString
+    private var gaze = FoveationGaze()
+    private var packer: FoveationPacker?
+    private var packingFailed = false
+    private let allowDiagnosticGaze = ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_DIAGNOSTIC_GAZE"] == "1"
     private var skipped = false
     private var stopped = false
     private var inFlight = 0
@@ -117,6 +125,8 @@ final class Session {
     /// next picture composited after `after` is tagged with it.
     private var pendingEcho: (id: UInt32, after: Int64)?
     private var statsTimer: DispatchSourceTimer?
+    private var gazeTimer: DispatchSourceTimer?
+    private var submittedLayout: FoveationLayout?
     /// Frames already queued for the network; beyond this, or with two frames
     /// already in the encoder, new frames are skipped (before encoding, so no
     /// reference frame goes missing) and the newest picture is sent once
@@ -129,7 +139,9 @@ final class Session {
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
-         reconnectKey: String, activity: StreamActivityRegistry) {
+         reconnectKey: String, activity: StreamActivityRegistry, foveation: Bool = false, foveationAtlas: Bool = false) {
+        self.foveation = foveation
+        self.foveationAtlas = foveation && foveationAtlas
         self.id = id
         self.source = source
         self.capture = capture
@@ -137,7 +149,11 @@ final class Session {
         self.codec = codec
         self.reconnectKey = reconnectKey
         self.activity = activity
-        appliedCaptureFps = fps
+        // Diagnostic TestSource only: model a source cadence below the target
+        // without changing SCK/window/separate capture or the pacing budget.
+        let testRate = Int(ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_TEST_CAPTURE_FPS"] ?? "")
+        testCaptureFps = source == .test && testRate.map { (1...fps).contains($0) } == true ? testRate : nil
+        appliedCaptureFps = testCaptureFps ?? fps
         encoder = Encoder(codec: codec, fps: fps, bitsPerPixel: bitsPerPixel)
         controller = RateController(maxFps: fps, sessionID: id, activity: activity)
         activity.register(id)
@@ -149,8 +165,9 @@ final class Session {
     /// Call with `lock` held.
     private func paced(now: Int64) -> Bool {
         let fps = controller.fps
-        guard fps < controller.maxFps, lastSubmit > 0 else { return false }
-        let interval = Int64(1_000_000 / fps), due = lastSubmit + interval * 9 / 10
+        guard (foveation || fps < controller.maxFps), lastSubmit > 0 else { return false }
+        let interval = Int64(1_000_000 / fps)
+        let due = lastSubmit + (foveation ? interval : interval * 9 / 10)
         guard now < due else { return false }
         if !paceScheduled {
             paceScheduled = true
@@ -180,7 +197,12 @@ final class Session {
         last = picture
         let busy = stopped || ws.pendingBytes > maxPending || inFlight >= Session.maxInFlight
             || paced(now: arrived) || !controller.maySend(now: arrived)
-        if busy { skipped = true } else { inFlight += 1; last?.echo = 0; lastSubmit = arrived }
+        if busy { skipped = true } else {
+            // This fresh picture replaces any pending foveated refresh; its
+            // completion must not resend it because of an older skipped flag.
+            if foveation { skipped = false }
+            inFlight += 1; last?.echo = 0; lastSubmit = arrived
+        }
         lock.unlock()
         if busy { stats.withLock { stats.skipped += 1 } } else { submit(picture) }
     }
@@ -196,7 +218,26 @@ final class Session {
             r.encodeStart = nowUs()
             let seq = self.stats.newFrame(r)
             if p.echo != 0 { self.stats.updateInput(p.echo) { $0.frame = seq; $0.capture = p.capture } }
-            if !self.encoder.encode(p.pb, pts: p.pts, seq: seq) { self.finished() }
+            var buffer = p.pb
+            var layout: FoveationLayout?
+            if self.foveation {
+                self.lock.lock()
+                var chosen = self.gaze.layout(width: CVPixelBufferGetWidth(p.pb), height: CVPixelBufferGetHeight(p.pb), now: nowUs(), atlas: self.foveationAtlas)
+                self.lock.unlock()
+                if chosen.warped && !self.packingFailed {
+                    do {
+                        if self.packer == nil { self.packer = try FoveationPacker() }
+                        buffer = try self.packer!.pack(p.pb, layout: chosen)
+                    } catch {
+                        self.packingFailed = true
+                        self.ws.sendJSON(["t": "foveation-status", "state": "full-quality", "reason": "packing-unavailable"])
+                    }
+                }
+                if self.packingFailed { chosen = .full(chosen.width, chosen.height) }
+                layout = chosen
+            }
+            self.submittedLayout = layout
+            if !self.encoder.encode(buffer, pts: p.pts, seq: seq, layout: layout) { self.finished() }
         }
     }
 
@@ -231,16 +272,16 @@ final class Session {
     }
 
     func start(maxLong: Int, fps: Int) {
-        encoder.onFrame = { [weak self] data, key, pts, seq in
+        encoder.onFrame = { [weak self] data, key, pts, seq, layout in
             guard let self else { return }
             let t = nowUs()
             // The quality setting's bitrate, at full size, is the most it gets.
             if self.appliedScale == 1 {
                 self.controller.setCeiling(self.encoder.defaultBitrate(width: self.encoder.width, height: self.encoder.height))
             }
-            self.controller.sent(seq: seq, bytes: data.count + 17, at: t)
+            self.controller.sent(seq: seq, bytes: data.count + 17 + (layout == nil ? 0 : 20), at: t)
             var echo: UInt32 = 0
-            let (w, h) = (self.encoder.width, self.encoder.height)
+            let (w, h) = (layout?.encodedWidth ?? self.encoder.width, layout?.encodedHeight ?? self.encoder.height)
             self.stats.update(seq) {
                 $0.encodeEnd = t
                 $0.sent = t
@@ -252,13 +293,14 @@ final class Session {
             }
             // Header: flags (1 = keyframe), pts µs, sequence number, and the
             // input this frame is the first reply to; all big-endian.
-            var msg = Data(capacity: data.count + 17)
-            msg.append(key ? 1 : 0)
+            var msg = Data(capacity: data.count + 37)
+            msg.append((key ? 1 : 0) | (layout == nil ? 0 : 0x80))
             var us = UInt64(max(0, CMTimeGetSeconds(pts)) * 1_000_000).bigEndian
             msg.append(Data(bytes: &us, count: 8))
             var s = seq.bigEndian, e = echo.bigEndian
             msg.append(Data(bytes: &s, count: 4))
             msg.append(Data(bytes: &e, count: 4))
+            if let layout { msg.append(layout.wire) }
             msg.append(data)
             let stats = self.stats
             self.ws.sendBinary(msg) { stats.update(seq) { $0.wire = nowUs() } }
@@ -277,7 +319,10 @@ final class Session {
         ws.onClose = { [weak self] in self?.end() }
         ws.start()
         // Reconnect with this (kept in the page's memory, never on a command line).
-        ws.sendJSON(["t": "hello", "r": reconnectKey])
+        var hello: [String: Any] = ["t": "hello", "r": reconnectKey]
+        if foveation { hello["foveation"] = 1; hello["gazeSession"] = gazeSession }
+        if foveationAtlas { hello["atlas"] = 1 }
+        ws.sendJSON(hello)
         capture.onChange = { [weak self] in self?.sendInfo() }
         // The numbers, for the viewer's overlay.
         // Adapt ten times a second; the numbers go to the viewer once a second.
@@ -298,7 +343,32 @@ final class Session {
         }
         t.resume()
         statsTimer = t
-        capture.start(maxLong: maxLong, fps: fps) { [weak self] error in
+        if foveation {
+            // ScreenCaptureKit need not emit a new picture on a static desktop.
+            // Repack its newest picture when gaze moves, or restore full quality
+            // when gaze expires, without keeping any additional picture queue.
+            let refresh = DispatchSource.makeTimerSource(queue: encodeQueue)
+            refresh.schedule(deadline: .now(), repeating: 1.0 / Double(min(fps, 60)))
+            refresh.setEventHandler { [weak self] in
+                guard let self, !self.packingFailed, let previous = self.submittedLayout else { return }
+                self.lock.lock()
+                if !self.stopped, let p = self.last {
+                    let now = nowUs()
+                    let next = self.gaze.layout(width: CVPixelBufferGetWidth(p.pb), height: CVPixelBufferGetHeight(p.pb), now: now, atlas: self.foveationAtlas)
+                    // Healthy capture carries the newest gaze layout itself.
+                    // Repacking just before its next arrival spends a paced
+                    // slot on old content. Two current frame periods without
+                    // delivery distinguish a quiet desktop from normal jitter.
+                    let captureQuiet = now - p.arrived > Int64(2_000_000 / self.controller.fps)
+                    let restoreFullQuality = previous.warped && !next.warped
+                    if next != previous && (captureQuiet || restoreFullQuality) { self.skipped = true }
+                }
+                self.lock.unlock()
+                self.resendIfRoom()
+            }
+            refresh.resume(); gazeTimer = refresh
+        }
+        capture.start(maxLong: maxLong, fps: appliedCaptureFps) { [weak self] error in
             guard let self else { return }
             if let error {
                 if self.capture.gone {
@@ -332,7 +402,7 @@ final class Session {
             encoder.requestKeyFrame()
         }
         appliedPriorityRole = priority.role
-        let captureFps = min(controller.maxFps, priority.fpsCap ?? controller.maxFps)
+        let captureFps = min(controller.maxFps, priority.fpsCap ?? controller.maxFps, testCaptureFps ?? controller.maxFps)
         if captureFps != appliedCaptureFps {
             appliedCaptureFps = captureFps
             capture.setMaxFps(captureFps)
@@ -362,6 +432,7 @@ final class Session {
         guard !was else { return }
         activity.unregister(id)
         statsTimer?.cancel()
+        gazeTimer?.cancel()
         capture.stop()
         encodeQueue.async { self.encoder.invalidate() }
         let owner = id
@@ -418,12 +489,26 @@ final class Session {
         return true
     }
 
+    // Authenticated HTTP stats only; no diagnostics are added to viewer UI.
+    func streamSummary() -> [String: Any] {
+        var result = stats.summary()
+        if foveation {
+            lock.lock(); result["gaze"] = gaze.diagnostics; lock.unlock()
+        }
+        return result
+    }
+
     /// Asks the viewer to do something for a benchmark (type, click, show its overlay).
     func bench(_ m: [String: Any]) { ws.sendJSON(m.merging(["t": "bench"]) { a, _ in a }) }
 
     private func handle(_ text: String) {
         guard !isStopped, let d = text.data(using: .utf8),
               let m = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let t = m["t"] as? String else { return }
+        if t == "gaze" {
+            guard foveation else { return }
+            lock.lock(); gaze.receive(m, session: gazeSession, now: nowUs(), allowDiagnostic: allowDiagnosticGaze); lock.unlock()
+            return
+        }
         if report(t, m) { return }
         activity.recordMessage(sessionID: id, type: t)
         let x = m["x"] as? Double ?? -1, y = m["y"] as? Double ?? -1
@@ -593,7 +678,7 @@ final class Agent {
             lock.lock()
             let list = sessions.values.map { s -> [String: Any] in
                 var e: [String: Any] = ["id": s.id, "src": s.source.key, "title": s.capture.title, "app": s.capture.app,
-                                        "stats": s.stats.summary(), "bitrate": s.encoder.bitrate,
+                                        "stats": s.streamSummary(), "bitrate": s.encoder.bitrate,
                                         "controller": s.controller.state()]
                 if let d = (s.capture as? SeparateSource)?.displayID { e["display"] = d }
                 return e
@@ -637,7 +722,7 @@ final class Agent {
             lock.unlock()
             c.respond(json: ["now": nowUs(), "streams": list.map { s -> [String: Any] in
                 ["id": s.id, "src": s.source.key, "frames": s.stats.settled(since: since, settle: settle).map(\.json),
-                 "inputs": s.stats.inputList().map(\.json), "summary": s.stats.summary(),
+                 "inputs": s.stats.inputList().map(\.json), "summary": s.streamSummary(),
                  "captured": s.stats.withLock { s.stats.captured }, "controller": s.controller.state(),
                  "events": s.controller.eventList()]
             }])
@@ -680,7 +765,9 @@ final class Agent {
         // unacknowledged ticket) replaces the one before.
         let replaced = sessions.values.filter { $0.reconnectKey == key }
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
-                              bitsPerPixel: bpp, reconnectKey: key, activity: activity)
+                              bitsPerPixel: bpp, reconnectKey: key, activity: activity,
+                              foveation: codec == .h264 && req.query["foveation"] == "1" && ProcessInfo.processInfo.environment["FRAME_WORKSPACE_FOVEATION"] == "1",
+                              foveationAtlas: req.query["atlas"] == "1")
         nextId += 1
         sessions[session.id] = session
         lock.unlock()

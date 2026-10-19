@@ -91,9 +91,11 @@ struct Endpoint {
   std::string host, source, ticket;
   int port = 0, max = 4096, fps = 30;
   double bpp = .14;
+  bool foveation = false;
   std::string path(const std::string &reconnect) const {
     return "/stream?src=" + quote(source) +
            "&codec=h264&max=" + std::to_string(max) +
+           (foveation ? "&foveation=1&atlas=1" : "") +
            "&fps=" + std::to_string(fps) + "&bpp=" + std::to_string(bpp) +
            (reconnect.empty() ? "&t=" + quote(ticket)
                               : "&r=" + quote(reconnect));
@@ -177,21 +179,69 @@ enum class ResetReason : uint8_t {
   Reconnect,
   FormatChange
 };
+// Wire v1: mode1 axis warp, mode2 base+ROI atlas. Values are source-pixel
+// edges, never sample centers. Zero-sized core is the full-quality fallback.
+struct FoveationLayout {
+  bool present = false, warped = false;
+  int width = 0, height = 0, encodedWidth = 0, encodedHeight = 0;
+  int left = 0, top = 0, coreWidth = 0, coreHeight = 0;
+  bool atlas = false;
+  bool valid() const {
+    if (!present) return true;
+    if (width < 1 || height < 1 || width > 4096 || height > 4096 ||
+        encodedWidth < 1 || encodedHeight < 1 ||
+        encodedWidth > 4096 || encodedHeight > 4096) return false;
+    if (!warped) return !atlas && width == encodedWidth && height == encodedHeight &&
+                        !left && !top && !coreWidth && !coreHeight;
+    if (atlas) return width >= 16 && height >= 16 && width % 4 == 0 && height % 4 == 0 &&
+        left >= 0 && top >= 0 && left % 2 == 0 && top % 2 == 0 &&
+        coreWidth == width / 2 && coreHeight == height / 2 &&
+        left + coreWidth <= width && top + coreHeight <= height &&
+        encodedWidth == width && encodedHeight == height / 2;
+    return width >= 16 && height >= 16 && width % 4 == 0 && height % 4 == 0 &&
+        left >= 0 && top >= 0 && left % 4 == 0 && top % 4 == 0 &&
+        coreWidth == width / 2 / 4 * 4 && coreHeight == height / 2 / 4 * 4 &&
+        left + coreWidth <= width && top + coreHeight <= height &&
+        encodedWidth == (width + coreWidth) / 2 &&
+        encodedHeight == (height + coreHeight) / 2;
+  }
+  bool matches(int w, int h) const {
+    return !present || (encodedWidth == w && encodedHeight == h);
+  }
+  static double compress(double x, int start, int core) {
+    return x < start ? x * .5 : (x < start + core ? start * .5 + x - start
+                                                : start * .5 + core + (x - start - core) * .5);
+  }
+};
 struct Packet {
   bool key = false;
   ResetReason resetReason = ResetReason::None;
   uint32_t seq = 0;
   double received = 0;
   std::vector<uint8_t> bytes;
+  FoveationLayout layout;
 };
-inline Packet packet(const std::vector<uint8_t> &b) {
+inline Packet packet(const std::vector<uint8_t> &b, bool negotiated = false, bool atlasNegotiated = false) {
   if (b.size() < 18 || b.size() > 16 * 1024 * 1024)
     throw std::runtime_error("invalid video packet");
   Packet p;
   p.key = b[0] & 1;
   p.seq = (uint32_t(b[9]) << 24) | (uint32_t(b[10]) << 16) |
           (uint32_t(b[11]) << 8) | b[12];
-  p.bytes.assign(b.begin() + 17, b.end());
+  size_t header = 17;
+  if (b[0] & 0x7e) throw std::runtime_error("unknown video flags");
+  if (b[0] & 0x80) {
+    if (!negotiated || b.size() < 38 || b[17] != 1 || b[18] > 2 || (b[18] == 2 && !atlasNegotiated) || b[19] || b[20])
+      throw std::runtime_error("invalid foveation extension");
+    auto u16 = [&](size_t i) { return (int(b[i]) << 8) | b[i + 1]; };
+    p.layout = {true, b[18] != 0, u16(21), u16(23), u16(25), u16(27),
+                u16(29), u16(31), u16(33), u16(35), b[18] == 2};
+    if (!p.layout.valid()) throw std::runtime_error("invalid foveation layout");
+    header = 37;
+  } else if (negotiated) {
+    throw std::runtime_error("missing negotiated layout");
+  }
+  p.bytes.assign(b.begin() + header, b.end());
   return p;
 }
 } // namespace fw

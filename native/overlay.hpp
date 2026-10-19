@@ -4,6 +4,7 @@
 #include "vendor/openvr/openvr_capi.h"
 #pragma GCC diagnostic pop
 #include "video.hpp"
+#include "gaze_bridge.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
@@ -86,6 +87,35 @@ class Overlay {
   Picture::Format yuvFormat = Picture::Format::RGBA;
   int width = 0, height = 0;
   bool noVR = false;
+  std::unique_ptr<GazeBridge> gazeBridge;
+  bool gazeCalibrated = false, gazeFlipX = false, gazeFlipY = false;
+  double lastGazeCalibration = 0;
+  bool gazeIntersection(const EyeRay &ray, float &u, float &v) {
+    VROverlayIntersectionParams_t params{};
+    params.eOrigin = ETrackingUniverseOrigin_TrackingUniverseStanding;
+    for(int i=0;i<3;++i) { params.vSource.v[i]=ray.origin[i]; params.vDirection.v[i]=ray.direction[i]; }
+    VROverlayIntersectionResults_t result{};
+    if(!overlay->ComputeOverlayIntersection(handle,&params,&result)) return false;
+    u=result.vUVs.v[0];v=result.vUVs.v[1];
+    return std::isfinite(u) && std::isfinite(v) && u>=0 && u<=1 && v>=0 && v<=1 &&
+        std::isfinite(result.fDistance) && result.fDistance>0;
+  }
+  bool calibrateGaze() {
+    if(!width || !height) return false;
+    const float h=placement.width * float(height)/float(width);
+    float us[4]{},vs[4]{};
+    const float positions[4][2]{{-.1f*placement.width,0},{.1f*placement.width,0},{0,.25f*h},{0,-.25f*h}};
+    for(int i=0;i<4;++i) {
+      EyeRay ray;
+      for(int r=0;r<3;++r) {
+        ray.origin[r]=placement.matrix.m[r][3]+placement.matrix.m[r][0]*positions[i][0]+
+            placement.matrix.m[r][1]*positions[i][1]+placement.matrix.m[r][2];
+        ray.direction[r]=-placement.matrix.m[r][2];
+      }
+      if(!gazeIntersection(ray,us[i],vs[i])) return false;
+    }
+    return uvOrientation(us[0],us[1],vs[2],vs[3],gazeFlipX,gazeFlipY);
+  }
   void check(EVROverlayError error, const char *operation) {
     if (error)
       throw std::runtime_error(std::string(operation) +
@@ -120,16 +150,32 @@ class Overlay {
         "#version 120\n"
         "uniform sampler2D yTexture; uniform sampler2D uTexture; "
         "uniform sampler2D vTexture; uniform int nv12;\n"
+        "uniform int warpMode; uniform vec2 sourceSize; uniform vec2 encodedSize; "
+        "uniform vec2 coreOrigin; uniform vec2 coreSize;\n"
         "uniform float yOffset; uniform float yScale; "
         "uniform float chromaOffset; uniform float rCr; "
         "uniform float gCb; uniform float gCr; uniform float bCb;\n"
+        "float compressAxis(float x,float a,float c){ return x<a ? x*0.5 : "
+        "(x<a+c ? a*0.5+x-a : a*0.5+c+(x-a-c)*0.5); }\n"
         "void main(){ vec2 q=gl_TexCoord[0].st; "
+        "if(warpMode==2){ vec2 p=q*sourceSize; "
+        "bool focal=all(greaterThanEqual(p,coreOrigin)) && all(lessThan(p,coreOrigin+coreSize)); "
+        "vec2 tile=vec2(focal ? coreSize.x : 0.0,0.0); "
+        "vec2 at=focal ? tile+p-coreOrigin : p*0.5; "
+        "q=clamp(at,tile+vec2(0.5),tile+coreSize-vec2(0.5))/encodedSize; "
+        "} else if(warpMode==1){ vec2 p=q*sourceSize; "
+        "q=vec2(compressAxis(p.x,coreOrigin.x,coreSize.x), "
+        "compressAxis(p.y,coreOrigin.y,coreSize.y))/encodedSize; } "
+        "if(nv12<0){ gl_FragColor=texture2D(yTexture,q); return; } "
+        "vec2 cq=q; if(warpMode==2){ "
+        "vec2 tile=vec2(q.x<0.5 ? 0.0 : coreSize.x,0.0); "
+        "cq=clamp(q*encodedSize,tile+vec2(1.0),tile+coreSize-vec2(1.0))/encodedSize; } "
         "float yy=(texture2D(yTexture,q).r-yOffset)*yScale; "
         "float cb; float cr; "
-        "if(nv12!=0){ vec4 chroma=texture2D(uTexture,q); "
+        "if(nv12!=0){ vec4 chroma=texture2D(uTexture,cq); "
         "cb=chroma.r-chromaOffset; cr=chroma.a-chromaOffset; } "
-        "else { cb=texture2D(uTexture,q).r-chromaOffset; "
-        "cr=texture2D(vTexture,q).r-chromaOffset; } "
+        "else { cb=texture2D(uTexture,cq).r-chromaOffset; "
+        "cr=texture2D(vTexture,cq).r-chromaOffset; } "
         "gl_FragColor=vec4(yy+rCr*cr, yy+gCb*cb+gCr*cr, "
         "yy+bCb*cb, 1.0); }\n";
     GLuint vs = compileShader(GL_VERTEX_SHADER, vertex);
@@ -188,7 +234,11 @@ class Overlay {
       glTexImage2D(GL_TEXTURE_2D, 0, format, w, h, 0, format,
                    GL_UNSIGNED_BYTE, nullptr);
     };
-    allocate(yuvTextures[0], p.width, p.height, GL_LUMINANCE);
+    allocate(yuvTextures[0], p.width, p.height, p.format == Picture::Format::RGBA ? GL_RGBA : GL_LUMINANCE);
+    if (p.format == Picture::Format::RGBA) {
+      yuvWidth = p.width; yuvHeight = p.height; yuvFormat = p.format;
+      return;
+    }
     allocate(yuvTextures[1], cw, ch,
              p.format == Picture::Format::NV12 ? GL_LUMINANCE_ALPHA
                                                 : GL_LUMINANCE);
@@ -212,14 +262,15 @@ class Overlay {
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, yuvTextures[0]);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p.width, p.height,
-                    GL_LUMINANCE, GL_UNSIGNED_BYTE, p.y.data());
+                    p.format == Picture::Format::RGBA ? GL_RGBA : GL_LUMINANCE, GL_UNSIGNED_BYTE,
+                    p.format == Picture::Format::RGBA ? p.rgba.data() : p.y.data());
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, yuvTextures[1]);
     if (p.format == Picture::Format::NV12) {
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (p.width + 1) / 2,
                       (p.height + 1) / 2, GL_LUMINANCE_ALPHA,
                       GL_UNSIGNED_BYTE, p.uv.data());
-    } else {
+    } else if (p.format == Picture::Format::YUV420P) {
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, (p.width + 1) / 2,
                       (p.height + 1) / 2, GL_LUMINANCE, GL_UNSIGNED_BYTE,
                       p.u.data());
@@ -235,7 +286,7 @@ class Overlay {
                            texture, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
       throw std::runtime_error("YUV output framebuffer is incomplete");
-    glViewport(0, 0, p.width, p.height);
+    glViewport(0, 0, p.outputWidth(), p.outputHeight());
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_SCISSOR_TEST);
@@ -255,7 +306,15 @@ class Overlay {
     uniform1i("yTexture", 0);
     uniform1i("uTexture", 1);
     uniform1i("vTexture", 2);
-    uniform1i("nv12", p.format == Picture::Format::NV12 ? 1 : 0);
+    uniform1i("nv12", p.format == Picture::Format::RGBA ? -1 : (p.format == Picture::Format::NV12 ? 1 : 0));
+    uniform1i("warpMode", p.layout.atlas ? 2 : (p.layout.warped ? 1 : 0));
+    auto uniform2f = [&](const char *name, float x, float y) {
+      glUniform2f(glGetUniformLocation(yuvProgram, name), x, y);
+    };
+    uniform2f("sourceSize", p.outputWidth(), p.outputHeight());
+    uniform2f("encodedSize", p.width, p.height);
+    uniform2f("coreOrigin", p.layout.left, p.layout.top);
+    uniform2f("coreSize", p.layout.coreWidth, p.layout.coreHeight);
     const bool full = p.colorRange == AVCOL_RANGE_JPEG;
     const bool bt709 = p.colorSpace == AVCOL_SPC_BT709;
     uniform1f("yOffset", full ? 0.f : 16.f / 255.f);
@@ -302,7 +361,7 @@ public:
   const char *exitReason = "running";
   double syncMs = 0, submitMs = 0;
   double gpuConvertMs = 0;
-  Overlay(bool test, const std::string &overlayKey)
+  Overlay(bool test, const std::string &overlayKey, bool foveation = false)
       : noVR(test), key(overlayKey) {
     if (SDL_Init(SDL_INIT_VIDEO))
       throw std::runtime_error("SDL video unavailable");
@@ -353,6 +412,7 @@ public:
         get("FnTable:IVRSystem_022", &error));
     if (error || !system)
       throw std::runtime_error("OpenVR system 022 unavailable");
+    if (foveation) gazeBridge = std::make_unique<GazeBridge>(library);
     char name[] = "Frame Workspace";
     check(overlay->CreateOverlay(key.data(), name, &handle), "CreateOverlay");
     check(overlay->SetOverlayTextureColorSpace(handle,
@@ -362,6 +422,22 @@ public:
           "input method");
     VRTextureBounds_t bounds{0, 0, 1, 1};
     check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
+  }
+  const char *gaze(double &u, double &v) {
+    if(!gazeBridge) return "unavailable";
+    if(!gazeCalibrated && nowMs()-lastGazeCalibration>=1000) {
+      lastGazeCalibration=nowMs();gazeCalibrated=calibrateGaze();
+    }
+    if(!gazeCalibrated) return "overlay-calibration-unavailable";
+    EyeRay rays[2];
+    const char *status=gazeBridge->sample(rays);
+    if(std::string(status)!="valid") return status;
+    float us[2]{},vs[2]{};
+    for(int i=0;i<2;++i) if(!gazeIntersection(rays[i],us[i],vs[i])) return "outside-overlay";
+    u=(us[0]+us[1])*.5;v=(vs[0]+vs[1])*.5;
+    if(gazeFlipX) u=1-u;
+    if(gazeFlipY) v=1-v;
+    return "valid";
   }
   ~Overlay() {
     if (handle) {
@@ -417,6 +493,7 @@ public:
     apply();
   }
   void apply() {
+    gazeCalibrated = false; lastGazeCalibration = 0;
     if (noVR)
       return;
     check(overlay->SetOverlayWidthInMeters(handle, placement.width), "width");
@@ -446,6 +523,7 @@ public:
     return result;
   }
   CurvatureResult setCurvature(float requested) {
+    gazeCalibrated = false; lastGazeCalibration = 0;
     CurvatureResult result;
     result.requested = requested;
     if (!std::isfinite(requested) || requested < 0.f || requested > 1.f) {
@@ -498,7 +576,7 @@ public:
   }
   bool upload(const Picture &p) {
     GLuint old = 0;
-    if (!texture || p.width != width || p.height != height) {
+    if (!texture || p.outputWidth() != width || p.outputHeight() != height) {
       old = texture;
       glGenTextures(1, &texture);
       glBindTexture(GL_TEXTURE_2D, texture);
@@ -506,10 +584,11 @@ public:
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, p.width, p.height, 0, GL_RGBA,
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, p.outputWidth(), p.outputHeight(), 0, GL_RGBA,
                    GL_UNSIGNED_BYTE, nullptr);
-      width = p.width;
-      height = p.height;
+      gazeCalibrated = false; lastGazeCalibration = 0;
+      width = p.outputWidth();
+      height = p.outputHeight();
       if (!noVR) {
         HmdVector2_t mouseScale{{float(width), float(height)}};
         check(overlay->SetOverlayMouseScale(handle, &mouseScale),
@@ -517,7 +596,7 @@ public:
       }
     } else
       glBindTexture(GL_TEXTURE_2D, texture);
-    if (p.format == Picture::Format::RGBA) {
+    if (p.format == Picture::Format::RGBA && !p.layout.warped) {
       gpuConvertMs = 0;
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p.width, p.height, GL_RGBA,

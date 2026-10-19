@@ -27,7 +27,7 @@ final class Encoder {
     private var reportedFrameError = false
     /// Called on VideoToolbox's thread with one access unit (or JPEG) per
     /// frame, and the sequence number it was submitted with.
-    var onFrame: ((Data, Bool, CMTime, UInt32) -> Void)?
+    var onFrame: ((Data, Bool, CMTime, UInt32, FoveationLayout?) -> Void)?
     var onError: ((String) -> Void)?
     /// Called once per frame handed to VideoToolbox, however it went.
     var onDone: ((UInt32) -> Void)?
@@ -138,7 +138,7 @@ final class Encoder {
 
     /// False if the frame never reached VideoToolbox (then onDone won't come).
     @discardableResult
-    func encode(_ pb: CVPixelBuffer, pts given: CMTime, seq: UInt32) -> Bool {
+    func encode(_ pb: CVPixelBuffer, pts given: CMTime, seq: UInt32, layout: FoveationLayout? = nil) -> Bool {
         // The encoder's own timeline: strictly increasing (a resent picture
         // stamped "now" can be followed by a capture stamped a moment earlier),
         // and never more than two frames on from the last one. Rate control
@@ -172,9 +172,9 @@ final class Encoder {
             guard status == noErr else { self.reportFrameError(status); return }
             guard let sample else { return }
             if codec == .jpeg {
-                if let data = Self.bytes(sample) { self.onFrame?(data, true, pts, seq) }
+                if let data = Self.bytes(sample) { self.onFrame?(data, true, pts, seq, layout) }
             } else if let (data, key) = Self.annexB(sample) {
-                self.onFrame?(data, key, pts, seq)
+                self.onFrame?(data, key, pts, seq, layout)
             }
         }
         if status != noErr { forceKey = true; reportFrameError(status) }

@@ -28,14 +28,22 @@ inline std::string base64(const unsigned char *b, int n) {
 class WebSocket {
   int fd = -1;
   std::atomic<bool> &stop;
-  double lastByte = 0;
+  double lastByte = 0, lastReadService = 0;
   void readBytes(void *ptr, size_t n) {
     auto *p = static_cast<uint8_t *>(ptr);
     while (n) {
       if (stop)
         throw std::runtime_error("stopped");
+      // A large video message can arrive continuously for hundreds of
+      // milliseconds without a poll timeout. Keep the opt-in gaze/control
+      // backchannel alive while assembling that message, too.
+      if (serviceIdleWhileReading && idle &&
+          nowMs() - lastReadService >= idlePollMs) {
+        lastReadService = nowMs();
+        idle();
+      }
       pollfd f{fd, POLLIN, 0};
-      int r = poll(&f, 1, 100);
+      int r = poll(&f, 1, idlePollMs);
       if (r < 0 && errno == EINTR)
         continue;
       if (r < 0)
@@ -43,6 +51,7 @@ class WebSocket {
       if (!r) {
         if (idle)
           idle();
+        lastReadService = nowMs();
         if (nowMs() - lastByte > 15000)
           throw std::runtime_error("stream timeout");
         continue;
@@ -77,6 +86,8 @@ class WebSocket {
   }
 
 public:
+  int idlePollMs = 100; // legacy cadence; foveated gaze opts into 8 ms
+  bool serviceIdleWhileReading = false;
   std::function<void()> idle;
   explicit WebSocket(std::atomic<bool> &stopped) : stop(stopped) {}
   ~WebSocket() {

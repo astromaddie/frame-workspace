@@ -1,10 +1,12 @@
 #pragma once
 #include "websocket.hpp"
+#include "clock_sync.hpp"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 }
+#include "h264_crop.hpp"
 #include <condition_variable>
 #include <utility>
 
@@ -15,6 +17,9 @@ namespace fw {
 struct Picture {
   enum class Format { RGBA, NV12, YUV420P };
   int width = 0, height = 0;
+  FoveationLayout layout;
+  int outputWidth() const { return layout.present ? layout.width : width; }
+  int outputHeight() const { return layout.present ? layout.height : height; }
   uint32_t seq = 0;
   double received = 0, decoded = 0;
   Format format = Format::RGBA;
@@ -28,6 +33,8 @@ struct Picture {
 struct PacketTiming {
   uint32_t seq;
   double received;
+  FoveationLayout layout;
+  H264Crop crop{};
 };
 enum class RecoveryAction {
   KeepContext,
@@ -167,6 +174,17 @@ struct Pipeline {
   std::deque<Packet> packets;
   std::shared_ptr<Picture> newest;
   std::deque<std::string> outbound;
+  struct GazeSample {
+    double u = 0, v = 0, sampled = 0;
+    bool valid = false, diagnostic = false;
+  };
+  GazeSample gazeSample;
+  void gaze(double u, double v, bool valid, double sampled, bool diagnostic = false) {
+    std::lock_guard<std::mutex> l(outMutex);
+    gazeSample = {u, v, sampled, valid && std::isfinite(u) && std::isfinite(v) &&
+        u >= 0 && u <= 1 && v >= 0 && v <= 1 && std::isfinite(sampled), diagnostic};
+  }
+  std::atomic<bool> foveationNegotiated{false}, atlasNegotiated{false};
   bool needKey = true;
   // Absorb short transport bursts without throwing away an H.264 reference
   // chain. This remains bounded; a real backlog still recovers at an IDR.
@@ -266,13 +284,29 @@ struct Pipeline {
       try {
         WebSocket ws(stop);
         bool resumed = !reconnect.empty();
+        if (endpoint.foveation) {
+          ws.idlePollMs = 8;
+          ws.serviceIdleWhileReading = true;
+        }
         ws.open(endpoint, reconnect);
         connected = true;
         ++reconnects;
         connectionOpened(resumed);
-        double ping = 0, key = 0;
+        clockValid = false;
+        foveationNegotiated = false; atlasNegotiated = false;
+        std::string gazeSession;
+        FoveationClock gazeClock;
+        { std::lock_guard<std::mutex> l(outMutex); gazeSample = {}; }
+        double ping = 0, key = 0, lastGaze = 0, lastSentSample = -1;
+        bool lastSentValid = false;
         ws.idle = [&] {
           double now = nowMs();
+          if (endpoint.foveation) {
+            double estimate = 0;
+            const bool valid = gazeClock.estimate(now, estimate);
+            if (valid) clockOffset = estimate;
+            clockValid = valid;
+          }
           if (now - ping > 2000) {
             ws.sendText("{\"t\":\"ping\",\"c\":" + std::to_string(now * 1000) +
                         "}");
@@ -285,6 +319,20 @@ struct Pipeline {
           }
           if (focus.exchange(false))
             ws.sendText("{\"t\":\"focus\"}");
+          if (foveationNegotiated && clockValid && now - lastGaze >= 16) {
+            GazeSample g;
+            { std::lock_guard<std::mutex> l(outMutex); g = gazeSample; }
+            const bool valid = g.valid && now >= g.sampled && now - g.sampled <= 100;
+            if (g.sampled > lastSentSample || (lastSentValid && !valid)) {
+            ws.sendText("{\"t\":\"gaze\",\"version\":1,\"session\":\"" + gazeSession +
+                "\",\"valid\":" + (valid ? "true" : "false") +
+                ",\"u\":" + std::to_string(valid ? g.u : 0) + ",\"v\":" + std::to_string(valid ? g.v : 0) +
+                ",\"sampleTime\":" + std::to_string(int64_t(g.sampled * 1000)) +
+                ",\"time\":" + std::to_string((g.sampled + clockOffset.load()) * 1000) +
+                ",\"source\":\"" + (g.diagnostic ? "diagnostic" : "eye") + "\"}");
+            lastGaze = now; lastSentSample = g.sampled; lastSentValid = valid;
+            }
+          }
           std::deque<std::string> pending;
           {
             std::lock_guard<std::mutex> l(outMutex);
@@ -298,7 +346,7 @@ struct Pipeline {
           auto [type, bytes] = ws.receive();
           double receivedAt = nowMs();
           if (type == 2) {
-            auto p = packet(bytes);
+            auto p = packet(bytes, foveationNegotiated, atlasNegotiated);
             p.received = receivedAt;
             std::string ack = "{\"t\":\"rx\",\"s\":" + std::to_string(p.seq);
             if (clockValid)
@@ -314,14 +362,31 @@ struct Pipeline {
               if (r.empty() || r.size() > 256)
                 throw std::runtime_error("invalid reconnect key");
               reconnect = r;
+              if (endpoint.foveation && json_object_is_type(field(j, "foveation"), json_type_int) && num(j, "foveation") == 1) {
+                auto nonce = str(j, "gazeSession");
+                if (nonce.empty() || nonce.size() > 64 ||
+                    nonce.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-") != std::string::npos)
+                  throw std::runtime_error("invalid gaze session");
+                gazeSession = nonce;
+                foveationNegotiated = true;
+                atlasNegotiated = json_object_is_type(field(j, "atlas"), json_type_int) && num(j, "atlas") == 1;
+              }
               ws.sendText("{\"t\":\"ack\"}");
               failed = 0;
             } else if (t == "pong") {
               double c = num(j, "c") / 1000, a = num(j, "a") / 1000;
               if (c > 0 && a > 0 && receivedAt - c >= 0 &&
                   receivedAt - c < 1000) {
-                clockOffset = a - (c + receivedAt) / 2;
-                clockValid = true;
+                if (endpoint.foveation) {
+                  gazeClock.observe(c, a, receivedAt);
+                  double estimate = 0;
+                  const bool valid = gazeClock.estimate(receivedAt, estimate);
+                  if (valid) clockOffset = estimate;
+                  clockValid = valid;
+                } else {
+                  clockOffset = a - (c + receivedAt) / 2;
+                  clockValid = true;
+                }
                 ws.sendText("{\"t\":\"clock\",\"rtt\":" +
                             std::to_string(receivedAt - c) + ",\"dec\":\"" +
                             decoderIdentity() + "\"}");
@@ -342,6 +407,7 @@ struct Pipeline {
       } catch (const std::exception &) {
         connected = false;
         clockValid = false;
+        foveationNegotiated = false; atlasNegotiated = false;
         if (stop)
           break;
         ++errors;
@@ -375,6 +441,7 @@ struct Pipeline {
     int64_t staleThroughToken = -1;
     bool submitted = false;
     H264Headers headers;
+    H264CropHeaders cropHeaders;
     auto fail = [&](const char *stage, int code) {
       decoderError = code;
       decoderErrorStage = stage;
@@ -499,10 +566,30 @@ struct Pipeline {
           fail("output-format", AVERROR_INVALIDDATA);
           break;
         }
+        // QCOM returns coded dimensions with zero crop fields. Repair only
+        // negotiated pictures, from their own validated SPS/PTS snapshot.
+        if (it->second.layout.present && decoderRequested == "v4l2" &&
+            !normalizeH264Crop(frame, it->second.crop,
+                               it->second.layout.encodedWidth,
+                               it->second.layout.encodedHeight)) {
+          fail("output-crop", AVERROR_INVALIDDATA);
+          break;
+        }
+        if (it->second.layout.present && decoderRequested == "v4l2") {
+          const auto &metadata = it->second.crop;
+          if (metadata.colorSpace != AVCOL_SPC_UNSPECIFIED)
+            frame->colorspace = metadata.colorSpace;
+          frame->color_range = metadata.colorRange;
+        }
         double convert = nowMs();
         auto pic = std::make_shared<Picture>();
         pic->width = frame->width;
         pic->height = frame->height;
+        pic->layout = it->second.layout;
+        if (!pic->layout.matches(frame->width, frame->height)) {
+          fail("output-layout", AVERROR_INVALIDDATA);
+          break;
+        }
         pic->seq = it->second.seq;
         pic->received = it->second.received;
         pic->colorSpace = frame->colorspace;
@@ -562,8 +649,15 @@ struct Pipeline {
             conversionActive = "cpu";
           }
           pic->rgba.resize(size_t(pic->width) * pic->height * 4);
-          sws = sws_getCachedContext(sws, pic->width, pic->height,
-                                     AVPixelFormat(frame->format), pic->width,
+          // Convert independent tiles independently: chroma interpolation must
+          // never use the unrelated tile on the other side of the atlas seam.
+          const int tileWidth = pic->layout.atlas ? pic->width / 2 : pic->width;
+          if (pic->layout.atlas && frame->format != AV_PIX_FMT_NV12 &&
+              frame->format != AV_PIX_FMT_YUV420P && frame->format != AV_PIX_FMT_YUVJ420P) {
+            fail("atlas-conversion-format", AVERROR_INVALIDDATA); break;
+          }
+          sws = sws_getCachedContext(sws, tileWidth, pic->height,
+                                     AVPixelFormat(frame->format), tileWidth,
                                      pic->height, AV_PIX_FMT_RGBA, SWS_BILINEAR,
                                      nullptr, nullptr, nullptr);
           if (!sws) {
@@ -576,13 +670,21 @@ struct Pipeline {
           sws_setColorspaceDetails(sws, coefficients,
                                    pic->colorRange == AVCOL_RANGE_JPEG,
                                    coefficients, 1, 0, 1 << 16, 1 << 16);
-          uint8_t *dst[] = {pic->rgba.data()};
-          int strides[] = {pic->width * 4};
-          if (sws_scale(sws, frame->data, frame->linesize, 0, pic->height, dst,
-                        strides) != pic->height) {
-            fail("conversion", AVERROR_INVALIDDATA);
-            break;
+          bool converted = true;
+          for (int tile = 0; tile < (pic->layout.atlas ? 2 : 1); ++tile) {
+            const int x = tile * tileWidth;
+            const uint8_t *src[] = {frame->data[0], frame->data[1], frame->data[2], frame->data[3]};
+            if (tile) {
+              src[0] += x;
+              src[1] += frame->format == AV_PIX_FMT_NV12 ? x : x / 2;
+              if (src[2]) src[2] += x / 2;
+            }
+            uint8_t *dst[] = {pic->rgba.data() + x * 4};
+            int strides[] = {pic->width * 4};
+            if (sws_scale(sws, src, frame->linesize, 0, pic->height, dst, strides) != pic->height)
+              converted = false;
           }
+          if (!converted) { fail("conversion", AVERROR_INVALIDDATA); break; }
           convertMs = nowMs() - convert;
         }
         pic->decoded = nowMs();
@@ -626,11 +728,24 @@ struct Pipeline {
         continue;
       }
       packetQueueWaitMs = nowMs() - p.received;
+      H264Crop packetCrop;
       if (decoderRequested == "v4l2") {
         int parsed = headers.parse(p.bytes);
         if (parsed < 0) {
           fail("h264-headers", parsed);
           break;
+        }
+        if (p.layout.present) {
+          if (p.resetReason == ResetReason::Reconnect) cropHeaders = H264CropHeaders{};
+          if (!cropHeaders.parse(p.bytes, packetCrop) ||
+              packetCrop.width() != headers.parser->width ||
+              packetCrop.height() != headers.parser->height ||
+              packetCrop.codedWidth != headers.parser->coded_width ||
+              packetCrop.codedHeight != headers.parser->coded_height ||
+              !p.layout.matches(packetCrop.width(), packetCrop.height())) {
+            fail("h264-crop", AVERROR_INVALIDDATA);
+            break;
+          }
         }
         bool changed = context && (headers.parser->width != inputWidth ||
                                    headers.parser->height != inputHeight ||
@@ -701,7 +816,7 @@ struct Pipeline {
         fail("inflight-limit", AVERROR(ENOBUFS));
         break;
       }
-      timing[token] = {p.seq, p.received};
+      timing[token] = {p.seq, p.received, p.layout, packetCrop};
       auto highWater = decoderTimingHighWater.load();
       if (timing.size() > highWater)
         decoderTimingHighWater = timing.size();

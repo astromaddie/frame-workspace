@@ -1,0 +1,1724 @@
+{
+  "schema": 1,
+  "outcome": "Functional prototype verified off-head; performance optimization rejected as default; worn acceptance pending.",
+  "date": "2026-10-19 Asia/Tokyo",
+  "sourceBase": "406d56cc632cb1c480cc9a8bdb30a2d753f976e0",
+  "evidenceLevel": "actual Frame off-head; desktop texture updates, not compositor or optical FPS; no worn acceptance",
+  "artifactsAndImageChecks": {
+    "result": "PASS",
+    "mac": {
+      "sha256": "d92f46b8c65375ac9e4a0db7bfc169574fc12b1c8da0fcbb035cccfd4016a1c0"
+    },
+    "native": {
+      "sha256": "3b26594e8e82bc98ba29a4fe1803aa14739f1f13e156fda7ec560637ff99be74"
+    },
+    "metal": {
+      "atlasFixtures": 14,
+      "productionSource": [
+        2880,
+        2560
+      ],
+      "encoded": [
+        2880,
+        1280
+      ],
+      "maxPlaneError": 0,
+      "focalByteExact": true,
+      "baseInvariantCorners644x484": true
+    },
+    "softwareGpu": {
+      "fixtures": 14,
+      "maxChannelError": 2,
+      "meanChannelError": 0.04457271848973356
+    },
+    "softwareCpu": {
+      "fixtures": 4,
+      "maxChannelError": 1,
+      "meanChannelError": 0.03461493424727584
+    },
+    "v4l2FallbackChain": {
+      "pictures": 180,
+      "secondsPerStage": 2,
+      "stages": [
+        "full",
+        "atlas-moving-roi",
+        "full"
+      ],
+      "formatReopensEach": 2,
+      "errorsEach": 0,
+      "allStagesAcknowledged": true,
+      "gpu": {
+        "maxChannelError": 1,
+        "meanChannelError": 0.019299949363425925
+      },
+      "cpu": {
+        "maxChannelError": 1,
+        "meanChannelError": 0.015444381148726852
+      }
+    },
+    "compatibility": {
+      "oldNativeNewServerSessionMode": 1,
+      "newNativeOldAxisServerGpuFixtures": 2,
+      "newNativeOldAxisServerMaxError": 2,
+      "browserHeaderBytes": 17,
+      "atlasSessionFrames": 6,
+      "axisSessionFrames": 6,
+      "clockReconnectRegression": "PASS"
+    }
+  },
+  "nativeBuildSourceFilesVerified": 36,
+  "regression": {
+    "macviewTests": 50,
+    "macviewSkipped": 0,
+    "localFinalChecks": 12,
+    "localFailures": 0,
+    "earlierUnchangedPanelTests": 10,
+    "earlierUnchangedJavaScriptTests": 69,
+    "stagedVendorVerification": "Official header SHA256 exact, including upstream whitespace; all other staged files pass git diff --cached --check."
+  },
+  "partialReadRegression": {
+    "transferBytes": 131072,
+    "chunkBytes": 1024,
+    "transferMsApprox": 525,
+    "oldMaxGazeGapMs": 530.55,
+    "fixedMaxGazeGapMs": 27.03,
+    "independentArrivalReader": true
+  },
+  "conditions": {
+    "source": [
+      2880,
+      2560
+    ],
+    "fixtureBounds": [
+      1800,
+      30,
+      2880,
+      2530
+    ],
+    "fixture": "owned scroll.html Chrome profile",
+    "quality": "Sharp",
+    "bpp": 0.14,
+    "decoder": "h264_v4l2m2m",
+    "sourceDimensionUnchanged": true,
+    "adaptiveMode": false,
+    "transport": "existing local-network SSH tunnel",
+    "runs": "sequential, no concurrent tests or builds",
+    "fpsMeaning": "unique capture first actual draw, deduplicated across repeated submissions; content-to-draw excludes compositor and optical delay"
+  },
+  "preAtlasExploratory": [
+    {
+      "label": "full-cpu-30-final",
+      "uploadedFps": 28.578680569143064,
+      "freshDrawnFps": 28.012162903189385,
+      "h264Mbps": 1.5961447323389584,
+      "queueOverflows": 0,
+      "decoderFormatReopens": 0,
+      "contentToDrawMs": {
+        "n": 1016,
+        "p50": 84.7485,
+        "p95": 165.022
+      },
+      "rejectedExperiment": false
+    },
+    {
+      "label": "scan-cpu-30-final",
+      "uploadedFps": 25.98207375135978,
+      "freshDrawnFps": 24.528548888291752,
+      "h264Mbps": 6.1364299937300615,
+      "queueOverflows": 0,
+      "decoderFormatReopens": 7,
+      "contentToDrawMs": {
+        "n": 890,
+        "p50": 86.8495,
+        "p95": 243.421
+      },
+      "rejectedExperiment": false
+    },
+    {
+      "label": "scan-cpu-60-final",
+      "uploadedFps": 49.42930024606164,
+      "freshDrawnFps": 45.85475016208788,
+      "h264Mbps": 8.707984692916385,
+      "queueOverflows": 2,
+      "decoderFormatReopens": 2,
+      "contentToDrawMs": {
+        "n": 3045,
+        "p50": 58.502,
+        "p95": 129.92
+      },
+      "rejectedExperiment": false
+    },
+    {
+      "label": "scan-cpu-60-stable",
+      "uploadedFps": 33.524843300095874,
+      "freshDrawnFps": 32.58408230504079,
+      "h264Mbps": 12.550664118456794,
+      "queueOverflows": 37,
+      "decoderFormatReopens": 6,
+      "contentToDrawMs": {
+        "n": 2162,
+        "p50": 83.77600000000001,
+        "p95": 283.973
+      },
+      "rejectedExperiment": true
+    },
+    {
+      "label": "full-cpu-60-pre-atlas",
+      "uploadedFps": 39.000745242063864,
+      "freshDrawnFps": 39.484053565957005,
+      "h264Mbps": 4.507259882069377,
+      "queueOverflows": 26,
+      "decoderFormatReopens": 0,
+      "contentToDrawMs": {
+        "n": 2624,
+        "p50": 78.182,
+        "p95": 238.642
+      },
+      "rejectedExperiment": false
+    },
+    {
+      "label": "fixed-cpu-60-pre-atlas",
+      "uploadedFps": 38.5529421191009,
+      "freshDrawnFps": 37.109213347880065,
+      "h264Mbps": 5.106588194575072,
+      "queueOverflows": 16,
+      "decoderFormatReopens": 6,
+      "contentToDrawMs": {
+        "n": 2466,
+        "p50": 52.153999999999996,
+        "p95": 274.325
+      },
+      "rejectedExperiment": false
+    }
+  ],
+  "atlasBuildMeasurements": [
+    {
+      "label": "full-gpu-60-final",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 60.04520323302131,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 60,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 54.97524901680481,
+      "decodedFps": 54.742091341483615,
+      "uploadedFps": 47.91390227850574,
+      "counters": {
+        "received": 3301,
+        "decoded": 3287,
+        "uploaded": 2877,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 12,
+        "droppedDecoded": 410,
+        "queueOverflows": 1,
+        "droppedAwaitingIdr": 4,
+        "overflowRecoveryIdrs": 1,
+        "staleDriverFramesDropped": 1,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0,
+        "emptyReceives": 11602,
+        "emptyReceiveTotalMs": 61.194414
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.5902255,
+          "p95": 1.650822
+        },
+        "sendMs": {
+          "p50": 1.577778,
+          "p95": 1.6601
+        },
+        "convertMs": {
+          "p50": 0.956734,
+          "p95": 5.584239
+        },
+        "planeCopyMs": {
+          "p50": 0.956734,
+          "p95": 5.584239
+        },
+        "gpuConvertMs": {
+          "p50": 0.846035,
+          "p95": 1.188502
+        },
+        "uploadMs": {
+          "p50": 3.9784930000000003,
+          "p95": 4.751432
+        },
+        "syncMs": {
+          "p50": 2.7377135,
+          "p95": 3.245813
+        },
+        "submitMs": {
+          "p50": 0.394022,
+          "p95": 0.597633
+        },
+        "queueAgeMs": {
+          "p50": 31.4905285,
+          "p95": 43.04938
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.08752299999999999,
+          "p95": 1.00382
+        },
+        "decoderOpenMs": {
+          "p50": 20.100571,
+          "p95": 20.100571
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "encodedSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "foveationStates": [
+        false
+      ],
+      "gazeStates": [
+        "eye-unavailable"
+      ],
+      "diagnosticGaze": false,
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 1,
+      "decoderColorRange": 1,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 602,
+      "decoderTimingHighWater": 6,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 8,
+      "emptyReceiveMaxMs": 0.443891,
+      "note": "Stage percentiles summarize one-second observations, not every frame.",
+      "mac": {
+        "duration": 67.124834,
+        "desktopCaptureFps": 54.614660201617774,
+        "uniqueSentCaptureFps": 52.782253435442385,
+        "uniqueDrawnCaptureFps": 46.00383816219195,
+        "sentFps": 52.81204866741271,
+        "repeatedCaptureSubmissions": 2,
+        "h264Mbps": 2.1742682000524574,
+        "contentToDrawMs": {
+          "n": 3088,
+          "p50": 49.93,
+          "p95": 132.607
+        },
+        "repeatContentAgeMs": {
+          "n": 2,
+          "p50": 143.1765,
+          "p95": 148.08
+        },
+        "gazeCounters": {
+          "accepted": 0,
+          "activations": 0,
+          "clockFuture": 0,
+          "expired": 0,
+          "fallbacks": 0,
+          "future": 0,
+          "invalid": 3296,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 0,
+          "version": 0
+        },
+        "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+      }
+    },
+    {
+      "label": "fixed-gpu-60-final",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 60.043294741015416,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 60,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 52.17901538404181,
+      "decodedFps": 49.33107040138265,
+      "uploadedFps": 40.98709124166195,
+      "counters": {
+        "received": 3133,
+        "decoded": 2962,
+        "uploaded": 2461,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 151,
+        "droppedDecoded": 501,
+        "queueOverflows": 9,
+        "droppedAwaitingIdr": 79,
+        "overflowRecoveryIdrs": 10,
+        "staleDriverFramesDropped": 10,
+        "decoderOpenAttempts": 10,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 10,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 403.906147,
+        "emptyReceives": 12364,
+        "emptyReceiveTotalMs": 69.367282
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.000274,
+          "p95": 1.591241
+        },
+        "sendMs": {
+          "p50": 0.988036,
+          "p95": 1.57994
+        },
+        "convertMs": {
+          "p50": 0.45066,
+          "p95": 4.003442
+        },
+        "planeCopyMs": {
+          "p50": 0.45066,
+          "p95": 4.003442
+        },
+        "gpuConvertMs": {
+          "p50": 0.4939135,
+          "p95": 0.957828
+        },
+        "uploadMs": {
+          "p50": 3.5367414999999998,
+          "p95": 4.505402
+        },
+        "syncMs": {
+          "p50": 2.6328430000000003,
+          "p95": 2.984262
+        },
+        "submitMs": {
+          "p50": 0.395428,
+          "p95": 0.604717
+        },
+        "queueAgeMs": {
+          "p50": 29.380665,
+          "p95": 93.546113
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.0852575,
+          "p95": 3.211599
+        },
+        "decoderOpenMs": {
+          "p50": 42.891142,
+          "p95": 48.588222
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "encodedSizes": [
+        [
+          2880,
+          1280
+        ],
+        [
+          2880,
+          2560
+        ]
+      ],
+      "foveationStates": [
+        false,
+        true
+      ],
+      "gazeStates": [
+        "diagnostic"
+      ],
+      "diagnosticGaze": true,
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 1,
+      "decoderColorRange": 1,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 2185,
+      "decoderTimingHighWater": 6,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 8,
+      "emptyReceiveMaxMs": 0.217909,
+      "note": "Stage percentiles summarize one-second observations, not every frame.",
+      "mac": {
+        "duration": 66.432791,
+        "desktopCaptureFps": 54.581479197524615,
+        "uniqueSentCaptureFps": 52.14292441815368,
+        "uniqueDrawnCaptureFps": 40.98879422362369,
+        "sentFps": 52.17303003271382,
+        "repeatedCaptureSubmissions": 2,
+        "h264Mbps": 4.0718030347392755,
+        "contentToDrawMs": {
+          "n": 2723,
+          "p50": 43.158,
+          "p95": 141.833
+        },
+        "repeatContentAgeMs": {
+          "n": 2,
+          "p50": 271.541,
+          "p95": 290.501
+        },
+        "gazeCounters": {
+          "accepted": 3210,
+          "activations": 6,
+          "clockFuture": 0,
+          "expired": 14,
+          "fallbacks": 6,
+          "future": 0,
+          "invalid": 0,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 34,
+          "version": 0
+        },
+        "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+      }
+    },
+    {
+      "label": "scan-gpu-60-final",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 60.04578419501195,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 60,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 61,
+      "receivedFps": 52.45996937552983,
+      "decodedFps": 47.463781815955564,
+      "uploadedFps": 39.75299901567927,
+      "counters": {
+        "received": 3150,
+        "decoded": 2850,
+        "uploaded": 2387,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 266,
+        "droppedDecoded": 462,
+        "queueOverflows": 16,
+        "droppedAwaitingIdr": 138,
+        "overflowRecoveryIdrs": 16,
+        "staleDriverFramesDropped": 16,
+        "decoderOpenAttempts": 13,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 13,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 499.40986100000003,
+        "emptyReceives": 12165,
+        "emptyReceiveTotalMs": 67.898521
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.05608,
+          "p95": 1.83139
+        },
+        "sendMs": {
+          "p50": 1.0521745,
+          "p95": 1.897585
+        },
+        "convertMs": {
+          "p50": 0.4696445,
+          "p95": 2.996608
+        },
+        "planeCopyMs": {
+          "p50": 0.4696445,
+          "p95": 2.996608
+        },
+        "gpuConvertMs": {
+          "p50": 0.4743315,
+          "p95": 0.941267
+        },
+        "uploadMs": {
+          "p50": 3.7081695000000003,
+          "p95": 4.418897
+        },
+        "syncMs": {
+          "p50": 2.6890405,
+          "p95": 2.928016
+        },
+        "submitMs": {
+          "p50": 0.44422799999999996,
+          "p95": 0.715129
+        },
+        "queueAgeMs": {
+          "p50": 29.693296,
+          "p95": 45.951623
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.099137,
+          "p95": 5.627187
+        },
+        "decoderOpenMs": {
+          "p50": 36.128862999999996,
+          "p95": 43.199023
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "encodedSizes": [
+        [
+          2880,
+          1280
+        ],
+        [
+          2880,
+          2560
+        ]
+      ],
+      "foveationStates": [
+        false,
+        true
+      ],
+      "gazeStates": [
+        "diagnostic-scan"
+      ],
+      "diagnosticGaze": true,
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 1,
+      "decoderColorRange": 1,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 3630,
+      "decoderTimingHighWater": 7,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 8,
+      "emptyReceiveMaxMs": 0.32405,
+      "note": "Stage percentiles summarize one-second observations, not every frame.",
+      "mac": {
+        "duration": 66.446667,
+        "desktopCaptureFps": 54.11859107997095,
+        "uniqueSentCaptureFps": 51.514999239916726,
+        "uniqueDrawnCaptureFps": 38.933480290290554,
+        "sentFps": 52.372830077391235,
+        "repeatedCaptureSubmissions": 57,
+        "h264Mbps": 7.156650671432474,
+        "contentToDrawMs": {
+          "n": 2587,
+          "p50": 46.591,
+          "p95": 150.207
+        },
+        "repeatContentAgeMs": {
+          "n": 53,
+          "p50": 103.839,
+          "p95": 256.283
+        },
+        "gazeCounters": {
+          "accepted": 3227,
+          "activations": 8,
+          "clockFuture": 0,
+          "expired": 9,
+          "fallbacks": 8,
+          "future": 0,
+          "invalid": 0,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 13,
+          "version": 0
+        },
+        "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+      }
+    },
+    {
+      "label": "full-gpu-30-final",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.022017641022103,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 61,
+      "receivedFps": 27.912847498129384,
+      "decodedFps": 27.946156385358655,
+      "uploadedFps": 26.780345332334157,
+      "counters": {
+        "received": 838,
+        "decoded": 839,
+        "uploaded": 804,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 0,
+        "droppedDecoded": 35,
+        "queueOverflows": 0,
+        "droppedAwaitingIdr": 0,
+        "overflowRecoveryIdrs": 0,
+        "staleDriverFramesDropped": 0,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0,
+        "emptyReceives": 5805,
+        "emptyReceiveTotalMs": 35.650806
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.6335860000000002,
+          "p95": 1.743477
+        },
+        "sendMs": {
+          "p50": 1.6130915,
+          "p95": 1.730457
+        },
+        "convertMs": {
+          "p50": 1.0699605,
+          "p95": 5.264337
+        },
+        "planeCopyMs": {
+          "p50": 1.0699605,
+          "p95": 5.264337
+        },
+        "gpuConvertMs": {
+          "p50": 0.8837174999999999,
+          "p95": 1.427499
+        },
+        "uploadMs": {
+          "p50": 4.3146065,
+          "p95": 5.102
+        },
+        "syncMs": {
+          "p50": 2.917393,
+          "p95": 3.307951
+        },
+        "submitMs": {
+          "p50": 0.4587595,
+          "p95": 0.663829
+        },
+        "queueAgeMs": {
+          "p50": 48.8517415,
+          "p95": 108.391169
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.0960645,
+          "p95": 1.550932
+        },
+        "decoderOpenMs": {
+          "p50": 16.654644,
+          "p95": 16.654644
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "encodedSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "foveationStates": [
+        false
+      ],
+      "gazeStates": [
+        "eye-unavailable"
+      ],
+      "diagnosticGaze": false,
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 1,
+      "decoderColorRange": 1,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 0,
+      "decoderTimingHighWater": 4,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 6,
+      "emptyReceiveMaxMs": 0.700964,
+      "note": "Stage percentiles summarize one-second observations, not every frame.",
+      "mac": {
+        "duration": 36.426459,
+        "desktopCaptureFps": 28.138886626339385,
+        "uniqueSentCaptureFps": 27.37021460142475,
+        "uniqueDrawnCaptureFps": 26.217206564052795,
+        "sentFps": 27.37021460142475,
+        "repeatedCaptureSubmissions": 0,
+        "h264Mbps": 1.4262377795217482,
+        "contentToDrawMs": {
+          "n": 955,
+          "p50": 69.199,
+          "p95": 179.74
+        },
+        "repeatContentAgeMs": {
+          "n": 0
+        },
+        "gazeCounters": {
+          "accepted": 0,
+          "activations": 0,
+          "clockFuture": 0,
+          "expired": 0,
+          "fallbacks": 0,
+          "future": 0,
+          "invalid": 1806,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 0,
+          "version": 0
+        },
+        "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+      }
+    },
+    {
+      "label": "scan-gpu-30-final",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 30.023033356002998,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 30,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 60,
+      "receivedFps": 26.579592759252048,
+      "decodedFps": 26.41305395750235,
+      "uploadedFps": 24.88089698140511,
+      "counters": {
+        "received": 798,
+        "decoded": 793,
+        "uploaded": 747,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 0,
+        "droppedDecoded": 46,
+        "queueOverflows": 0,
+        "droppedAwaitingIdr": 0,
+        "overflowRecoveryIdrs": 0,
+        "staleDriverFramesDropped": 0,
+        "decoderOpenAttempts": 5,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 5,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 195.629821,
+        "emptyReceives": 5941,
+        "emptyReceiveTotalMs": 35.364385
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.1579525,
+          "p95": 1.627024
+        },
+        "sendMs": {
+          "p50": 1.1605305000000001,
+          "p95": 1.92092
+        },
+        "convertMs": {
+          "p50": 0.4716755,
+          "p95": 4.966589
+        },
+        "planeCopyMs": {
+          "p50": 0.4716755,
+          "p95": 4.966589
+        },
+        "gpuConvertMs": {
+          "p50": 0.532455,
+          "p95": 0.925435
+        },
+        "uploadMs": {
+          "p50": 3.8258235000000003,
+          "p95": 4.513481
+        },
+        "syncMs": {
+          "p50": 2.800809,
+          "p95": 3.064835
+        },
+        "submitMs": {
+          "p50": 0.412433,
+          "p95": 0.623102
+        },
+        "queueAgeMs": {
+          "p50": 47.626146,
+          "p95": 69.693233
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.100491,
+          "p95": 0.186608
+        },
+        "decoderOpenMs": {
+          "p50": 45.923161,
+          "p95": 45.923161
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "encodedSizes": [
+        [
+          2880,
+          1280
+        ],
+        [
+          2880,
+          2560
+        ]
+      ],
+      "foveationStates": [
+        false,
+        true
+      ],
+      "gazeStates": [
+        "diagnostic-scan"
+      ],
+      "diagnosticGaze": true,
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 1,
+      "decoderColorRange": 1,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 0,
+      "decoderTimingHighWater": 5,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 4,
+      "emptyReceiveMaxMs": 1.353387,
+      "note": "Stage percentiles summarize one-second observations, not every frame.",
+      "mac": {
+        "duration": 36.276125,
+        "desktopCaptureFps": 28.39333032400787,
+        "uniqueSentCaptureFps": 26.518819195820942,
+        "uniqueDrawnCaptureFps": 24.89240512871758,
+        "sentFps": 26.629084556302526,
+        "repeatedCaptureSubmissions": 4,
+        "h264Mbps": 4.415523212581278,
+        "contentToDrawMs": {
+          "n": 903,
+          "p50": 66.761,
+          "p95": 152.794
+        },
+        "repeatContentAgeMs": {
+          "n": 4,
+          "p50": 163.279,
+          "p95": 545.557
+        },
+        "gazeCounters": {
+          "accepted": 1738,
+          "activations": 3,
+          "clockFuture": 0,
+          "expired": 6,
+          "fallbacks": 3,
+          "future": 0,
+          "invalid": 0,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 32,
+          "version": 0
+        },
+        "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+      }
+    },
+    {
+      "label": "full-gpu-60-recheck",
+      "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+      "duration": 60.04581322998274,
+      "workspacePreset": "2880x2560",
+      "target": {
+        "width": 2880,
+        "height": 2560,
+        "maxLong": 4096,
+        "fps": 60,
+        "codec": "h264"
+      },
+      "fixtureWindowSize": [
+        2880,
+        2530
+      ],
+      "fixtureReportedFpsAtWarmup": 61,
+      "receivedFps": 54.87476682811757,
+      "decodedFps": 53.85887584890204,
+      "uploadedFps": 48.31311033941398,
+      "counters": {
+        "received": 3295,
+        "decoded": 3234,
+        "uploaded": 2901,
+        "errors": 0,
+        "networkErrors": 0,
+        "serverErrors": 0,
+        "decoderSendErrors": 0,
+        "decoderReceiveErrors": 0,
+        "decoderFatalErrors": 0,
+        "submitErrors": 0,
+        "droppedEncoded": 60,
+        "droppedDecoded": 333,
+        "queueOverflows": 1,
+        "droppedAwaitingIdr": 52,
+        "overflowRecoveryIdrs": 1,
+        "staleDriverFramesDropped": 1,
+        "decoderOpenAttempts": 0,
+        "decoderInitialOpens": 0,
+        "decoderReconnectOpens": 0,
+        "decoderFormatReopens": 0,
+        "decoderOpenFailures": 0,
+        "decoderOpenTotalMs": 0.0,
+        "emptyReceives": 11591,
+        "emptyReceiveTotalMs": 61.371914
+      },
+      "timings": {
+        "decodeMs": {
+          "p50": 1.583927,
+          "p95": 1.675721
+        },
+        "sendMs": {
+          "p50": 1.5739535,
+          "p95": 1.667804
+        },
+        "convertMs": {
+          "p50": 0.8976495,
+          "p95": 3.651898
+        },
+        "planeCopyMs": {
+          "p50": 0.8976495,
+          "p95": 3.651898
+        },
+        "gpuConvertMs": {
+          "p50": 0.8358030000000001,
+          "p95": 1.252767
+        },
+        "uploadMs": {
+          "p50": 4.044645,
+          "p95": 4.980652
+        },
+        "syncMs": {
+          "p50": 2.7607335,
+          "p95": 3.15301
+        },
+        "submitMs": {
+          "p50": 0.41011549999999997,
+          "p95": 0.699818
+        },
+        "queueAgeMs": {
+          "p50": 30.730005,
+          "p95": 48.463139
+        },
+        "packetQueueWaitMs": {
+          "p50": 0.1035385,
+          "p95": 5.420845
+        },
+        "decoderOpenMs": {
+          "p50": 12.964892,
+          "p95": 12.964892
+        }
+      },
+      "textureSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "encodedSizes": [
+        [
+          2880,
+          2560
+        ]
+      ],
+      "foveationStates": [
+        false
+      ],
+      "gazeStates": [
+        "eye-unavailable"
+      ],
+      "diagnosticGaze": false,
+      "decoder": "h264_v4l2m2m",
+      "decoderPixelFormat": 23,
+      "decoderColorSpace": 1,
+      "decoderColorRange": 1,
+      "conversionRequested": "gpu",
+      "conversionActive": "gpu",
+      "conversionFallbacks": 0,
+      "lastOverflowRecoverySeq": 750,
+      "decoderTimingHighWater": 6,
+      "packetQueueLimit": 8,
+      "packetQueueHighWater": 8,
+      "emptyReceiveMaxMs": 0.528574,
+      "note": "Stage percentiles summarize one-second observations, not every frame.",
+      "mac": {
+        "duration": 66.365084,
+        "desktopCaptureFps": 54.90839128599612,
+        "uniqueSentCaptureFps": 54.80291413478811,
+        "uniqueDrawnCaptureFps": 48.398944240016334,
+        "sentFps": 54.80291413478811,
+        "repeatedCaptureSubmissions": 0,
+        "h264Mbps": 2.2294897117888075,
+        "contentToDrawMs": {
+          "n": 3212,
+          "p50": 48.6385,
+          "p95": 123.228
+        },
+        "repeatContentAgeMs": {
+          "n": 0
+        },
+        "gazeCounters": {
+          "accepted": 0,
+          "activations": 0,
+          "clockFuture": 0,
+          "expired": 0,
+          "fallbacks": 0,
+          "future": 0,
+          "invalid": 3279,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 0,
+          "version": 0
+        },
+        "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+      }
+    }
+  ],
+  "limitations": [
+    "Real eye sample validity, UV placement, sharpness and tracking loss while worn remain unverified. Off-head eye mode is full quality.",
+    "Tiny 384x288 generated VT stream failed strict QCOM PTS checks; separate rapid 100ms resize returned EBUSY. Actual-sized settled CPU/GPU full-atlas-full chains passed.",
+    "Encoded pixel reduction is not a guaranteed bitrate or frame-rate improvement."
+  ],
+  "preSchedulingAtlasMeasurements": {
+    "macSha256": "d92f46b8c65375ac9e4a0db7bfc169574fc12b1c8da0fcbb035cccfd4016a1c0",
+    "runs": [
+      {
+        "label": "fixed-gpu-60-atlas-build",
+        "freshDrawnFps": 47.79013960783131,
+        "uploadedFps": 48.18227664462296,
+        "h264Mbps": 2.7503890394845483,
+        "repeats": 38,
+        "queueOverflows": 4,
+        "formatReopens": 6,
+        "gaze": {
+          "accepted": 3224,
+          "activations": 3,
+          "clockFuture": 0,
+          "expired": 3,
+          "fallbacks": 3,
+          "future": 0,
+          "invalid": 0,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 0,
+          "version": 0
+        }
+      },
+      {
+        "label": "full-gpu-60-atlas-build",
+        "freshDrawnFps": 41.62888694891262,
+        "uploadedFps": 42.06793908970713,
+        "h264Mbps": 3.6479603430899568,
+        "repeats": 86,
+        "queueOverflows": 12,
+        "formatReopens": 0,
+        "gaze": {
+          "accepted": 0,
+          "activations": 0,
+          "clockFuture": 0,
+          "expired": 0,
+          "fallbacks": 0,
+          "future": 0,
+          "invalid": 3250,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 0,
+          "version": 0
+        }
+      },
+      {
+        "label": "scan-gpu-60-atlas-build",
+        "freshDrawnFps": 41.6715351302047,
+        "uploadedFps": 44.56602215760097,
+        "h264Mbps": 6.144835239886474,
+        "repeats": 270,
+        "queueOverflows": 9,
+        "formatReopens": 12,
+        "gaze": {
+          "accepted": 3214,
+          "activations": 7,
+          "clockFuture": 0,
+          "expired": 6,
+          "fallbacks": 6,
+          "future": 0,
+          "invalid": 2,
+          "malformed": 0,
+          "range": 0,
+          "replay": 0,
+          "sampleGap": 0,
+          "session": 0,
+          "source": 0,
+          "stale": 10,
+          "version": 0
+        }
+      }
+    ]
+  },
+  "captureFirstRegression": {
+    "result": "PASS",
+    "sha256": "f09de9fe5a1c73ddf29d09f6b1827eea051fba0b62dad916fc5bfc4e46adc04a",
+    "changes": [
+      "Gaze-only refresh waits for more than two current paced frame periods without capture arrival",
+      "Warped-to-full fallback bypasses quiet gating",
+      "Fresh admitted foveated capture clears stale skipped scheduling flag",
+      "TestSource-only positive integer capture-rate override bounded by requested FPS"
+    ],
+    "session": {
+      "staticFrames": 6,
+      "coverage": [
+        "static gaze movement",
+        "invalid/stale full fallback",
+        "cooldown",
+        "reconnect",
+        "legacy browser framing",
+        "nominal pacing",
+        "prompt healthy-capture invalid fallback"
+      ]
+    },
+    "continuous": [
+      {
+        "targetFps": 30,
+        "captureFps": 27,
+        "fixedCaptured": 81,
+        "movingCaptured": 81,
+        "fixedMeasuredUnique": 59,
+        "movingMeasuredUnique": 60,
+        "repeatsEach": 0
+      },
+      {
+        "targetFps": 60,
+        "captureFps": 55,
+        "fixedCaptured": 165,
+        "movingCaptured": 165,
+        "fixedMeasuredUnique": 120,
+        "movingMeasuredUnique": 121,
+        "repeatsEach": 0
+      }
+    ],
+    "nativeUnchanged": true,
+    "clock": {
+      "result": "PASS",
+      "harmlessCorrectionFallbacks": 0,
+      "orderingReplayRejected": true,
+      "staleFutureBoundsUnchanged": true,
+      "actual250msLossFallsBack": true,
+      "reconnectFreshNonce": true
+    }
+  },
+  "runtimeArtifacts": {
+    "macSha256": "f09de9fe5a1c73ddf29d09f6b1827eea051fba0b62dad916fc5bfc4e46adc04a",
+    "nativeSha256": "3b26594e8e82bc98ba29a4fe1803aa14739f1f13e156fda7ec560637ff99be74",
+    "macSwiftSourcesCombinedSha256": "7b9d2befe152273ecb540aa0f787bbb91f5ab61a60dcabf55e09b91e389dc832",
+    "macVirtualDisplayHeaderSha256": "8fa36d43174badcdd6c3f91f76edf9c6fc82286df1ffd4ec2daa426f10e49f3a"
+  },
+  "decision": {
+    "experimentalOnly": true,
+    "enableByDefault": false,
+    "sustained60fpsAchieved": false,
+    "reason": "Final matched foveated runs were slower and used more bandwidth than negotiated full quality. Gaze expiry caused repeated full/atlas codec transitions despite correct reconstruction. Keep ordinary full-quality viewer enabled; explicit opt-in remains available for further worn/transport investigation."
+  },
+  "normalViewerCheck": {
+    "label": "legacy-full-gpu-60-final",
+    "evidence": "off-head desktop texture updates; not compositor or optical FPS",
+    "duration": 30.025131419009995,
+    "workspacePreset": "2880x2560",
+    "target": {
+      "width": 2880,
+      "height": 2560,
+      "maxLong": 4096,
+      "fps": 60,
+      "codec": "h264"
+    },
+    "fixtureWindowSize": [
+      2880,
+      2530
+    ],
+    "fixtureReportedFpsAtWarmup": 61,
+    "receivedFps": 54.62090996749666,
+    "decodedFps": 52.456056828540994,
+    "uploadedFps": 45.66174851551092,
+    "counters": {
+      "received": 1640,
+      "decoded": 1575,
+      "uploaded": 1371,
+      "errors": 0,
+      "networkErrors": 0,
+      "serverErrors": 0,
+      "decoderSendErrors": 0,
+      "decoderReceiveErrors": 0,
+      "decoderFatalErrors": 0,
+      "submitErrors": 0,
+      "droppedEncoded": 62,
+      "droppedDecoded": 204,
+      "queueOverflows": 3,
+      "droppedAwaitingIdr": 38,
+      "overflowRecoveryIdrs": 3,
+      "staleDriverFramesDropped": 3,
+      "decoderOpenAttempts": 0,
+      "decoderInitialOpens": 0,
+      "decoderReconnectOpens": 0,
+      "decoderFormatReopens": 0,
+      "decoderOpenFailures": 0,
+      "decoderOpenTotalMs": 0.0,
+      "emptyReceives": 5818,
+      "emptyReceiveTotalMs": 31.781526
+    },
+    "timings": {
+      "decodeMs": {
+        "p50": 1.6033545,
+        "p95": 1.635879
+      },
+      "sendMs": {
+        "p50": 1.574605,
+        "p95": 1.652961
+      },
+      "convertMs": {
+        "p50": 0.8924675,
+        "p95": 3.996418
+      },
+      "planeCopyMs": {
+        "p50": 0.8924675,
+        "p95": 3.996418
+      },
+      "gpuConvertMs": {
+        "p50": 0.8650990000000001,
+        "p95": 1.099491
+      },
+      "uploadMs": {
+        "p50": 4.086285,
+        "p95": 4.971019
+      },
+      "syncMs": {
+        "p50": 2.7530775,
+        "p95": 3.100462
+      },
+      "submitMs": {
+        "p50": 0.401157,
+        "p95": 0.690028
+      },
+      "queueAgeMs": {
+        "p50": 30.837665,
+        "p95": 38.389242
+      },
+      "packetQueueWaitMs": {
+        "p50": 0.115178,
+        "p95": 0.188119
+      },
+      "decoderOpenMs": {
+        "p50": 12.581525,
+        "p95": 12.581525
+      }
+    },
+    "textureSizes": [
+      [
+        2880,
+        2560
+      ]
+    ],
+    "encodedSizes": [
+      [
+        2880,
+        2560
+      ]
+    ],
+    "foveationStates": [
+      false
+    ],
+    "gazeStates": [
+      "disabled"
+    ],
+    "diagnosticGaze": false,
+    "decoder": "h264_v4l2m2m",
+    "decoderPixelFormat": 23,
+    "decoderColorSpace": 2,
+    "decoderColorRange": 0,
+    "conversionRequested": "gpu",
+    "conversionActive": "gpu",
+    "conversionFallbacks": 0,
+    "lastOverflowRecoverySeq": 1203,
+    "decoderTimingHighWater": 6,
+    "packetQueueLimit": 8,
+    "packetQueueHighWater": 8,
+    "emptyReceiveMaxMs": 0.271917,
+    "note": "Stage percentiles summarize one-second observations, not every frame.",
+    "mac": {
+      "duration": 36.389084,
+      "desktopCaptureFps": 54.46688353023671,
+      "uniqueSentCaptureFps": 54.164595074720765,
+      "uniqueDrawnCaptureFps": 45.37074909607508,
+      "sentFps": 54.3019989181371,
+      "repeatedCaptureSubmissions": 5,
+      "h264Mbps": 2.7675541379387294,
+      "contentToDrawMs": {
+        "n": 1621,
+        "p50": 52.785,
+        "p95": 136.6
+      },
+      "repeatContentAgeMs": {
+        "n": 5,
+        "p50": 171.483,
+        "p95": 332.384
+      },
+      "gazeCounters": {},
+      "note": "Mac host-clock window brackets the native sampling window; H264 payload only. Unique captures are separate from repeats caused by gaze or backlog. Clock-synchronized cap-to-draw excludes compositor and optical latency."
+    }
+  },
+  "finalConfiguration": {
+    "workspace": "Coding",
+    "source": [
+      2880,
+      2560
+    ],
+    "quality": "Sharp",
+    "requestedFps": 60,
+    "decoder": "v4l2",
+    "conversion": "gpu",
+    "foveationEnabled": false,
+    "syntheticGazeEnabled": false
+  },
+  "cleanup": {
+    "priorPassLogicalBytes": 103283122,
+    "finalPassLogicalBytes": 55882460,
+    "finalPassAllocatedBytes": 56057856,
+    "totalLogicalBytesRemoved": 159165582,
+    "finalPass": [
+      {
+        "host": "Mac",
+        "records": [
+          {
+            "path": "/tmp/frame-workspace-foveation-native-atlas-build.json",
+            "logicalBytes": 4314,
+            "allocatedBytes": 8192
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-native-final.json",
+            "logicalBytes": 2825,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-foveation-mac-view",
+            "logicalBytes": 762568,
+            "allocatedBytes": 765952
+          },
+          {
+            "path": "/tmp/frame-foveation-mac-view-capture-first",
+            "logicalBytes": 782536,
+            "allocatedBytes": 786432
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-native-atlas-final-build.json",
+            "logicalBytes": 4057,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-final-checks.json",
+            "logicalBytes": 1697,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-foveation-mac-view-atlas",
+            "logicalBytes": 765920,
+            "allocatedBytes": 765952
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-switch.py",
+            "logicalBytes": 2535,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-foveation-mac-view-counters",
+            "logicalBytes": 764784,
+            "allocatedBytes": 765952
+          },
+          {
+            "path": "/tmp/frame-foveation-evidence",
+            "logicalBytes": 564470,
+            "allocatedBytes": 565248
+          },
+          {
+            "path": "/tmp/frame-foveation-atlas-checks.json",
+            "logicalBytes": 1891,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-foveation-mac-view-clock",
+            "logicalBytes": 764896,
+            "allocatedBytes": 765952
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-slowread.json",
+            "logicalBytes": 880,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-foveation-mac-view-stable",
+            "logicalBytes": 765120,
+            "allocatedBytes": 765952
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-local-final.json",
+            "logicalBytes": 2323,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-foveation-capture-first-checks.json",
+            "logicalBytes": 1543,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-results",
+            "logicalBytes": 68983,
+            "allocatedBytes": 81920
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-probe-20261019",
+            "logicalBytes": 185008,
+            "allocatedBytes": 200704
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-local-checks.json",
+            "logicalBytes": 9714,
+            "allocatedBytes": 12288
+          },
+          {
+            "path": "/tmp/frame-workspace-slowread-probe.py",
+            "logicalBytes": 5303,
+            "allocatedBytes": 8192
+          },
+          {
+            "path": "/tmp/frame-workspace-fixture-bounds",
+            "logicalBytes": 68336,
+            "allocatedBytes": 69632
+          },
+          {
+            "path": "/tmp/frame-workspace-fixture-bounds.swift",
+            "logicalBytes": 377,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "native/__pycache__/tests_foveation.cpython-314.pyc",
+            "logicalBytes": 25194,
+            "allocatedBytes": 28672
+          },
+          {
+            "path": "native/__pycache__/tests_gaze_transport.cpython-314.pyc",
+            "logicalBytes": 11481,
+            "allocatedBytes": 12288
+          },
+          {
+            "path": "/tmp/frame-workspace-companion-task.log (trimmed, active log retained)",
+            "logicalBytes": 591212,
+            "allocatedBytes": 593920
+          }
+        ],
+        "logicalBytes": 6157967,
+        "allocatedBytes": 6234112,
+        "preserved": [
+          "current installed helper",
+          "one pre-task rollback",
+          "active companion runner/pid/log",
+          "awake assertion",
+          "user data"
+        ]
+      },
+      {
+        "host": "Frame",
+        "records": [
+          {
+            "path": "/tmp/frame-workspace-foveation-slowread.json",
+            "logicalBytes": 899,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-transition.json",
+            "logicalBytes": 1914,
+            "allocatedBytes": 4096
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-dev",
+            "logicalBytes": 46869858,
+            "allocatedBytes": 46997504
+          },
+          {
+            "path": "/tmp/frame-workspace-foveation-probe",
+            "logicalBytes": 254686,
+            "allocatedBytes": 212992
+          },
+          {
+            "path": "/tmp/frame-workspace-30fps-rollback",
+            "logicalBytes": 2597136,
+            "allocatedBytes": 2605056
+          }
+        ],
+        "logicalBytes": 49724493,
+        "allocatedBytes": 49823744,
+        "preserved": [
+          "installed native binary and metadata",
+          "one pre-task rollback including original pose",
+          "user data",
+          "other applications"
+        ]
+      }
+    ]
+  },
+  "runtimeHealth": {
+    "mac": {
+      "workspaceState": "running",
+      "preset": "2880x2560",
+      "fpsTarget": 60,
+      "tunnel": true,
+      "macBinarySha256": "f09de9fe5a1c73ddf29d09f6b1827eea051fba0b62dad916fc5bfc4e46adc04a",
+      "awakeAssertionAlive": true
+    },
+    "frame": {
+      "ready": true,
+      "connected": true,
+      "textureWidth": 2880,
+      "textureHeight": 2560,
+      "encodedWidth": 2880,
+      "encodedHeight": 2560,
+      "diagnosticGaze": false,
+      "gazeState": "disabled",
+      "foveationRequested": false,
+      "foveationNegotiated": false,
+      "conversionActive": "gpu",
+      "errors": 0,
+      "decoderFatalErrors": 0,
+      "submitErrors": 0,
+      "pid": 1597759,
+      "runningBinarySha256": "3b26594e8e82bc98ba29a4fe1803aa14739f1f13e156fda7ec560637ff99be74",
+      "poseSha256": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c"
+    }
+  },
+  "eyeProviderProbe": {
+    "sdk": "OpenVR v2.15.6",
+    "system026Available": true,
+    "input011Available": true,
+    "eyeActionManifestErrors": 0,
+    "offHeadEyeValid": false,
+    "overlayUvCalibrationPassed": true,
+    "wornAcceptance": false
+  },
+  "rollback": {
+    "mac": {
+      "path": "/tmp/frame-workspace-foveation-mac-rollback/frame-mac-view",
+      "sha256": "d6bccf857ff48e2de99400e16e15e82b981bb340bc903644460b96b3aa969edc"
+    },
+    "frame": {
+      "path": "/tmp/frame-workspace-foveation-rollback",
+      "binarySha256": "93f3497538e89d99fb25e7460fbb1c868a6b06cc1756a33e23bba20d7964684f",
+      "poseSha256": "1dc2bd39102c1103f0bd83e4657edfac51b953646321fafd1f065328d2b6887c"
+    },
+    "note": "One small pre-task rollback retained until worn verification; current installed deliverables and user data preserved."
+  }
+}

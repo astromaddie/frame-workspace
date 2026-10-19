@@ -35,6 +35,12 @@ import frame_macview  # noqa: E402
 
 
 class Helpers(unittest.TestCase):
+    def test_diagnostic_gaze_is_canonical_before_launch(self):
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_FOVEATION": "1", "FRAME_MAC_VIEW_DIAGNOSTIC_GAZE": "1", "FRAME_WORKSPACE_DIAGNOSTIC_GAZE": " 0.5 , 1e-1 "}):
+            value = frame_macview.workspace_diagnostic_gaze()
+            self.assertNotIn(" ", value)
+            self.assertEqual(list(map(float, value.split(","))), [0.5, 0.1])
+
     def test_panel_id_is_stable_and_in_range(self):
         a = frame_macview.panel_id("window:123")
         self.assertEqual(a, frame_macview.panel_id("window:123"))
@@ -1208,6 +1214,12 @@ class WorkspaceLifecycle(unittest.TestCase):
                 self.assertNotIn("--remote-debugging-port=9999", args)
                 self.assertEqual(calls[0][1]["stdin"], frame_macview.WORKSPACE_NATIVE_SCRIPT.read_text())
                 self.assertEqual(shown["panel"], "com.frame-workspace.native.1000.workspace")
+                with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_FOVEATION": "1"}):
+                    mv.show("workspace", quality="sharp")
+                self.assertEqual(shlex.split(calls[-1][0])[-3:], ["v4l2", "gpu", "1"])
+                with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_FOVEATION": "1", "FRAME_MAC_VIEW_DIAGNOSTIC_GAZE": "1", "FRAME_WORKSPACE_DIAGNOSTIC_GAZE": "scan"}):
+                    mv.show("workspace", quality="sharp")
+                self.assertEqual(shlex.split(calls[-1][0])[-4:], ["v4l2", "gpu", "1", "scan"])
                 mv._focus_workspace_viewer()
                 self.assertEqual(calls[-1][0], "bash -s -- focus")
                 self.assertNotIn("--showdashboard", calls[-1][0])
@@ -1316,7 +1328,11 @@ class WorkspaceLifecycle(unittest.TestCase):
         for env, quality, message in [({"FRAME_WORKSPACE_VIEWER": "wrong"}, "sharp", "browser or native"),
                                       ({"FRAME_WORKSPACE_VIEWER": "native"}, "compatible", "needs H.264"),
                                       ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "auto"}, "sharp", "software or v4l2"),
-                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_CONVERSION": "auto"}, "sharp", "cpu or gpu")]:
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_CONVERSION": "auto"}, "sharp", "cpu or gpu"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_FOVEATION": "auto"}, "sharp", "0 or 1"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DIAGNOSTIC_GAZE": "scan"}, "sharp", "Diagnostic gaze requires"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_FOVEATION": "1", "FRAME_MAC_VIEW_DIAGNOSTIC_GAZE": "1", "FRAME_WORKSPACE_DIAGNOSTIC_GAZE": "nan,0"}, "sharp", "finite U,V"),
+                                      ({"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_FOVEATION": "1", "FRAME_MAC_VIEW_DIAGNOSTIC_GAZE": "1", "FRAME_WORKSPACE_DIAGNOSTIC_GAZE": "0,1.1"}, "sharp", "finite U,V")]:
             with self.subTest(env=env, quality=quality), mock.patch.dict(os.environ, env), \
                     mock.patch.object(frame_macview.subprocess, "Popen") as popen:
                 with self.assertRaisesRegex(frame_macview.MacViewError, message):

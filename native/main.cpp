@@ -43,6 +43,146 @@ static int selfTest() {
   bytes[17] = 7;
   auto p = packet(bytes);
   require(p.key && p.seq == 0x12345678 && p.bytes[0] == 7, "wire packet");
+  const float projection[16]{2,0,.2f,0, 0,3,-.1f,0, 0,0,-1.002f,-.2002f, 0,0,-1,0};
+  const float eye[12]{1,0,0,-.03f, 0,1,0,0, 0,0,1,0};
+  const float head[12]{1,0,0,1, 0,1,0,2, 0,0,1,3};
+  EyeRay ray;
+  require(eyeRay(projection,eye,head,.3f,.5f,ray) &&
+          std::abs(ray.origin[0]-.97f)<1e-5 && std::abs(ray.origin[1]-2)<1e-5 &&
+          ray.direction[0]>0 && ray.direction[1]>0 && ray.direction[2]<0,
+          "off-axis NDC to eye ray and standing origin");
+  double px=ray.direction[0]/-ray.direction[2],py=ray.direction[1]/-ray.direction[2];
+  require(std::abs(2*px-.2-.3)<1e-5 && std::abs(3*py+.1-.5)<1e-5,
+          "unprojected ray roundtrips exact projection");
+  bool flipX=false,flipY=false;
+  require(uvOrientation(.4f,.6f,.25f,.75f,flipX,flipY) && !flipX && !flipY &&
+          uvOrientation(.6f,.4f,.75f,.25f,flipX,flipY) && flipX && flipY &&
+          !uvOrientation(.4f,.4f,.25f,.75f,flipX,flipY), "runtime UV orientation calibration");
+  float badProjection[16]{};
+  require(!eyeRay(badProjection,eye,head,0,0,ray) &&
+          !eyeRay(projection,eye,head,NAN,0,ray), "invalid eye math fallback");
+  auto layoutPacket = std::vector<uint8_t>(38, 0);
+  layoutPacket[0] = 0x81; layoutPacket[17] = 1; layoutPacket[18] = 1;
+  auto put16 = [&](size_t offset, int value) {
+    layoutPacket[offset] = value >> 8; layoutPacket[offset + 1] = value & 255;
+  };
+  put16(21, 640); put16(23, 480); put16(25, 480); put16(27, 360);
+  put16(29, 160); put16(31, 120); put16(33, 320); put16(35, 240);
+  auto warped = packet(layoutPacket, true);
+  require(warped.layout.valid() && warped.layout.matches(480, 360) &&
+          !warped.layout.matches(640, 480) && warped.bytes.size() == 1,
+          "validated foveated extension");
+  for (int x = 160; x < 480; ++x)
+    require(FoveationLayout::compress(x + .5, 160, 320) == x + .5 - 80,
+            "focal pixels retain exact sample centers");
+  require(FoveationLayout::compress(0, 160, 320) == 0 &&
+          FoveationLayout::compress(640, 160, 320) == 480,
+          "warp spans both source edges");
+  for (int index : {0, 17, 18, 19, 20, 21, 25, 29, 33}) {
+    auto bad = layoutPacket;
+    bad[index] = 255;
+    bool rejected = false;
+    try { packet(bad, true); } catch (...) { rejected = true; }
+    require(rejected, "malformed layout accepted");
+  }
+  bool unnegotiated = false;
+  try { packet(layoutPacket); } catch (...) { unnegotiated = true; }
+  require(unnegotiated, "unnegotiated extension accepted");
+  // Atlas is a separately negotiated mode; legacy v1 senders stay valid.
+  layoutPacket[18] = 2;
+  put16(21, 644); put16(23, 484); put16(25, 644); put16(27, 242);
+  put16(29, 322); put16(31, 242); put16(33, 322); put16(35, 242);
+  auto atlasPacket = packet(layoutPacket, true, true);
+  require(atlasPacket.layout.atlas && atlasPacket.layout.valid() &&
+          atlasPacket.layout.matches(644,242), "exact half atlas supports divisible4-not8 corners");
+  bool atlasUnnegotiated = false;
+  try { packet(layoutPacket, true); } catch (...) { atlasUnnegotiated = true; }
+  require(atlasUnnegotiated, "unnegotiated atlas accepted by axis-only session");
+  for (const auto &change : std::vector<std::pair<size_t,int>>{{25,642},{27,244},{29,321},{29,324},{31,244},{33,320},{35,240}}) {
+    auto saved = layoutPacket;
+    put16(change.first,change.second);
+    bool rejected = false;
+    try { packet(layoutPacket,true,true); } catch (...) { rejected = true; }
+    require(rejected, "malformed atlas geometry accepted");
+    layoutPacket = saved;
+  }
+  std::map<int64_t, PacketTiming> layouts;
+  layouts[10] = {1, 1, warped.layout};
+  auto moved = warped.layout; moved.left = 0; moved.top = 0;
+  layouts[11] = {2, 2, moved};
+  require(layouts.at(10).layout.left == 160 && layouts.at(11).layout.left == 0,
+          "delayed decoder output retains its own layout");
+  int64_t layoutBarrier = 0;
+  retireTimingHistory(layouts, 10, layoutBarrier);
+  require(timestampStatus(10, layoutBarrier, layouts) == TimestampStatus::Stale &&
+          timestampStatus(11, layoutBarrier, layouts) == TimestampStatus::Mapped &&
+          layouts.at(11).layout.left == 0, "layout follows IDR timestamp barrier");
+  // Crop repair accepts only exact coded/visible bounds from the slice's SPS.
+  // Exercise nonzero left/top as well as QCOM's bottom-only padding case.
+  auto cropSps = [](unsigned id, unsigned left, unsigned right,
+                    unsigned top, unsigned bottom, bool fullRange = false) {
+    std::vector<bool> bits;
+    auto put = [&](uint32_t value, unsigned count) {
+      for (unsigned i = count; i; --i) bits.push_back((value >> (i - 1)) & 1);
+    };
+    auto ue = [&](uint32_t value) {
+      ++value; unsigned count = 0;
+      for (uint32_t v = value; v; v >>= 1) ++count;
+      put(0, count - 1); put(value, count);
+    };
+    put(66, 8); put(0, 8); put(31, 8); ue(id);
+    ue(0); ue(0); ue(0); ue(1); put(0, 1);
+    ue(30); ue(22); put(1, 1); put(1, 1); put(1, 1);
+    ue(left); ue(right); ue(top); ue(bottom);
+    put(1,1); put(0,1); put(0,1); put(1,1); // VUI, no aspect/overscan, video signal
+    put(5,3); put(fullRange,1); put(1,1); put(1,8); put(1,8); put(1,8); put(1,1);
+    while (bits.size() % 8) bits.push_back(false);
+    std::vector<uint8_t> out{0,0,1,0x67};
+    unsigned zeros = 0;
+    for (size_t i = 0; i < bits.size(); i += 8) {
+      uint8_t byte = 0;
+      for (unsigned j = 0; j < 8; ++j) byte = (byte << 1) | bits[i+j];
+      if (zeros >= 2 && byte <= 3) { out.push_back(3); zeros = 0; }
+      out.push_back(byte); zeros = byte == 0 ? zeros + 1 : 0;
+    }
+    return out;
+  };
+  H264CropHeaders cropParser;
+  H264Crop crop;
+  auto cropBytes = cropSps(0,2,6,1,3);
+  // PPS0 references SPS0, then a later SPS1 must not replace that mapping.
+  const uint8_t pps0[]{0,0,1,0x68,0xc0};
+  cropBytes.insert(cropBytes.end(), std::begin(pps0), std::end(pps0));
+  auto otherSps = cropSps(1,0,8,0,4,true);
+  cropBytes.insert(cropBytes.end(), otherSps.begin(), otherSps.end());
+  const uint8_t slice0[]{0,0,1,0x65,0xb8};
+  cropBytes.insert(cropBytes.end(), std::begin(slice0), std::end(slice0));
+  require(cropParser.parse(cropBytes,crop) && crop.left == 4 && crop.top == 2 &&
+          crop.width() == 480 && crop.height() == 360 && crop.colorSpace == AVCOL_SPC_BT709 &&
+          crop.colorRange == AVCOL_RANGE_MPEG, "slice PPS selects crop and VUI SPS");
+  auto savedCrop = crop;
+  auto badCrop = cropSps(0,248,0,0,0);
+  badCrop.insert(badCrop.end(), std::begin(slice0), std::end(slice0));
+  require(!cropParser.parse(badCrop,crop), "out-of-bounds SPS crop rejected");
+  require(!cropParser.parse({0,0,1,0x67,66},crop), "truncated crop SPS rejected");
+  AVFrame *cropped = av_frame_alloc();
+  require(cropped != nullptr, "crop test frame");
+  cropped->format = AV_PIX_FMT_NV12; cropped->width = 496; cropped->height = 368;
+  require(av_frame_get_buffer(cropped,32) == 0, "crop test planes");
+  auto originalY = cropped->data[0], originalUV = cropped->data[1];
+  auto strideY = cropped->linesize[0], strideUV = cropped->linesize[1];
+  cropped->crop_bottom = 2;
+  require(!normalizeH264Crop(cropped,savedCrop,480,360), "conflicting decoder crop rejected");
+  cropped->crop_bottom = 0;
+  require(!normalizeH264Crop(cropped,savedCrop,480,358), "layout crop mismatch rejected");
+  require(normalizeH264Crop(cropped,savedCrop,480,360) &&
+          cropped->data[0] == originalY + 2*strideY + 4 &&
+          cropped->data[1] == originalUV + strideUV + 4 &&
+          normalizeH264Crop(cropped,savedCrop,480,360), "visible NV12 plane origins and already-cropped frame");
+  av_frame_free(&cropped);
+  layouts[11].crop = savedCrop;
+  crop.left = 0;
+  require(layouts[11].crop.left == 4, "crop snapshot remains bound to decoder PTS");
   Pipeline initial;
   Packet initialIdr;
   initialIdr.key = true;
@@ -95,7 +235,7 @@ static int selfTest() {
                   RecoveryAction::FlushContext,
           "initial, overflow, reconnect, resize recovery policy");
   std::map<int64_t, PacketTiming> softwareReconnectTiming{
-      {1, {1, 1}}, {2, {2, 2}}, {3, {3, 3}}};
+      {1, {1, 1, {}}}, {2, {2, 2, {}}}, {3, {3, 3, {}}}};
   int64_t softwareReconnectBarrier = -1;
   const RecoveryAction softwareReconnectAction =
       recoveryAction(false, true, false, ResetReason::Reconnect);
@@ -112,8 +252,8 @@ static int selfTest() {
                              softwareReconnectTiming) ==
                   TimestampStatus::Unknown,
           "software reconnect flush retires prior timestamp metadata");
-  std::map<int64_t, PacketTiming> timestamps{{1, {1, 1}}, {2, {2, 2}},
-                                              {3, {3, 3}}, {4, {4, 4}}};
+  std::map<int64_t, PacketTiming> timestamps{{1, {1, 1, {}}}, {2, {2, 2, {}}},
+                                              {3, {3, 3, {}}}, {4, {4, 4, {}}}};
   retireTimingsThrough(timestamps, 3);
   require(timestamps.size() == 1 && timestamps.count(4) &&
               timestampStatus(2, 3, timestamps) == TimestampStatus::Stale &&
@@ -261,9 +401,12 @@ int main(int argc, char **argv) {
       exitReason = "running";
   std::vector<std::string> inspectFiles;
   bool test = false, noVR = false, testYuvOracle = false;
+  bool foveation = false, diagnosticGaze = false, diagnosticScan = false;
+  double diagnosticU = 0, diagnosticV = 0;
   uint32_t dumpSequence = 0;
   int dumpWidth = 0, dumpHeight = 0;
-  double seconds = 0;
+  double seconds = 0, lastGazeSample = 0;
+  const char *gazeState = "disabled";
   try {
     for (int i = 1; i < argc; i++) {
       std::string a = argv[i];
@@ -290,6 +433,22 @@ int main(int argc, char **argv) {
         decoderMode = value();
       else if (a == "--conversion")
         conversionMode = value();
+      else if (a == "--foveation")
+        foveation = true;
+      else if (a == "--diagnostic-gaze") {
+        auto uv = value();
+        if (uv == "scan") { diagnosticGaze = true; diagnosticScan = true; continue; }
+        size_t comma = uv.find(',');
+        if (comma == std::string::npos) throw std::runtime_error("gaze requires U,V");
+        size_t aUsed = 0, bUsed = 0;
+        diagnosticU = std::stod(uv.substr(0, comma), &aUsed);
+        diagnosticV = std::stod(uv.substr(comma + 1), &bUsed);
+        if (aUsed != comma || bUsed != uv.size() - comma - 1 ||
+            !std::isfinite(diagnosticU) || !std::isfinite(diagnosticV) ||
+            diagnosticU < 0 || diagnosticU > 1 || diagnosticV < 0 || diagnosticV > 1)
+          throw std::runtime_error("invalid diagnostic gaze");
+        diagnosticGaze = true;
+      }
       else if (a == "--dump")
         dumpPath = value();
       else if (a == "--dump-seq") {
@@ -332,10 +491,10 @@ int main(int argc, char **argv) {
         std::cout
             << "frame-workspace-native --url-file PATH [--control-file PATH] "
                "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] "
-               "[--decoder software|v4l2] [--conversion cpu|gpu] "
+               "[--decoder software|v4l2] [--conversion cpu|gpu] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --self-test | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "
@@ -346,6 +505,8 @@ int main(int argc, char **argv) {
       } else
         throw std::runtime_error("unknown option");
     }
+    if (diagnosticGaze && !foveation) throw std::runtime_error("diagnostic gaze requires --foveation");
+    if (diagnosticGaze) fprintf(stderr, "[native] SYNTHETIC diagnostic gaze enabled; not eye tracking\n");
     if (key.empty() || key.size() > 128 ||
         key.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUV"
                               "WXYZ0123456789._-") != std::string::npos)
@@ -392,7 +553,8 @@ int main(int argc, char **argv) {
     signal(SIGINT, signalHandler);
     signal(SIGPIPE, SIG_IGN);
     av_log_set_level(AV_LOG_ERROR);
-    Overlay overlay(noVR, key);
+    endpoint.foveation = foveation;
+    Overlay overlay(noVR, key, foveation && !diagnosticGaze);
     bool persisted = loadPlacement(poseFile, overlay.placement);
     bool pendingRecenter = !persisted;
     if (pendingRecenter)
@@ -406,7 +568,8 @@ int main(int argc, char **argv) {
     double start = nowMs(), lastState = start, lastLog = start, lastControl = 0,
            lastPattern = 0, previousState = start;
     uint64_t uploads = 0, lastUploads = 0, lastDecoded = 0, submitErrors = 0;
-    int w = 0, h = 0;
+    int w = 0, h = 0, encodedW = 0, encodedH = 0;
+    bool foveationActive = false;
     double uploadMs = 0, ageMs = 0, decodeFps = 0, uploadFps = 0;
     bool ready = false, dumped = false;
     double revision = -1, controlResultRevision = -1;
@@ -425,6 +588,9 @@ int main(int argc, char **argv) {
              ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
              "\",\"textureWidth\":" + std::to_string(w) +
              ",\"textureHeight\":" + std::to_string(h) +
+             ",\"encodedWidth\":" + std::to_string(encodedW) +
+             ",\"encodedHeight\":" + std::to_string(encodedH) +
+             ",\"foveationActive\":" + (foveationActive ? "true" : "false") +
              ",\"received\":" + std::to_string(pipe.received) +
              ",\"decoded\":" + std::to_string(pipe.decoded) +
              ",\"uploaded\":" + std::to_string(uploads) +
@@ -490,6 +656,10 @@ int main(int argc, char **argv) {
              ",\"submitError\":" + std::to_string(overlay.lastSubmitError) +
              ",\"decoder\":\"" + pipe.decoderIdentity() + "\"" +
              ",\"decoderRequested\":\"" + decoderMode + "\"" +
+             ",\"gazeState\":\"" + gazeState + "\"" +
+             ",\"foveationRequested\":" + (foveation ? "true" : "false") +
+             ",\"foveationNegotiated\":" + (pipe.foveationNegotiated ? "true" : "false") +
+             ",\"diagnosticGaze\":" + (diagnosticGaze ? "true" : "false") +
              ",\"conversionRequested\":\"" + conversionMode + "\"" +
              ",\"conversionActive\":\"" + pipe.conversionActive.load() +
              "\"" + ",\"conversionFallbacks\":" +
@@ -532,6 +702,17 @@ int main(int argc, char **argv) {
     while (!interrupted && !pipe.stop &&
            (seconds == 0 || nowMs() - start < seconds * 1000)) {
       double now = nowMs();
+      if (foveation && now - lastGazeSample >= 1000.0 / 60) {
+        double u=0,v=0;
+        if (diagnosticGaze) {
+          u=diagnosticScan ? .5+.3*std::sin((now-start)*.0015707963267948966) : diagnosticU;
+          v=diagnosticScan ? .5+.3*std::cos((now-start)*.0015707963267948966) : diagnosticV;
+          gazeState=diagnosticScan ? "diagnostic-scan" : "diagnostic";
+        }
+        else gazeState=overlay.gaze(u,v);
+        pipe.gaze(u,v,diagnosticGaze || std::string(gazeState)=="valid",now,diagnosticGaze);
+        lastGazeSample=now;
+      }
       if (!overlay.events()) {
         exitReason = overlay.exitReason;
         break;
@@ -615,15 +796,16 @@ int main(int argc, char **argv) {
         if (submitted) {
           ready = true;
           ++uploads;
-          w = picture->width;
-          h = picture->height;
+          w = picture->outputWidth();
+          h = picture->outputHeight();
+          encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.warped;
           ageMs = nowMs() - picture->received;
           pipe.report(*picture, nowMs());
           retryPicture.reset();
           if (!dumpPath.empty() && !dumped &&
               (!dumpSequence || picture->seq == dumpSequence) &&
               (!dumpWidth ||
-               (picture->width == dumpWidth && picture->height == dumpHeight))) {
+               (picture->outputWidth() == dumpWidth && picture->outputHeight() == dumpHeight))) {
             overlay.dump(dumpPath);
             dumped = true;
           }
