@@ -461,7 +461,7 @@ Let the user put the Workspace exactly where it is comfortable to work, and keep
 ## Current state (2026-10-19)
 - **Distance and size:** Width (0.4–8 m) and Distance (0.4–10 m) buttons in the Mac controls, in 0.2 m steps. They apply live through the native owner and are saved in its pose file. Worn comfort is unverified.
 - **Position:** only recenter. Show Workspace Again places the panel ahead of the current head direction at eye height. There is no way to nudge it, raise or lower it, rotate it or tilt it. It cannot be grabbed in the headset, because the overlay takes no controller input, and it is not listed in the SteamVR bar.
-- **Curvature:** the companion API sets 0–1 with OpenVR readback (0.25 was accepted on the Frame). There is no control in the UI, and curvature is neither saved nor restored on restart.
+- **Curvature:** the companion API sets 0–1 with OpenVR readback (0.25 was accepted on the Frame). There is no control in the UI, and curvature is neither saved nor restored on restart. In the first worn check the user preferred 0.15 to 0.25 on the 9:8 Workspace; 0.25 may suit an ultrawide. A viewer restart reset it to flat.
 - **Ownership:** the installed Frame Control app and the preview companion can both start the one Frame viewer. Only the owning companion's controls take effect.
 
 ## Implementation / investigation

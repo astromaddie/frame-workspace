@@ -169,7 +169,11 @@ SteamVR texture metadata. No per-eye rendering, synchronous steady-state GPU rea
 refresh loop is involved. `--dump PATH.ppm` performs one explicit diagnostic
 readback of the first successfully submitted application texture.
 
-Valve's API specifies an app-created GL texture and upper-left-to-lower-right UV
+Pictures are stored top row first, but SteamVR reads GL textures bottom-up,
+so the overlay's texture bounds flip V (`{0, 1, 1, 0}`). The earlier `{0, 0, 1, 1}`
+bounds showed the desktop upside down and mirrored in the lenses, which
+application readback could not detect. The flip was confirmed worn on
+2026-10-19. Valve's API specifies an app-created GL texture and upper-left-to-lower-right UV
 bounds. See [SetOverlayTexture](https://github.com/ValveSoftware/openvr/wiki/IVROverlay%3A%3ASetOverlayTexture)
 and the [pinned interface documentation](https://github.com/ValveSoftware/openvr/blob/ae46a8dd0172580648c8922658a100439115d3eb/headers/openvr.h).
 The API return plus application readback does not prove the final lens image or

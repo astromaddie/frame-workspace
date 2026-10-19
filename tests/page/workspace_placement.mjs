@@ -41,4 +41,10 @@ state.workspace.placement={width:7.95,distance:.45};p.set(state);
 task=click('Width',.2);assert.equal(calls.at(-1).body.width,8);resolve({ready:true,placement:{width:8,distance:.45}});await task;assert.ok(dom.mvWidthPlus.disabled);
 task=click('Distance',-.2);assert.equal(calls.at(-1).body.distance,.4);resolve({ready:true,placement:{width:8,distance:.4}});await task;assert.ok(dom.mvDistanceMinus.disabled);
 p.busy(true);assert.ok(dom.mvWidthMinus.disabled);p.busy(false);
-console.log('PASS Workspace production rendering/event routing: confirmed values, increments, boundaries, busy, error and owner gating');
+// Show Workspace Again reuses the shared quality menu: mirror the running
+// Workspace until the user picks a quality, so reopening never downgrades it.
+dom.mvQuality={value:'balanced',dataset:{},options:[{value:'sharp'},{value:'balanced'}]};
+p.set({...state,workspace:{...state.workspace,quality:'sharp'}});assert.equal(dom.mvQuality.value,'sharp');
+dom.mvQuality.value='balanced';dom.mvQuality.dataset.touched='1';
+p.set({...state,workspace:{...state.workspace,quality:'sharp'}});assert.equal(dom.mvQuality.value,'balanced');
+console.log('PASS Workspace production rendering/event routing: confirmed values, increments, boundaries, busy, error, owner gating and quality mirroring');

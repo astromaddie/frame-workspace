@@ -458,7 +458,10 @@ public:
           "color space");
     check(overlay->SetOverlayInputMethod(handle, VROverlayInputMethod_None),
           "input method");
-    VRTextureBounds_t bounds{0, 0, 1, 1};
+    // Pictures are stored top row first (the first uploaded or rendered row
+    // is GL's t = 0), but SteamVR reads GL textures bottom-up. Flip V so the
+    // desktop is upright in the headset; readback dumps are unaffected.
+    VRTextureBounds_t bounds{0, 1, 1, 0};
     check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
   }
   const char *gaze(double &u, double &v) {

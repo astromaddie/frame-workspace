@@ -293,7 +293,10 @@ stopped() {
   case "$active" in inactive|failed) [ "$pid" = 0 ] ;; *) return 1 ;; esac
 }
 if ! stopped; then
-  systemctl --user --no-block stop "$unit" >/dev/null
+  # Show again closes the old stream first, so the viewer may exit and its
+  # transient unit unload before this stop runs ("Unit ... not loaded").
+  # The loop below is what confirms shutdown either way.
+  systemctl --user --no-block stop "$unit" >/dev/null 2>&1 || true
   for _ in $(seq 1 25); do stopped && break; sleep 0.2; done
   stopped || { echo 'The previous Workspace service has not stopped.' >&2; exit 1; }
 fi

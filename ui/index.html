@@ -4348,6 +4348,12 @@ function renderMvWorkspace(s) {
   const pending = ws.state === "starting" || ws.state === "owner_unknown" || (ws.state === "error" && ws.removed === false);
   const needsStop = ws.state !== "stopped" && !(ws.state === "error" && ws.removed === true);
   mvWorkspaceActivePreset = running ? ws.preset : null;
+  // Show Workspace Again sends this shared choice. Until the user picks one,
+  // mirror the running Workspace so reopening never silently downgrades it.
+  const qualityChoice = $("mvQuality");
+  if (running && qualityChoice && qualityChoice.dataset && !qualityChoice.dataset.touched &&
+      Array.from(qualityChoice.options).some(option => option.value === ws.quality))
+    qualityChoice.value = ws.quality;
   if (running && Array.from(preset.options).some(option => option.value === ws.preset)) {
     if (mvWorkspacePendingPreset === ws.preset) mvWorkspacePendingPreset = null;
     if (mvWorkspacePendingPreset === null) preset.value = ws.preset;
@@ -4433,6 +4439,7 @@ $("mvWorkspacePreset").onchange = () => {
 };
 $("mvSeparate").checked = localStorage.getItem("mvSeparate") !== "0";
 $("mvSeparate").onchange = e => localStorage.setItem("mvSeparate", e.target.checked ? "1" : "0");
+$("mvQuality").addEventListener("change", e => { e.target.dataset.touched = "1"; });
 $("macview").onclick = async e => {
   const b = e.target.closest("[data-mv]"); if (!b) return;
   const src = b.dataset.src;
