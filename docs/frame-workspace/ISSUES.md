@@ -651,9 +651,20 @@ own display. The helper watches windows open and close (Accessibility) and gives
 - 2026-10-20 spike, see `SPATIAL.md`: the Frame's hardware decoder fits about 21-25 MP decoded at
   once (about five typical HiDPI windows beside the Workspace) and memory is tight, so only the
   window you look at and changing ones can be live at full resolution; one viewer for all panels.
+- 2026-10-20 stage 2 implementation: the companion owns and remembers Desktop/Spatial mode,
+  exposes the approved T1 switch on the Mac page and `workspace.mode` in the bar state, and
+  switches setups only after confirmed cleanup. Spatial uses the helper's hidden mirrored home,
+  eligible-window discovery and reusable display pool, with automatic `separate:` panels in the
+  shared native host. Last Session is independent per mode. The 2026-10-21 local run passed
+  188 tests with one skip; helper builds, pure checks and the ordered device acceptance
+  procedure are recorded in `SPATIAL.md`. Stage 2 is not yet device-verified.
+- App data, icons and Cmd-Tab are a separate worker's scope. The companion provides UI-state
+  and request hooks for that module; this stage does not claim Dock or switcher acceptance.
 
 ## Risks
-- Stream count: each window is an encode on the Mac and a decode and viewer on the Frame.
+- Stream count: each live window needs Mac encoding and Frame decoding; the shared host saves
+  per-viewer overhead, while the still/live budget limits simultaneous decoded pixels.
 - Displays must touch edge to edge, so the cursor can wander between them; the helper places it.
-- macOS defers removing virtual displays while the screen sleeps; keep a fixed pool and reuse it.
+- macOS defers removing virtual displays while the screen sleeps; reuse pooled displays during
+  churn and require confirmed removal before replacing a setup.
 - Windows must go back where they were when Spatial Mode ends.
