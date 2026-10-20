@@ -137,6 +137,18 @@ def window_displays():
     return os.environ.get("FRAME_WINDOW_DISPLAYS", "0") == "1"
 
 
+def spatial_decode_pixels():
+    """Total decoder capacity reserved for Spatial Mode, in pixels."""
+    try:
+        mp = float(os.environ.get("FRAME_SPATIAL_DECODE_MP", "18"))
+    except ValueError:
+        mp = 0
+    pixels = mp * 1_000_000
+    if not math.isfinite(pixels) or pixels < 1:
+        raise MacViewError("FRAME_SPATIAL_DECODE_MP Must Be A Positive, Finite Number.")
+    return int(pixels)
+
+
 def wifi_mbps():
     """Bitrate ceiling on the network route, in Mbit/s (0 = none)."""
     try:
@@ -646,6 +658,15 @@ class MacView:
         self.usb_ip, self._usb_misses = None, 0
         self.native_panels = {}  # src -> {"panel", "key", "slot"}
         self._link_applied = None
+        self._pointer_applied = None
+        self._spatial_applied = None
+        self._spatial_candidates = {}
+        self._spatial_live_since = {}
+        self._spatial_focused = None
+        self._spatial_lock = threading.Lock()
+        self._pending_focus = None
+        self._focus_queued = False
+        self._last_frame_focus = -math.inf
         self.shown = set()  # sources with a viewer out there, connected or retrying
         self.browser_flags = list(BROWSER_FLAGS)
         self.browser_lock = threading.Lock()
@@ -878,6 +899,10 @@ class MacView:
                 tick += 1
                 if self.closing or not (self.agent and self.agent.poll() is None):
                     continue
+                try:
+                    self._spatial_tick()
+                except MacViewError:
+                    pass  # retry the local helper next second, even without a tunnel
                 if self.tunnel_up():
                     self._follow_best_route(tick)
                     self._apply_link_cap()
@@ -891,6 +916,89 @@ class MacView:
 
         self.supervisor = threading.Thread(target=loop, daemon=True)
         self.supervisor.start()
+
+    def _spatial_tick(self):
+        """Budget window decoders on the supervisor's existing one-second tick.
+
+        A changed window stays eligible for five seconds. Optional additions
+        need one second of observation; admitted windows get three seconds
+        before a newer contender can replace them. Focus and the pixel cap
+        override this residency. No remote calls or panel launches here.
+        """
+        enabled = window_displays()
+        if self._spatial_applied is not None and self._spatial_applied[0] != id(self.agent):
+            self._spatial_candidates.clear()
+            self._spatial_live_since.clear()
+        pointer_key = (id(self.agent), enabled)
+        if self._pointer_applied != pointer_key:
+            self.call("/pointer", method="POST", shared="1" if enabled else "0")
+            self._pointer_applied = pointer_key
+        if not enabled and self._spatial_applied is None:
+            return
+        self._flush_frame_focus()
+        status = self.call("/status")
+        streams = status.get("streams", [])
+        windows = {}
+        reserved = 0
+        for stream in streams:
+            src = stream.get("src", "")
+            if not isinstance(src, str):
+                continue
+            w, h = stream.get("width"), stream.get("height")
+            pixels = w * h if type(w) is int and type(h) is int and w > 0 and h > 0 else None
+            if not src.startswith(("window:", "separate:")):
+                # Unknown display dimensions leave no safe optional capacity.
+                reserved += pixels if pixels is not None else spatial_decode_pixels()
+                continue
+            entry = windows.setdefault(src, {"pixels": 0, "changed": 0, "ids": [], "live": True})
+            entry["pixels"] = None if pixels is None or entry["pixels"] is None else entry["pixels"] + pixels
+            changed = stream.get("lastChanged", 0)
+            if type(changed) in (int, float) and math.isfinite(changed):
+                entry["changed"] = max(entry["changed"], changed)
+            entry["ids"].append(stream.get("id"))
+            entry["live"] = entry["live"] and stream.get("live") is True
+
+        if not enabled:
+            self.call("/streams/live", method="POST", all="1")
+            self._spatial_applied = None
+            self._spatial_candidates.clear()
+            self._spatial_live_since.clear()
+            with self._spatial_lock:
+                self._pending_focus = None
+                self._spatial_focused = None
+            return
+
+        now, wall = time.monotonic(), time.time()
+        with self._spatial_lock:
+            focus = status.get("focusedSrc") or self._spatial_focused
+        # Session identities stop a reconnect inheriting a departed viewer's lease.
+        identities = {s: tuple(sorted(e["ids"], key=str)) for s, e in windows.items()}
+        recent = {s for s, e in windows.items() if e["changed"] > 0 and 0 <= wall - e["changed"] <= 5}
+        self._spatial_candidates = {
+            s: self._spatial_candidates[s] if self._spatial_candidates.get(s, (None,))[0] == identities[s]
+            else (identities[s], now) for s in recent}
+        self._spatial_live_since = {s: lease for s, lease in self._spatial_live_since.items()
+                                    if s in windows and lease[0] == identities[s] and windows[s]["live"]}
+        eligible = {s for s, (_, since) in self._spatial_candidates.items() if now - since >= 1}
+        pinned = {s for s, (_, since) in self._spatial_live_since.items() if s in recent and now - since < 3}
+        newest = lambda s: (-windows[s]["changed"], s)
+        order = ([focus] if focus in windows else [])
+        order += sorted(pinned - set(order), key=newest)
+        order += sorted((eligible | (recent & self._spatial_live_since.keys())) - set(order), key=newest)
+        remaining = max(0, spatial_decode_pixels() - reserved)
+        selected = set()
+        for src in order:
+            pixels = windows[src]["pixels"]
+            if pixels is not None and pixels <= remaining:
+                selected.add(src)
+                remaining -= pixels
+        key = (id(self.agent), tuple(sorted((s, identities[s]) for s in selected)))
+        mismatched = any((s.get("live") is True) != (s.get("src") in selected) for s in streams
+                         if s.get("src") in windows)
+        if key != self._spatial_applied or mismatched:
+            self.call("/streams/live", method="POST", src=",".join(sorted(selected)))
+            self._spatial_applied = key
+        self._spatial_live_since = {s: self._spatial_live_since.get(s, (identities[s], now)) for s in selected}
 
     def _apply_link_cap(self):
         """Tell the agent the bitrate ceiling for the route in use, whenever the
@@ -991,7 +1099,10 @@ class MacView:
         or in the bar panel closes that window's stream or stops the Workspace;
         the bar panel can also start the Workspace (with the last settings used)
         and recenter it. The Frame can only ask for these fixed actions. Each
-        line is one request, already removed on the Frame."""
+        line is one request, already removed on the Frame. Spatial gaze focus
+        uses the same owned panel keys and only the newest valid request in a
+        batch survives; execution is capped at four requests per second."""
+        focus = None
         for line in (out or "").splitlines():
             if not line.startswith("{"):
                 continue
@@ -1005,12 +1116,45 @@ class MacView:
             if action == "close":
                 if re.fullmatch(r"com\.frame-workspace\.native\.\d+\.(workspace|panel-w\d{1,15})", key):
                     self._dash_run(None, self._close_from_frame, key)
+            elif action == "focus" and window_displays():
+                u, v = request.get("u"), request.get("v")
+                if (type(u) in (int, float) and type(v) in (int, float) and
+                        math.isfinite(u) and math.isfinite(v) and 0 <= u <= 1 and 0 <= v <= 1 and
+                        re.fullmatch(r"com\.frame-workspace\.native\.\d+\.panel-w\d{1,15}", key) and
+                        any(p["key"] == key for p in list(self.native_panels.values()))):
+                    focus = (key, u, v)
             elif action == "workspace_start":
                 self._dash_run("starting", lambda: self.start_workspace(*self.last_workspace, resume=True))
             elif action == "workspace_stop":
                 self._dash_run("stopping", self.stop_workspace)
             elif action == "recenter":
                 self._dash_run(None, self._focus_workspace_viewer)
+        if focus:
+            with self._spatial_lock:
+                self._pending_focus = focus
+            self._flush_frame_focus()
+
+    def _flush_frame_focus(self):
+        with self._spatial_lock:
+            if (not window_displays() or self._pending_focus is None or self._focus_queued or
+                    time.monotonic() - self._last_frame_focus < .25):
+                return
+            self._focus_queued = True
+        self._dash_run(None, self._focus_from_frame)
+
+    def _focus_from_frame(self):
+        with self._spatial_lock:
+            focus, self._pending_focus = self._pending_focus, None
+            self._focus_queued = False
+            if not focus or not window_displays():
+                return
+            self._last_frame_focus = time.monotonic()
+        key, u, v = focus
+        src = next((s for s, p in list(self.native_panels.items()) if p["key"] == key), None)
+        if src and src.startswith(("window:", "separate:")):
+            self.call("/focus", method="POST", src=src, u=u, v=v)
+            with self._spatial_lock:
+                self._spatial_focused = src
 
     def _dash_run(self, busy, fn, *args):
         """Carry out headset requests in order, off the sync loop, so the

@@ -66,7 +66,8 @@ one on the laptop screen, selects a word in the first and posts a mouse drag tha
 from one display to the other (no path across their shared edge), then drops. **Pass:** the word
 arrived in the second window. So a drag can follow the laser from one panel's display to another's.
 Inferred, not tested: drags between different apps (the same pasteboard mechanism). The helper's
-input currently tracks buttons per viewer, so a drag across two panels needs one shared pointer.
+input now has a shared-pointer mode for window displays; cross-panel behaviour still needs a
+device check after integration.
 
 ## New windows (verified 2026-10-20)
 
@@ -75,7 +76,76 @@ window opened. Its close was only reported when the app quit (the closed window 
 alive), so closes should also be confirmed from the window list, as `WindowCloseRecovery.swift`
 already does.
 
+## Mac foundation (built 2026-10-20)
+
+The helper and companion now implement the Mac half of the
+[shared spatial protocol](../../native/README.md#spatial-stream-and-focus-contract-fw-15).
+This does not add the mode toggle, automatic window panels, or mirroring.
+
+- `POST /streams/live?src=...` chooses live window streams. Other windows send `still`,
+  stop encoding and sending pictures, and continue low-cadence content observation. They
+  keep their last picture on the viewer. Resuming sends `live` before a forced keyframe
+  containing SPS/PPS. Display streams, including the Workspace, stay live.
+- `/status` exposes each stream's live pixel dimensions, live state and last content-change
+  time (Unix seconds), plus the focused source and shared-pointer mode. Capture observations
+  continue while still; decoder allocation cannot be inferred from this Mac-side status.
+- With `FRAME_WINDOW_DISPLAYS=1`, the companion's existing one-second supervisor reserves
+  running display streams first, then selects the focused window and recently changed
+  windows, newest first. `FRAME_SPATIAL_DECODE_MP` defaults to **18 MP**. Optional windows
+  need one second of observation before admission, remain eligible for five seconds after
+  their last change, and get three seconds of live residency before a newer window can
+  replace them. Focus and the capacity limit override residency. Disabling window displays
+  restores all current and future window streams to live.
+- Unknown window dimensions are not admitted to the live set. New streams deliver one initial
+  picture before honoring still, so each panel has a texture; transient startup decoder demand
+  needs device verification. If the Workspace plus focused window cannot
+  fit, the focused window stays still until its stream size or the configured budget
+  changes. The policy never admits optional pixels beyond the remaining capacity; it
+  cannot reduce existing display streams that already exceed the budget by themselves.
+- The companion accepts atomic `focus` request files with an owned window panel key and
+  finite normalized `(u,v)`, coalesces a batch to its newest valid request and dispatches
+  at most four per second. `/focus` raises the window and restores its cursor memory;
+  `(u,v)` initializes the first visit. Repeated focus on the same window leaves its cursor
+  in place. Shared pointer mode carries held mouse buttons across viewer sessions, while
+  keys keep their original session ownership.
+
+**Verified locally, 2026-10-20:** fake-agent policy and request tests, pure Swift state tests,
+and the isolated synthetic-helper suite. From the repository root:
+
+```sh
+mac/frame-mac-view/build.sh mac/frame-mac-view/.fw15-build/frame-mac-view
+xcrun swiftc -swift-version 5 mac/frame-mac-view/Sources/SpatialStreams.swift mac/frame-mac-view/tests/SpatialStreamsTests.swift -o mac/frame-mac-view/.fw15-build/SpatialStreamsTests
+mac/frame-mac-view/.fw15-build/SpatialStreamsTests
+cd tests && python3 -m unittest test_macview test_workspace_profiles test_server
+```
+
+The helper built successfully and the pure Swift checks passed. The Python suite ran **142
+tests, with one skip and no failures**; the missing-Accessibility rejection test skipped
+because this Mac grants Accessibility. The suite emitted socket `ResourceWarning`s. Pure checks
+cover stale-frame epochs, resumed keyframe gating, shared button ownership, first-gaze
+initialization after viewer focus, and cursor-coordinate round trips without drift. These
+do not establish ScreenCaptureKit or headset behaviour. The helper build stayed inside
+this worktree; the installed helper, running companion, displays, viewers and Frame were
+untouched. Disposable build binaries were removed afterwards, recovering **2,116 KiB**;
+the test fixture removed its isolated helper directories.
+
+Device acceptance is still required after merging the Frame worker:
+
+1. Show more windows than the simultaneous decoder limit with the Workspace running.
+   Check `still` leaves the last texture visible and releases the decoder, and that `live`
+   recreates it from SPS/PPS plus IDR without allocation failures or stale frames, including
+   rapid transitions, resizing, opening windows and reconnecting. Check status dimensions
+   against actual decoded sizes and confirm the total live pixels respect the budget.
+2. Edit a still window, including a small text edit or badge change. Confirm it wakes,
+   remains live briefly, and settles without repeatedly evicting other windows. Measure
+   capture/encode load and focus latency with ordinary and continuously changing windows.
+3. Wear the headset and look between panels. Confirm the intended window becomes key,
+   the Mac cursor appears there, the first visit uses the gaze coordinates, and returning
+   restores each window's last cursor position after mouse movement and window resizing.
+4. Drag from one panel into another, release in the destination, then repeat between apps.
+   Confirm the drag survives the panel boundary, keys remain independent, and closing or
+   disconnecting the source during a drag releases buttons without stuck input.
+
 ## Still to test
 
-- Gaze picking the active window, and the cursor memory (needs the headset worn).
 - A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.

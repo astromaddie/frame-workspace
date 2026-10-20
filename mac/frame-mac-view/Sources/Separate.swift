@@ -206,6 +206,7 @@ final class SeparateSource: CaptureSource {
     private(set) var pid: pid_t?
     private(set) var gone = false
     private var display: VirtualDisplay?
+    private let innerLock = NSLock()
     private var inner: SCKSource?
     private var window: AXWindow?
     private var original: CGRect?
@@ -217,8 +218,13 @@ final class SeparateSource: CaptureSource {
 
     init(windowID: CGWindowID) { self.windowID = windowID }
 
-    var frameRect: CGRect { inner?.frameRect ?? .zero }
+    private var currentInner: SCKSource? {
+        innerLock.lock(); defer { innerLock.unlock() }
+        return inner
+    }
+    var frameRect: CGRect { currentInner?.frameRect ?? .zero }
     var displayID: CGDirectDisplayID? { display?.id }
+    var pixelSize: (Int, Int)? { currentInner?.pixelSize }
 
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void) {
         guard AXIsProcessTrusted() else {
@@ -282,7 +288,7 @@ final class SeparateSource: CaptureSource {
         }
         sck.onFrame = { [weak self] pb, pts, shown in self?.onFrame?(pb, pts, shown) }
         sck.onEnded = { [weak self] reason in self?.onEnded?(reason) }
-        inner = sck
+        innerLock.lock(); inner = sck; innerLock.unlock()
         sck.start(maxLong: maxLong, fps: maxFps) { [weak self] error in
             // Back on main, where stop() runs too, so a viewer that left during
             // startup can't leave a capture running.
@@ -342,7 +348,7 @@ final class SeparateSource: CaptureSource {
             stopped = true
             poll?.cancel()
             poll = nil
-            inner?.stop()
+            currentInner?.stop()
             restore()
         }
     }
@@ -359,11 +365,19 @@ final class SeparateSource: CaptureSource {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { vd?.release() }
     }
 
-    func setMaxLong(_ n: Int) { DispatchQueue.main.async { self.inner?.setMaxLong(n) } }
+    func setMaxLong(_ n: Int) { DispatchQueue.main.async { self.currentInner?.setMaxLong(n) } }
     func setMaxFps(_ fps: Int) {
         DispatchQueue.main.async {
             self.maxFps = max(1, fps)
-            self.inner?.setMaxFps(self.maxFps)
+            self.currentInner?.setMaxFps(self.maxFps)
+        }
+    }
+
+    func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void) {
+        DispatchQueue.main.async {
+            self.maxFps = still ? 1 : max(1, fps)
+            guard let inner = self.currentInner else { completion(); return }
+            inner.setStillCaptureMode(still, maxLong: maxLong, fps: self.maxFps, completion: completion)
         }
     }
 

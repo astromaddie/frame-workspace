@@ -93,6 +93,7 @@ final class Session {
     let codec: Codec
     let reconnectKey: String
     private let activity: StreamActivityRegistry
+    private let spatial: SpatialStreamState
     let stats = StreamStats()
     let controller: RateController
     private var appliedScale = 1.0
@@ -111,8 +112,15 @@ final class Session {
         var layout: FoveationLayout? = nil
         var directEpoch: UInt64? = nil
         var echo: UInt32  // the input this picture is the first reply to
+        let epoch: UInt64
     }
     private var last: Picture?
+    /// The newest complete still-mode buffer is retained without encoding so
+    /// a static window can produce an immediate keyframe when it resumes.
+    private var stillPicture: Picture?
+    private var liveGate = StreamLiveGate()
+    private var frameEpochs: [UInt32: UInt64] = [:]
+    private var requestedMaxLong = 1920
     private let foveation: Bool
     private let foveationAtlas: Bool
     private let foveationDirect: Bool
@@ -143,25 +151,31 @@ final class Session {
     /// things catch up. Only that newest picture is kept meanwhile.
     let maxPending: Int
     static let maxInFlight = 2
+    private let modeQueue: DispatchQueue
     var onEnd: ((Session) -> Void)?
     var onAck: (() -> Void)?
     var onFinished: ((String) -> Void)?
+    var onPointerPosition: ((String, CGPoint) -> Void)?
+    var onFocused: ((String) -> Void)?
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
-         reconnectKey: String, activity: StreamActivityRegistry, foveation: Bool = false, foveationAtlas: Bool = false, foveationDirect: Bool = false,
+         reconnectKey: String, activity: StreamActivityRegistry, spatial: SpatialStreamState,
+         foveation: Bool = false, foveationAtlas: Bool = false, foveationDirect: Bool = false,
          gazeSharpen: Bool = false) {
         self.foveationDirect = foveation && foveationDirect
         self.gazeSharpen = gazeSharpen && !foveation
         self.foveation = foveation
         self.foveationAtlas = foveation && foveationAtlas
         self.id = id
+        modeQueue = DispatchQueue(label: "frame-mac-view.mode.\(id)")
         self.source = source
         self.capture = capture
         self.ws = ws
         self.codec = codec
         self.reconnectKey = reconnectKey
         self.activity = activity
+        self.spatial = spatial
         // Diagnostic TestSource only: model a source cadence below the target
         // without changing SCK/window/separate capture or the pacing budget.
         let testRate = Int(ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_TEST_CAPTURE_FPS"] ?? "")
@@ -198,17 +212,30 @@ final class Session {
     private func offer(_ pb: CVPixelBuffer, pts: CMTime, capture shown: Int64, layout: FoveationLayout? = nil, directEpoch: UInt64? = nil) {
         let arrived = nowUs()
         stats.withLock { stats.captured += 1 }
-        controller.captured(at: arrived)
+        let size = capture.pixelSize ?? (CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb))
+        // SCKSource forwards only complete samples. In still mode its cursor
+        // is hidden and cadence is 1fps, so those observations follow content
+        // changes, including small and color-only edits, rather than the cursor.
+        spatial.observe(source.key, width: size.0, height: size.1, changed: true)
         lock.lock()
+        guard !stopped else { lock.unlock(); return }
+        if !liveGate.live {
+            stillPicture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived,
+                                   echo: 0, epoch: liveGate.epoch)
+            lock.unlock()
+            return
+        }
+        controller.captured(at: arrived)
         // A reply to input stays with whichever picture ends up being sent.
         var echo = skipped ? last?.echo ?? 0 : 0
         if let p = pendingEcho, shown >= p.after {
             echo = p.id
             pendingEcho = nil
         }
-        let picture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived, layout: layout, directEpoch: directEpoch, echo: echo)
+        let picture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived, layout: layout,
+                              directEpoch: directEpoch, echo: echo, epoch: liveGate.epoch)
         last = picture
-        let busy = stopped || ws.pendingBytes > maxPending || inFlight >= Session.maxInFlight
+        let busy = ws.pendingBytes > maxPending || inFlight >= Session.maxInFlight
             || paced(now: arrived) || !controller.maySend(now: arrived)
         if busy { skipped = true } else {
             // This fresh picture replaces any pending foveated refresh; its
@@ -222,6 +249,10 @@ final class Session {
 
     private func submit(_ p: Picture) {
         encodeQueue.async {
+            self.lock.lock()
+            let accepts = !self.stopped && self.liveGate.accepts(frameEpoch: p.epoch)
+            self.lock.unlock()
+            guard accepts else { self.finished(); return }
             var r = FrameRecord()
             r.capture = p.capture
             r.arrived = p.arrived
@@ -230,16 +261,20 @@ final class Session {
             r.tier = self.controller.tier
             r.encodeStart = nowUs()
             let seq = self.stats.newFrame(r)
+            self.lock.lock(); self.frameEpochs[seq] = p.epoch; self.lock.unlock()
             if p.echo != 0 { self.stats.updateInput(p.echo) { $0.frame = seq; $0.capture = p.capture } }
             var buffer = p.pb
             var layout = p.layout
             if self.foveationDirect {
                 self.lock.lock()
                 let next = self.gaze.layout(width: CVPixelBufferGetWidth(p.pb), height: CVPixelBufferGetHeight(p.pb), now: nowUs(), direct: true)
-                let accept = !self.stopped && (self.gaze.active || p.layout == next)
+                let accept = !self.stopped && self.liveGate.accepts(frameEpoch: p.epoch) &&
+                    (self.gaze.active || p.layout == next)
                 self.lock.unlock()
                 // A picture paced before loss must not restore an old eye ROI.
-                guard accept, (self.capture as? DirectSCKSource)?.acceptsPicture(epoch:p.directEpoch) == true else { self.finished(); return }
+                guard accept, (self.capture as? DirectSCKSource)?.acceptsPicture(epoch:p.directEpoch) == true else {
+                    self.finishEncoding(seq); return
+                }
             } else if self.foveation {
                 self.lock.lock()
                 var chosen = self.gaze.layout(width: CVPixelBufferGetWidth(p.pb), height: CVPixelBufferGetHeight(p.pb), now: nowUs(), atlas: self.foveationAtlas)
@@ -275,7 +310,11 @@ final class Session {
                 }
             }
             self.submittedLayout = layout
-            if !self.encoder.encode(buffer, pts: p.pts, seq: seq, layout: layout) { self.finished() }
+            self.lock.lock()
+            let stillCurrent = !self.stopped && self.liveGate.accepts(frameEpoch: p.epoch)
+            self.lock.unlock()
+            guard stillCurrent else { self.finishEncoding(seq); return }
+            if !self.encoder.encode(buffer, pts: p.pts, seq: seq, layout: layout) { self.finishEncoding(seq) }
         }
     }
 
@@ -288,11 +327,116 @@ final class Session {
         resendIfRoom()
     }
 
+    private func finishEncoding(_ seq: UInt32) {
+        lock.lock(); frameEpochs[seq] = nil; lock.unlock()
+        finished()
+    }
+
+    private var isWindowSource: Bool {
+        switch source { case .window, .separate: return true; default: return false }
+    }
+
+    var isLive: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return liveGate.live
+    }
+
+    private func liveCaptureSettings() -> (scale: Double, maxLong: Int, fps: Int) {
+        let scale = controller.scale
+        let priority = controller.priority()
+        let fps = min(controller.maxFps, priority.fpsCap ?? controller.maxFps,
+                      testCaptureFps ?? controller.maxFps)
+        return (scale, max(320, Int(Double(requestedMaxLong) * scale)), fps)
+    }
+
+    /// Applies the live/still policy to window captures. A still request can
+    /// wait for the first encoded picture, while a resume activates only after
+    /// ScreenCaptureKit has restored the live cursor and cadence.
+    func setLive(_ shouldBeLive: Bool) {
+        guard isWindowSource else { return }
+        lock.lock()
+        let request = liveGate.request(shouldBeLive)
+        if case .still = request {
+            stillPicture = last
+            last = nil
+            skipped = false
+            // Serialize this boundary with binary frames. The gate is already
+            // closed, so callbacks waiting on this lock cannot send afterward.
+            ws.sendJSON(["t": "still"])
+        }
+        let settings = liveCaptureSettings()
+        lock.unlock()
+
+        switch request {
+        case .unchanged:
+            break
+        case .waitForFirstPicture:
+            break
+        case .still:
+            modeQueue.async { [weak self] in
+                guard let self else { return }
+                self.capture.setStillCaptureMode(true, maxLong: settings.maxLong, fps: settings.fps) {}
+            }
+        case .resume(let requestID):
+            modeQueue.async { [weak self] in
+                guard let self else { return }
+                self.capture.setStillCaptureMode(false, maxLong: settings.maxLong, fps: settings.fps) { [weak self] in
+                    guard let self else { return }
+                    self.encodeQueue.async {
+                        self.lock.lock()
+                        let current = self.liveGate.requestID == requestID && self.liveGate.desiredLive && !self.liveGate.live
+                        guard current else { self.lock.unlock(); return }
+                        let cached = self.stillPicture
+                        self.stillPicture = nil
+                        // Order the key request and protocol message ahead of
+                        // every fresh submission on this same queue.
+                        self.encoder.requestKeyFrame()
+                        self.ws.sendJSON(["t": "live"])
+                        let activated = self.liveGate.activateLive(request: requestID)
+                        if activated {
+                            self.skipped = false
+                            self.appliedScale = settings.scale
+                            self.appliedCaptureFps = settings.fps
+                            self.last = nil
+                            if let cached, let size = self.capture.pixelSize,
+                               CVPixelBufferGetWidth(cached.pb) == size.0,
+                               CVPixelBufferGetHeight(cached.pb) == size.1 {
+                                let now = nowUs()
+                                let resumed = Picture(pb: cached.pb,
+                                                      pts: CMClockGetTime(CMClockGetHostTimeClock()),
+                                                      capture: cached.capture, arrived: now, echo: 0,
+                                                      epoch: self.liveGate.epoch)
+                                self.last = resumed
+                                self.inFlight += 1
+                                self.lastSubmit = now
+                                self.submit(resumed)
+                            }
+                        }
+                        self.lock.unlock()
+                    }
+                }
+            }
+        }
+    }
+
+    private func enterStillAfterFirstPicture(requestID: UInt64) {
+        lock.lock()
+        let stillPending = !liveGate.live && !liveGate.desiredLive && liveGate.requestID == requestID
+        let settings = liveCaptureSettings()
+        lock.unlock()
+        guard stillPending else { return }
+        modeQueue.async { [weak self] in
+            guard let self else { return }
+            self.capture.setStillCaptureMode(true, maxLong: settings.maxLong, fps: settings.fps) {}
+        }
+    }
+
     private func resendIfRoom() {
         lock.lock()
         var next: Picture?
         let now = nowUs()
-        if !stopped, skipped, ws.pendingBytes <= maxPending / 2, inFlight < Session.maxInFlight, let l = last,
+        if !stopped, liveGate.live, skipped, ws.pendingBytes <= maxPending / 2,
+           inFlight < Session.maxInFlight, let l = last, liveGate.accepts(frameEpoch: l.epoch),
            !paced(now: now), controller.maySend(now: now, counts: false) {
             next = l
             skipped = false
@@ -305,14 +449,31 @@ final class Session {
         // time stays in the record, so the wait counts as latency.
         if let p = next {
             submit(Picture(pb: p.pb, pts: CMClockGetTime(CMClockGetHostTimeClock()), capture: p.capture,
-                           arrived: p.arrived, layout: p.layout, directEpoch: p.directEpoch, echo: p.echo))
+                           arrived: p.arrived, layout: p.layout, directEpoch: p.directEpoch, echo: p.echo,
+                           epoch: p.epoch))
         }
     }
 
     func start(maxLong: Int, fps: Int) {
+        lock.lock()
+        requestedMaxLong = maxLong
+        lock.unlock()
         encoder.onFrame = { [weak self] data, key, pts, seq, layout in
             guard let self else { return }
             let t = nowUs()
+            self.lock.lock()
+            guard let epoch = self.frameEpochs[seq], !self.stopped,
+                  self.liveGate.accepts(frameEpoch: epoch) else {
+                self.lock.unlock()
+                return
+            }
+            guard self.liveGate.canQueuePicture(frameEpoch: epoch, key: key) else {
+                self.lock.unlock()
+                // A resumed stream cannot accept a non-IDR picture. Retry
+                // until VideoToolbox returns the requested keyframe.
+                self.encodeQueue.async { self.encoder.requestKeyFrame() }
+                return
+            }
             // The quality setting's bitrate, at full size, is the most it gets.
             if self.appliedScale == 1 {
                 self.controller.setCeiling(self.encoder.defaultBitrate(width: self.encoder.width, height: self.encoder.height))
@@ -342,8 +503,18 @@ final class Session {
             msg.append(data)
             let stats = self.stats
             self.ws.sendBinary(msg) { stats.update(seq) { $0.wire = nowUs() } }
+            let enterStill = self.liveGate.didQueuePicture(frameEpoch: epoch, key: key)
+            let stillRequest = self.liveGate.requestID
+            if enterStill {
+                self.stillPicture = self.last
+                self.last = nil
+                self.skipped = false
+                self.ws.sendJSON(["t": "still"])
+            }
+            self.lock.unlock()
+            if enterStill { self.enterStillAfterFirstPicture(requestID: stillRequest) }
         }
-        encoder.onDone = { [weak self] _ in self?.finished() }
+        encoder.onDone = { [weak self] seq in self?.finishEncoding(seq) }
         encoder.onError = { [weak self] message in self?.ws.sendJSON(["t": "error", "message": message]) }
         capture.onFrame = { [weak self] pb, pts, shown in self?.offer(pb, pts: pts, capture: shown) }
         if let direct = capture as? DirectSCKSource {
@@ -447,6 +618,15 @@ final class Session {
         if let bps = controller.update(now: now) { encoder.setBitrate(bps) }
         encoder.applyLinkCap()
         let scale = controller.scale
+        lock.lock(); let live = liveGate.live; lock.unlock()
+        guard live else {
+            if !foveationDirect && scale != appliedScale {
+                appliedScale = scale
+                capture.setMaxLong(max(320, Int(Double(maxLong) * scale)))
+            }
+            appliedPriorityRole = controller.priority().role
+            return
+        }
         if !foveationDirect && scale != appliedScale {
             appliedScale = scale
             capture.setMaxLong(max(320, Int(Double(maxLong) * scale)))
@@ -483,7 +663,10 @@ final class Session {
         lock.lock()
         let was = stopped
         stopped = true
+        liveGate.stop()
         last = nil
+        stillPicture = nil
+        skipped = false
         lock.unlock()
         guard !was else { return }
         activity.unregister(id)
@@ -608,13 +791,21 @@ final class Session {
             case "m":
                 let kind = m["e"] as? String ?? "move", b = m["b"] as? Int ?? 0
                 let p = point(x, y)
-                if kind == "down", case .window(let wid) = source, let pid = capture.pid {
-                    Input.focus(window: wid, pid: pid)
+                if kind == "down" {
+                    onFocused?(source.key)
+                    if case .window(let wid) = source, let pid = capture.pid {
+                        Input.focus(window: wid, pid: pid)
+                    } else if case .separate(let wid) = source, let pid = capture.pid {
+                        Input.focus(window: wid, pid: pid)
+                    }
                 }
                 Input.mouse(kind, button: b, at: p, owner: id)
+                onPointerPosition?(source.key, p)
                 if kind == "down" { injected(m, kind: "click") }
             case "wheel":
-                Input.scroll(dx: m["dx"] as? Double ?? 0, dy: m["dy"] as? Double ?? 0, at: point(x, y), owner: id)
+                let p = point(x, y)
+                Input.scroll(dx: m["dx"] as? Double ?? 0, dy: m["dy"] as? Double ?? 0, at: p, owner: id)
+                onPointerPosition?(source.key, p)
                 injected(m, kind: "wheel")
             case "k":
                 let down = (m["e"] as? String) == "down"
@@ -626,7 +817,12 @@ final class Session {
             case "release":
                 Input.releaseAll(owner: id)
             case "focus":
-                if case .window(let wid) = source, let pid = capture.pid { Input.focus(window: wid, pid: pid) }
+                onFocused?(source.key)
+                if case .window(let wid) = source, let pid = capture.pid {
+                    Input.focus(window: wid, pid: pid)
+                } else if case .separate(let wid) = source, let pid = capture.pid {
+                    Input.focus(window: wid, pid: pid)
+                }
             default: break
             }
         }
@@ -654,6 +850,11 @@ final class Agent {
     var nextId = 1
     let lock = NSLock()
     private let activity = StreamActivityRegistry()
+    private let spatial = SpatialStreamState()
+    private let cursorMemory = FocusCursorMemory()
+    /// nil means every current and future window stream stays live.
+    private var desiredLiveSources: Set<String>?
+    private var pointerSharedMode = ProcessInfo.processInfo.environment["FRAME_WINDOW_DISPLAYS"] == "1"
     private var assertion: IOPMAssertionID = 0
     /// ticket -> (source, expiry, reconnect key once redeemed). A ticket opens
     /// one viewer within a minute; it may be redeemed again, for the same key,
@@ -695,6 +896,147 @@ final class Agent {
     init(token: String, page: URL?) {
         self.token = token
         self.page = page
+        Input.setPointerShared(pointerSharedMode)
+    }
+
+    private func isWindowSource(_ source: Source) -> Bool {
+        switch source { case .window, .separate: return true; default: return false }
+    }
+
+    private func windowID(_ key: String) -> CGWindowID? {
+        guard let source = Source(key) else { return nil }
+        switch source { case .window(let id), .separate(let id): return id; default: return nil }
+    }
+
+    private func counterpartSourceKeys(_ key: String) -> [String] {
+        guard let id = windowID(key) else { return [key] }
+        return ["window:\(id)", "separate:\(id)"]
+    }
+
+    private func normalized(_ point: CGPoint, in bounds: CGRect) -> NormalizedPoint? {
+        guard bounds.width > 0, bounds.height > 0 else { return nil }
+        return NormalizedPoint(u: min(max(Double((point.x - bounds.minX) / bounds.width), 0), 1),
+                               v: min(max(Double((point.y - bounds.minY) / bounds.height), 0), 1))
+    }
+
+    private func panelPoint(_ normalized: NormalizedPoint, in rect: CGRect) -> CGPoint {
+        CGPoint(x: rect.minX + CGFloat(normalized.u) * rect.width,
+                y: rect.minY + CGFloat(normalized.v) * rect.height)
+    }
+
+    /// Called before a real click/focus is posted. Only save the old panel's
+    /// cursor if the Mac cursor still lies inside that window; another panel's
+    /// pending pointer must not replace the last position we observed there.
+    private func noteFocus(_ sourceKey: String) {
+        guard windowID(sourceKey) != nil else { return }
+        let oldSource = cursorMemory.focusedSource
+        var leaving: NormalizedPoint?
+        if oldSource != sourceKey, let oldSource, let oldID = windowID(oldSource),
+           let bounds = WindowInfo.find(oldID)?.bounds {
+            let cursor = Input.cursorLocation
+            if bounds.contains(cursor) { leaving = normalized(cursor, in: bounds) }
+        }
+        cursorMemory.noteFocus(sourceKey, leavingPoint: leaving)
+    }
+
+    private func rememberPointer(_ point: CGPoint, sourceKey: String) {
+        guard cursorMemory.focusedSource == sourceKey, let id = windowID(sourceKey),
+              let bounds = WindowInfo.find(id)?.bounds,
+              let relative = normalized(point, in: bounds) else { return }
+        cursorMemory.rememberIfFocused(relative, for: sourceKey)
+    }
+
+    private func pruneSpatialSources(_ key: String?) {
+        guard let key else { spatial.clear(); cursorMemory.clear(); return }
+        for source in counterpartSourceKeys(key) {
+            spatial.remove(source)
+            cursorMemory.remove(source)
+        }
+    }
+
+    private func setWindowStreamsLive(_ selected: Set<String>?) {
+        lock.lock()
+        desiredLiveSources = selected
+        let targets = sessions.values.filter { isWindowSource($0.source) }
+        lock.unlock()
+        for session in targets {
+            session.setLive(selected == nil || selected!.contains(session.source.key))
+        }
+    }
+
+    private func liveStreamsResponse(_ req: Request, _ c: HTTPConnection) {
+        if req.query["all"] == "1" {
+            setWindowStreamsLive(nil)
+            return c.respond(json: ["all": true])
+        }
+        guard let raw = req.query["src"] else { return c.respond(400, text: "Missing Stream Sources") }
+        var selected = Set<String>()
+        if !raw.isEmpty {
+            for key in raw.split(separator: ",", omittingEmptySubsequences: false).map(String.init) {
+                guard let source = Source(key), isWindowSource(source), source.key == key else {
+                    return c.respond(400, text: "Invalid Stream Source")
+                }
+                selected.insert(key)
+            }
+        }
+        setWindowStreamsLive(selected)
+        c.respond(json: ["live": selected.sorted(), "all": false])
+    }
+
+    private func pointerResponse(_ req: Request, _ c: HTTPConnection) {
+        guard let raw = req.query["shared"], raw == "0" || raw == "1" else {
+            return c.respond(400, text: "Shared Pointer Must Be 0 Or 1")
+        }
+        let enabled = raw == "1"
+        lock.lock(); pointerSharedMode = enabled; lock.unlock()
+        DispatchQueue.main.async { Input.setPointerShared(enabled) }
+        c.respond(json: ["pointerShared": enabled])
+    }
+
+    private func focusResponse(_ req: Request, _ c: HTTPConnection) {
+        guard let key = req.query["src"], let source = Source(key), isWindowSource(source), source.key == key else {
+            return c.respond(400, text: "Invalid Window Source")
+        }
+        guard let u = Double(req.query["u"] ?? ""), let v = Double(req.query["v"] ?? ""),
+              let gaze = NormalizedPoint(u: u, v: v) else {
+            return c.respond(400, text: "Invalid Normalized Coordinates")
+        }
+        guard Input.allowed else { return c.respond(403, text: "Accessibility Permission Is Required") }
+        lock.lock(); let session = sessions.values.first { $0.source.key == key && !$0.isStopped }; lock.unlock()
+        guard let session, let pid = session.capture.pid, let id = windowID(key),
+              let bounds = WindowInfo.find(id)?.bounds,
+              !session.capture.frameRect.isEmpty else { return c.respond(409, text: "Window Stream Is Not Active") }
+
+        // The incoming gaze belongs to the panel capture. Convert it through
+        // global screen coordinates so Separate's menu-bar/crop pixels do not
+        // become the memory coordinate system for the real application window.
+        let panelPoint = panelPoint(gaze, in: session.capture.frameRect)
+        guard let firstVisit = normalized(panelPoint, in: bounds) else {
+            return c.respond(409, text: "Window Bounds Are Unavailable")
+        }
+        DispatchQueue.main.async {
+            guard !session.isStopped, let currentBounds = WindowInfo.find(id)?.bounds else {
+                return c.respond(409, text: "Window Stream Is Not Active")
+            }
+            let currentFirstVisit = self.normalized(panelPoint, in: currentBounds) ?? firstVisit
+            let oldSource = self.cursorMemory.focusedSource
+            var leaving: NormalizedPoint?
+            if oldSource != key, let oldSource, let oldID = self.windowID(oldSource),
+               let oldBounds = WindowInfo.find(oldID)?.bounds {
+                let cursor = Input.cursorLocation
+                if oldBounds.contains(cursor) { leaving = self.normalized(cursor, in: oldBounds) }
+            }
+            let selection = self.cursorMemory.focus(key, firstVisit: currentFirstVisit, leavingPoint: leaving)
+            Input.focus(window: id, pid: pid)
+            if selection.shouldMoveCursor, let freshBounds = WindowInfo.find(id)?.bounds {
+                let point = selection.point.point(x: Double(freshBounds.minX), y: Double(freshBounds.minY),
+                                                   width: Double(freshBounds.width), height: Double(freshBounds.height))
+                Input.moveCursor(to: CGPoint(x: point.x, y: point.y))
+            } else if selection.shouldMoveCursor {
+                return c.respond(409, text: "Window Bounds Are Unavailable")
+            }
+            c.respond(json: ["focusedSrc": key])
+        }
     }
 
     /// Whether this request may open a stream of `src`: Frame Control's key,
@@ -743,16 +1085,27 @@ final class Agent {
         case ("GET", "/status"):
             lock.lock()
             let list = sessions.values.map { s -> [String: Any] in
+                let previous = spatial.observation(for: s.source.key)
+                if let size = s.capture.pixelSize, size.0 > 0, size.1 > 0 {
+                    spatial.observe(s.source.key, width: size.0, height: size.1, changed: false)
+                }
+                let observed = spatial.observation(for: s.source.key)
                 var e: [String: Any] = ["id": s.id, "src": s.source.key, "title": s.capture.title, "app": s.capture.app,
                                         "stats": s.streamSummary(), "bitrate": s.encoder.bitrate,
-                                        "controller": s.controller.state()]
+                                        "controller": s.controller.state(),
+                                        "width": observed.width > 0 ? observed.width : previous.width,
+                                        "height": observed.height > 0 ? observed.height : previous.height,
+                                        "live": s.isLive, "lastChanged": observed.lastChanged]
                 if let d = (s.capture as? SeparateSource)?.displayID { e["display"] = d }
                 return e
             }
+            let sharedPointer = pointerSharedMode
             lock.unlock()
             var s = permissionsJSON()
             s["version"] = version
             s["streams"] = list
+            s["pointerShared"] = sharedPointer
+            if let focused = cursorMemory.focusedSource { s["focusedSrc"] = focused }
             lock.lock(); s["finished"] = Array(finished); lock.unlock()
             c.respond(json: s)
         case ("GET", "/windows"):
@@ -767,6 +1120,12 @@ final class Agent {
             finished.remove(src.key)
             lock.unlock()
             c.respond(json: ["ticket": t])
+        case ("POST", "/streams/live"):
+            liveStreamsResponse(req, c)
+        case ("POST", "/pointer"):
+            pointerResponse(req, c)
+        case ("POST", "/focus"):
+            focusResponse(req, c)
         case ("POST", "/close"):
             // Tell viewers to close their windows, but don't rely on them:
             // the sessions end here and can't reconnect.
@@ -776,6 +1135,7 @@ final class Agent {
             reconnectKeys = reconnectKeys.filter { src != nil && $0.value != src }
             tickets = tickets.filter { src != nil && $0.value.src != src }  // not yet used ones too
             lock.unlock()
+            pruneSpatialSources(src)
             for s in matching { s.ws.sendJSON(["t": "close"]) }
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { for s in matching { s.end() } }
             c.respond(json: ["closed": matching.count])
@@ -854,12 +1214,13 @@ final class Agent {
         // unacknowledged ticket) replaces the one before.
         let replaced = sessions.values.filter { $0.reconnectKey == key }
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
-                              bitsPerPixel: bpp, reconnectKey: key, activity: activity,
+                              bitsPerPixel: bpp, reconnectKey: key, activity: activity, spatial: spatial,
                               foveation: foveation,
                               foveationAtlas: !wantsDirect && req.query["atlas"] == "1", foveationDirect: wantsDirect,
                               gazeSharpen: codec == .h264 && req.query["gaze"] == "1")
         nextId += 1
         sessions[session.id] = session
+        let selectedLiveSources = desiredLiveSources
         lock.unlock()
         for old in replaced { old.end() }
         session.onEnd = { [weak self] s in
@@ -873,8 +1234,14 @@ final class Agent {
             self.finished.insert(src)
             self.reconnectKeys = self.reconnectKeys.filter { $0.value != src }
             self.lock.unlock()
+            self.pruneSpatialSources(src)
         }
         session.onAck = { [weak self] in self?.acknowledged(key: key) }
+        session.onFocused = { [weak self] src in self?.noteFocus(src) }
+        session.onPointerPosition = { [weak self] src, point in self?.rememberPointer(point, sourceKey: src) }
+        if isWindowSource(src), let selectedLiveSources, !selectedLiveSources.contains(src.key) {
+            session.setLive(false)
+        }
         session.start(maxLong: maxLong, fps: fps)
     }
 }
