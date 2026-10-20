@@ -68,7 +68,8 @@
         "from": "../scripts",
         "to": "scripts",
         "filter": [
-          "*.sh"
+          "*.sh",
+          "workspace-spatial-on-frame.py"
         ]
       },
       {

@@ -35,6 +35,8 @@ import zlib
 from pathlib import Path
 from urllib.parse import quote, urlencode  # %20, not +: the agent's URLComponents keeps +
 
+from frame_spatial_apps import SpatialApps
+
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 PAGE = HERE / "mac-view.html"
@@ -678,6 +680,7 @@ class MacView:
         self.dash_jobs = queue.Queue()
         self.dash_lock = threading.Lock()
         self.dash_worker = None
+        self.spatial_apps = SpatialApps(self)
         self.last_workspace_file = None
         self.last_workspace = ("5120x1440", 1, "sharp")
         # Session auto-save (frame_workspace_profiles.SessionKeeper) hooks.
@@ -1038,14 +1041,23 @@ class MacView:
             return
         self.last_workspace_file = last_workspace_file
         self._load_last_workspace()
+        self.spatial_apps.start(connected)
 
         def loop():
             tick, failures, missing = 0, 0, False
             while not self.closing:
-                time.sleep(1)
+                self.spatial_apps.wake.wait(1)
+                self.spatial_apps.wake.clear()
                 tick += 1
+                if not connected():
+                    continue
+                try:
+                    self.spatial_apps.sync()
+                except Exception as exc:  # retry the spatial state independently of bar availability
+                    self.spatial_apps.error = str(exc)
                 # Not installed: look again each minute. Unreachable: every 5 s.
-                if (missing and tick % 60) or (failures and tick % 5) or not connected():
+                if ((missing and tick % 60 and not self.spatial_apps.enabled) or
+                        (failures and tick % 5)):
                     continue
                 try:
                     out = self.run("bash -s -- sync " + _quote(json.dumps(self.dash_state(), separators=(",", ":"))),
@@ -1111,6 +1123,8 @@ class MacView:
             except ValueError:
                 continue
             if not isinstance(request, dict):
+                continue
+            if self.spatial_apps.handle_request(request):
                 continue
             action, key = request.get("action"), str(request.get("key") or "")
             if action == "close":
@@ -1444,7 +1458,8 @@ print(json.dumps(poses))
         if not match:
             raise MacViewError("The native window panel did not report its registered OpenVR panel key.")
         self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot,
-                                   "title": title, "host": host, "generation": tag}
+                                   "title": title, "host": host, "generation": tag,
+                                   "bundleID": info.get("bundleID")}
         return out
 
     def _stop_native_panels(self, src=None):

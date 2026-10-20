@@ -2,6 +2,106 @@
 
 Labels as elsewhere: **verified** (run here, with date and versions) or **inferred**.
 
+## Apps and Cmd-Tab contract (stage 2)
+
+The approved dock is **D1**, the floating shelf; the switcher is **S1**, the curved window
+strip (FW-15 in `ISSUES.md`). The Mac helper and companion supply their data and actions;
+this change adds no Mac page UI. The mode/session worker owns the mode toggle, automatic
+panels, displays and mirroring. Until `MacView.mode` exists, this integration stays in Desktop Mode.
+
+`Apps.swift` reads `com.apple.dock`'s `persistent-apps` preferences without writing them.
+`GET /apps` returns pinned apps in Dock order, followed by other running regular apps, with
+`bundleID`, `name`, `running`, `pinned`, `hidden` and `active`. The companion adds each icon
+filename. The token-protected
+`GET /apps/icon?bundleID=...` returns `{ "png": "<base64>" }`, a 128×128 PNG rendered from
+NSWorkspace. `POST /apps/action?bundleID=...&verb=...` accepts only `open`, `hide`, `unhide`,
+`quit` and `show_windows`; quit requests normal application termination. Apps can refuse a quit
+or show a save prompt. `show_windows` activates and unhides the app.
+
+`ui/frame_spatial_apps.py` joins that catalogue to the companion's owned native window panels.
+Panel metadata and a current-window mapping retain app membership when a window is hidden.
+Its `/windows?all=1` lookup includes offscreen windows for an already-hidden panel's first sync;
+ordinary `/windows` callers keep the existing onscreen list.
+The bar's existing sync loop sends state every second and wakes when the helper's switcher
+changes (polled every 100 ms). `scripts/workspace-spatial-on-frame.py`, sent as Python on stdin,
+validates the JSON and writes it atomically at
+`$XDG_RUNTIME_DIR/frame-workspace/spatial-ui.json` **only in Spatial Mode**. Leaving that mode
+removes the state. The existing bar sync still collects atomic request files, including when
+the bar executable is missing in Spatial Mode.
+
+The state contains Dock-ordered `apps`, each with `{key,title}` windows, and
+`switcher: {open,index,seq,chosen,windows,tapActive}`. `switcher.windows` is an additive field:
+the ordered panel keys in the strip, grouped by app in recent-use order. `index` selects a
+window in **that** array, independent of Dock order. `chosen` is a panel key or null; `seq`
+changes with the switcher's visible state. A tap failure is exposed as optional `switcher.error`.
+MRU records activations observed since helper startup; its initial order is the frontmost app
+followed by launch order. `chosen` stays null while highlighting and is committed on Cmd release.
+Icons live in `frame-workspace/icons/<bundleID>.png`; only successful deliveries are remembered.
+Failed icons retry without blocking state, and missing icons after a Frame runtime reset are
+resent from the companion cache. Initial delivery is limited to four icons per sync.
+
+The companion configures `POST /switcher?mode=spatial&entries=...` with JSON
+`[{"key":"<owned panel key>","bundleID":"..."}]`, renewing this configuration each second.
+`GET /switcher` reads the helper state. The helper intercepts Cmd-Tab / Cmd-Shift-Tab only in
+Spatial Mode: each step highlights a window, the strip stays open while Cmd is held, and releasing
+Cmd chooses its key. The strip order stays stable during a cycle. Controller requests use
+`POST /switcher?mode=spatial&verb=open|close`; close cancels a highlight and acknowledges a
+delivered choice, preventing it from replaying after another app activates. Desktop Mode removes
+the event tap; helper exit also removes it. The spatial lease expires if companion updates stop, so an abandoned helper
+does not keep intercepting Cmd-Tab.
+
+Headset requests enter the existing ordered job queue:
+
+- `app` forwards only the fixed verbs for apps in the published catalogue.
+- `switch` accepts only an owned native window key and calls the existing `/focus` path;
+  it closes the switcher after focus succeeds. The Frame brings the panel in front of the wearer.
+  Its first cursor visit starts at the centre; later visits use the helper's per-window cursor memory.
+- `switcher` accepts only `open` or `close`.
+
+The Frame writer bounds state to 64 KiB, 128 apps and 256 window keys. It checks icon names,
+128×128 PNG headers, bundle IDs, key ownership within state, switcher order/index and types,
+and rejects symlink runtime/icon directories before writing. Requests for unknown apps,
+stale/foreign panels or unsupported verbs are ignored. These checks do not grant an app access
+to helper endpoints: the existing companion token is still required.
+
+### Local verification and device acceptance
+
+Reproduce without SSH, app actions or installing an event tap:
+
+```sh
+mac/frame-mac-view/build.sh mac/frame-mac-view/.fw15-apps-build/frame-mac-view
+xcrun swiftc -swift-version 5 mac/frame-mac-view/Sources/AppsState.swift mac/frame-mac-view/tests/AppsStateTests.swift -o mac/frame-mac-view/.fw15-apps-build/AppsStateTests
+mac/frame-mac-view/.fw15-apps-build/AppsStateTests
+cd tests && python3 -m unittest test_macview test_server test_spatial_apps
+```
+
+The app/switcher unit tests use fakes and temporary runtime folders. The existing Mac helper
+suite builds and runs an isolated helper with synthetic streams; it does not enable the new
+spatial tap. A successful build and these checks do not establish keyboard interception,
+NSWorkspace icon appearance, focus behaviour or headset interaction.
+
+**Verified locally, 2026-10-20:** the command above ran **137 tests, one skipped, no failures**.
+The skip was the missing-Accessibility rejection case because this Mac grants Accessibility;
+the existing synthetic helper tests emitted unclosed-socket `ResourceWarning`s. The explicit
+ARM64 helper build, pure Swift state checks, companion-to-Swift parser/release contract check
+and `git diff --check` passed. App actions and transport were fakes; the running companion,
+installed helper, user apps and Frame were untouched, and no event tap was installed.
+Disposable build binaries and the test log were removed, recovering **1,528,298 file bytes**.
+
+After integrating the mode/session and Frame UI work, verify on authorized devices:
+
+1. Enter Spatial Mode and compare the shelf with the user's Dock: pinned order, running apps,
+   correct icons and live active/hidden/running changes. Open an unlaunched pinned app, hide,
+   unhide and show its windows; request a normal quit of a disposable app with unsaved content.
+2. Hold Cmd and use Tab / Shift-Tab across several apps with multiple panels. Check MRU grouping,
+   highlight order, no native Mac switcher, and the chosen panel's focus/front placement on Cmd
+   release. Open and close the strip with the controller, then select with laser or gaze.
+3. Open/close/hide windows while the strip is open; check no stale keys or jumping highlights.
+   Reconnect or restart the helper/Frame and confirm icons and panel mappings recover.
+4. Return to Desktop Mode and check native Cmd-Tab works again and spatial state is removed.
+   Exit the helper and interrupt companion updates separately; check interception is removed
+   promptly, including denied event-tap permission and macOS disabling a slow tap.
+
 ## How many windows the Frame can show (verified 2026-10-20)
 
 User's M4 MacBook Pro (macOS 26.3.1), Steam Frame on the SteamOS build installed that day, the
