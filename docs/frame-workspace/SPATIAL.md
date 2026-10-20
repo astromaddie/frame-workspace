@@ -43,9 +43,39 @@ look at them; and (c) one viewer process for all panels, to save memory and star
    allocate memory` in the user journal. Afterwards stop each `separate:` stream, quit the fixture,
    and remove the test windows' files in `~/.local/share/frame-workspace/panels/`.
 
+## The laptop screen as if the lid were closed (verified 2026-10-20)
+
+`mac/frame-mac-view/Diagnostics/SpatialMirrorProbe.swift` (build with `swiftc -O`, run while a
+Workspace display exists) sets the built-in screen to mirror the Frame Workspace display with
+`CGConfigureDisplayMirrorOfDisplay`, applied `.forAppOnly` so macOS undoes it when the probe exits,
+then undoes it itself after 6 s. Result, with no errors:
+
+- While mirroring, macOS listed **one** screen, the Frame Workspace: it became the main display
+  (menu bar and Dock), at 0,0, 2880x2560; the built-in reported `active=0` and mirrored it. This is
+  the "lid closed" desktop, through public API.
+- After the undo, the layout was exactly as before (built-in main, 1800x1169 at 0,0; Workspace at
+  1800,0), the Workspace stream kept running, and all 72 of the user's windows were still on the
+  laptop screen.
+- Not yet checked: whether the user's windows change size during a longer mirrored session, and
+  whether the built-in's backlight turns off or only goes black.
+
+## A drag between windows on different displays (verified 2026-10-20)
+
+`SpatialDragProbe.swift` opens two text windows of its own, one on the Frame Workspace display and
+one on the laptop screen, selects a word in the first and posts a mouse drag that jumps straight
+from one display to the other (no path across their shared edge), then drops. **Pass:** the word
+arrived in the second window. So a drag can follow the laser from one panel's display to another's.
+Inferred, not tested: drags between different apps (the same pasteboard mechanism). The helper's
+input currently tracks buttons per viewer, so a drag across two panels needs one shared pointer.
+
+## New windows (verified 2026-10-20)
+
+An Accessibility observer on an app saw `AXWindowCreated` (with the window's title) as a test
+window opened. Its close was only reported when the app quit (the closed window object stayed
+alive), so closes should also be confirmed from the window list, as `WindowCloseRecovery.swift`
+already does.
+
 ## Still to test
 
-- Mirroring the laptop screen to the headset display (public API; changes the Mac's displays briefly).
-- A drag from one window's display to another's (moves the real cursor).
-- Detecting new windows as they open (Accessibility observer).
 - Gaze picking the active window, and the cursor memory (needs the headset worn).
+- A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.
