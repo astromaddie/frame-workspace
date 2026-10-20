@@ -489,13 +489,19 @@ window's edge towards them:
 - bars on the sides curve it (left/right bend horizontally, top/bottom vertically);
 - a pill below the window moves it in 3D while held, position and angle together.
 
-Visual style (chosen 2026-10-19, see `evidence/vr-handles-mockup.png`): handles
-look like style A (frosted white, visionOS) when they appear, and switch to
-style B (Steam blue with a soft glow) while held for dragging.
-A physical "chrome" frame around windows comes later. Native window panels now
-open beside the Workspace (commit 29b8456) and will use the same handles. Next:
-a worn run of `native/spike_overlay_input.c` to confirm laser hover and click
-delivery to a third-party world overlay on the Frame.
+Visual style (chosen 2026-10-20, replacing the 2026-10-19 white/blue handles):
+Palladium in silver-lavender, with the physical frame brought forward. See
+`evidence/palladium-vr-mockup.png` (variations) and
+`evidence/palladium-vr-handles-mockup.png` (approved):
+- F2 Machined Bezel, floating 1.5 cm in front of the window;
+- P4: a separate close disc with an engraved X beside a tighter move pill;
+- corners (one L each, grip texture at 45° in the bend) and side grips share one
+  language: slide out thin, widen under the laser, glow only when clicked to drag;
+- the laser lights the metal around its tip as in Stargate, in its blue; the
+  whole-piece glow is reserved for dragging, and it glows inside the pressed-in
+  recess, off its walls, rather than outside it.
+Built in `native/chrome.hpp` (see `native/README.md`); worn use not yet verified.
+Native window panels open beside the Workspace and wear the same chrome.
 
 ## Implementation / investigation
 - Add live position controls beside Width and Distance: Move Left / Right / Up / Down, Rotate Left / Right and Tilt Up / Down, with sensible steps and limits, plus Recenter. These use the native owner's existing control file. They must not restart the viewer or the Mac display, and must not take typing focus.

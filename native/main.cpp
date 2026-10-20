@@ -1,5 +1,6 @@
 #include "overlay.hpp"
 #include "gaze_producer.hpp"
+#include "chrome_preview.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -308,15 +309,21 @@ static int selfTest() {
   {
     // VR handles: zones around a 2.4 x 2.13 m window, and the drag maths.
     HandleLayout l;
-    const float hx = l.width / 2, hy = l.height / 2, m = l.margin();
+    const float hx = l.width / 2, hy = l.height / 2, o = l.handleOffset();
     require(l.zone(0, 0) == Handle::None && l.zone(hx - 0.01f, hy - 0.01f) == Handle::None, "inside: no handle");
-    require(l.zone(0, -hy - 0.5f * m) == Handle::Pill, "below the centre: pill");
-    require(l.zone(l.closeX(), -hy - l.pillGap()) == Handle::Close, "left of the pill: close");
-    require(l.zone(l.pillWidth() + 0.05f, -hy - 0.5f * m) == Handle::None, "below but off the pill");
-    require(l.zone(hx + 0.5f * m, 0) == Handle::BarRight && l.zone(-hx - 0.5f * m, 0.3f) == Handle::BarLeft, "sides: curve bars");
-    require(l.zone(hx + 0.5f * m, -hy - 0.5f * m) == Handle::CornerBR && l.zone(-hx - 0.3f * m, hy + 0.3f * m) == Handle::CornerTL,
-            "corners");
-    require(l.zone(hx + 2 * m, 0) == Handle::None, "far outside: nothing");
+    require(l.zone(l.pillX(), l.rowY()) == Handle::Pill, "under the window: the move pill");
+    require(l.zone(l.closeX(), l.rowY()) == Handle::Close, "left of the pill: the close disc");
+    require(l.closeX() + l.discDiameter() / 2 < l.pillX() - l.pillWidth() / 2, "disc and pill are apart");
+    require(l.zone(hx + o, 0) == Handle::BarRight && l.zone(-hx - o, 0.02f) == Handle::BarLeft, "sides: curve grips");
+    require(l.zone(hx + o - 0.6f * l.arm(), hy + o) == Handle::CornerTR, "along a corner's top arm");
+    require(l.zone(-hx - o, -hy - o + 0.6f * l.arm()) == Handle::CornerBL, "along a corner's side arm");
+    require(l.zone(hx + o - 0.29f * l.bend(), hy + o - 0.29f * l.bend()) == Handle::CornerTR, "on a corner's bend");
+    require(l.zone(hx + l.reach() + 0.05f, 0) == Handle::None, "far outside: nothing");
+    const unsigned right = l.revealed(hx + 0.05f, 0);
+    require(right == ((1u << handleIndex(Handle::CornerTR)) | (1u << handleIndex(Handle::CornerBR)) |
+                      (1u << handleIndex(Handle::BarRight))), "past the right edge: its corners and grip slide out");
+    require(l.revealed(0, 0) == 0 && l.revealed(hx + l.reach() + 0.05f, 0) == 0, "inside or far away: none");
+    require(l.chromeWidth() > l.frameWidth() && l.chromeHeight() / 2 > -l.rowY(), "the controls layer covers them all");
     Placement start;  // 2 m ahead of the origin, facing it
     start.matrix = {{{1, 0, 0, 0}, {0, 1, 0, 1.5f}, {0, 0, 1, -2}}};
     // Controller at the origin pointing ahead (-z) at the pill.
@@ -342,15 +349,6 @@ static int selfTest() {
     HmdMatrix34_t pulled = c0;
     pulled.m[2][3] += 0.3f;
     require(std::fabs(drag.update(pulled).curvature - 0.5f) < 1e-3, "bar: pulling it curves the window");
-    std::vector<uint8_t> image;
-    int high = 0;
-    drawHandle(l, Handle::None, false, 256, image, high);
-    require(std::all_of(image.begin(), image.end(), [](uint8_t v) { return v == 0; }), "no handle: transparent");
-    drawHandle(l, Handle::Pill, true, 256, image, high);
-    size_t lit = 0, blue = 0;
-    for (size_t i = 0; i < image.size(); i += 4)
-      if (image[i + 3] > 128) { ++lit; blue += image[i + 2] > image[i] * 2; }
-    require(lit > 20 && blue == lit, "held pill is drawn in Steam blue");
   }
   std::cout
       << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles\n";
@@ -538,27 +536,13 @@ int main(int argc, char **argv) {
         auto v = value();
         if (v != "on" && v != "off") throw std::runtime_error("--v4l2-poc-rewrite must be on or off");
         pocRewrite = v == "on";
-      } else if (a == "--draw-handle") {
-        // Diagnostic: --draw-handle pill|corner|bar rest|held OUT.ppm draws one
-        // handle on grey around a 2.4 m Workspace outline.
-        std::string which = value(), state = value(), outPath = value();
-        Handle h = which == "pill" ? Handle::Pill : which == "corner" ? Handle::CornerBR : which == "bar" ? Handle::BarRight : Handle::None;
-        HandleLayout l;
-        std::vector<uint8_t> image;
-        int high = 0;
-        const int wide = 900;
-        drawHandle(l, h, state == "held", wide, image, high);
-        std::ofstream f(outPath, std::ios::binary);
-        f << "P6\n" << wide << " " << high << "\n255\n";
-        const float mpp = l.chromeWidth() / wide;
-        for (int py = 0; py < high; py++)
-          for (int px = 0; px < wide; px++) {
-            const float x = (px + 0.5f) * mpp - l.chromeWidth() / 2, y = l.chromeHeight() / 2 - (py + 0.5f) * mpp;
-            const bool window = std::fabs(x) <= l.width / 2 && std::fabs(y) <= l.height / 2;
-            const uint8_t *p = &image[(size_t(py) * wide + px) * 4];
-            const float a = p[3] / 255.f, base = window ? 52.f : 18.f;
-            for (int k = 0; k < 3; k++) f.put(char(std::lround(base * (1 - a) + p[k] * a)));
-          }
+      } else if (a == "--render-chrome") {
+        // Diagnostic: --render-chrome rest|all|hover|held|close|close-held OUT.ppm
+        // draws the window chrome (bezel and controls) for a 1.2 m window, flat.
+        std::string scene = value(), outPath = value();
+        Overlay gl(true, "com.frame-workspace.native.preview");
+        if (!renderChromePreview(scene, 1.2f, outPath))
+          throw std::runtime_error("--render-chrome: unknown scene or unwritable output");
         return 0;
       } else if (a == "--rewrite-poc") {
         // Diagnostic: rewrite an Annex B file to POC type 2 (one access unit
@@ -634,7 +618,7 @@ int main(int argc, char **argv) {
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-chrome SCENE OUT.ppm | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "

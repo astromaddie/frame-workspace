@@ -159,18 +159,43 @@ The action set uses the global overlay priority, and SteamVR's event queue is
 pumped every loop; without that, the actions stayed inactive. A probe then
 received a continuous aim pose and exact trigger presses.
 
-Each viewer draws its own cursor dot where a controller's ray meets its panel,
-and shows visionOS-style handles on a transparent overlay just behind the window
-(`handles.hpp`). They stay hidden until the ray passes the window edge towards
-them. The pill below carries the window rigidly with the controller, corners
-resize it about its centre, and the left/right bars curve it as they are pulled
-towards the viewer. Handles are frosted white when shown and Steam blue while
-held. A finished drag saves the pose. `--action-manifest PATH|none` overrides
-or disables input. Worn use is not yet verified.
+Each window wears Palladium chrome in silver-lavender
+(`docs/frame-workspace/evidence/palladium-vr-handles-mockup.png`, approved
+2026-10-20), on two layers in front of it so each eye sees real depth:
 
-A round Close button left of the pill closes that window (or stops the
-Workspace): the viewer writes `{"action":"close","key":KEY}` into
-`--request-dir` and the Mac companion acts on it.
+- **Bezel** (`<key>.frame`, 1.5 cm in front): the F2 machined bezel, about
+  1% of the window's width (2–3.5 cm), with an inward chamfer, a chiseled line
+  round its face and a soft shadow on the window's edge.
+- **Controls** (`<key>.handles`, 3 cm in front): a move pill and a separate
+  close disc with an engraved X, 3 cm below the bezel and always there; and
+  four corner Ls and two side grips, 6 mm Palladium rods that slide out when
+  the laser leaves the window towards them, widen to 15 mm with grip texture
+  under the laser (at 45° across a corner's bend), and press in and glow from
+  inside, brightest along the recess's walls, while dragged.
+
+`chrome.hpp` draws both with one GLSL shader into textures (premultiplied
+alpha), lit from the upper left, and redraws a layer only when something on it
+changes. The laser works as in Stargate: no dot, a small white-hot core where
+it lands (`<key>.cursor`, on whichever layer it meets), and the metal within
+about 5 cm brightening in the laser's blue, most on faces turned towards it.
+The layers follow the window's curvature on concentric cylinders, and the
+laser is intersected with each layer's own cylinder. The pill carries the
+window rigidly with the controller, corners resize it about its centre, and
+the side grips curve it as they are pulled towards the viewer; a finished drag
+saves the pose. The measurements live in `handles.hpp`, shared by the hit
+zones and the shader. `--render-chrome SCENE OUT.ppm` draws the chrome flat
+for checking it without the headset. `--action-manifest PATH|none` overrides
+or disables input.
+
+Verified 2026-10-20 on the Frame (not worn): the shader compiles and renders
+the same on its GPU (zink on Turnip) as on the Mac, and with the Workspace
+running all three layers are visible, sorted in front of the window, 1.5 and
+3 cm out, with matching curvature. Not yet verified: how they look and feel
+worn.
+
+The close disc closes that window (or stops the Workspace): the viewer writes
+`{"action":"close","key":KEY}` into `--request-dir` and the Mac companion
+acts on it.
 
 ## SteamVR bar panel (FW-08)
 

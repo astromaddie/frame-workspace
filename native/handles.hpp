@@ -1,13 +1,16 @@
 #pragma once
-// VR-first window handles (FW-14), visionOS-style: hidden until the laser
-// leaves the window towards them. A pill below the window moves it (it follows
-// the controller rigidly, position and angle together), corners outside the
-// window resize it about its centre, and bars beside the left and right edges
-// curve it as they are pulled towards or pushed away from the viewer. Handles
-// look frosted white (style A) when shown and Steam blue (style B) while held.
+// VR-first window controls (FW-14) in Palladium silver-lavender. Each window
+// has a machined bezel floating 1.5 cm in front of it, and its controls on a
+// layer 3 cm in front: a move pill and a separate close disc below, always
+// there, and resize corners and curve grips that slide out (thin) when the
+// laser leaves the window towards them, widen under the laser, and glow from
+// inside while dragged. The pill carries the window rigidly with the
+// controller, corners resize it about its centre, and the side grips curve it
+// as they are pulled towards or pushed away from the viewer.
 //
-// This file is the input-independent part: zones, drag maths and drawing.
-// Coordinates are panel-local meters: x right, y up, origin at the window centre.
+// This file is the input-independent part: the measurements (shared with the
+// shader in chrome.hpp), hit zones and drag maths. Coordinates are
+// panel-local meters: x right, y up, origin at the window centre.
 #include "placement.hpp"
 #include <algorithm>
 #include <cmath>
@@ -17,35 +20,110 @@
 namespace fw {
 
 enum class Handle { None, Pill, Close, CornerTL, CornerTR, CornerBL, CornerBR, BarLeft, BarRight };
+constexpr int handleCount = 8; // Pill..BarRight, indexed handle - 1
+inline int handleIndex(Handle h) { return int(h) - 1; }
 
-// Handle layout around a window of `width` x `height` meters. The chrome
-// surface extends `margin` beyond each edge, plus room for the pill below.
+// Measurements around a window of `width` x `height` meters.
 struct HandleLayout {
   float width = 2.4f, height = 2.13f;
-  float margin() const { return std::clamp(0.06f * width, 0.08f, 0.25f); }
-  float pillWidth() const { return std::clamp(0.18f * width, 0.16f, 0.5f); }
-  float pillHeight() const { return 0.25f * margin(); }
-  float pillGap() const { return 0.45f * margin(); }  // window edge to pill centre
-  // A round close button left of the pill, as on visionOS.
-  float closeRadius() const { return 0.6f * pillHeight() + 0.01f; }
-  float closeX() const { return -(pillWidth() / 2 + 0.35f * margin() + closeRadius()); }
-  float chromeWidth() const { return width + 2 * margin(); }
-  float chromeHeight() const { return height + 2 * margin(); }
+  // F2 machined bezel.
+  float bezel() const { return std::clamp(0.0105f * width, 0.02f, 0.035f); }
+  // Corners and side grips: one Palladium rod, 6 mm slid out, 15 mm under the laser.
+  static constexpr float rodRest = 0.006f, rodWide = 0.015f;
+  // Window edge to the rods' centre line: just clear of the bezel when wide.
+  float handleOffset() const { return bezel() + 0.006f + rodWide / 2; }
+  float arm() const { return std::clamp(0.07f * width, 0.06f, 0.18f); }
+  float bend() const { return 0.24f * arm(); }
+  float gripLength() const { return std::clamp(0.1f * height, 0.08f, 0.25f); }
+  // P4: a close disc left of the move pill, 3 cm under the bezel.
+  float pillWidth() const { return std::clamp(0.12f * width, 0.11f, 0.33f); }
+  float pillHeight() const { return std::clamp(0.18f * pillWidth(), 0.024f, 0.05f); }
+  float discDiameter() const { return 1.36f * pillHeight(); }
+  float rowGap() const { return 0.45f * pillHeight(); }
+  float rowY() const { return -(height / 2 + bezel() + 0.03f + discDiameter() / 2); }
+  float closeX() const { return -(discDiameter() + rowGap() + pillWidth()) / 2 + discDiameter() / 2; }
+  float pillX() const { return (discDiameter() + rowGap() + pillWidth()) / 2 - pillWidth() / 2; }
+  // The laser reveals a side's handles within this distance of the window.
+  float reach() const { return handleOffset() + 0.10f; }
+  // How close the laser must come to a handle's centre line to take it.
+  static constexpr float tolerance = 0.03f;
+  // The bezel layer, and the controls layer (symmetric about the centre).
+  float frameWidth() const { return width + 2 * bezel(); }
+  float frameHeight() const { return height + 2 * bezel(); }
+  float chromeWidth() const { return width + 2 * (handleOffset() + rodWide / 2 + 0.012f); }
+  float chromeHeight() const {
+    return 2 * std::max(height / 2 + handleOffset() + rodWide / 2 + 0.012f, -rowY() + discDiameter() / 2 + 0.012f);
+  }
 
-  // Which handle the laser is pointing towards at (x, y), or None inside the
-  // window or too far out. Corners win where both edges are crossed.
+  // Where a corner's bend sits: sx, sy are its side (+1 right/top).
+  void cornerSigns(Handle h, float &sx, float &sy) const {
+    sx = (h == Handle::CornerTR || h == Handle::CornerBR) ? 1.f : -1.f;
+    sy = (h == Handle::CornerTL || h == Handle::CornerTR) ? 1.f : -1.f;
+  }
+  static float segment(float px, float py, float ax, float ay, float bx, float by) {
+    const float vx = bx - ax, vy = by - ay;
+    const float t = std::clamp(((px - ax) * vx + (py - ay) * vy) / std::max(vx * vx + vy * vy, 1e-12f), 0.f, 1.f);
+    return std::hypot(px - ax - t * vx, py - ay - t * vy);
+  }
+  // Distance from (x, y) to a handle's centre line (pill and disc: to their
+  // edge, so 0 means on the outline).
+  float distance(Handle h, float x, float y) const {
+    const float hx = width / 2, hy = height / 2, o = handleOffset();
+    switch (h) {
+    case Handle::Pill: {
+      const float half = pillWidth() / 2 - pillHeight() / 2;
+      return std::max(0.f, segment(x, y, pillX() - half, rowY(), pillX() + half, rowY()) - pillHeight() / 2);
+    }
+    case Handle::Close:
+      return std::max(0.f, std::hypot(x - closeX(), y - rowY()) - discDiameter() / 2);
+    case Handle::BarLeft: case Handle::BarRight: {
+      const float gx = (h == Handle::BarLeft ? -1 : 1) * (hx + o);
+      return segment(x, y, gx, -gripLength() / 2, gx, gripLength() / 2);
+    }
+    case Handle::None:
+      return 1e9f;
+    default: {
+      // One L: the bend (radius r) at the corner, arms running back along the edges.
+      float sx, sy;
+      cornerSigns(h, sx, sy);
+      const float bx = sx * (hx + o), by = sy * (hy + o), r = bend(), a = arm();
+      const float cx = bx - sx * r, cy = by - sy * r; // the bend's centre
+      float d = std::min(segment(x, y, bx - sx * r, by, bx - sx * a, by), segment(x, y, bx, by - sy * r, bx, by - sy * a));
+      if ((x - cx) * sx >= 0 && (y - cy) * sy >= 0) d = std::min(d, std::fabs(std::hypot(x - cx, y - cy) - r));
+      return d;
+    }
+    }
+  }
+  // Which sides' handles the laser at (x, y) reveals, as a bit per handle
+  // index (the pill and close disc are always shown, so not included).
+  unsigned revealed(float x, float y) const {
+    const float hx = width / 2, hy = height / 2, r = reach();
+    if (std::fabs(x) > hx + r || std::fabs(y) > hy + r) return 0;
+    const bool right = x > hx, left = x < -hx, top = y > hy, bottom = y < -hy;
+    unsigned m = 0;
+    auto set = [&](Handle h, bool on) { if (on) m |= 1u << handleIndex(h); };
+    set(Handle::CornerTL, left || top);
+    set(Handle::CornerTR, right || top);
+    set(Handle::CornerBL, left || bottom);
+    set(Handle::CornerBR, right || bottom);
+    set(Handle::BarLeft, left);
+    set(Handle::BarRight, right);
+    return m;
+  }
+  // The handle the laser at (x, y) would take: the nearest shown one within
+  // `tolerance`, or None. Nothing inside the window.
   Handle zone(float x, float y) const {
-    const float hx = width / 2, hy = height / 2, m = margin();
-    const bool outX = std::fabs(x) > hx, outY = std::fabs(y) > hy;
-    if (!outX && !outY) return Handle::None;
-    if (std::fabs(x) > hx + m || std::fabs(y) > hy + m) return Handle::None;
-    if (outX && outY)
-      return y > 0 ? (x < 0 ? Handle::CornerTL : Handle::CornerTR)
-                   : (x < 0 ? Handle::CornerBL : Handle::CornerBR);
-    if (outX) return x < 0 ? Handle::BarLeft : Handle::BarRight;
-    if (y < 0 && std::fabs(x - closeX()) <= 1.8f * closeRadius()) return Handle::Close;
-    if (y < 0 && std::fabs(x) <= pillWidth()) return Handle::Pill;
-    return Handle::None;
+    if (std::fabs(x) <= width / 2 && std::fabs(y) <= height / 2) return Handle::None;
+    const unsigned shown = revealed(x, y) | (1u << handleIndex(Handle::Pill)) | (1u << handleIndex(Handle::Close));
+    Handle best = Handle::None;
+    float bestD = tolerance;
+    for (int i = 0; i < handleCount; i++) {
+      if (!(shown & (1u << i))) continue;
+      const Handle h = Handle(i + 1);
+      const float d = distance(h, x, y);
+      if (d <= bestD) { bestD = d; best = h; }
+    }
+    return best;
   }
 };
 
@@ -133,71 +211,5 @@ struct HandleDrag {
     return p;
   }
 };
-
-// Draws the visible handle (if any) into an RGBA image covering the chrome
-// surface: transparent everywhere else. `held` switches style A to style B.
-inline void drawHandle(const HandleLayout &l, Handle h, bool held, int pixelsWide, std::vector<uint8_t> &rgba,
-                       int &pixelsHigh) {
-  const float metersPerPixel = l.chromeWidth() / float(pixelsWide);
-  pixelsHigh = std::max(1, int(std::lround(l.chromeHeight() / metersPerPixel)));
-  rgba.assign(size_t(pixelsWide) * pixelsHigh * 4, 0);
-  if (h == Handle::None) return;
-  // Style A: frosted white; style B: Steam blue (#1a9fff) with a soft glow.
-  const float color[3] = {held ? 26.f : 235.f, held ? 159.f : 238.f, held ? 255.f : 242.f};
-  const float alpha = held ? 0.95f : 0.82f;
-  const float thick = std::max(0.012f, 0.2f * l.margin());
-  const float glow = held ? 0.8f * thick / metersPerPixel : 0.f; // glow falloff, pixels
-  const float hx = l.width / 2, hy = l.height / 2, m = l.margin();
-  // Signed distance (meters) from (x, y) to the handle's shape.
-  auto distance = [&](float x, float y) {
-    auto capsule = [](float px, float py, float ax, float ay, float bx, float by, float r) {
-      const float vx = bx - ax, vy = by - ay;
-      const float t = std::clamp(((px - ax) * vx + (py - ay) * vy) / std::max(vx * vx + vy * vy, 1e-9f), 0.f, 1.f);
-      return std::hypot(px - ax - t * vx, py - ay - t * vy) - r;
-    };
-    switch (h) {
-    case Handle::Pill:
-    case Handle::Close: {
-      const float y0 = -hy - l.pillGap(), half = l.pillWidth() / 2;
-      const float pill = capsule(x, y, -half, y0, half, y0, l.pillHeight() / 2);
-      // The close button: a ring with a cross, drawn as one distance field.
-      const float cx = l.closeX(), r = l.closeRadius();
-      const float ring = std::fabs(std::hypot(x - cx, y - y0) - r) - 0.12f * r;
-      const float a = 0.42f * r;
-      const float cross = std::min(capsule(x, y, cx - a, y0 - a, cx + a, y0 + a, 0.09f * r),
-                                   capsule(x, y, cx - a, y0 + a, cx + a, y0 - a, 0.09f * r));
-      return std::min(pill, std::min(ring, cross));
-    }
-    case Handle::BarLeft: case Handle::BarRight: {
-      const float x0 = (h == Handle::BarLeft ? -1 : 1) * (hx + 0.45f * m);
-      return capsule(x, y, x0, -0.12f * l.height, x0, 0.12f * l.height, thick / 2);
-    }
-    default: {
-      // A quarter arc hugging the corner, just outside it.
-      const float sx = (h == Handle::CornerTL || h == Handle::CornerBL) ? -1.f : 1.f;
-      const float sy = (h == Handle::CornerTL || h == Handle::CornerTR) ? 1.f : -1.f;
-      // Radius and offset keep the arc clear of the window's corner.
-      const float r = std::max(0.9f * m, 0.07f * l.width), reach = 0.45f * m;
-      const float cx = sx * (hx + reach - r), cy = sy * (hy + reach - r);
-      const float dx = (x - cx) * sx, dy = (y - cy) * sy;
-      // Only the part outside the window, never over its content.
-      if (dx < 0 || dy < 0 || (std::fabs(x) <= hx && std::fabs(y) <= hy)) return 1e9f;
-      return std::fabs(std::hypot(dx, dy) - r) - thick / 2;
-    }
-    }
-  };
-  for (int py = 0; py < pixelsHigh; py++)
-    for (int px = 0; px < pixelsWide; px++) {
-      const float x = (px + 0.5f) * metersPerPixel - l.chromeWidth() / 2;
-      const float y = l.chromeHeight() / 2 - (py + 0.5f) * metersPerPixel;
-      const float d = distance(x, y) / metersPerPixel;  // in pixels
-      float a = std::clamp(0.5f - d, 0.f, 1.f) * alpha;  // anti-aliased edge
-      if (glow > 0 && d > 0) a = std::max(a, 0.45f * std::exp(-d / glow));
-      if (a <= 0) continue;
-      uint8_t *o = &rgba[(size_t(py) * pixelsWide + px) * 4];
-      o[0] = uint8_t(color[0]); o[1] = uint8_t(color[1]); o[2] = uint8_t(color[2]);
-      o[3] = uint8_t(std::lround(a * 255));
-    }
-}
 
 } // namespace fw

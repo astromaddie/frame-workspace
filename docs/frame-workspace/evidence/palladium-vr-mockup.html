@@ -1,0 +1,289 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Palladium VR Chrome</title>
+<style>
+:root{
+  /* Palladium silver-lavender */
+  --top:#fbfafd; --face:#e3dfea; --bottom:#cbc4d6; --border:#8d82a0; --ink:#776a8a; --light:#fff; --shade:#a296b3;
+  /* the laser's light (Steam blue) */
+  --beam:#1a9fff; --beam-soft:#1a9fff55; --beam-hot:#bfe4ff; --lit-ink:#1f6fc0; --lit-border:#4aa8f0;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#15131a;color:#e9e4ee;font:14px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,sans-serif;padding:40px 44px 56px;width:1720px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700;letter-spacing:-.01em}
+h2{font-size:21px;margin:44px 0 4px;font-weight:650}
+.sub{color:#a59cae;margin:0 0 18px;max-width:1180px}
+.row{display:flex;gap:22px;flex-wrap:nowrap}
+.card{background:linear-gradient(#1f1c26,#18161d);border:1px solid #2c2834;border-radius:16px;padding:0 0 16px;overflow:hidden;flex:1}
+.card .label{padding:0 20px;margin-top:12px;font-weight:650;font-size:16px}
+.card .note{padding:0 20px;color:#a59cae;font-size:13px;margin-top:2px}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;color:#6cc0ff;margin-left:8px;vertical-align:2px}
+
+/* ---- the VR room ---- */
+.scene{height:430px;perspective:1300px;perspective-origin:50% 42%;position:relative;
+  background:radial-gradient(120% 90% at 50% 0%,#3a3646 0%,#24212c 45%,#141218 100%)}
+.scene::after{content:"";position:absolute;left:0;right:0;bottom:0;height:120px;
+  background:linear-gradient(transparent,#0d0c11cc)}
+.rig{position:absolute;left:50%;top:50%;width:300px;height:267px;margin:-150px 0 0 -150px;
+  transform-style:preserve-3d;transform:rotateY(-24deg) rotateX(5deg)}
+.rig *{transform-style:preserve-3d}
+.screen{position:absolute;inset:0;border-radius:3px;overflow:hidden;
+  background:#1d1f27;box-shadow:0 0 0 1px #0006}
+.screen .bar{height:16px;background:#2a2d37;display:flex;gap:5px;align-items:center;padding-left:8px}
+.screen .bar i{width:7px;height:7px;border-radius:50%;background:#ff5f57}
+.screen .bar i:nth-child(2){background:#febc2e}.screen .bar i:nth-child(3){background:#28c840}
+.code{padding:10px 12px;display:grid;gap:6px}
+.code b{display:block;height:6px;border-radius:3px;background:#6c7a96}
+.code b.k{background:#c792ea}.code b.s{background:#9ccc65}.code b.f{background:#82aaff}.code b.c{background:#4d5566}
+
+/* ---- frame variants ---- */
+.bezel{position:absolute;border-radius:var(--r);pointer-events:none}
+/* outer chamfer (faces out: lit top/left), flat face, inner chamfer (faces in: shaded top/left) */
+.bezel .outer{position:absolute;inset:0;border-radius:var(--r);
+  border:var(--ch) solid;border-color:var(--light) var(--shade) var(--border) var(--top);
+  background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);
+  padding:calc(var(--w) - var(--ch))}
+.bezel .faceA{position:absolute;inset:var(--ch);border-radius:calc(var(--r) - 2px);
+  background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);
+  padding:calc(var(--w) - 2 * var(--ch));box-shadow:inset 1px 1px 0 #ffffff90}
+.bezel .inner{position:absolute;inset:calc(var(--w) - var(--ich));border-radius:4px;
+  border:var(--ich) solid;border-color:var(--shade) var(--light) var(--light) var(--shade);
+  opacity:.95}
+.bezel .groove{position:absolute;inset:calc(var(--w) * .45);border-radius:calc(var(--r) * .6);
+  border:1px solid #9e93ab;box-shadow:0 1px 0 #fff,inset 0 1px 0 #fff8;opacity:.75}
+.shadowline{position:absolute;inset:-2px;border-radius:5px;box-shadow:0 0 14px 4px #000a, inset 0 0 18px 6px #0008;transform:translateZ(1px)}
+.wall{position:absolute;background:linear-gradient(90deg,var(--bottom),var(--shade))}
+/* contact shadow on the floor */
+.floor{position:absolute;left:50%;bottom:34px;width:340px;height:40px;margin-left:-170px;border-radius:50%;
+  background:radial-gradient(closest-side,#0009,transparent);filter:blur(6px)}
+
+/* ---- pill & close ---- */
+.pal{background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  border:1px solid var(--border);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),inset 2px 2px 0 #ffffff70,0 2px 3px #0005,0 6px 14px #0006}
+/* Highlighted: the laser's blue light plays across the metal and the piece glows softly. */
+.pal.hover{background:radial-gradient(70% 120% at 62% 30%,#cfe9ffcc 0%,#9fd2ff55 35%,transparent 70%),
+    linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);border-color:var(--lit-border);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 #7fb6e6,inset 2px 2px 0 #ffffff70,
+    0 0 0 1px #1a9fff40,0 0 10px 2px #1a9fff80,0 0 28px 8px #1a9fff38,0 6px 14px #0006}
+/* Held: pressed in (Palladium's inverted bevel), lit from inside, glowing fully. */
+.pal.pressed{background:radial-gradient(80% 130% at 50% 45%,#bfe4ffdd 0%,#6fbaff66 45%,transparent 80%),
+    linear-gradient(115deg,#d9d3e3 0%,#cdc6d9 48%,#bdb5cb 100%);border-color:var(--beam);
+  box-shadow:inset 1px 1px 0 #8f84a3,inset -1px -1px 0 #fff,inset 2px 2px 3px #6d6283a0,
+    0 0 0 1px #1a9fff80,0 0 14px 4px #1a9fffb0,0 0 40px 14px #1a9fff50}
+.ridges{display:grid;gap:3px}
+.ridges i{display:block;height:1.5px;background:var(--ink);box-shadow:0 1px 0 var(--light)}
+.hover .ridges i{background:var(--lit-ink)} .pressed .ridges i{background:var(--lit-ink);box-shadow:0 1px 0 #ffffffb0}
+.vridges{display:flex;gap:3px;height:100%}
+.vridges i{display:block;width:1.5px;height:100%;background:var(--ink);box-shadow:1px 0 0 var(--light)}
+.hover .vridges i{background:var(--lit-ink)} .pressed .vridges i{background:var(--lit-ink);box-shadow:1px 0 0 #ffffffb0}
+
+.pillstage{height:150px;display:flex;align-items:center;justify-content:center;gap:34px;position:relative;
+  background:radial-gradient(120% 140% at 50% 0%,#34303f 0%,#1d1b23 70%)}
+.edge{position:absolute;left:30px;right:30px;top:0;height:30px;border-radius:0 0 10px 10px;
+  background:linear-gradient(#1d1f27,#1d1f27);box-shadow:0 1px 0 #ffffff14}
+.edge.framed{background:linear-gradient(180deg,var(--face),var(--bottom));height:22px;
+  box-shadow:inset 0 -1px 0 var(--shade),0 3px 6px #0007}
+.state{display:flex;flex-direction:column;align-items:center;gap:10px}
+.state small{color:#a59cae;font-size:12px}
+
+/* X: round disc, chamfered rim, beveled cross */
+.disc{width:var(--d);height:var(--d);border-radius:50%;position:relative;flex:none}
+.disc::before{content:"";position:absolute;inset:3px;border-radius:50%;
+  background:linear-gradient(295deg,var(--top),var(--face) 52%,var(--bottom));
+  box-shadow:inset 0 0 0 1px #00000010}
+.pressed.disc::before{background:radial-gradient(circle at 50% 50%,#bfe4ffcc,transparent 70%),linear-gradient(295deg,#d9d3e3,#cdc6d9 52%,#bdb5cb)}
+.hover.disc::before{background:radial-gradient(circle at 60% 32%,#cfe9ffcc,transparent 62%),linear-gradient(295deg,var(--top),var(--face) 52%,var(--bottom))}
+.x{position:absolute;left:50%;top:50%;width:calc(var(--d) * .5);height:calc(var(--d) * .5);margin:calc(var(--d) * -.25) 0 0 calc(var(--d) * -.25)}
+.x i{position:absolute;left:0;right:0;top:50%;height:var(--xt);margin-top:calc(var(--xt) / -2);border-radius:1.5px}
+.x i:nth-child(1){transform:rotate(45deg)} .x i:nth-child(2){transform:rotate(-45deg)}
+/* embossed: a raised ridge, upper face lit */
+.x.emb i{background:linear-gradient(180deg,var(--light) 0 48%,var(--shade) 52% 100%);box-shadow:0 1px 1px #0004}
+.x.emb i:nth-child(2){background:linear-gradient(0deg,var(--shade) 0 48%,var(--light) 52% 100%)}
+.hover .x.emb i,.pressed .x.emb i{background:linear-gradient(180deg,#fff 0 48%,#3d8fd8 52% 100%);box-shadow:0 0 4px #1a9fff99}
+.hover .x.emb i:nth-child(2),.pressed .x.emb i:nth-child(2){background:linear-gradient(0deg,#3d8fd8 0 48%,#fff 52% 100%)}
+/* engraved: a V-cut, upper face in shadow (as the chiseled divider) */
+.x.eng i{background:linear-gradient(180deg,var(--border) 0 48%,var(--light) 52% 100%)}
+.x.eng i:nth-child(2){background:linear-gradient(0deg,var(--light) 0 48%,var(--border) 52% 100%)}
+.hover .x.eng i,.pressed .x.eng i{background:linear-gradient(180deg,#1a6cc0 0 48%,#e6f4ff 52% 100%);box-shadow:0 0 5px #1a9fffaa}
+.hover .x.eng i:nth-child(2),.pressed .x.eng i:nth-child(2){background:linear-gradient(0deg,#e6f4ff 0 48%,#1a6cc0 52% 100%)}
+
+.pill{height:var(--ph);width:var(--pw);border-radius:999px;display:flex;align-items:center;justify-content:center}
+.combo{height:var(--ph);border-radius:999px;display:flex;align-items:center;padding:0 3px;gap:0}
+.combo .seg{height:100%;display:flex;align-items:center;justify-content:center}
+.combo .cut{width:3px;height:70%;background:linear-gradient(90deg,var(--border) 50%,var(--light) 50%);opacity:.8;margin:0 8px}
+.pressed .combo .cut,.combo.pressed .cut,.combo.hover .cut{background:linear-gradient(90deg,#3d7fc0 50%,#fff 50%)}
+
+/* adjustment handles */
+.hstage{height:190px;display:flex;align-items:center;justify-content:center;gap:42px;position:relative;
+  background:radial-gradient(120% 140% at 50% 0%,#34303f 0%,#1d1b23 70%)}
+.corner{width:62px;height:62px;position:relative}
+.corner .a,.corner .b{position:absolute;border-radius:7px}
+.corner .a{left:0;top:0;width:62px;height:15px}
+.corner .b{left:0;top:0;width:15px;height:62px}
+.corner .join{position:absolute;left:0;top:0;width:15px;height:15px;border-radius:7px 2px 2px 2px}
+.corner .rd{position:absolute;left:24px;top:3.5px;width:22px;height:8px}
+.corner .rd2{position:absolute;left:3.5px;top:24px;width:8px;height:22px}
+.grip{width:var(--gw);height:84px;border-radius:999px;display:flex;align-items:center;justify-content:center}
+.grip .ridges{width:8px}
+.hint{color:#a59cae;font-size:12px;text-align:center}
+.engr{width:60px;height:60px;position:relative;border-radius:14px 0 0 0;
+  border-left:3px solid;border-top:3px solid;border-color:var(--border);box-shadow:inset 1px 1px 0 var(--light),-1px -1px 0 #ffffff90}
+.facepatch{padding:22px;border-radius:12px;background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),0 6px 14px #0006}
+.engbar{width:4px;height:70px;border-radius:2px;background:linear-gradient(90deg,var(--border) 50%,var(--light) 50%)}
+.dot{position:absolute;width:9px;height:9px;border-radius:50%;background:#eaf6ff;box-shadow:0 0 6px 2px #1a9fffdd,0 0 22px 8px #1a9fff66}
+.bsheen{position:absolute;inset:0;border-radius:var(--r);-webkit-mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
+</style></head>
+<body>
+<h1>Palladium for the Workspace in VR</h1>
+<p class="sub">Mockups only. Everything is silver-lavender Palladium, lit from the upper left. The laser carries a blue light: near its dot, the metal picks up a blue sheen, and the piece it selects glows. Held pieces press in and glow fully. Depth is real in the headset: the frame, handles and pill sit on their own layers a few centimetres in front of the window, so each eye sees them at a different offset; the shading is drawn in.</p>
+
+<h2>1 · Frame Around the Window</h2>
+<p class="sub">The window seen from a step to its left, the way you would see depth in the room.</p>
+<div class="row">
+  <div class="card"><div class="scene">
+    <div class="rig" id="f1"></div><div class="floor"></div></div>
+    <div class="label">F1 · Hairline Rim</div>
+    <div class="note">A slim 1 cm raised rim with a chiseled groove where it meets the window. Lies on the window, so it bends with any curve.</div></div>
+  <div class="card"><div class="scene">
+    <div class="rig" id="f2"></div><div class="floor"></div></div>
+    <div class="label">F2 · Machined Bezel<span class="tag">RECOMMENDED</span></div>
+    <div class="note">A 2.5 cm bezel with an inward chamfer, floating 1.5 cm in front with a soft shadow on the window edge. Works curved or flat.</div></div>
+  <div class="card"><div class="scene">
+    <div class="rig" id="f3"></div><div class="floor"></div></div>
+    <div class="label">F3 · Deep Frame</div>
+    <div class="note">F2 with real side walls 4 cm deep, like a physical monitor. Flat windows only: a curved window falls back to F2.</div></div>
+</div>
+
+<h2>2 · Move Pill and Close</h2>
+<p class="sub">Shown at the window's bottom edge, at rest, highlighted and held. Both are tighter than now: the pill is about a third shorter and sits 3 cm under the frame instead of 6 cm, raised 2 cm in front of it.</p>
+<div class="row">
+  <div class="card"><div class="pillstage" id="p1"></div>
+    <div class="label">P1 · Separate Disc, Raised X</div>
+    <div class="note">visionOS's layout. The X stands up from the disc as a beveled ridge, with its upper faces lit.</div></div>
+  <div class="card"><div class="pillstage" id="p2"></div>
+    <div class="label">P2 · One Capsule, Engraved X<span class="tag">RECOMMENDED</span></div>
+    <div class="note">The X sits at the capsule's left end, cut in like Palladium's chiseled divider, with a groove before the grip. Closing and moving are still separate targets.</div></div>
+</div>
+<div class="row" style="margin-top:22px">
+  <div class="card"><div class="pillstage" id="p4"></div>
+    <div class="label">P3 · One Capsule, Raised X</div>
+    <div class="note">P2's capsule with P1's raised X, if you prefer the X standing up.</div></div>
+  <div class="card"><div class="pillstage" id="p5"></div>
+    <div class="label">P4 · Separate Disc, Engraved X</div>
+    <div class="note">P1's layout with the X cut in.</div></div>
+</div>
+
+<h2>3 · Resize Corners and Curve Grips</h2>
+<p class="sub">Machined pieces that sit on the frame, at rest, highlighted and held. The curve grip is the Palladium resize grip itself, standing upright beside the frame.</p>
+<div class="row">
+  <div class="card"><div class="hstage" id="h1"></div>
+    <div class="label">H1 · Slide Out on Approach<span class="tag">RECOMMENDED</span></div>
+    <div class="note">Hidden behind the frame until the laser leaves the window towards them, then they slide out 1.5 cm in front, as now. The frame stays clean.</div></div>
+  <div class="card"><div class="hstage" id="h2"></div>
+    <div class="label">H2 · Engraved, Raised on Approach</div>
+    <div class="note">Faint engraved marks always show where the handles are (left). When the laser comes near, the handles rise out of them (right).</div></div>
+</div>
+
+<h2>4 · Together</h2>
+<p class="sub">F2, P2 and H1 in the room. The curve grip and right corners have slid out because the laser is past the right edge; the pill is always there.</p>
+<div class="row">
+  <div class="card"><div class="scene" style="height:560px"><div class="rig" id="all" style="transform:rotateY(-18deg) rotateX(4deg) scale(1.32)"></div><div class="floor" style="bottom:40px"></div></div>
+    <div class="label">Highlighted</div><div class="note">The laser just past the right edge: the grip under it glows, and the bezel nearby catches its blue light.</div></div>
+  <div class="card"><div class="scene" style="height:560px"><div class="rig" id="all2" style="transform:rotateY(-18deg) rotateX(4deg) scale(1.32)"></div><div class="floor" style="bottom:40px"></div></div>
+    <div class="label">Held</div><div class="note">Dragging the lower right corner: it presses in and glows fully; the other pieces stay at rest.</div></div>
+</div>
+
+<script>
+const code = () => {
+  const rows = ["k f c","s s","f c c c","k s","c c f","k f s s","c","f f k","s c","k s f","c c","f k","s s c","k f","c c f"];
+  return `<div class="screen"><div class="bar"><i></i><i></i><i></i></div><div class="code">` +
+    rows.map((r,i)=>`<div style="display:flex;gap:6px;padding-left:${(i%4)*10}px">`+r.split(" ").map((c,j)=>`<b class="${c}" style="width:${22+((i*7+j*13)%40)}px"></b>`).join("")+`</div>`).join("") +
+    `</div></div>`;
+};
+// frame: w = bezel width (px), ch = outer chamfer, ich = inner chamfer, z = float, depth = wall depth
+function frame(el, {w, ch, ich, r, z, depth=0, groove=false, handles=null, pill=true, sheen=null}) {
+  const W = 300, H = 267;
+  let h = code();
+  if (z) h += `<div class="shadowline" style="transform:translateZ(2px)"></div>`;
+  const bz = `--w:${w}px;--ch:${ch}px;--ich:${ich}px;--r:${r}px;left:${-w}px;top:${-w}px;width:${W+2*w}px;height:${H+2*w}px;transform:translateZ(${z}px)`;
+  if (depth) {
+    const ww = W + 2*w, hh = H + 2*w;
+    const wall = (style) => `<div class="wall" style="${style}"></div>`;
+    h += wall(`left:${-w}px;top:${-w}px;width:${depth}px;height:${hh}px;transform-origin:left center;transform:translateZ(${z}px) rotateY(90deg);background:linear-gradient(90deg,var(--face),var(--bottom))`);
+    h += wall(`left:${W+w-depth}px;top:${-w}px;width:${depth}px;height:${hh}px;transform-origin:right center;transform:translateZ(${z}px) rotateY(-90deg);background:linear-gradient(90deg,var(--shade),var(--bottom))`);
+    h += wall(`left:${-w}px;top:${-w}px;width:${ww}px;height:${depth}px;transform-origin:center top;transform:translateZ(${z}px) rotateX(-90deg);background:linear-gradient(var(--top),var(--face))`);
+    h += wall(`left:${-w}px;top:${H+w-depth}px;width:${ww}px;height:${depth}px;transform-origin:center bottom;transform:translateZ(${z}px) rotateX(90deg);background:linear-gradient(var(--shade),var(--border))`);
+  }
+  h += `<div class="bezel" style="${bz}"><div class="outer"></div><div class="faceA"></div><div class="inner"></div>${groove?'<div class="groove"></div>':''}${sheen?`<div class="bsheen" style="padding:${w}px;background:radial-gradient(circle 95px at ${sheen[0]+w}px ${sheen[1]+w}px,#d6eeffee,#5fb6ff88 40%,#1a9fff22 70%,transparent)"></div>`:''}</div>`;
+  if (pill) {
+    const pz = z + 12, py = H + w + 10;
+    h += `<div style="position:absolute;left:${W/2-62}px;top:${py}px;transform:translateZ(${pz}px)">${capsule('', 'eng', 15, 124)}</div>`;
+  }
+  if (handles) h += handles(W, H, w, z);
+  el.innerHTML = h;
+}
+function capsule(state, xs, ph, total) {
+  const d = ph;
+  return `<div class="combo pal ${state}" style="--ph:${ph}px;width:${total}px;--d:${d}px;--xt:${Math.max(2, ph*.16)}px">
+    <div class="seg" style="width:${d}px"><div class="disc ${state}" style="--d:${d-2}px"><div class="x ${xs}"><i></i><i></i></div></div></div>
+    <div class="cut"></div>
+    <div class="seg" style="flex:1;padding:0 ${ph*.5}px"><div class="vridges" style="height:${ph*.42}px"><i></i><i></i><i></i></div></div></div>`;
+}
+function pillP1(state, xs, scale=1) {
+  const ph = 22*scale, d = 30*scale;
+  return `<div style="display:flex;gap:${10*scale}px;align-items:center">
+    <div class="disc pal ${state}" style="--d:${d}px;--xt:${4*scale}px;border-radius:50%"><div class="x ${xs}"><i></i><i></i></div></div>
+    <div class="pill pal ${state==='pressed'?'':state}" style="--ph:${ph}px;--pw:${120*scale}px"><div class="vridges" style="height:${ph*.42}px"><i></i><i></i><i></i></div></div></div>`;
+}
+const states = [["", "At Rest"], ["hover", "Highlighted"], ["pressed", "Held"]];
+function pillRow(id, render, framed=true) {
+  const el = document.getElementById(id);
+  el.innerHTML = `<div class="edge ${framed?'framed':''}"></div>` + states.map(([s,l]) =>
+    `<div class="state" style="margin-top:28px;position:relative">${render(s)}${s?'<div class="dot" style="left:58%;top:10px"></div>':''}<small>${l}</small></div>`).join("");
+}
+pillRow("p1", s => pillP1(s, "emb"));
+pillRow("p2", s => capsule(s, "eng", 30, 150));
+pillRow("p4", s => capsule(s, "emb", 30, 150));
+pillRow("p5", s => pillP1(s, "eng"));
+
+function corner(state) {
+  return `<div class="corner">
+    <div class="a pal ${state}"></div><div class="b pal ${state}"></div>
+    <div class="rd vridges ${state}" style="height:8px"><i></i><i></i><i></i></div>
+    <div class="rd2 ${state}"><div class="ridges" style="width:8px"><i></i><i></i><i></i></div></div></div>`;
+}
+function grip(state) {
+  return `<div class="grip pal ${state}" style="--gw:${state?18:9}px">${state?'<div class="ridges"><i></i><i></i><i></i></div>':''}</div>`;
+}
+document.getElementById("h1").innerHTML = states.map(([s,l]) =>
+  `<div class="state" style="position:relative">${`<div style="display:flex;gap:26px;align-items:center">${corner(s)}${grip(s||'')}</div>`}${s?'<div class="dot" style="left:88px;top:38px"></div>':''}<small>${l}</small></div>`).join("");
+document.getElementById("h2").innerHTML =
+  `<div class="state"><div class="facepatch" style="display:flex;gap:30px;align-items:center"><div class="engr"></div><div class="engbar"></div></div><small>At Rest · Engraved</small></div>
+   <div class="state"><div style="display:flex;gap:26px;align-items:center">${corner("hover")}${grip("hover")}</div><small>Laser Near · Raised</small></div>`;
+
+frame(document.getElementById("f1"), {w:9, ch:3, ich:2, r:7, z:0, groove:false});
+frame(document.getElementById("f2"), {w:20, ch:4, ich:6, r:14, z:10, groove:true});
+frame(document.getElementById("f3"), {w:20, ch:4, ich:6, r:14, z:10, depth:30, groove:true});
+
+function activeHandles(heldCorner) {
+  return (W, H, w, z) => {
+    const hz = z + 12;
+    const place = (x, y, rot, html) => `<div style="position:absolute;left:${x}px;top:${y}px;transform:translateZ(${hz}px) rotate(${rot}deg);transform-origin:0 0">${html}</div>`;
+    const c = heldCorner ? "pressed" : "";
+    let s = "";
+    s += place(W + w + 4, -w - 4, 90, corner("").replace('class="corner"', 'class="corner" style="transform:scale(.7);transform-origin:0 0"'));
+    s += place(W + w + 4, H + w + 4, 180, corner(c).replace('class="corner"', 'class="corner" style="transform:scale(.7);transform-origin:0 0"'));
+    s += `<div style="position:absolute;left:${W + w + 8}px;top:${H/2 - 42}px;transform:translateZ(${hz}px)">${grip(heldCorner ? "" : "hover")}</div>`;
+    // The laser's light on the bezel near its dot, and the dot itself.
+    const [lx, ly] = heldCorner ? [W + w + 2, H + w + 2] : [W + w + 17, H / 2];
+    s += `<div class="dot" style="left:${lx-4}px;top:${ly-4}px;transform:translateZ(${hz+2}px)"></div>`;
+    return s;
+  };
+}
+frame(document.getElementById("all"), {w:20, ch:4, ich:6, r:14, z:10, groove:true, handles:activeHandles(false), sheen:[337, 133]});
+frame(document.getElementById("all2"), {w:20, ch:4, ich:6, r:14, z:10, groove:true, handles:activeHandles(true), sheen:[322, 287]});
+</script>
+</body></html>

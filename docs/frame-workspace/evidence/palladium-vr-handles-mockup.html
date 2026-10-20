@@ -1,0 +1,232 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Palladium VR Handles</title>
+<style>
+:root{
+  --top:#fbfafd; --face:#e3dfea; --bottom:#cbc4d6; --border:#8d82a0; --ink:#776a8a; --light:#fff; --shade:#a296b3;
+  --lit-ink:#1f6fc0; --lit-border:#4aa8f0;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#15131a;color:#e9e4ee;font:14px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,sans-serif;padding:40px 44px 48px;width:1720px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700;letter-spacing:-.01em}
+h2{font-size:21px;margin:40px 0 4px;font-weight:650}
+.sub{color:#a59cae;margin:0 0 18px;max-width:1240px}
+.row{display:flex;gap:22px}
+.card{background:linear-gradient(#1f1c26,#18161d);border:1px solid #2c2834;border-radius:16px;padding:0 0 16px;overflow:hidden;flex:1}
+.card .label{padding:0 20px;margin-top:12px;font-weight:650;font-size:16px}
+.card .note{padding:0 20px;color:#a59cae;font-size:13px;margin-top:2px}
+.stage{height:250px;display:flex;align-items:center;justify-content:center;gap:70px;position:relative;
+  background:radial-gradient(120% 140% at 50% 0%,#34303f 0%,#1d1b23 70%)}
+.state{display:flex;flex-direction:column;align-items:center;gap:12px}
+.state small{color:#a59cae;font-size:12px}
+.pair{display:flex;align-items:center;gap:30px}
+
+/* the room */
+.scene{height:560px;perspective:1300px;perspective-origin:50% 42%;position:relative;
+  background:radial-gradient(120% 90% at 50% 0%,#3a3646 0%,#24212c 45%,#141218 100%)}
+.rig{position:absolute;left:50%;top:50%;width:300px;height:267px;margin:-150px 0 0 -150px;
+  transform-style:preserve-3d;transform:rotateY(-18deg) rotateX(4deg) scale(1.32)}
+.rig *{transform-style:preserve-3d}
+.screen{position:absolute;inset:0;border-radius:3px;overflow:hidden;background:#1d1f27;box-shadow:0 0 0 1px #0006}
+.screen .bar{height:16px;background:#2a2d37;display:flex;gap:5px;align-items:center;padding-left:8px}
+.screen .bar i{width:7px;height:7px;border-radius:50%;background:#ff5f57}
+.screen .bar i:nth-child(2){background:#febc2e}.screen .bar i:nth-child(3){background:#28c840}
+.code{padding:10px 12px;display:grid;gap:6px}
+.code b{display:block;height:6px;border-radius:3px;background:#6c7a96}
+.code b.k{background:#c792ea}.code b.s{background:#9ccc65}.code b.f{background:#82aaff}.code b.c{background:#4d5566}
+.floor{position:absolute;left:50%;bottom:40px;width:340px;height:40px;margin-left:-170px;border-radius:50%;
+  background:radial-gradient(closest-side,#0009,transparent);filter:blur(6px)}
+.bezel{position:absolute;border-radius:var(--r)}
+.bezel .outer{position:absolute;inset:0;border-radius:var(--r);border:var(--ch) solid;border-color:var(--light) var(--shade) var(--border) var(--top);
+  background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);padding:calc(var(--w) - var(--ch))}
+.bezel .faceA{position:absolute;inset:var(--ch);border-radius:calc(var(--r) - 2px);
+  background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0);padding:calc(var(--w) - 2 * var(--ch));box-shadow:inset 1px 1px 0 #ffffff90}
+.bezel .inner{position:absolute;inset:calc(var(--w) - var(--ich));border-radius:4px;border:var(--ich) solid;border-color:var(--shade) var(--light) var(--light) var(--shade)}
+.bezel .groove{position:absolute;inset:calc(var(--w) * .45);border-radius:calc(var(--r) * .6);border:1px solid #9e93ab;box-shadow:0 1px 0 #fff,inset 0 1px 0 #fff8;opacity:.75}
+.bsheen{position:absolute;inset:0;border-radius:var(--r);-webkit-mask:linear-gradient(#000 0 0) content-box exclude,linear-gradient(#000 0 0)}
+.shadowline{position:absolute;inset:-2px;border-radius:5px;box-shadow:0 0 14px 4px #000a, inset 0 0 18px 6px #0008}
+.core{position:absolute;width:4px;height:4px;border-radius:50%;background:#fff;box-shadow:0 0 0 1.5px #4aa8ff8c}
+
+/* P4: separate disc with an engraved X, and the pill */
+.pal{background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);border:1px solid var(--border);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),inset 2px 2px 0 #ffffff70,0 2px 3px #0005,0 6px 14px #0006}
+.pal.hover{background:radial-gradient(circle 22px at 58% 40%,#c4e4ffe6 0%,#6fbcffa0 26%,#3a9dff38 60%,transparent 100%),linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),inset 2px 2px 0 #ffffff70,0 2px 3px #0005,0 6px 14px #0006}
+.pal.pressed{background:radial-gradient(80% 130% at 50% 50%,#6fbcff47 0%,#6fbcff30 60%,transparent 100%),linear-gradient(115deg,#d9d3e3 0%,#cdc6d9 48%,#bdb5cb 100%);
+  border-color:#5b8fc4;box-shadow:inset 0 0 0 1px #d4ecffd0,inset 0 0 4px 2px #2f9dffe6,inset 0 0 10px 3px #2f9dff70,inset 1px 1px 0 #8f84a3,inset -1px -1px 0 #fff,0 1px 0 #ffffff40}
+.disc{width:var(--d);height:var(--d);border-radius:50%;position:relative;flex:none}
+.x{position:absolute;left:50%;top:50%;width:calc(var(--d) * .5);height:calc(var(--d) * .5);margin:calc(var(--d) * -.25) 0 0 calc(var(--d) * -.25)}
+.x i{position:absolute;left:0;right:0;top:50%;height:var(--xt);margin-top:calc(var(--xt) / -2);border-radius:1.5px}
+.x i:nth-child(1){transform:rotate(45deg)} .x i:nth-child(2){transform:rotate(-45deg)}
+.x i{background:linear-gradient(180deg,var(--border) 0 48%,var(--light) 52% 100%)}
+.x i:nth-child(2){background:linear-gradient(0deg,var(--light) 0 48%,var(--border) 52% 100%)}
+.hover .x i{background:linear-gradient(180deg,#5d7fa8 0 48%,#ffffff 52% 100%)}
+.hover .x i:nth-child(2){background:linear-gradient(0deg,#ffffff 0 48%,#5d7fa8 52% 100%)}
+.pressed .x i{background:linear-gradient(180deg,#1a6cc0 0 48%,#e6f4ff 52% 100%)}
+.pressed .x i:nth-child(2){background:linear-gradient(0deg,#e6f4ff 0 48%,#1a6cc0 52% 100%)}
+
+.pill{height:var(--ph);width:var(--pw);border-radius:999px;display:flex;align-items:center;justify-content:center}
+.vridges{display:flex;gap:3px}
+.vridges i{display:block;width:1.5px;height:100%;background:var(--ink);box-shadow:1px 0 0 var(--light)}
+.pressed .vridges i{background:var(--lit-ink)}
+.edge{position:absolute;left:30px;right:30px;top:0;height:22px;border-radius:0 0 10px 10px;
+  background:linear-gradient(180deg,var(--face),var(--bottom));box-shadow:inset 0 -1px 0 var(--shade),0 3px 6px #0007}
+svg{overflow:visible}
+</style></head>
+<body>
+<h1>Palladium in VR: Handles, Round Two</h1>
+<p class="sub">With F2 Machined Bezel and P4 Separate Disc, Engraved X. Corners and side grips now share one design language. They slide out thin and simple, widen with grip texture when the laser is on them, and light up only once clicked to drag: pressed in, they glow from inside, the light bouncing off the walls of the recess rather than spilling out. The laser works as in Stargate: no dot, just a tiny white-hot core where it lands, and the metal around that point brightens in its own colour with a blue cast, fading over a few centimetres. Faces turned towards the tip catch the most, and the bezel nearby catches some too. The pill and X follow the same rule. Shading here is real lighting from the upper left, so it stays correct at every corner.</p>
+
+<h2>Corner and Side Grip</h2>
+<p class="sub">Each corner is one continuous L with a rounded bend, its grip texture set at 45° across the bend. The side grip is the same piece, straight.</p>
+<div class="row">
+  <div class="card"><div class="stage" id="hs"></div>
+    <div class="label">Slid Out · Laser On It · Clicked to Drag</div>
+    <div class="note">Slid out: a 6 mm silver-lavender line, no texture. Laser on it: it widens to 15 mm and shows its grip texture, lit only around the laser's tip. Clicked to drag: it presses in (the bevel flips, as in Palladium) and glows from inside until you let go, brightest along the recess's walls; nothing spills out around it.</div></div>
+</div>
+
+<h2>Move Pill and Close (P4)</h2>
+<div class="row">
+  <div class="card"><div class="stage" id="ps" style="height:170px"></div>
+    <div class="label">At Rest · Laser On It · Clicked to Drag</div>
+    <div class="note">As chosen, with the same rule: the laser's light around its tip on hover, the glow inside the pressed-in disc only while held.</div></div>
+</div>
+
+<h2>Together</h2>
+<p class="sub">F2, P4 and the new handles. The laser is past the right edge, so only the right side's pieces have slid out.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="rig" id="sceneHover"></div><div class="floor"></div></div>
+    <div class="label">Laser on the Side Grip</div><div class="note">The grip widens and is lit around the laser's tip, and the bezel beside it catches a little. No glow: nothing is being dragged. The corners stay thin.</div></div>
+  <div class="card"><div class="scene"><div class="rig" id="sceneHeld"></div><div class="floor"></div></div>
+    <div class="label">Dragging the Lower Right Corner</div><div class="note">The corner is clicked and dragged, so it alone glows, inside its recess. The side grip and the other corner stay thin.</div></div>
+</div>
+
+<script>
+let uid = 0;
+// The laser's tip, as in Stargate: no dot, a tiny white-hot core that shows on anything.
+const tipCore = (x, y) => `<circle cx="${x}" cy="${y}" r="3.4" fill="#4aa8ff" opacity=".55"/><circle cx="${x}" cy="${y}" r="1.9" fill="#fff"/>`;
+// One Palladium piece drawn as a stroked path, lit by a distant light from the upper left
+// (from the lower right when pressed, which reads as recessed), plus the laser as a blue
+// point light when it is on the piece.
+function piece({d, t, state, ridges = [], laser = null, box, reach = 30, core = true}) {
+  const id = "f" + (++uid);
+  const pressed = state === "held", lit = state !== "rest";
+  const az = pressed ? 45 : 225;
+  const glow = "";
+  const [x0, y0, w, h] = box;
+  const lx = laser ? laser[0] : 0, ly = laser ? laser[1] : 0;
+  return `<svg width="${w}" height="${h}" viewBox="${x0} ${y0} ${w} ${h}" style="${glow}">
+  <defs>
+    <linearGradient id="${id}g" gradientUnits="userSpaceOnUse" x1="${x0}" y1="${y0}" x2="${x0 + w * .55}" y2="${y0 + h}">
+      <stop offset="0" stop-color="${pressed ? '#d9d3e3' : '#fbfafd'}"/><stop offset=".48" stop-color="${pressed ? '#cdc6d9' : '#e3dfea'}"/><stop offset="1" stop-color="${pressed ? '#b9b0c9' : '#cbc4d6'}"/>
+    </linearGradient>
+    <filter id="${id}" filterUnits="userSpaceOnUse" x="${x0}" y="${y0}" width="${w}" height="${h}" color-interpolation-filters="sRGB">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="${Math.max(.8, t * .14)}" result="b"/>
+      <feDiffuseLighting in="b" surfaceScale="${t * .32}" diffuseConstant="1.05" lighting-color="#fff" result="dl"><feDistantLight azimuth="${az}" elevation="52"/></feDiffuseLighting>
+      <feComposite in="dl" in2="SourceAlpha" operator="in" result="dl2"/>
+      <feBlend in="SourceGraphic" in2="dl2" mode="multiply" result="m"/>
+      <feSpecularLighting in="b" surfaceScale="${t * .32}" specularConstant=".85" specularExponent="22" lighting-color="#ffffff" result="sp"><feDistantLight azimuth="${az}" elevation="38"/></feSpecularLighting>
+      <feComposite in="sp" in2="SourceAlpha" operator="in" result="sp2"/>
+      <feComposite in="sp2" in2="m" operator="arithmetic" k2="1" k3="1" result="lit"/>
+      ${pressed ? `<!-- held: lit from inside the recess, brightest where the light bounces off its walls -->
+      <feComponentTransfer in="SourceAlpha" result="inv"><feFuncA type="table" tableValues="1 0"/></feComponentTransfer>
+      <feGaussianBlur in="inv" stdDeviation="${t * .15}" result="wide"/>
+      <feComposite in="wide" in2="SourceAlpha" operator="in" result="walls"/>
+      <feGaussianBlur in="inv" stdDeviation="${t * .07}" result="near"/>
+      <feComposite in="near" in2="SourceAlpha" operator="in" result="rim"/>
+      <feFlood flood-color="#2f9dff" flood-opacity=".85"/><feComposite in2="walls" operator="in" result="wallsBlue"/>
+      <feFlood flood-color="#d4ecff"/><feComposite in2="rim" operator="in" result="rimBlue"/>
+      <feFlood flood-color="#6fbcff" flood-opacity=".1"/><feComposite in2="SourceAlpha" operator="in" result="fill"/>
+      <feMerge><feMergeNode in="lit"/><feMergeNode in="fill"/><feMergeNode in="wallsBlue"/><feMergeNode in="rimBlue"/></feMerge>` : ""}
+    </filter>
+  </defs>
+  <g filter="url(#${id})">
+    <path d="${d}" fill="none" stroke="${pressed ? '#2a8ee6' : '#8d82a0'}" stroke-width="${t}" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="${d}" fill="none" stroke="url(#${id}g)" stroke-width="${t - 1.6}" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  ${laser && lit ? `<radialGradient id="${id}tip" gradientUnits="userSpaceOnUse" cx="${lx}" cy="${ly}" r="${reach}">
+      <stop offset="0" stop-color="#d2ebff" stop-opacity=".9"/><stop offset=".22" stop-color="#7cc2ff" stop-opacity=".62"/>
+      <stop offset=".55" stop-color="#3a9dff" stop-opacity=".22"/><stop offset="1" stop-color="#1a9fff" stop-opacity="0"/></radialGradient>
+    <path d="${d}" fill="none" stroke="url(#${id}tip)" stroke-width="${t - 1}" stroke-linecap="round" stroke-linejoin="round"/>` : ""}
+  ${ridges.map(([ax, ay, bx, by]) => `
+    <line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${pressed ? '#1f6fc0' : '#776a8a'}" stroke-width="1.6" stroke-linecap="round"/>
+    <line x1="${ax + .9}" y1="${ay + .9}" x2="${bx + .9}" y2="${by + .9}" stroke="#ffffffc0" stroke-width="1" stroke-linecap="round"/>`).join("")}
+  ${laser && lit && core ? tipCore(lx, ly) : ""}
+</svg>`;
+}
+const T = {rest: 6, hover: 15, held: 15};
+// A corner: sx/sy point the arms (+1 right/down). The bend is at (0, 0).
+function corner(state, {sx = 1, sy = 1, len = 62, r = 15, laser = null, scale = 1} = {}) {
+  const t = T[state] * scale; len *= scale; r *= scale;
+  const sweep = sx * sy > 0 ? 0 : 1;
+  const d = `M ${sx * len} 0 H ${sx * r} A ${r} ${r} 0 0 ${sweep} 0 ${sy * r} V ${sy * len}`;
+  const ridges = [];
+  if (state !== "rest") {
+    // Three ridges across the bend at 45°, spaced along the curve.
+    const cx = sx * r, cy = sy * r, k = Math.SQRT1_2;
+    const mx = cx - sx * r * k, my = cy - sy * r * k;
+    const rx = -sx * k, ry = -sy * k;         // radial (across the stroke)
+    const tx = sx * k, ty = -sy * k;          // along the curve
+    const half = t * .34, gap = 3.8 * scale;
+    for (const i of [-1, 0, 1]) {
+      const px = mx + tx * gap * i, py = my + ty * gap * i;
+      ridges.push([px - rx * half, py - ry * half, px + rx * half, py + ry * half]);
+    }
+  }
+  const pad = 30 * scale + t;
+  const box = [Math.min(0, sx * len) - pad, Math.min(0, sy * len) - pad, len + 2 * pad, len + 2 * pad];
+  const ls = laser || [sx * r * .3, sy * r * .3];
+  return piece({d, t, state, ridges, laser: ls, box, reach: 30 * scale, core: scale === 1});
+}
+function sideGrip(state, {len = 86, laser = null, scale = 1} = {}) {
+  const t = T[state] * scale; len *= scale;
+  const ridges = state === "rest" ? [] : [-1, 0, 1].map(i => [-t * .27, i * 3.6 * scale, t * .27, i * 3.6 * scale]);
+  const pad = 30 * scale + t;
+  return piece({d: `M 0 ${-len / 2} V ${len / 2}`, t, state, ridges, laser: laser || [-2, -6], box: [-pad, -len / 2 - pad, 2 * pad, len + 2 * pad], reach: 30 * scale, core: scale === 1});
+}
+const states = [["rest", "Slid Out"], ["hover", "Laser On It"], ["held", "Clicked to Drag"]];
+document.getElementById("hs").innerHTML = states.map(([s, l]) =>
+  `<div class="state"><div class="pair">${corner(s)}${sideGrip(s)}</div><small>${l}</small></div>`).join("");
+
+function pillP4(state) {
+  const cls = state === "rest" ? "" : state === "hover" ? "hover" : "pressed";
+  return `<div style="display:flex;gap:10px;align-items:center">
+    <div class="disc pal ${cls}" style="--d:30px;--xt:4px"><div class="x"><i></i><i></i></div>${state === "rest" ? "" : '<div class="core" style="left:15.4px;top:10px"></div>'}</div>
+    <div class="pill pal" style="--ph:22px;--pw:120px"><div class="vridges" style="height:9px"><i></i><i></i><i></i></div></div></div>`;
+}
+document.getElementById("ps").innerHTML = `<div class="edge"></div>` + states.map(([s, l]) =>
+  `<div class="state" style="margin-top:24px">${pillP4(s)}<small>${l === "Slid Out" ? "At Rest" : l}</small></div>`).join("");
+
+const code = () => {
+  const rows = ["k f c","s s","f c c c","k s","c c f","k f s s","c","f f k","s c","k s f","c c","f k","s s c","k f","c c f"];
+  return `<div class="screen"><div class="bar"><i></i><i></i><i></i></div><div class="code">` +
+    rows.map((r,i)=>`<div style="display:flex;gap:6px;padding-left:${(i%4)*10}px">`+r.split(" ").map((c,j)=>`<b class="${c}" style="width:${22+((i*7+j*13)%40)}px"></b>`).join("")+`</div>`).join("") + `</div></div>`;
+};
+function scene(el, held) {
+  const W = 300, H = 267, w = 20, z = 10, hz = 22, s = .62;
+  let h = code() + `<div class="shadowline" style="transform:translateZ(2px)"></div>`;
+  const [lx, ly] = held ? [W + w + 1, H + w + 1] : [W + w + 4, H / 2 + 6];
+  h += `<div class="bezel" style="--w:${w}px;--ch:4px;--ich:6px;--r:14px;left:${-w}px;top:${-w}px;width:${W + 2 * w}px;height:${H + 2 * w}px;transform:translateZ(${z}px)">
+    <div class="outer"></div><div class="faceA"></div><div class="inner"></div><div class="groove"></div>
+    <div class="bsheen" style="padding:${w}px;background:radial-gradient(circle 46px at ${lx + w}px ${ly + w}px,#c4e4ffd0,#6fbcff8a 26%,#3a9dff30 60%,transparent)"></div></div>`;
+  // pieces are placed so their bend (or centre) sits just outside the bezel
+  const put = (x, y, svg) => `<div style="position:absolute;left:${x}px;top:${y}px;width:0;height:0;transform:translateZ(${hz}px)"><div style="position:absolute;transform:translate(-50%,-50%)">${svg}</div></div>`;
+  const o = w + 4;
+  // corner SVG boxes are offset from the bend; centre them on the box centre instead
+  const cornerAt = (x, y, sx, sy, state) => {
+    const len = 62 * s, t = T[state] * s, pad = 30 * s + t;
+    const cx = x + sx * (len / 2), cy = y + sy * (len / 2);
+    return put(cx, cy, corner(state, {sx, sy, scale: s, laser: state !== "rest" ? [sx * 3, sy * 3] : null}));
+  };
+  h += cornerAt(W + o, -o, -1, 1, "rest");
+  h += cornerAt(W + o, H + o, -1, -1, held ? "held" : "rest");
+  h += put(W + o, H / 2, sideGrip(held ? "rest" : "hover", {scale: .8, laser: [0, 6]}));
+  h += `<div style="position:absolute;left:${W / 2 - 80}px;top:${H + w + 9}px;transform:translateZ(${hz}px) scale(.62);transform-origin:0 0">${pillP4("rest")}</div>`;
+  h += `<div class="core" style="left:${lx - 2}px;top:${ly - 2}px;transform:translateZ(${hz + 3}px)"></div>`;
+  el.innerHTML = h;
+}
+scene(document.getElementById("sceneHover"), false);
+scene(document.getElementById("sceneHeld"), true);
+</script>
+</body></html>

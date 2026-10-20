@@ -7,6 +7,7 @@
 #include "gaze_bridge.hpp"
 #include "placement.hpp"
 #include "handles.hpp"
+#include "chrome.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
@@ -61,17 +62,22 @@ class Overlay {
   GLuint yuvFramebuffer = 0, yuvProgram = 0;
   int width = 0, height = 0;   // dimensions of the last submitted texture
   // VR-first placement (FW-14): the viewer reads the controllers itself through
-  // SteamVR Input (SteamVR's own laser only serves its dashboard), draws a
-  // cursor dot, and shows visionOS-style handles on a transparent "chrome"
-  // overlay just behind the window.
+  // SteamVR Input (SteamVR's own laser only serves its dashboard). Each window
+  // has two Palladium layers in front of it (chrome.hpp): the bezel 1.5 cm out,
+  // and the controls 3 cm out; plus the laser's tip, a small white-hot core.
   VR_IVRInput_FnTable *input = nullptr;
   VRActionSetHandle_t actionSet = 0;
   VRActionHandle_t aimAction = 0, grabAction = 0;
   VRInputValueHandle_t hands[2] = {};
-  VROverlayHandle_t chromeHandle = 0, cursorHandle = 0;
-  GLuint chromeTexture = 0, cursorTexture = 0;
-  Handle shownHandle = Handle::None;
-  bool shownHeld = false, chromeVisible = false, cursorVisible = false;
+  static constexpr float frameDepth = 0.015f, controlsDepth = 0.03f;
+  VROverlayHandle_t frameHandle = 0, chromeHandle = 0, cursorHandle = 0;
+  GLuint frameTexture = 0, chromeTexture = 0, cursorTexture = 0;
+  ChromeRenderer chromeRenderer;
+  ChromeState chromeState, chromeDrawn, frameDrawn;
+  float drawnGeometry[3] = {-1, -1, -1};     // width, height, curvature last drawn
+  float layerGeometry[3] = {-1, -1, -1};     // ... last given to the layers
+  bool chromeShown = false, cursorVisible = false, chromeFailed = false, closing = false;
+  double lastChromeUpdate = 0;
   HandleDrag drag;
   int dragHand = -1;
   bool grabWas[2] = {};
@@ -467,34 +473,43 @@ public:
       fprintf(stderr, "[native] placement input unavailable\n");
       return;
     }
-    std::string chromeKey = key + ".handles", cursorKey = key + ".cursor";
-    std::string chromeName = name + " Handles", cursorName = name + " Cursor";
-    if (overlay->CreateOverlay(chromeKey.data(), chromeName.data(), &chromeHandle) ||
+    std::string frameKey = key + ".frame", chromeKey = key + ".handles", cursorKey = key + ".cursor";
+    std::string frameName = name + " Frame", chromeName = name + " Controls", cursorName = name + " Pointer";
+    if (overlay->CreateOverlay(frameKey.data(), frameName.data(), &frameHandle) ||
+        overlay->CreateOverlay(chromeKey.data(), chromeName.data(), &chromeHandle) ||
         overlay->CreateOverlay(cursorKey.data(), cursorName.data(), &cursorHandle)) {
       fprintf(stderr, "[native] placement overlays unavailable\n");
       return;
     }
     VRTextureBounds_t bounds{0, 1, 1, 0};
-    for (auto h : {chromeHandle, cursorHandle}) {
+    for (auto h : {frameHandle, chromeHandle, cursorHandle}) {
       overlay->SetOverlayTextureBounds(h, &bounds);
       overlay->SetOverlayInputMethod(h, VROverlayInputMethod_None);
+      overlay->SetOverlayFlag(h, VROverlayFlags_IsPremultiplied, true);
     }
-    // Window above its handles; the cursor above both.
-    overlay->SetOverlaySortOrder(chromeHandle, 0);
+    // Back to front: the window, its bezel, its controls, the laser's tip.
     overlay->SetOverlaySortOrder(handle, 1);
-    overlay->SetOverlaySortOrder(cursorHandle, 2);
-    overlay->SetOverlayWidthInMeters(cursorHandle, 0.022f);
-    // A soft white dot with a darker rim, readable on any content.
+    overlay->SetOverlaySortOrder(frameHandle, 2);
+    overlay->SetOverlaySortOrder(chromeHandle, 3);
+    overlay->SetOverlaySortOrder(cursorHandle, 4);
+    overlay->SetOverlayWidthInMeters(cursorHandle, 0.014f);
+    // The tip, as in Stargate: a small white-hot core that shows on anything,
+    // in a thin ring of the laser's blue (premultiplied).
     const int n = 64;
     std::vector<uint8_t> dot(size_t(n) * n * 4, 0);
     for (int y = 0; y < n; y++)
       for (int x = 0; x < n; x++) {
         const float d = std::hypot(x + 0.5f - n / 2.f, y + 0.5f - n / 2.f) / (n / 2.f);
+        const float core = std::clamp((0.3f - d) * 20.f + 0.5f, 0.f, 1.f);
+        const float ring = std::clamp((0.5f - d) * 20.f + 0.5f, 0.f, 1.f) * 0.55f;
+        const float halo = std::exp(-d * d * 9.f) * 0.18f;
+        const float blue = std::max(ring, halo) * (1 - core);
         uint8_t *o = &dot[(size_t(y) * n + x) * 4];
-        const float a = std::clamp((1.f - d) * 12.f, 0.f, 1.f);
-        const float v = d < 0.72f ? 245.f : 40.f;
-        o[0] = o[1] = o[2] = uint8_t(v);
-        o[3] = uint8_t(a * 235);
+        const float a = core + blue;
+        o[0] = uint8_t(std::lround(255 * (core + blue * 0.29f)));
+        o[1] = uint8_t(std::lround(255 * (core + blue * 0.66f)));
+        o[2] = uint8_t(std::lround(255 * (core + blue * 1.0f)));
+        o[3] = uint8_t(std::lround(255 * std::min(a, 1.f)));
       }
     glGenTextures(1, &cursorTexture);
     glBindTexture(GL_TEXTURE_2D, cursorTexture);
@@ -502,6 +517,7 @@ public:
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, dot.data());
+    glGenTextures(1, &frameTexture);
     glGenTextures(1, &chromeTexture);
     glFinish();
     Texture_t t{reinterpret_cast<void *>(uintptr_t(cursorTexture)), ETextureType_TextureType_OpenGL,
@@ -515,55 +531,136 @@ public:
   float panelHeight() const {
     return placement.width * (width > 0 && height > 0 ? float(height) / float(width) : 2560.f / 2880.f);
   }
-  void setPanelTransform(VROverlayHandle_t h, float x, float y, float z, float overlayWidth) {
-    HmdMatrix34_t m = placement.matrix;
-    for (int r = 0; r < 3; r++)
-      m.m[r][3] += m.m[r][0] * x + m.m[r][1] * y + m.m[r][2] * z;
-    overlay->SetOverlayTransformAbsolute(h, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
-    if (overlayWidth > 0)
-      overlay->SetOverlayWidthInMeters(h, overlayWidth);
+  // The window's curvature radius (0 when flat) and, for a layer `z` in front,
+  // the factor from the layer's own arc to the window's (1 when flat).
+  float curveRadius() const {
+    return placement.curvature > 1e-4f ? placement.width / (2 * float(M_PI) * placement.curvature) : 0;
   }
-  void showHandle(const HandleLayout &l, Handle h, bool held) {
-    if (h == Handle::None) {
-      if (chromeVisible) overlay->HideOverlay(chromeHandle);
-      chromeVisible = false;
-      shownHandle = Handle::None;
-      return;
+  float layerScale(float z) const {
+    const float R = curveRadius();
+    return R > 0 ? R / std::max(R - z, 0.05f) : 1;
+  }
+  // A transform `z` in front of the window at window coordinates (x, y): on its
+  // cylinder when curved, facing the axis.
+  HmdMatrix34_t panelPoint(float x, float y, float z) const {
+    HmdMatrix34_t local{{{1, 0, 0, x}, {0, 1, 0, y}, {0, 0, 1, z}}};
+    const float R = curveRadius();
+    if (R > 0) {
+      const float a = x / R, r = std::max(R - z, 0.05f);
+      local = {{{std::cos(a), 0, -std::sin(a), r * std::sin(a)}, {0, 1, 0, y},
+                {std::sin(a), 0, std::cos(a), R - r * std::cos(a)}}};
     }
-    setPanelTransform(chromeHandle, 0, 0, -0.004f, l.chromeWidth());
-    if (h != shownHandle || held != shownHeld) {
-      std::vector<uint8_t> image;
-      int high = 0;
-      const int wide = 768;
-      drawHandle(l, h, held, wide, image, high);
-      glBindTexture(GL_TEXTURE_2D, chromeTexture);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-      glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, wide, high, 0, GL_RGBA, GL_UNSIGNED_BYTE, image.data());
-      glFinish(); // SteamVR copies it on submission; it must be complete.
-      Texture_t t{reinterpret_cast<void *>(uintptr_t(chromeTexture)), ETextureType_TextureType_OpenGL,
+    return multiply(placement.matrix, local);
+  }
+  // Where a controller's pointing ray meets the layer `z` in front of the
+  // window, in window coordinates (an arc position when curved).
+  bool layerHit(const HmdMatrix34_t &c, float z, float &x, float &y) const {
+    const HmdMatrix34_t local = multiply(inverseRigid(placement.matrix), c);
+    const float o[3] = {local.m[0][3], local.m[1][3], local.m[2][3]};
+    const float d[3] = {-local.m[0][2], -local.m[1][2], -local.m[2][2]};
+    const float R = curveRadius();
+    if (R <= 0) {
+      if (std::fabs(d[2]) < 1e-4f) return false;
+      const float t = (z - o[2]) / d[2];
+      if (t <= 0) return false;
+      x = o[0] + t * d[0];
+      y = o[1] + t * d[1];
+      return true;
+    }
+    const float r = std::max(R - z, 0.05f), ox = o[0], oz = o[2] - R;
+    const float qa = d[0] * d[0] + d[2] * d[2], qb = 2 * (ox * d[0] + oz * d[2]), qc = ox * ox + oz * oz - r * r;
+    const float disc = qb * qb - 4 * qa * qc;
+    if (qa < 1e-8f || disc < 0) return false;
+    float best = -1;
+    for (float t : {(-qb - std::sqrt(disc)) / (2 * qa), (-qb + std::sqrt(disc)) / (2 * qa)})
+      if (t > 0 && o[2] + t * d[2] < R && (best < 0 || t < best)) best = t;
+    if (best < 0) return false;
+    const float px = o[0] + best * d[0], pz = o[2] + best * d[2];
+    x = std::atan2(px, R - pz) * R;
+    y = o[1] + best * d[1];
+    return true;
+  }
+  // Keeps the bezel and controls layers on the window, matching its size and
+  // curvature (concentric when curved).
+  void placeLayers(const HandleLayout &l) {
+    struct { VROverlayHandle_t h; float z, width; } layers[2] = {
+        {frameHandle, frameDepth, l.frameWidth()}, {chromeHandle, controlsDepth, l.chromeWidth()}};
+    const bool resized = layerGeometry[0] != placement.width || layerGeometry[1] != l.height ||
+                         layerGeometry[2] != placement.curvature;
+    for (auto &layer : layers) {
+      HmdMatrix34_t m = panelPoint(0, 0, layer.z);
+      overlay->SetOverlayTransformAbsolute(layer.h, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
+      if (resized) {
+        const float arc = layer.width / layerScale(layer.z), R = curveRadius();
+        overlay->SetOverlayWidthInMeters(layer.h, arc);
+        if (overlay->SetOverlayCurvature)
+          overlay->SetOverlayCurvature(layer.h, R > 0 ? std::min(arc / (2 * float(M_PI) * (R - layer.z)), 1.f) : 0.f);
+      }
+    }
+    layerGeometry[0] = placement.width;
+    layerGeometry[1] = l.height;
+    layerGeometry[2] = placement.curvature;
+  }
+  static bool sameChrome(const ChromeState &a, const ChromeState &b) {
+    for (int i = 0; i < handleCount; i++)
+      if (std::fabs(a.reveal[i] - b.reveal[i]) > 1e-3f || std::fabs(a.wide[i] - b.wide[i]) > 1e-3f ||
+          a.held[i] != b.held[i])
+        return false;
+    return a.tip == b.tip && (!a.tip || (std::fabs(a.tipX - b.tipX) < 5e-4f && std::fabs(a.tipY - b.tipY) < 5e-4f));
+  }
+  // Draws whichever layers changed and hands them to SteamVR.
+  void drawChrome(const HandleLayout &l, const ChromeState &frameState) {
+    const bool geometry = drawnGeometry[0] != placement.width || drawnGeometry[1] != l.height ||
+                          drawnGeometry[2] != placement.curvature;
+    struct { int layer; VROverlayHandle_t h; GLuint texture; const ChromeState &state; ChromeState &drawn;
+             float width, height, z; } layers[2] = {
+        {0, frameHandle, frameTexture, frameState, frameDrawn, l.frameWidth(), l.frameHeight(), frameDepth},
+        {1, chromeHandle, chromeTexture, chromeState, chromeDrawn, l.chromeWidth(), l.chromeHeight(), controlsDepth}};
+    for (auto &layer : layers) {
+      if (!geometry && sameChrome(layer.state, layer.drawn)) continue;
+      const float scale = layerScale(layer.z), arc = layer.width / scale;
+      int w = 0, h = 0;
+      ChromeRenderer::textureSize(arc, layer.height, w, h);
+      try {
+        chromeRenderer.render(layer.layer, l, layer.state, arc, layer.height, scale, layer.texture, w, h);
+      } catch (const std::exception &e) {
+        fprintf(stderr, "[native] window chrome unavailable: %s\n", e.what());
+        chromeFailed = true;
+        return;
+      }
+      glFlush(); // SteamVR copies it on submission, in this context
+      Texture_t t{reinterpret_cast<void *>(uintptr_t(layer.texture)), ETextureType_TextureType_OpenGL,
                   EColorSpace_ColorSpace_Gamma};
-      overlay->SetOverlayTexture(chromeHandle, &t);
-      shownHandle = h;
-      shownHeld = held;
+      overlay->SetOverlayTexture(layer.h, &t);
+      layer.drawn = layer.state;
     }
-    if (!chromeVisible) overlay->ShowOverlay(chromeHandle);
-    chromeVisible = true;
+    drawnGeometry[0] = placement.width;
+    drawnGeometry[1] = l.height;
+    drawnGeometry[2] = placement.curvature;
   }
-  // One step of VR placement: reads both hands, moves the cursor, shows the
-  // handle the laser points towards, and drives a drag while the trigger is
-  // held. Returns true when a drag ended, so the caller saves the pose.
+  void hideChrome() {
+    for (auto h : {frameHandle, chromeHandle, cursorHandle})
+      if (h) overlay->HideOverlay(h);
+    chromeShown = cursorVisible = false;
+  }
+  // One step of VR placement: reads both hands, shows the window's chrome,
+  // slides out the handles the laser is heading for, lights the metal around
+  // its tip, and drives a drag while the trigger is held. Returns true when a
+  // drag ended, so the caller saves the pose.
   bool updatePlacementInput() {
-    if (!input || noVR) return false;
+    if (!input || noVR || chromeFailed || closing) return false;
     VRActiveActionSet_t active{};
     active.ulActionSet = actionSet;
     active.nPriority = 0x01000000; // k_nActionSetOverlayGlobalPriorityMin: works beside scene apps
     if (input->UpdateActionState(&active, sizeof active, 1)) return false;
+    const double now = nowMs();
+    const float dt = lastChromeUpdate > 0 ? float(std::clamp(now - lastChromeUpdate, 0.0, 100.0) / 1000.0) : 0.f;
+    lastChromeUpdate = now;
     HandleLayout l;
     l.width = placement.width;
     l.height = panelHeight();
-    struct HandRay { bool valid = false, grab = false, hit = false; HmdMatrix34_t pose{}; float x = 0, y = 0; };
+    struct HandRay { bool valid = false, grab = false, hit = false, onControls = false, onFrame = false;
+                     HmdMatrix34_t pose{}; float x = 0, y = 0, fx = 0, fy = 0; };
     HandRay rays[2];
     for (int i = 0; i < 2; i++) {
       InputPoseActionData_t pose{};
@@ -575,10 +672,21 @@ public:
       rays[i].grab = grab.bActive && grab.bState;
       if (rays[i].valid) {
         rays[i].pose = pose.pose.mDeviceToAbsoluteTracking;
-        rays[i].hit = HandleDrag::rayHit(placement, rays[i].pose, rays[i].x, rays[i].y);
+        rays[i].onControls = layerHit(rays[i].pose, controlsDepth, rays[i].x, rays[i].y);
+        rays[i].onFrame = layerHit(rays[i].pose, frameDepth, rays[i].fx, rays[i].fy);
+        rays[i].hit = rays[i].onControls;
       }
     }
+    // Nothing until the window has a picture; nothing once it is closing.
+    if (!texture) return false;
+    if (!chromeShown) {
+      for (auto h : {frameHandle, chromeHandle}) overlay->ShowOverlay(h);
+      chromeShown = true;
+    }
+    placeLayers(l);
     bool ended = false;
+    int pointing = -1; // the hand whose laser is on or near this window
+    Handle hot = Handle::None;
     if (dragHand >= 0) {
       HandRay &r = rays[dragHand];
       if (r.valid && r.grab) {
@@ -589,52 +697,97 @@ public:
           setCurvature(placement.curvature);
         l.width = placement.width;
         l.height = panelHeight();
-        showHandle(l, drag.handle, true);
+        placeLayers(l);
+        r.onControls = layerHit(r.pose, controlsDepth, r.x, r.y);
+        r.onFrame = layerHit(r.pose, frameDepth, r.fx, r.fy);
+        pointing = dragHand;
+        hot = drag.handle;
       } else {
         dragHand = -1;
         ended = true;
-        showHandle(l, Handle::None, false);
-      }
-    } else {
-      // The hand pointing at this panel (right first) shows its handle.
-      int h = -1;
-      Handle zone = Handle::None;
-      for (int i : {1, 0}) {
-        if (!rays[i].hit) continue;
-        const bool near = std::fabs(rays[i].x) <= l.chromeWidth() / 2 && std::fabs(rays[i].y) <= l.chromeHeight() / 2;
-        if (!near) continue;
-        h = i;
-        zone = l.zone(rays[i].x, rays[i].y);
-        break;
-      }
-      if (h >= 0 && zone == Handle::Close && rays[h].grab && !grabWas[h]) {
-        // Close: hide at once for immediate feedback; the companion then
-        // stops this panel's stream (or the Workspace) and the viewer exits.
-        closeRequested = true;
-        showHandle(l, zone, true);
-        overlay->HideOverlay(handle);
-      } else if (h >= 0 && zone != Handle::None && rays[h].grab && !grabWas[h]) {
-        drag.start(zone, rays[h].pose, placement);
-        dragHand = h;
-        showHandle(l, zone, true);
-      } else {
-        showHandle(l, zone, false);
-      }
-      // Cursor dot where the pointing hand meets the panel plane.
-      if (h >= 0) {
-        setPanelTransform(cursorHandle, rays[h].x, rays[h].y, 0.006f, 0);
-        if (!cursorVisible) overlay->ShowOverlay(cursorHandle);
-        cursorVisible = true;
-      } else if (cursorVisible) {
-        overlay->HideOverlay(cursorHandle);
-        cursorVisible = false;
       }
     }
-    for (int i = 0; i < 2; i++) grabWas[i] = rays[i].grab;
-    if (dragHand >= 0 && cursorVisible) {
+    if (dragHand < 0) {
+      for (int i : {1, 0}) {
+        if (!rays[i].onControls) continue;
+        if (std::fabs(rays[i].x) > l.chromeWidth() / 2 || std::fabs(rays[i].y) > l.chromeHeight() / 2) continue;
+        pointing = i;
+        hot = l.zone(rays[i].x, rays[i].y);
+        break;
+      }
+      if (pointing >= 0 && hot == Handle::Close && rays[pointing].grab && !grabWas[pointing]) {
+        // Close: hide at once for immediate feedback; the companion then
+        // stops this panel's stream (or the Workspace) and the viewer exits.
+        closeRequested = closing = true;
+        overlay->HideOverlay(handle);
+        hideChrome();
+        for (int i = 0; i < 2; i++) grabWas[i] = rays[i].grab;
+        return false;
+      }
+      if (pointing >= 0 && hot != Handle::None && rays[pointing].grab && !grabWas[pointing]) {
+        drag.start(hot, rays[pointing].pose, placement);
+        dragHand = pointing;
+      }
+    }
+    // Targets: a side's handles slide out while the laser is past that edge
+    // (or one of them is held); a handle widens under the laser.
+    const unsigned shown = pointing >= 0 ? l.revealed(rays[pointing].x, rays[pointing].y) : 0;
+    auto approach = [&](float &v, float target, float seconds) {
+      const float step = seconds > 0 ? dt / seconds : 1.f;
+      v = v < target ? std::min(target, v + step) : std::max(target, v - step);
+    };
+    for (int i = 0; i < handleCount; i++) {
+      const Handle h = Handle(i + 1);
+      const bool always = h == Handle::Pill || h == Handle::Close;
+      const bool isHot = h == hot && hot != Handle::None;
+      const bool held = dragHand >= 0 && h == drag.handle;
+      approach(chromeState.reveal[i], always || (shown & (1u << i)) || held ? 1.f : 0.f, 0.12f);
+      approach(chromeState.wide[i], !always && (isHot || held) ? 1.f : 0.f, 0.09f);
+      chromeState.held[i] = held ? 1.f : 0.f;
+    }
+    // The laser's light: on the controls near any of them, and on the bezel.
+    ChromeState frameState;
+    chromeState.tip = pointing >= 0 && rays[pointing].onControls;
+    if (chromeState.tip) {
+      chromeState.tipX = rays[pointing].x;
+      chromeState.tipY = rays[pointing].y;
+      // Only redraw for the tip while it is near something it lights.
+      bool nearPiece = false;
+      for (int i = 0; i < handleCount; i++)
+        if (chromeState.reveal[i] > 0 && l.distance(Handle(i + 1), rays[pointing].x, rays[pointing].y) < 0.06f)
+          nearPiece = true;
+      chromeState.tip = nearPiece;
+    }
+    if (pointing >= 0 && rays[pointing].onFrame) {
+      const float ex = std::fabs(rays[pointing].fx) - l.width / 2, ey = std::fabs(rays[pointing].fy) - l.height / 2;
+      const float ring = std::max(ex, ey);  // < 0 inside the window, ~bezel at its outer edge
+      if (ring > -0.06f && ring < l.bezel() + 0.06f) {
+        frameState.tip = true;
+        frameState.tipX = rays[pointing].fx;
+        frameState.tipY = rays[pointing].fy;
+      }
+    }
+    drawChrome(l, frameState);
+    // The tip's core, on whatever it lands on: a control, the bezel, or the window.
+    if (pointing >= 0 && dragHand < 0) {
+      float x = rays[pointing].x, y = rays[pointing].y, z = controlsDepth + 0.002f;
+      if (hot == Handle::None) {
+        const float ex = std::fabs(rays[pointing].fx) - l.width / 2, ey = std::fabs(rays[pointing].fy) - l.height / 2;
+        if (rays[pointing].onFrame && std::max(ex, ey) >= 0 && std::max(ex, ey) <= l.bezel()) {
+          x = rays[pointing].fx; y = rays[pointing].fy; z = frameDepth + 0.002f;
+        } else if (layerHit(rays[pointing].pose, 0, x, y)) {
+          z = 0.002f;
+        }
+      }
+      HmdMatrix34_t m = panelPoint(x, y, z);
+      overlay->SetOverlayTransformAbsolute(cursorHandle, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
+      if (!cursorVisible) overlay->ShowOverlay(cursorHandle);
+      cursorVisible = true;
+    } else if (cursorVisible) {
       overlay->HideOverlay(cursorHandle);
       cursorVisible = false;
     }
+    for (int i = 0; i < 2; i++) grabWas[i] = rays[i].grab;
     return ended;
   }
   const char *gaze(double &u, double &v) {
@@ -657,9 +810,10 @@ public:
   }
   ~Overlay() {
     // The main-scope GazeProducer has already joined before this object dies.
-    for (auto h : {chromeHandle, cursorHandle})
+    chromeRenderer.release();
+    for (auto h : {frameHandle, chromeHandle, cursorHandle})
       if (h) overlay->DestroyOverlay(h);
-    for (auto t : {chromeTexture, cursorTexture})
+    for (auto t : {frameTexture, chromeTexture, cursorTexture})
       if (t) glDeleteTextures(1, &t);
     if (handle) {
       overlay->HideOverlay(handle);
@@ -814,7 +968,7 @@ public:
         exitReason = "openvr-overlay-quit";
         return false;
       }
-    for (auto h : {chromeHandle, cursorHandle})
+    for (auto h : {frameHandle, chromeHandle, cursorHandle})
       if (h)
         while (overlay->PollNextOverlayEvent(h, &e, sizeof(e))) {
         }
