@@ -14,10 +14,39 @@ enum Input {
     /// lets go of its own keys and buttons and nobody else's. Main thread.
     private static var buttonsHeld: [Int: Set<Int>] = [:]
     private static var keysHeld: [Int: Set<CGKeyCode>] = [:]
+    private static var sharedButtons = SharedPointerButtons()
+    private static let pointerModeLock = NSLock()
+    private static var sharedPointer = ProcessInfo.processInfo.environment["FRAME_WINDOW_DISPLAYS"] == "1"
 
     private static var lastDown: (time: TimeInterval, point: CGPoint, button: Int, count: Int)?
 
     static var allowed: Bool { AXIsProcessTrusted() }
+
+    static var pointerShared: Bool {
+        pointerModeLock.lock(); defer { pointerModeLock.unlock() }
+        return sharedPointer
+    }
+
+    /// Pointer mode changes and input are serialized by the main queue.
+    static func setPointerShared(_ enabled: Bool) {
+        pointerModeLock.lock()
+        guard sharedPointer != enabled else { pointerModeLock.unlock(); return }
+        if enabled {
+            for (owner, buttons) in buttonsHeld {
+                for button in buttons { _ = sharedButtons.down(button, owner: owner) }
+            }
+            buttonsHeld.removeAll()
+        } else {
+            let p = CGEvent(source: nil)?.location ?? .zero
+            for button in sharedButtons.releaseAll() {
+                let type: CGEventType = button == 2 ? .rightMouseUp : button == 1 ? .otherMouseUp : .leftMouseUp
+                CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p,
+                        mouseButton: button == 2 ? .right : button == 1 ? .center : .left)?.post(tap: .cghidEventTap)
+            }
+        }
+        sharedPointer = enabled
+        pointerModeLock.unlock()
+    }
 
     /// Brings a window to the front so a click lands on it, not on whatever
     /// covers it, and typing goes to it.
@@ -46,26 +75,43 @@ enum Input {
 
     /// `button` uses the browser's numbering: 0 left, 1 middle, 2 right.
     static func mouse(_ kind: String, button: Int, at p: CGPoint, owner: Int) {
+        let button = min(max(button, 0), 2)
         let b: CGMouseButton = button == 2 ? .right : button == 1 ? .center : .left
+        let shared = pointerShared
         let type: CGEventType
         switch kind {
         case "down":
             type = b == .left ? .leftMouseDown : b == .right ? .rightMouseDown : .otherMouseDown
-            buttonsHeld[owner, default: []].insert(button)
+            if shared {
+                guard sharedButtons.down(button, owner: owner) else { return }
+            } else {
+                buttonsHeld[owner, default: []].insert(button)
+            }
         case "up":
             type = b == .left ? .leftMouseUp : b == .right ? .rightMouseUp : .otherMouseUp
-            buttonsHeld[owner]?.remove(button)
-            // Another viewer still holding it keeps it down.
-            if buttonsHeld.values.contains(where: { $0.contains(button) }) { return }
+            if shared {
+                guard sharedButtons.up(button) else { return }
+            } else {
+                buttonsHeld[owner]?.remove(button)
+                // Another viewer still holding it keeps it down.
+                if buttonsHeld.values.contains(where: { $0.contains(button) }) { return }
+            }
         default:  // a drag is whatever this viewer is holding
-            let mine = buttonsHeld[owner] ?? []
-            if mine.contains(0) { type = .leftMouseDragged }
-            else if mine.contains(2) { type = .rightMouseDragged }
-            else if mine.contains(1) { type = .otherMouseDragged }
-            else { type = .mouseMoved }
+            let mine = shared ? sharedButtons.held : (buttonsHeld[owner] ?? [])
+            switch SharedPointerButtons.dragButton(in: mine) {
+            case .some(0): type = .leftMouseDragged
+            case .some(2): type = .rightMouseDragged
+            case .some(1): type = .otherMouseDragged
+            default: type = .mouseMoved
+            }
         }
-        let mine = buttonsHeld[owner] ?? []
-        let held: CGMouseButton = mine.contains(0) ? .left : mine.contains(2) ? .right : mine.contains(1) ? .center : .left
+        let mine = shared ? sharedButtons.held : (buttonsHeld[owner] ?? [])
+        let held: CGMouseButton
+        switch SharedPointerButtons.dragButton(in: mine) {
+        case .some(2): held = .right
+        case .some(1): held = .center
+        default: held = .left
+        }
         guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p,
                               mouseButton: kind == "move" ? held : b) else { return }
         if kind == "down" || kind == "up" {
@@ -96,10 +142,14 @@ enum Input {
     /// dropped connection can't leave, say, Shift or ⌘ stuck on.
     static func releaseAll(owner: Int) {
         let p = CGEvent(source: nil)?.location ?? .zero
-        let buttons = buttonsHeld.removeValue(forKey: owner) ?? []
+        var buttons = buttonsHeld.removeValue(forKey: owner) ?? []
+        if pointerShared {
+            buttons.formUnion(sharedButtons.releaseAll(owner: owner))
+        }
         let keys = keysHeld.removeValue(forKey: owner) ?? []
         // Only what no other viewer is still holding.
-        for b in buttons where !buttonsHeld.values.contains(where: { $0.contains(b) }) {
+        for b in buttons where !buttonsHeld.values.contains(where: { $0.contains(b) }) &&
+            !(pointerShared && sharedButtons.held.contains(b)) {
             let type: CGEventType = b == 2 ? .rightMouseUp : b == 1 ? .otherMouseUp : .leftMouseUp
             CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p,
                     mouseButton: b == 2 ? .right : b == 1 ? .center : .left)?.post(tap: .cghidEventTap)
@@ -108,6 +158,23 @@ enum Input {
             CGEvent(keyboardEventSource: source, virtualKey: k, keyDown: false)?.post(tap: .cghidEventTap)
         }
     }
+
+    static func moveCursor(to point: CGPoint) {
+        let held = pointerShared ? sharedButtons.held : buttonsHeld.values.reduce(into: Set<Int>()) { $0.formUnion($1) }
+        let dragButton = SharedPointerButtons.dragButton(in: held)
+        let button: CGMouseButton
+        let type: CGEventType
+        switch dragButton {
+        case .some(0): button = .left; type = .leftMouseDragged
+        case .some(2): button = .right; type = .rightMouseDragged
+        case .some(1): button = .center; type = .otherMouseDragged
+        default: button = .left; type = .mouseMoved
+        }
+        CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point,
+                mouseButton: button)?.post(tap: .cghidEventTap)
+    }
+
+    static var cursorLocation: CGPoint { CGEvent(source: nil)?.location ?? .zero }
 
     static func key(code: String, key: String, down: Bool, mods: [String], owner: Int) {
         var flags = CGEventFlags()

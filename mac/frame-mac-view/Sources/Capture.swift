@@ -98,19 +98,36 @@ protocol CaptureSource: AnyObject {
     var title: String { get }
     var app: String { get }
     var pid: pid_t? { get }
+    /// Pixel dimensions the source is configured to capture at. Available even
+    /// before the next frame, including after a window resizes while still.
+    var pixelSize: (Int, Int)? { get }
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void)
     /// A smaller or larger picture from now on (the long side, in pixels).
     func setMaxLong(_ maxLong: Int)
     /// A maximum delivery rate from now on. Used for background sessions while
     /// preserving the captured dimensions and the selected session's rate.
     func setMaxFps(_ fps: Int)
+    /// Keep capturing at one frame per second with no cursor for dirty checks,
+    /// or restore the requested live cadence and cursor. Completion runs after
+    /// ScreenCaptureKit has applied the configuration.
+    func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void)
     func stop()
     func pointer(x: Double, y: Double, text: String?)  // for the test pattern
 }
 
 extension CaptureSource {
+    var pixelSize: (Int, Int)? { nil }
     func pointer(x: Double, y: Double, text: String?) {}
     func setMaxFps(_ fps: Int) {}
+    func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void) {
+        if still {
+            setMaxFps(1)
+        } else {
+            setMaxLong(maxLong)
+            setMaxFps(fps)
+        }
+        completion()
+    }
 }
 
 /// ScreenCaptureKit, for a window or a display.
@@ -118,14 +135,22 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     let source: Source
     var onFrame: ((CVPixelBuffer, CMTime, Int64) -> Void)?
     var onEnded: ((String) -> Void)?
-    private(set) var frameRect = CGRect.zero
+    private let geometryLock = NSLock()
+    private var configuredFrameRect = CGRect.zero
+    var frameRect: CGRect {
+        geometryLock.lock(); defer { geometryLock.unlock() }
+        return configuredFrameRect
+    }
     private(set) var title = ""
     private(set) var app = ""
     private(set) var pid: pid_t?
     private var stream: SCStream?
     private var config = SCStreamConfiguration()
+    private let dimensionsLock = NSLock()
+    private var configuredPixelSize: (Int, Int) = (0, 0)
     private var maxLong = 1920
     private var maxFps = 60
+    private var stillCaptureMode = false
     private var lastShown: Int64 = 0  // display time of the last kept frame
     private var scale = 2.0
     private var poll: DispatchSourceTimer?
@@ -145,6 +170,21 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     var crop: CGRect?
 
     init(_ source: Source) { self.source = source }
+
+    var pixelSize: (Int, Int)? {
+        dimensionsLock.lock(); defer { dimensionsLock.unlock() }
+        return configuredPixelSize.0 > 0 && configuredPixelSize.1 > 0 ? configuredPixelSize : nil
+    }
+
+    private func publishPixelSize() {
+        dimensionsLock.lock()
+        configuredPixelSize = (config.width, config.height)
+        dimensionsLock.unlock()
+    }
+
+    private func publishFrameRect(_ rect: CGRect) {
+        geometryLock.lock(); configuredFrameRect = rect; geometryLock.unlock()
+    }
 
     /// What's captured, in global points: the display, or the cropped part of it.
     private func displayRect(_ id: CGDirectDisplayID) -> CGRect {
@@ -182,7 +222,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
             title = w.title ?? ""
             app = w.owningApplication?.applicationName ?? ""
             pid = w.owningApplication?.processID
-            frameRect = w.frame
+            publishFrameRect(w.frame)
         case .display(let id):
             guard let d = content.displays.first(where: { $0.displayID == id }) else {
                 gone = true
@@ -191,7 +231,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
             filter = SCContentFilter(display: d, excludingWindows: [])
             title = displayName(id)
             app = "Mac"
-            frameRect = displayRect(id)
+            publishFrameRect(displayRect(id))
             if crop != nil { config.sourceRect = frameRect.offsetBy(dx: -CGDisplayBounds(id).minX, dy: -CGDisplayBounds(id).minY) }
         case .test, .separate:
             return completion("not a ScreenCaptureKit source")
@@ -205,6 +245,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         let (w, h) = fitSize(width: frameRect.width * scale, height: frameRect.height * scale, maxLong: maxLong)
         config.width = w
         config.height = h
+        publishPixelSize()
         config.minimumFrameInterval = minimumInterval(fps: maxFps)
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
@@ -346,11 +387,12 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         var changed = false
         if !newTitle.isEmpty, newTitle != title { title = newTitle; changed = true }
         let old = frameRect
-        frameRect = bounds
+        publishFrameRect(bounds)
         if abs(old.width - bounds.width) > 1 || abs(old.height - bounds.height) > 1 {
             let (w, h) = fitSize(width: bounds.width * scale, height: bounds.height * scale, maxLong: maxLong)
             config.width = w
             config.height = h
+            publishPixelSize()
             stream?.updateConfiguration(config) { _ in }
             changed = true
         }
@@ -365,6 +407,7 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
             guard w != self.config.width || h != self.config.height else { return }
             self.config.width = w
             self.config.height = h
+            self.publishPixelSize()
             self.stream?.updateConfiguration(self.config) { _ in }
         }
     }
@@ -392,10 +435,30 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     func setMaxFps(_ fps: Int) {
         queue.async {
             let bounded = max(1, fps)
+            guard !self.stillCaptureMode else { return }
             guard bounded != self.maxFps else { return }
             self.maxFps = bounded
             self.config.minimumFrameInterval = self.minimumInterval(fps: bounded)
             self.stream?.updateConfiguration(self.config) { _ in }
+        }
+    }
+
+    func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void) {
+        queue.async {
+            self.stillCaptureMode = still
+            self.maxLong = maxLong
+            self.maxFps = still ? 1 : max(1, fps)
+            self.config.showsCursor = !still
+            self.config.minimumFrameInterval = self.minimumInterval(fps: self.maxFps)
+            let (w, h) = fitSize(width: self.frameRect.width * self.scale,
+                                 height: self.frameRect.height * self.scale, maxLong: self.maxLong)
+            self.config.width = w
+            self.config.height = h
+            self.publishPixelSize()
+            guard let stream = self.stream else { completion(); return }
+            stream.updateConfiguration(self.config) { _ in
+                self.queue.async { completion() }
+            }
         }
     }
 
@@ -406,11 +469,12 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
             guard let self, let mode = CGDisplayCopyDisplayMode(id), mode.width > 0 else { return }
             let bounds = self.displayRect(id), scale = Double(mode.pixelWidth) / Double(mode.width)
             let (w, h) = fitSize(width: bounds.width * scale, height: bounds.height * scale, maxLong: self.maxLong)
-            self.frameRect = bounds
+            self.publishFrameRect(bounds)
             guard w != self.config.width || h != self.config.height else { return }
             self.scale = scale
             self.config.width = w
             self.config.height = h
+            self.publishPixelSize()
             self.stream?.updateConfiguration(self.config) { _ in }
             self.onChange?()
         }
@@ -468,6 +532,8 @@ final class TestSource: CaptureSource {
     private var lastText = "Point or type in the headset"
     private let queue = DispatchQueue(label: "frame-mac-view.test")
     private var size = (1280, 720)
+
+    var pixelSize: (Int, Int)? { size }
 
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void) {
         self.fps = max(1, fps)
