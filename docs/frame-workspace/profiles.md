@@ -22,6 +22,11 @@ Spatial profile restore is locally unit-tested and **not yet verified on the dev
 
 The local schema is version 2. Version 1 documents load unchanged without poses or an immediate rewrite; the next save/delete/reset writes version 2. Unknown fields and unsupported versions are rejected; corrupt files are reported without rewriting them. Poses reject non-finite numbers, out-of-range native dimensions and curvature, malformed matrices, and non-orthonormal or reflected rotations. The file is stored under the companion's app data directory at `workspace-profiles/profiles.json`, in a private directory with a mode `0600` file on macOS and POSIX systems. A restore needs the existing Screen Recording permission and a visible current window for every rule. The profile is saved on the computer running the MacView companion.
 
+Profiles start in the companion's chosen mode. In Spatial Mode there is no
+Workspace panel, so named-profile saves omit its pose and restores apply only
+the matched window poses; a Workspace pose already in a profile is left stored
+for Desktop use. Spatial windows use native `separate:` panels automatically.
+
 Changing the viewer backend does not make existing profiles unreadable. Runtime
 compatibility is checked when restoring: for example, a saved Compatible/JPEG
 profile can still be listed and edited while the native viewer is selected, but
@@ -54,25 +59,40 @@ python3 scripts/workspace-profiles.py --url http://127.0.0.1:60339 restore Codin
 
 ## Last session (auto-saved)
 
-While the Workspace runs, the companion keeps an extra profile named Last
-Session in `workspace/last-session.json` in its data folder, apart from the
-named profiles (it never appears in the list). It records each floating
+Each mode keeps its own extra profile named Last Session, apart from named
+profiles (neither appears in the list). Desktop uses the existing
+`workspace/last-session.json`; Spatial uses `workspace/last-session-spatial.json`
+in the companion's data folder. Existing Desktop snapshots need no migration.
+While that mode runs, it records each floating
 window shown in the headset (by bundle ID, with a title hint only when the app
 has more than one window, since titles change) and every pose, bends
 included. It is rewritten every 15 seconds and once more just before the
-Workspace stops, is replaced, or the companion quits; if the Frame can't be
-read at that moment, the previous snapshot stays. So a crash, sleep or dropped
-connection loses at most 15 seconds.
+Workspace stops, the mode switches, or the companion quits; if the Frame can't
+be read at that moment, the previous snapshot stays. Interrupted connections
+can therefore leave an older snapshot. Automatic Spatial startup must finish
+opening its windows before it replaces the last complete snapshot. Sessions
+support up to 128 matching rules and a 256 KiB file; named profiles retain their
+existing 24-rule and 64 KiB limits. Identical or ambiguous title hints are still
+skipped rather than assigned another window's pose.
 
 Starting the Workspace from the Mac page or from the headset's Start Workspace
-always brings that session back (the user's choice, 2026-10-20): windows that
+always brings the chosen mode's session back (the user's choice, 2026-10-20): windows that
 are still open on the Mac reopen at their saved poses; ones already shown, or
-gone, are left alone. Restoring a named profile does not resume the last
+gone, are left alone. Desktop also loads its saved Workspace pose before
+launching the viewer. Spatial has no Workspace panel: it matches saved window
+poses against fresh window IDs before automatic panels open, then passes each
+pose to that window's first `separate:` launch. A queued resume from the old
+mode cannot run after Stop or a mode switch. Restoring a named profile does not resume the last
 session; saving simply carries on. `FRAME_WORKSPACE_SESSION=0` turns it off
 (the MCP adapter's backend does).
 
-Verified 2026-10-20 on the Frame (not worn): a Finder window was shown, moved
+Verified 2026-10-20 on the Frame (not worn), before per-mode sessions: a Finder window was shown, moved
 and given a one-sided bend; the snapshot caught it within 5 s; the companion
 was then killed outright (SIGKILL), which ended the Workspace and its viewers;
 after restarting the companion, Start Workspace brought the window back at the
 identical pose and bend, and the Mac was left with one Frame Workspace display.
+
+Per-mode isolation, `separate:` pose capture, fresh-ID matching, incomplete
+startup preservation and stale-resume rejection are covered by local fake-helper
+tests. Restoring both modes' poses, including Workspace placement, still needs
+device acceptance; the earlier single-session check does not verify this change.
