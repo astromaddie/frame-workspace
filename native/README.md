@@ -190,8 +190,14 @@ or disables input.
 Verified 2026-10-20 on the Frame (not worn): the shader compiles and renders
 the same on its GPU (zink on Turnip) as on the Mac, and with the Workspace
 running all three layers are visible, sorted in front of the window, 1.5 and
-3 cm out, with matching curvature. Not yet verified: how they look and feel
-worn.
+3 cm out, with matching curvature. Curved, the old handles layer stayed flat
+behind the window, so its edges (bending towards the viewer) hid the corners
+and side bars. `probe_chrome_curvature.c` checks that this is gone: rays cast
+from the centre of curvature with SteamVR's own intersection test met the bezel
+1.5 cm and the controls 3 cm inside the window's cylinder at every angle, still
+in front just past the window's edges, with positions across matching the
+window to within 0.001, at curvature 0.168 and 0.45 (the window wrapping 162°;
+2026-10-20). Not yet verified: how they look and feel worn.
 
 The close disc closes that window (or stops the Workspace): the viewer writes
 `{"action":"close","key":KEY}` into `--request-dir` and the Mac companion
