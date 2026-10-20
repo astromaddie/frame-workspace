@@ -1005,6 +1005,239 @@ fi
         self.assertEqual(mv.route, "network")
 
 
+class SpatialPolicy(unittest.TestCase):
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"FRAME_WINDOW_DISPLAYS": "1", "FRAME_SPATIAL_DECODE_MP": "18"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.now = 100.0
+        self.clock = mock.patch.object(frame_macview.time, "monotonic", side_effect=lambda: self.now)
+        self.wall = mock.patch.object(frame_macview.time, "time", side_effect=lambda: self.now + 900)
+        self.clock.start()
+        self.wall.start()
+        self.addCleanup(self.clock.stop)
+        self.addCleanup(self.wall.stop)
+        self.mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        self.mv.agent = object()
+        self.status = {"streams": []}
+        self.calls = []
+        self.mv.call = self.call
+        # Exercise the production request handler without background timing.
+        self.mv._dash_run = lambda busy, fn, *args: fn(*args)
+
+    def call(self, path, method="GET", **q):
+        self.calls.append((path, method, q))
+        if path == "/status":
+            return self.status
+        self.assertEqual(method, "POST")
+        if path == "/streams/live":
+            selected = set(q.get("src", "").split(","))
+            for s in self.status["streams"]:
+                if s["src"].startswith(("window:", "separate:")):
+                    s["live"] = q.get("all") == "1" or s["src"] in selected
+        elif path == "/focus":
+            self.status["focusedSrc"] = q["src"]
+        else:
+            self.assertEqual(path, "/pointer")
+        return {}
+
+    def stream(self, src, mp, age=0, **extra):
+        s = {"id": len(self.status["streams"]) + 1, "src": src, "width": int(mp * 1000), "height": 1000,
+             "lastChanged": self.now + 900 - age, "live": True, **extra}
+        self.status["streams"].append(s)
+        return s
+
+    def tick(self, at=None):
+        if at is not None:
+            self.now = at
+        self.mv._spatial_tick()
+
+    def live(self):
+        return {s["src"] for s in self.status["streams"] if s["live"]}
+
+    def panel(self, src, number):
+        key = f"com.frame-workspace.native.1000.panel-w{number}"
+        self.mv.native_panels[src] = {"key": key}
+        return key
+
+    def focus(self, key, u=.25, v=.75):
+        self.mv._handle_frame_requests(json.dumps({"action": "focus", "key": key, "u": u, "v": v}))
+
+    def test_budget_reserves_workspace_and_prefers_focus_then_newest_change(self):
+        self.stream("display:1", 8)
+        self.stream("separate:1", 6, age=20)
+        self.stream("separate:2", 4, age=2)
+        self.stream("separate:3", 3)
+        self.status["focusedSrc"] = "separate:1"
+        self.tick()
+        self.assertEqual(self.live(), {"display:1", "separate:1"})
+        self.tick(101)
+        self.assertEqual(self.live(), {"display:1", "separate:1", "separate:3"})
+        self.assertLessEqual(sum(s["width"] * s["height"] for s in self.status["streams"] if s["live"]), 18_000_000)
+        writes = len([c for c in self.calls if c[0] == "/streams/live"])
+        self.tick(102)
+        self.assertEqual(len([c for c in self.calls if c[0] == "/streams/live"]), writes)
+
+    def test_recent_change_hold_expires_and_continuous_changes_refresh_it(self):
+        s = self.stream("separate:1", 4)
+        self.tick()
+        self.tick(101)
+        self.assertIn(s["src"], self.live())
+        s["lastChanged"] = 1004
+        self.tick(106)
+        self.assertIn(s["src"], self.live())
+        self.tick(110)
+        self.assertNotIn(s["src"], self.live())
+
+    def test_admission_delay_and_residency_prevent_newest_window_churn(self):
+        self.stream("display:1", 14)
+        a = self.stream("separate:1", 4)
+        self.tick()
+        self.tick(101)
+        b = self.stream("separate:2", 4, lastChanged=1002)
+        self.tick(102)
+        self.tick(103)
+        self.assertIn(a["src"], self.live())
+        self.assertNotIn(b["src"], self.live())
+        self.tick(104)
+        self.assertIn(b["src"], self.live())
+        self.status["focusedSrc"] = a["src"]
+        self.tick(104.1)
+        self.assertIn(a["src"], self.live())
+        self.assertNotIn(b["src"], self.live())
+
+    def test_budget_reduction_and_resize_override_residency(self):
+        s = self.stream("separate:1", 4)
+        self.tick()
+        self.tick(101)
+        s["width"] = 19000
+        self.status["focusedSrc"] = s["src"]
+        self.tick(101.1)
+        self.assertEqual(self.live(), set())  # even focus cannot exceed the hard pixel cap
+        s["width"] = 4000
+        self.tick(101.2)
+        self.assertIn(s["src"], self.live())
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "3"}):
+            self.tick(101.3)
+            self.assertEqual(self.live(), set())
+
+    def test_unknown_sizes_and_duplicate_viewers_do_not_overcommit(self):
+        self.stream("display:1", 8)
+        self.stream("separate:1", 6)
+        self.stream("separate:1", 6)  # two decoders for the same source
+        self.stream("window:2", 1, width=0)
+        self.tick()
+        self.tick(101)
+        self.assertEqual(self.live(), {"display:1"})
+        self.status["streams"][0]["width"] = 0
+        self.stream("separate:3", 1)
+        self.tick(102)
+        self.tick(103)
+        self.assertEqual(self.live(), {"display:1"})
+
+    def test_reconnect_and_restart_reapply_selection_and_pointer_mode(self):
+        s = self.stream("separate:1", 4)
+        self.tick()
+        self.tick(101)
+        s["id"] = 999
+        self.tick(102)
+        self.assertEqual(self.live(), set())
+        self.tick(103)
+        self.assertEqual(self.live(), {s["src"]})
+        self.mv.agent = object()
+        self.tick(104)
+        self.assertEqual(len([c for c in self.calls if c[0] == "/pointer"]), 2)
+
+    def test_disable_restores_current_and_future_streams_then_stops_policy(self):
+        self.stream("separate:1", 4, age=20)
+        self.tick()
+        self.assertEqual(self.live(), set())
+        with mock.patch.dict(os.environ, {"FRAME_WINDOW_DISPLAYS": "0"}):
+            self.tick(101)
+            self.assertEqual(self.live(), {"separate:1"})
+            self.assertIn(("/pointer", "POST", {"shared": "0"}), self.calls)
+            self.assertEqual(self.calls[-1], ("/streams/live", "POST", {"all": "1"}))
+            count = len(self.calls)
+            self.tick(102)
+            self.assertEqual(len(self.calls), count)
+
+    def test_failed_selection_is_retried(self):
+        self.stream("separate:1", 4)
+        self.mv.call = mock.Mock(side_effect=[{}, self.status, frame_macview.MacViewError("not answering")])
+        with self.assertRaises(frame_macview.MacViewError):
+            self.tick()
+        self.assertIsNone(self.mv._spatial_applied)
+        self.mv.call = self.call
+        self.tick(101)
+        self.assertEqual(self.live(), {"separate:1"})
+
+    def test_focus_maps_key_to_source_and_focus_is_live_without_admission_delay(self):
+        key = self.panel("separate:42", 42)
+        self.stream("separate:42", 4, age=30)
+        self.focus(key)
+        self.assertEqual(self.calls, [("/focus", "POST", {"src": "separate:42", "u": .25, "v": .75})])
+        self.tick()
+        self.assertEqual(self.live(), {"separate:42"})
+
+    def test_focus_coalesces_latest_and_is_limited_to_four_per_second(self):
+        a, b = self.panel("window:1", 1), self.panel("separate:2", 2)
+        self.focus(a)
+        self.now += .05
+        self.focus(b)
+        self.focus(a, u=.4)
+        self.assertEqual(len(self.calls), 1)
+        self.now += .2
+        self.mv._flush_frame_focus()
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[-1][2], {"src": "window:1", "u": .4, "v": .75})
+        self.now += .25
+        self.mv._handle_frame_requests("\n".join(json.dumps({"action": "focus", "key": k, "u": 0, "v": 1})
+                                                 for k in (a, b, a, b)))
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.calls[-1][2]["src"], "separate:2")
+
+    def test_focus_rejects_unknown_stale_keys_bad_coordinates_and_disabled_mode(self):
+        key = self.panel("separate:42", 42)
+        for u, v in ((None, 0), (True, 0), ("0.2", 0), (-.1, 0), (1.1, 0), (math.nan, 0), (0, math.inf)):
+            self.focus(key, u, v)
+        self.focus("com.frame-workspace.native.1000.panel-w99")
+        self.assertEqual(self.calls, [])
+        with mock.patch.dict(os.environ, {"FRAME_WINDOW_DISPLAYS": "0"}):
+            self.focus(key)
+        self.assertEqual(self.calls, [])
+        self.focus(key)
+        self.now += .1
+        self.focus(key)
+        self.mv.native_panels.clear()
+        self.now += 1
+        self.mv._flush_frame_focus()
+        self.assertEqual(len(self.calls), 1)
+
+    def test_decode_budget_validation(self):
+        for value in ("0", "-1", "NaN", "inf", "invalid", "1e308"):
+            with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": value}):
+                with self.assertRaises(frame_macview.MacViewError):
+                    frame_macview.spatial_decode_pixels()
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "12.5"}):
+            self.assertEqual(frame_macview.spatial_decode_pixels(), 12_500_000)
+
+    def test_supervisor_runs_local_policy_even_when_tunnel_is_down(self):
+        self.mv.agent = mock.Mock()
+        self.mv.agent.poll.return_value = None
+        self.mv.tunnel_up = mock.Mock(return_value=False)
+        self.mv.ensure_tunnel = mock.Mock()
+
+        def once():
+            self.mv.closing = True
+        self.mv._spatial_tick = mock.Mock(side_effect=once)
+        with mock.patch.object(frame_macview.time, "sleep"):
+            self.mv._supervise()
+            self.mv.supervisor.join(timeout=2)
+        self.assertFalse(self.mv.supervisor.is_alive())
+        self.mv._spatial_tick.assert_called_once_with()
+        self.mv.ensure_tunnel.assert_not_called()
+
+
 class WorkspaceLifecycle(unittest.TestCase):
     @staticmethod
     def fake_helper(path):
@@ -1654,7 +1887,8 @@ class WS:
 class Agent(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp()
+        cls.tmp = tempfile.mkdtemp(prefix=".macview-test-", dir=ROOT)
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.bin = Path(cls.tmp) / "frame-mac-view"
         r = subprocess.run(["/bin/sh", str(ROOT / "mac" / "frame-mac-view" / "build.sh"), str(cls.bin)],
                            capture_output=True, text=True, timeout=600)
@@ -1675,7 +1909,6 @@ class Agent(unittest.TestCase):
             cls.proc.wait(5)
         except subprocess.TimeoutExpired:
             cls.proc.kill()
-        shutil.rmtree(cls.tmp, ignore_errors=True)
 
     def get(self, path, method="GET"):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -1686,6 +1919,8 @@ class Agent(unittest.TestCase):
     def test_token_is_required(self):
         self.assertEqual(self.get("/status")[0], 403)
         self.assertEqual(self.get("/status?k=wrong")[0], 403)
+        for path in ("/streams/live?src=", "/pointer?shared=1", "/focus?src=separate:1&u=0&v=0"):
+            self.assertEqual(self.get(path, method="POST")[0], 403)
         status, body = self.get(f"/status?k={self.token}")
         self.assertEqual(status, 200)
         self.assertIn("screen", json.loads(body))
@@ -1815,7 +2050,13 @@ class Agent(unittest.TestCase):
                 break
         self.assertTrue(got_key, "no keyframe after asking for one")
         _, body = self.get(f"/status?k={self.token}")
-        self.assertEqual([s["src"] for s in json.loads(body)["streams"]], ["test"])
+        state = json.loads(body)
+        self.assertEqual([s["src"] for s in state["streams"]], ["test"])
+        stream = state["streams"][0]
+        self.assertEqual((stream["width"], stream["height"]), (640, 360))
+        self.assertTrue(stream["live"])
+        self.assertGreater(stream["lastChanged"], 0)
+        self.assertIsInstance(state["pointerShared"], bool)
         status, body = self.get(f"/close?k={self.token}", method="POST")
         self.assertEqual(json.loads(body)["closed"], 1)
         for _ in range(400):
