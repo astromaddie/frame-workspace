@@ -623,6 +623,14 @@ toggle between the two, because Spatial Mode won't suit every task.
   headset display (public API) is the first option; turning it off needs a private API that already
   failed with error 1014 (verified 2026-09-28).
 - New UI (the dock, the app switcher, the mode toggle) needs mockups and approval before it is built.
+- Chosen 2026-10-20 (`evidence/spatial-mode-mockup.png`): **T1**, a Desktop | Spatial segmented
+  switch on the Workspace card (bar panel and Mac page); **D1**, the dock as a floating Palladium
+  shelf below the line of sight that follows the user when they turn far away; **S1**, the app
+  switcher as a curved strip of live window thumbnails at eye level, Cmd-Tab moving along it;
+  **V1**, still windows look exactly like live ones.
+- **Focus confirmation** (the user's addition): looking at a window builds a quick glow along its
+  border, then it snaps into focus: fast, but enough that a passing glance doesn't select every
+  window it crosses.
 
 ## Approach
 Each window gets its own virtual display, sized to it, streamed as its own panel

@@ -1,0 +1,172 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spatial Mode Mockups</title>
+<style>
+:root{--top:#fbfafd;--face:#e3dfea;--bottom:#cbc4d6;--border:#8d82a0;--ink:#776a8a;--light:#fff;--shade:#a296b3;--blue:#1a9fff}
+*{box-sizing:border-box}
+body{margin:0;background:#15131a;color:#e9e4ee;font:14px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,sans-serif;padding:40px 44px 48px;width:1720px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700}
+h2{font-size:21px;margin:40px 0 4px;font-weight:650}
+.sub{color:#a59cae;margin:0 0 18px;max-width:1260px}
+.row{display:flex;gap:22px}
+.card{background:linear-gradient(#1f1c26,#18161d);border:1px solid #2c2834;border-radius:16px;padding:0 0 16px;overflow:hidden;flex:1}
+.label{padding:0 20px;margin-top:12px;font-weight:650;font-size:16px}
+.note{padding:0 20px;color:#a59cae;font-size:13px;margin-top:2px}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;color:#6cc0ff;margin-left:8px;vertical-align:2px}
+/* room */
+.scene{height:430px;perspective:1100px;perspective-origin:50% 38%;position:relative;overflow:hidden;
+  background:radial-gradient(120% 90% at 50% 0%,#3a3646 0%,#24212c 45%,#141218 100%)}
+.scene::after{content:"";position:absolute;left:0;right:0;bottom:0;height:90px;background:linear-gradient(transparent,#0d0c11cc)}
+.world{position:absolute;left:50%;top:46%;transform-style:preserve-3d}
+.world *{transform-style:preserve-3d}
+.win{position:absolute;border-radius:6px;background:#1d1f27;box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 18px 30px #0008;overflow:hidden}
+.win .bar{height:12px;background:#2a2d37;display:flex;gap:4px;align-items:center;padding-left:6px;font-size:8px;color:#9aa}
+.win .bar i{width:5px;height:5px;border-radius:50%;background:#ff5f57}.win .bar i:nth-child(2){background:#febc2e}.win .bar i:nth-child(3){background:#28c840}
+.win .body,.thumb .body{padding:8px;display:grid;gap:4px}
+.win .body b,.thumb .body b{display:block;height:4px;border-radius:2px;background:#5d6a85}
+.thumb.light{background:#f4f2f7}.thumb.light .body b{background:#c9c3d4}
+.win.light{background:#f4f2f7}.win.light .bar{background:#e4e0ea}.win.light .body b{background:#c9c3d4}
+.win .menubar{height:9px;background:#2f3240cc;font-size:7px;color:#cfd;padding-left:6px;line-height:9px}
+.win.focus{box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 0 0 9px #1a9fff55,0 18px 30px #0008}
+.cursor{position:absolute;width:0;height:0;border-left:6px solid #fff;border-right:4px solid transparent;border-bottom:11px solid transparent;filter:drop-shadow(0 1px 1px #000)}
+.floor{position:absolute;left:10%;right:10%;bottom:20px;height:60px;border-radius:50%;background:radial-gradient(closest-side,#0008,transparent);filter:blur(8px)}
+/* palladium metal */
+.pal{background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);border:1px solid var(--border);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),inset 2px 2px 0 #ffffff70,0 2px 3px #0005,0 8px 18px #0007}
+.icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;
+  box-shadow:inset 0 1px 0 #ffffff55,0 2px 4px #0006;position:relative}
+.icon .dot{position:absolute;bottom:-7px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:#5d5170}
+.hot{box-shadow:inset 0 1px 0 #ffffff55,0 0 0 2px #fff,0 0 12px 3px #1a9fffaa}
+.tipmenu{position:absolute;border-radius:10px;padding:6px 0;min-width:150px;font-size:12px;color:#3a2f47}
+.tipmenu div{padding:4px 14px}.tipmenu div.sel{background:radial-gradient(circle 30px at 30% 50%,#c4e4ffd0,transparent);color:#1a4f86}
+.thumb{position:absolute;border-radius:8px;overflow:hidden;background:#1d1f27;box-shadow:0 0 0 2px #e3dfea,0 12px 22px #0009}
+.caption{position:absolute;font-size:9px;color:#3a2f47;text-align:center;left:6px;right:6px;bottom:4px;background:#e3dfeae6;border-radius:4px}
+/* dash panel toggle */
+.dash{width:88%;margin:26px auto 0;border-radius:18px;background:linear-gradient(#1b2838,#0e141b);padding:22px 26px;box-shadow:0 20px 40px #0008}
+.dash h4{margin:0 0 14px;font-size:11px;letter-spacing:.2em;color:#8f98a0}
+.dcard{background:#ffffff0b;border:1px solid #ffffff12;border-radius:12px;padding:16px 18px}
+.dcard .t{font-size:19px;font-weight:600;color:#fff}.dcard .s{font-size:13px;color:#59bf40;margin:4px 0 12px}
+.seg{display:inline-flex;background:#0006;border-radius:10px;padding:3px;gap:3px}
+.seg span{padding:9px 18px;border-radius:8px;color:#c7d0d8;font-size:14px}
+.seg span.on{background:linear-gradient(90deg,#47bfff,#1a44c2);color:#fff;font-weight:600}
+.btn{display:inline-block;padding:10px 18px;border-radius:8px;background:#676f7b3d;color:#dcdedf;font-size:14px;margin-left:10px}
+.btn.primary{background:linear-gradient(90deg,#47bfff,#1a44c2);color:#fff;font-weight:600}
+.macpage{width:88%;margin:26px auto 0;border-radius:12px;background:#f5f5f7;color:#1d1d1f;padding:18px 22px;box-shadow:0 20px 40px #0008;font-size:13px}
+.macpage .seg{background:#e3e3e8}.macpage .seg span{color:#333}.macpage .seg span.on{background:#fff;color:#000;box-shadow:0 1px 3px #0003;font-weight:600}
+.small{font-size:12px;color:#86868b;margin-top:8px}
+</style></head><body>
+<h1>Spatial Mode: Mockups</h1>
+<p class="sub">Mockups only, for choosing before anything is built. Silver-lavender Palladium in the room, as approved for the window chrome; the bar panel keeps its Steam styling. The window you look at is focused (its frame has a faint blue edge and the Mac cursor is on it). Each window carries its own app's menu bar, because it lives on a display of its own.</p>
+
+<h2>1 · Desktop Mode and Spatial Mode</h2>
+<p class="sub">The switch lives where you start the Workspace: on the SteamVR bar panel and on the Mac page. Switching closes one setup and opens the other; the windows you had come back where they were in each mode.</p>
+<div class="row">
+  <div class="card"><div style="height:330px;background:radial-gradient(#2a2733,#15131a);padding-top:4px">
+    <div class="dash"><h4>FRAME WORKSPACE</h4><div class="dcard"><div class="t">Workspace</div><div class="s">Running · Spatial Mode · 7 Windows</div>
+      <div class="seg"><span>Desktop</span><span class="on">Spatial</span></div><span class="btn">Stop</span><span class="btn">Recenter</span></div></div></div>
+    <div class="label">T1 · Segmented Switch on the Card<span class="tag">RECOMMENDED</span></div>
+    <div class="note">Desktop and Spatial side by side on the Workspace card, always visible; one press switches. Start Workspace starts whichever is chosen.</div></div>
+  <div class="card"><div style="height:330px;background:radial-gradient(#2a2733,#15131a);padding-top:4px">
+    <div class="dash"><h4>FRAME WORKSPACE</h4><div class="dcard"><div class="t">Workspace</div><div class="s">Stopped</div>
+      <span class="btn primary" style="margin-left:0">Start Desktop</span><span class="btn primary">Start Spatial</span></div></div></div>
+    <div class="label">T2 · Two Start Buttons</div>
+    <div class="note">Choose the mode as you start; while running, the card shows the mode and a Switch to Desktop or Switch to Spatial button.</div></div>
+  <div class="card"><div style="height:330px;background:radial-gradient(#2a2733,#15131a);padding-top:4px">
+    <div class="macpage"><b style="font-size:15px">Workspace</b><div style="margin:10px 0 6px">Mode</div>
+      <div class="seg"><span>Desktop</span><span class="on">Spatial</span></div>
+      <div class="small">Spatial: every window in the room, the laptop screen off. Desktop: one large display with windows beside it.</div></div></div>
+    <div class="label">On the Mac Page</div>
+    <div class="note">The same switch as T1 or T2, in the page's own style, above Start Workspace.</div></div>
+</div>
+
+<h2>2 · The Dock</h2>
+<p class="sub">Your pinned and running apps with their real icons (letters stand in here). Point and click to open or switch to an app; hold to get Show All Windows, Hide and Quit. The laser lights the icon under it, as on the window chrome.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="d1"></div><div class="floor"></div></div>
+    <div class="label">D1 · Floating Shelf<span class="tag">RECOMMENDED</span></div>
+    <div class="note">A slim Palladium shelf below your line of sight, in front of you; it follows you when you turn far away. Like the Mac's Dock, in the room.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="d2"></div><div class="floor"></div></div>
+    <div class="label">D2 · Arc Around You</div>
+    <div class="note">The shelf curves around you at waist height, so apps are always within reach whichever way you face.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="d3"></div><div class="floor"></div></div>
+    <div class="label">D3 · On Your Wrist</div>
+    <div class="note">Turn your left hand over and the dock appears above the controller; out of sight otherwise.</div></div>
+</div>
+
+<h2>3 · The App Switcher</h2>
+<p class="sub">Opened with a controller button or Cmd-Tab on the Mac keyboard. Picking a window brings it in front of you and focuses it.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="s1"></div><div class="floor"></div></div>
+    <div class="label">S1 · Strip in Front of You<span class="tag">RECOMMENDED</span></div>
+    <div class="note">Live thumbnails of each app's windows in a curved strip at eye level, the current one lit; Cmd-Tab moves along it, as on the Mac.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="s2"></div><div class="floor"></div></div>
+    <div class="label">S2 · Spread Out in Place</div>
+    <div class="note">Like Mission Control: your windows stay where they are but spread apart, each labelled with its app; look at one and click.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="s3"></div><div class="floor"></div></div>
+    <div class="label">S3 · Apps, Then Windows</div>
+    <div class="note">A row of app icons; looking at one fans out its windows above it, then pick one.</div></div>
+</div>
+
+<h2>4 · Live and Still Windows</h2>
+<p class="sub">Only the window you look at, and windows that are changing, stream live; the rest show their last picture (the Frame's decoder can't keep every window live). A still window comes back to life the moment it changes or you look at it, sharpening within a moment.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="v1"></div><div class="floor"></div></div>
+    <div class="label">V1 · No Difference<span class="tag">RECOMMENDED</span></div>
+    <div class="note">Still windows look exactly like live ones; you only ever read the one you're looking at, so it never shows.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="v2"></div><div class="floor"></div></div>
+    <div class="label">V2 · Slightly Dimmed</div>
+    <div class="note">Still windows sit back 10% in brightness, so the live ones stand out a little.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="v3"></div><div class="floor"></div></div>
+    <div class="label">V3 · A Small Mark on the Bezel</div>
+    <div class="note">A tiny dot in the bezel's corner: blue when live, silver when still.</div></div>
+</div>
+
+<script>
+const lines = (n, light) => `<div class="body">${Array.from({length:n},(_, i)=>`<b style="width:${30+((i*37)%60)}%;${light?'':`background:${['#c792ea','#82aaff','#9ccc65','#5d6a85'][i%4]}`}"></b>`).join("")}</div>`;
+function win({x,y,z=0,ry=0,w=180,h=120,title="Window",light=false,focus=false,cursor=false,menu="",dim=false,dot=null}) {
+  return `<div class="win ${light?'light':''} ${focus?'focus':''}" style="width:${w}px;height:${h}px;transform:translate3d(${x - w/2}px,${y - h/2}px,${z}px) rotateY(${ry}deg);${dim?'filter:brightness(.9)':''}">
+    ${menu?`<div class="menubar"> ${menu}</div>`:''}<div class="bar"><i></i><i></i><i></i>&nbsp;${title}</div>${lines(Math.floor(h/12), light)}
+    ${cursor?`<div class="cursor" style="left:${w*0.55}px;top:${h*0.55}px"></div>`:''}
+    ${dot?`<div style="position:absolute;right:-3px;top:-3px;width:9px;height:9px;border-radius:50%;background:${dot};box-shadow:0 0 0 1px #8d82a0"></div>`:''}</div>`;
+}
+const apps = [["Sa","#2f7bf5"],["Te","#222"],["Co","#1e88e5"],["Fi","#4aa3ff"],["Mu","#fa233b"],["Me","#34c759"],["No","#f5c400"],["Cl","#d97757"]];
+function room(extra="") {
+  return win({x:-250,y:-40,z:-60,ry:32,w:170,h:120,title:"Safari",light:true,menu:"Safari  File  Edit  View"}) +
+         win({x:0,y:-60,z:-140,w:230,h:150,title:"Terminal",focus:true,cursor:true,menu:"Terminal  Shell  Edit"}) +
+         win({x:250,y:-40,z:-60,ry:-32,w:170,h:120,title:"Code",menu:"Code  File  Edit  Selection"}) + extra;
+}
+function dockIcons(hot=-1, scale=1) {
+  return apps.map(([l,c],i)=>`<div class="icon ${i===hot?'hot':''}" style="background:${c};transform:scale(${scale})">${l}${i<5?'<span class="dot" style="background:#776a8a"></span>':''}</div>`).join("");
+}
+document.getElementById("d1").innerHTML = room(`<div class="pal" style="position:absolute;left:-170px;top:120px;width:340px;height:46px;border-radius:14px;display:flex;gap:10px;align-items:center;justify-content:center;transform:translateZ(40px) rotateX(-28deg)">${dockIcons(1)}</div>
+  <div class="tipmenu pal" style="left:-120px;top:42px;transform:translateZ(60px)"><div class="sel">Show All Windows</div><div>Hide</div><div>Quit</div></div>`);
+document.getElementById("d2").innerHTML = room(apps.map(([l,c],i)=>{const a=(i-3.5)*13*Math.PI/180, R=420;
+  const x=R*Math.sin(a), z=-R*Math.cos(a)+R-20; return `<div class="pal" style="position:absolute;left:-24px;top:118px;width:48px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;transform:translate3d(${x}px,0,${z}px) rotateY(${-a*180/Math.PI}deg) rotateX(-30deg)"><div class="icon" style="background:${c}">${l}</div></div>`}).join(""));
+document.getElementById("d3").innerHTML = room(`<div style="position:absolute;left:40px;top:70px;transform:translateZ(120px) rotateX(-18deg) rotateY(-22deg)">
+   <div style="width:70px;height:26px;border-radius:13px;background:linear-gradient(#3b3743,#1e1b24);box-shadow:0 6px 12px #0009;position:relative;top:70px"></div>
+   <div class="pal" style="position:absolute;left:-60px;top:0;width:190px;height:62px;border-radius:14px;display:flex;flex-wrap:wrap;gap:6px;padding:6px;align-items:center;justify-content:center">${dockIcons(-1,0.75)}</div></div>`);
+// switcher S1
+const thumbs = [["Safari",true],["Terminal",false],["Code",false],["Finder",true],["Notes",true]];
+document.getElementById("s1").innerHTML = room() + `<div style="position:absolute;left:0;top:0;transform:translateZ(60px)">${thumbs.map(([t,l],i)=>{const a=(i-2)*18;return `<div class="thumb ${l?'light':''}" style="width:96px;height:66px;left:-48px;top:-20px;transform:rotateY(${a}deg) translateZ(260px) translateZ(-260px) translateX(${(i-2)*0}px);${i===1?'box-shadow:0 0 0 2px #fff,0 0 16px 4px #1a9fffaa':''}">${lines(5,l)}<div class="caption">${t}</div></div>`}).join("")}</div>`;
+document.getElementById("s1").querySelectorAll(".thumb").forEach((t,i)=>{t.style.transform=`translateX(${(i-2)*112}px) translateZ(${-Math.abs(i-2)*30}px) rotateY(${-(i-2)*14}deg)`;});
+document.getElementById("s1").querySelectorAll(".win").forEach(w=>w.style.filter="brightness(.45)");
+document.getElementById("s2").innerHTML =
+  win({x:-300,y:-70,z:-60,ry:32,w:150,h:100,title:"Safari",light:true}) + win({x:-140,y:-110,z:-120,ry:14,w:150,h:100,title:"Safari",light:true}) +
+  win({x:20,y:-40,z:-160,w:190,h:120,title:"Terminal",focus:true}) + win({x:200,y:-110,z:-120,ry:-14,w:150,h:100,title:"Code"}) +
+  win({x:320,y:-30,z:-60,ry:-32,w:150,h:100,title:"Notes",light:true}) +
+  ["Safari","Safari","Terminal","Code","Notes"].map((t,i)=>`<div style="position:absolute;left:${[-330,-170,-10,170,290][i]}px;top:${[-10,-50,30,-50,30][i]}px;transform:translateZ(${[-40,-100,-140,-100,-40][i]}px)" class="pal"><div style="padding:2px 8px;font-size:10px;color:#3a2f47">${t}</div></div>`).join("");
+document.getElementById("s3").innerHTML = room() + `<div class="pal" style="position:absolute;left:-150px;top:110px;width:300px;height:46px;border-radius:14px;display:flex;gap:10px;align-items:center;justify-content:center;transform:translateZ(80px)">${dockIcons(0).split('</div>').slice(0,6).join('</div>')}</div></div>` +
+  [0,1].map(i=>`<div class="thumb light" style="width:100px;height:70px;left:${-178 + i*112}px;top:20px;transform:translateZ(90px) rotateZ(${(i-0.5)*8}deg);${i===0?'box-shadow:0 0 0 2px #fff,0 0 14px 3px #1a9fffaa':''}">${lines(5,true)}</div>`).join("");
+document.getElementById("s3").querySelectorAll(".win").forEach(w=>w.style.filter="brightness(.45)");
+// live/still
+const live = (opts) => opts;
+document.getElementById("v1").innerHTML = room();
+document.getElementById("v2").innerHTML =
+  win({x:-250,y:-40,z:-60,ry:32,w:170,h:120,title:"Safari",light:true,dim:true}) +
+  win({x:0,y:-60,z:-140,w:230,h:150,title:"Terminal",focus:true,cursor:true}) +
+  win({x:250,y:-40,z:-60,ry:-32,w:170,h:120,title:"Code",dim:true});
+document.getElementById("v3").innerHTML =
+  win({x:-250,y:-40,z:-60,ry:32,w:170,h:120,title:"Safari",light:true,dot:"#e3dfea"}) +
+  win({x:0,y:-60,z:-140,w:230,h:150,title:"Terminal",focus:true,cursor:true,dot:"#1a9fff"}) +
+  win({x:250,y:-40,z:-60,ry:-32,w:170,h:120,title:"Code",dot:"#e3dfea"});
+</script>
+</body></html>
