@@ -1,0 +1,170 @@
+{
+  "date": "2026-10-20 JST",
+  "host": {
+    "macOS": "26.3.1",
+    "build": "25D2128",
+    "architecture": "arm64"
+  },
+  "baseCommit": "390669ce7d455b2a7fbb4a03762494e5e9502d7f",
+  "decision": {
+    "FW06": "No-go for automatic detachment in this attempt: native UI unavailable while locked; inactive-Space capture remains unproven. Not a demonstrated capture failure.",
+    "FW07": "Gated; agent fullscreen schema, watcher, opt-out and lifecycle tests not implemented."
+  },
+  "verified": {
+    "windowedFixture": {
+      "started": {
+        "accessibilityPreflight": true,
+        "bundleID": null,
+        "capturePolicy": "preflight only; no TCC prompt is requested",
+        "event": "started",
+        "fixture": true,
+        "sampleContentReady": true,
+        "sampleContentRequested": true,
+        "screenCapturePreflight": true,
+        "targetPID": 85367,
+        "timestamp": "2026-10-20T09:07:33Z",
+        "windowID": 63578
+      },
+      "lastFrameRecord": {
+        "event": "capture_frame",
+        "frameCount": 600,
+        "hostTimeMicros": 760145686583,
+        "ptsSeconds": 760145.686619333,
+        "timestamp": "2026-10-20T09:08:13Z",
+        "windowID": 63578
+      },
+      "contentSamples": 40,
+      "changingContentSamples": 39,
+      "firstContentTimestamp": "2026-10-20T09:07:33Z",
+      "lastContentTimestamp": "2026-10-20T09:08:14Z",
+      "fullscreenOrSpaceTransitions": [],
+      "probeSourceSHA256": "9ac4cca53cc8ffe4056830220e11de6187174bd403ce93942c43647007e8437d",
+      "binarySHA256": "8b258028eb0d3df67f221e86a4df146b0af13675ff15c11fd2eb1acf7cc88b68",
+      "capturePath": "Production SCKSource(.window), owned animated AppKit fixture only"
+    },
+    "externalAXObserver": {
+      "targetPID": 86755,
+      "started": {
+        "accessibilityPreflight": true,
+        "bundleID": null,
+        "capturePolicy": "preflight only; no TCC prompt is requested",
+        "event": "started",
+        "fixture": false,
+        "sampleContentReady": false,
+        "sampleContentRequested": false,
+        "screenCapturePreflight": true,
+        "targetPID": 86755,
+        "timestamp": "2026-10-20T09:09:12Z",
+        "windowID": null
+      },
+      "subscriptionResult": {
+        "event": "accessibility_observer_ready",
+        "fullScreenAttribute": "AXFullScreen (dynamic string; queried, not set)",
+        "pid": 86755,
+        "subscriptionAttempts": 8,
+        "subscriptionsAccepted": 8,
+        "timestamp": "2026-10-20T09:09:12Z"
+      },
+      "state": {
+        "axFullScreen": null,
+        "event": "ax_fullscreen_state",
+        "frame": null,
+        "mapping": "unmapped",
+        "query": "AXError -25205",
+        "timestamp": "2026-10-20T09:09:12Z",
+        "title": "FW06 Owned Fixture",
+        "windowID": null
+      },
+      "sampleContentRequested": false,
+      "binarySHA256": "8b258028eb0d3df67f221e86a4df146b0af13675ff15c11fd2eb1acf7cc88b68"
+    },
+    "console": {
+      "readOnlyCheck": "xcrun swift -e 'import CoreGraphics; print((CGSessionCopyCurrentDictionary() as? [String: Any])?[\"CGSSessionScreenIsLocked\"] as Any)'",
+      "result": "Optional(1)",
+      "computerUseResult": "cgWindowNotFound for the task-owned fixture by bundle path and identifier"
+    },
+    "activationRetry": {
+      "fixturePID": 86018,
+      "fixtureWindowID": 63583,
+      "probeSourceSHA256": "a67fd91e162622931fe7f177c746c9943504c13f561c4ed7b0a445b12337c712",
+      "binarySHA256": "714ab23d134290a0a283201af8767d1dd4d14e93b0c38bcb78374c2483837165",
+      "result": "Capture continued windowed; no full-screen or Space-change event. UI still unavailable."
+    },
+    "checks": {
+      "python": {
+        "command": "cd tests && TMPDIR=\"$PWD/../.fullscreen-spike/test-tmp\" python3 -m unittest test_macview",
+        "result": "OK (skipped=1)",
+        "tests": 59,
+        "elapsedSeconds": 50.418,
+        "warnings": "ResourceWarning for unclosed test helper sockets; no failures",
+        "testFixtureBuildPath": "worktree .fullscreen-spike/test-tmp/<temporary directory>/frame-mac-view; removed by test teardown",
+        "scope": "Baseline suite only; no new full-screen transition tests while FW07 remains gated"
+      },
+      "swiftAgent": {
+        "command": "mac/frame-mac-view/build.sh \"$PWD/.fullscreen-spike/frame-mac-view\"",
+        "result": "exit 0; Mach-O arm64",
+        "bytes": 908784,
+        "sha256": "40819014e76ffa382cca569c2633f4d7311d7934e69f39909760c8bc02ac8527"
+      },
+      "diagnostic": {
+        "command": "FRAME_FULLSCREEN_PROBE_BIN=\"$PWD/.fullscreen-spike/final-probe\" FRAME_FULLSCREEN_PROBE_MODULE_CACHE=\"$PWD/.fullscreen-spike/module-cache\" scripts/fullscreen-probe.sh --help",
+        "result": "exit 0",
+        "sha256": "87ae9add01098d55f197b8850649388856cbfe190c4086a9348394317e5d7170",
+        "sourceSHA256": "3d8af8fe3fdc5c9812d3385fbd578c5a87a781666a0b799fee5aaade78aa6435",
+        "startupVersionRecord": {
+          "accessibilityPreflight": true,
+          "bundleID": null,
+          "capturePolicy": "preflight only; no TCC prompt is requested",
+          "event": "started",
+          "fixture": false,
+          "macOSVersion": "Version 26.3.1 (Build 25D2128)",
+          "sampleContentReady": false,
+          "sampleContentRequested": false,
+          "screenCapturePreflight": true,
+          "targetPID": 86755,
+          "timestamp": "2026-10-20T09:12:11Z",
+          "windowID": null
+        },
+        "startupVersionResult": "macOSVersion emitted as Version 26.3.1 (Build 25D2128)"
+      }
+    }
+  },
+  "inferred": [
+    "A locked console accounts for unusable native UI and unknown AX attributes despite successful permission/observer preflights.",
+    "Path A using AX full-screen state plus notifications and stable identity remains promising from historical active-entry/exit evidence; inactive-Space viability is not established.",
+    "Bounds/layer alone are not accepted as proof of native full screen."
+  ],
+  "notTestedThisAttempt": [
+    "Native green-button entry/exit",
+    "Capture with native fullscreen retained while another Space is active",
+    "Fresh capture started from another Space",
+    "Fullscreen window close",
+    "Minimize/restore",
+    "Wake",
+    "Stage Manager",
+    "Two simultaneous fullscreen apps",
+    "Safari/Chrome/VS Code or other Electron apps",
+    "Path B relocation to virtual display",
+    "Workspace or Frame device behavior"
+  ],
+  "reproduction": [
+    "Unlock the Mac normally. Do not alter privacy permissions or system settings. Verify only task-created windows are targeted.",
+    "From this worktree: mkdir -p .fullscreen-spike/module-cache",
+    "FRAME_FULLSCREEN_PROBE_BIN=\"$PWD/.fullscreen-spike/fullscreen-probe\" FRAME_FULLSCREEN_PROBE_MODULE_CACHE=\"$PWD/.fullscreen-spike/module-cache\" scripts/fullscreen-probe.sh --fixture --seconds 300 > .fullscreen-spike/fixture.jsonl",
+    "Use the fixture native green button. Require AppKit full-screen entry, AX false-to-true and a unique PID/window-ID mapping; successful subscriptions or matching display bounds are insufficient.",
+    "Switch to a different Space using only another task-owned fixture. Do not query or reactivate the capture fixture via Computer Use while it is meant to remain inactive.",
+    "Require a Space-away event, targetIsFrontmost=false, retained full-screen state and repeated changing-content samples; return, exit full screen, then close the owned fixture.",
+    "Repeat with separate task-created Safari, Chrome and Electron windows and two simultaneous fullscreen fixtures. Observe Stage Manager only if already enabled. Record unknown/ambiguous identities rather than guessing.",
+    "No Workspace, virtual display, Frame SSH or running-companion changes during the Mac spike. Keep builds and TMPDIR under this worktree. Do not overwrite any installed binary.",
+    "After the Mac gate passes and FW07 is implemented, integrator verifies device placement, focus/input, exit/close cleanup, rapid toggles, manual close, Workspace start/stop/reconnect, inactive no-op and FRAME_WORKSPACE_AUTODETACH=0."
+  ],
+  "preservation": "This compact fixture-only report replaces raw JSONL logs, temporary app bundles, binaries and module caches; no image data retained.",
+  "cleanup": {
+    "taskOwnedFixture": "All task-created fixture/observer processes terminated; no user app/window targeted.",
+    "removedPath": ".fullscreen-spike/",
+    "note": "Temporary fixture-only logs, app bundle, binaries, module cache and test-tmp; compact evidence retained here.",
+    "allocatedKiBRemoved": 82400,
+    "remainingKiBAtRemovedPath": 0,
+    "measuredRecoveryMiB": 80.47
+  }
+}

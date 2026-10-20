@@ -148,6 +148,20 @@ Workspace, with clean removal on Stop. `FRAME_WINDOW_VIEWER=browser` keeps the
 older Chrome panels. Moving panels in the headset (visionOS-style grab pill,
 resize corners and curve bars) is the next FW-14 stage.
 
+Native macOS green-button full screen is still manual: **FW-07 automatic
+attachment is gated by FW-06**, so `FRAME_WORKSPACE_AUTODETACH` has no effect yet.
+The 2026-10-20 macOS 26.3.1 spike verified windowed fixture capture with existing
+permissions but could not test native entry/exit or inactive-Space capture while
+the console was locked. Earlier active full-screen capture evidence does not
+establish capture after switching Spaces. See the
+[verified/inferred findings and go/no-go](../docs/frame-workspace/FULLSCREEN.md#current-spike-attempt-2026-10-20).
+Before enabling automatic native panels, the integrator must prove changing
+capture while the target remains full screen in an inactive Space, stable window
+identity, exit/close cleanup and rapid-toggle deduplication. Then verify beside
+an active Workspace on the Frame: placement, stream cleanup, manual-close
+suppression, no action without a Workspace, opt-out, focus/input and reconnect.
+No device verification or installed-agent update was performed in this attempt.
+
 ## In-headset placement (FW-14)
 
 SteamVR's own laser only serves its dashboard: a probe overlay with mouse input

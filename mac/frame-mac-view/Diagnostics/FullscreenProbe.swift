@@ -171,6 +171,7 @@ private final class FullscreenProbe: NSObject, NSApplicationDelegate, NSWindowDe
             }
         }
         emit("started", [
+            "macOSVersion": ProcessInfo.processInfo.operatingSystemVersionString,
             "targetPID": targetPID as Any? ?? NSNull(),
             "bundleID": options.bundleID as Any? ?? NSNull(),
             "fixture": options.fixture,
@@ -238,6 +239,7 @@ private final class FullscreenProbe: NSObject, NSApplicationDelegate, NSWindowDe
         w.contentView = view
         w.center()
         w.makeKeyAndOrderFront(nil)
+        application.activate(ignoringOtherApps: true)
         window = w
         fixtureView = view
         emit("fixture_created", ["windowID": UInt32(exactly: w.windowNumber) as Any? ?? NSNull(),
