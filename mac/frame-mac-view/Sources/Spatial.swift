@@ -203,8 +203,17 @@ final class SpatialDisplayPool {
         let ready = display.screen != nil && mode?.width == width && mode?.height == height &&
             mode?.pixelWidth == pixelScale * width && mode?.pixelHeight == pixelScale * height
         if ready { completion(true) }
-        else if attempt >= 30 { completion(false) }
-        else {
+        else if attempt >= 30 {
+            FileHandle.standardError.write(Data(("frame-mac-view: display \(display.id) not ready: wanted \(width)x\(height)@\(pixelScale)x, " +
+                "has \(mode?.width ?? 0)x\(mode?.height ?? 0) (\(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0) px), " +
+                "screen \(display.screen != nil), \(display.lastModeConfigurationError ?? "no mode error")\n").utf8))
+            completion(false)
+        } else {
+            // As the Workspace does: macOS may only accept the mode once the
+            // new display has appeared, so apply it again while waiting.
+            if display.screen != nil && attempt % 3 == 0 {
+                display.applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                 self?.waitForModeReady(display, width: width, height: height, pixelScale: pixelScale,
                                        attempt: attempt + 1, completion: completion)
@@ -785,8 +794,17 @@ final class SpatialCoordinator {
         let ready = display.screen != nil && mode?.width == width && mode?.height == height &&
             mode?.pixelWidth == pixelScale * width && mode?.pixelHeight == pixelScale * height
         if ready { completion(true) }
-        else if attempt >= 30 { completion(false) }
-        else {
+        else if attempt >= 30 {
+            FileHandle.standardError.write(Data(("frame-mac-view: display \(display.id) not ready: wanted \(width)x\(height)@\(pixelScale)x, " +
+                "has \(mode?.width ?? 0)x\(mode?.height ?? 0) (\(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0) px), " +
+                "screen \(display.screen != nil), \(display.lastModeConfigurationError ?? "no mode error")\n").utf8))
+            completion(false)
+        } else {
+            // As the Workspace does: macOS may only accept the mode once the
+            // new display has appeared, so apply it again while waiting.
+            if display.screen != nil && attempt % 3 == 0 {
+                display.applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak display] in
                 guard let self, let display else { completion(false); return }
                 self.waitForModeReady(display, width: width, height: height, pixelScale: pixelScale,

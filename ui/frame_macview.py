@@ -755,7 +755,28 @@ class MacView:
                 self._drop_tunnel()
             self.port = int(m.group(1))
             self.track(self.agent)
-            threading.Thread(target=self.agent.stdout.read, daemon=True).start()  # drain
+            threading.Thread(target=self._keep_helper_log, args=(self.agent,), daemon=True).start()
+
+    HELPER_LOG = Path.home() / "Library" / "Logs" / "Frame Control" / "mac-helper.log"
+
+    def _keep_helper_log(self, agent):
+        """Keeps the helper's own messages (its errors explain refused streams
+        and failed Spatial steps) in ~/Library/Logs/Frame Control/mac-helper.log,
+        started afresh with each helper and capped at 4 MB."""
+        try:
+            self.HELPER_LOG.parent.mkdir(parents=True, exist_ok=True)
+            log = open(self.HELPER_LOG, "w", encoding="utf-8")
+        except OSError:
+            log = None
+        written = 0
+        for line in agent.stdout:
+            if log and written < 4 << 20:
+                stamp = time.strftime("%H:%M:%S")
+                log.write(f"{stamp} {line}")
+                log.flush()
+                written += len(line)
+        if log:
+            log.close()
 
     def call(self, path, method="GET", **query):
         """A request to the agent; starts it if needed."""
@@ -763,7 +784,7 @@ class MacView:
         url = f"http://127.0.0.1:{self.port}{path}?{urlencode({**query, 'k': self.token}, quote_via=quote)}"
         req = urllib.request.Request(url, method=method, data=b"" if method == "POST" else None)
         try:
-            with urllib.request.urlopen(req, timeout=45 if path.startswith("/spatial/") else 10) as r:
+            with urllib.request.urlopen(req, timeout=120 if path.startswith("/spatial/") else 10) as r:
                 return json.load(r)
         except urllib.error.HTTPError as e:
             try:
