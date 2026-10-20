@@ -531,11 +531,27 @@ display layout (a recorder and a restore tool, `restore BEFORE.txt`, in the sess
 - After the run: the display layout was exactly as before, and 64 of 66 windows exactly back; two
   windows that were hidden off screen (a Terminal and an ExpressVPN window) moved.
 
+**Decision (the user's, 2026-10-21): blank the laptop screen, don't mirror it.** By default
+Spatial Mode now leaves the built-in as the main display behind a plain black cover window (level
+just above normal windows, so the menu bar, Dock and system dialogs stay visible and usable); the
+home display is only a hidden parking place. `FRAME_SPATIAL_MIRROR=1` keeps the mirror for
+experiments. Retested without mirroring, window displays still stalled, so mirroring was not the
+whole cause: Spatial window displays allowed up to 5120x3200 pixels (for reshaping pooled
+displays), so macOS chose a larger default mode (1840x1008 for a 920x504 window). They are now
+created like separated windows' displays (exactly twice the window's size, the same mode
+selection). With that, the first window's display came up, the window moved and capture
+started; the second display's HiDPI change still failed with 1001, and each display change took
+about 30 s while the Mac's swap was at 4-7 GB from other sessions' work, so the next run should
+start on an unloaded Mac (these runs were not conclusive). Stop worked every time with the
+cover; after the runs the layout was exact and 64 of 66 windows exactly back (the same two hidden
+windows as above moved).
+
 Changes from this run: Stop always undoes its own mirror; per-window startup steps and display
 mode failures are logged; the companion keeps the helper's log in
 `~/Library/Logs/Frame Control/mac-helper.log`; spare pool displays are off
-(`FRAME_SPATIAL_WARM_SPARES=0` from the companion). **Open decision:** keep the lid-closed mirror
-(and find a way to configure displays while mirrored) or leave the built-in unmirrored and blank it.
+(`FRAME_SPATIAL_WARM_SPARES=0` from the companion). Next: rerun on an unloaded Mac, one window at a time, then
+several; check whether display changes overlap (the second window started within a second of the
+first) and serialize them if so.
 
 ## Spatial UI integration (2026-10-20)
 

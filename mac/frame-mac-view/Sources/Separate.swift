@@ -38,8 +38,13 @@ final class VirtualDisplay {
             let d = CGVirtualDisplayDescriptor()
             d.queue = DispatchQueue.main
             d.name = name
-            d.maxPixelsWide = UInt32(purpose == .spatialWindow ? 5120 : pixelScale * width)
-            d.maxPixelsHigh = UInt32(purpose == .spatialWindow ? 3200 : pixelScale * height)
+            // Exactly the window's HiDPI size, as for separated windows: with a
+            // larger maximum macOS picks a bigger default mode and, on the user's
+            // M4 (2026-10-21), stalls or refuses (1001) the change to the right one.
+            // (Reshaping pooled displays needs a larger maximum; the pool is off.)
+            let reshapable = purpose == .spatialWindow && SpatialPoolPolicy.warmSpareCount > 0
+            d.maxPixelsWide = UInt32(reshapable ? 5120 : pixelScale * width)
+            d.maxPixelsHigh = UInt32(reshapable ? 3200 : pixelScale * height)
             d.sizeInMillimeters = CGSize(width: Double(width) * 0.2646, height: Double(height) * 0.2646)
             d.vendorID = purpose == .workspace ? VirtualDisplay.workspaceVendor :
                 (purpose == .spatialHome || purpose == .spatialWindow) ? VirtualDisplay.spatialVendor : VirtualDisplay.vendor
@@ -68,7 +73,7 @@ final class VirtualDisplay {
         let modes = (CGDisplayCopyAllDisplayModes(id, [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary)
             as? [CGDisplayMode]) ?? []
         let requestedMode: CGDisplayMode?
-        if purpose == .separate {
+        if purpose == .separate || purpose == .spatialWindow {
             requestedMode = modes.first(where: {
                 $0.width == width && $0.height == height && $0.pixelWidth == 2 * width && $0.refreshRate == VirtualDisplay.refreshRate
             }) ?? modes.first(where: { $0.width == width && $0.height == height && $0.pixelWidth == 2 * width })
@@ -81,7 +86,7 @@ final class VirtualDisplay {
             })
         }
         if let hidpi = requestedMode {
-            if purpose == .separate {
+            if purpose == .separate || purpose == .spatialWindow {
                 var cfg: CGDisplayConfigRef?
                 if CGBeginDisplayConfiguration(&cfg) == .success, let cfg,
                    CGConfigureDisplayWithDisplayMode(cfg, id, hidpi, nil) == .success {

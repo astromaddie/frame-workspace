@@ -614,12 +614,25 @@ final class SpatialCoordinator {
             pool.prewarm { error in
                 if let current = self.currentPhysicalLayoutStates() { self.restoreLayoutBaseline = current.1 }
                 if let error { return self.failStart(error, completion: completion) }
-                guard self.applyMirror(builtIn: builtIn, home: display.id) else {
-                    return self.failStart("macOS rejected the built-in display mirror transaction", completion: completion)
+                // The laptop screen: mirrored to the home (FRAME_SPATIAL_MIRROR=1, the
+                // lid-closed setup; while mirrored macOS stalls or rejects the
+                // per-window displays' mode changes, see SPATIAL.md) or, by default,
+                // left as the main display behind a black cover. The home is then
+                // only a hidden parking place, and no layout change is needed.
+                let mirror = Self.mirrorsBuiltIn
+                if mirror {
+                    guard self.applyMirror(builtIn: builtIn, home: display.id) else {
+                        return self.failStart("macOS rejected the built-in display mirror transaction", completion: completion)
+                    }
+                    self.mirrorApplied = true
                 }
-                self.mirrorApplied = true
-                self.verifyMirror(builtIn: builtIn, home: display.id, attempt: 0) { verified in
+                let verify: (@escaping (Bool) -> Void) -> Void = { done in
+                    if mirror { self.verifyMirror(builtIn: builtIn, home: display.id, attempt: 0, completion: done) }
+                    else { done(true) }
+                }
+                verify { verified in
                     guard verified else { return self.failStart("the spatial home display did not become the main display", completion: completion) }
+                    if !mirror { self.showCover(on: builtIn) }
                     guard let activeLayout = self.currentPhysicalLayoutStates()?.1 else {
                         return self.failStart("WindowServer could not confirm the physical layout after mirroring", completion: completion)
                     }
@@ -711,6 +724,7 @@ final class SpatialCoordinator {
     }
 
     private func cleanupAfterStreams(message: String?, completion: @escaping (Bool, String?) -> Void) {
+        hideCover()
         discovery.stop()
         if let pool {
             pool.stopRefillingAndWait { self.finishCleanupAfterRefills(message: message, completion: completion) }
@@ -774,6 +788,31 @@ final class SpatialCoordinator {
            abs(bounds.minX) < 1, abs(bounds.minY) < 1 { completion(true) }
         else if attempt >= 30 { completion(false) }
         else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.verifyMirror(builtIn: builtIn, home: home, attempt: attempt + 1, completion: completion) } }
+    }
+
+    static let mirrorsBuiltIn = ProcessInfo.processInfo.environment["FRAME_SPATIAL_MIRROR"] == "1"
+
+    /// A plain black cover over the laptop screen, just above normal windows,
+    /// so the menu bar, Dock and system dialogs stay visible and usable there.
+    private var cover: NSWindow?
+    private func showCover(on builtIn: CGDirectDisplayID) {
+        guard cover == nil, let screen = NSScreen.screens.first(where: {
+            ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == builtIn
+        }) else { return }
+        let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        window.backgroundColor = .black
+        window.level = .floating
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        window.hasShadow = false
+        window.setFrame(screen.frame, display: true)
+        window.orderFrontRegardless()
+        cover = window
+    }
+    private func hideCover() {
+        cover?.orderOut(nil)
+        cover?.close()
+        cover = nil
     }
 
     private func applyMirror(builtIn: CGDirectDisplayID, home: CGDirectDisplayID) -> Bool {
