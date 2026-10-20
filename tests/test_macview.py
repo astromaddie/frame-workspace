@@ -36,6 +36,16 @@ import frame_macview  # noqa: E402
 
 
 class Helpers(unittest.TestCase):
+    def test_helper_cleanup_error_reaches_the_companion(self):
+        mv = frame_macview.MacView([], mock.Mock(), "fake")
+        mv.ensure_agent = mock.Mock()
+        mv.port = 12345
+        failure = frame_macview.urllib.error.HTTPError("http://127.0.0.1", 500, "Failure", {},
+            io.BytesIO(b'{"state":"error","removed":false,"error":"Display Removal Is Pending"}'))
+        with mock.patch.object(frame_macview.urllib.request, "urlopen", side_effect=failure):
+            with self.assertRaisesRegex(frame_macview.MacViewError, "Display Removal Is Pending"):
+                mv.call("/spatial/stop", method="POST")
+
     def test_diagnostic_gaze_is_canonical_before_launch(self):
         with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_FOVEATION": "1", "FRAME_MAC_VIEW_DIAGNOSTIC_GAZE": "1", "FRAME_WORKSPACE_DIAGNOSTIC_GAZE": " 0.5 , 1e-1 "}):
             value = frame_macview.workspace_diagnostic_gaze()
@@ -346,7 +356,7 @@ class Helpers(unittest.TestCase):
             "window:4": {"panel": "w4", "key": "com.frame-workspace.native.1000.panel-w4", "slot": 0, "title": "Terminal"},
         }
         state = mv.dash_state()
-        self.assertEqual(state["workspace"], {"running": True, "busy": None, "label": "9:8 · 2880 × 2560"})
+        self.assertEqual(state["workspace"], {"running": True, "busy": None, "label": "9:8 · 2880 × 2560", "mode": "desktop"})
         self.assertEqual([w["title"] for w in state["windows"]], ["Terminal", "Notes"])
         mv.workspace_manager.state = lambda: {"state": "stopped"}
         mv.workspace_panel_key = None
@@ -1326,6 +1336,239 @@ class SpatialPolicy(unittest.TestCase):
         self.assertFalse(self.mv.supervisor.is_alive())
         self.mv._spatial_tick.assert_called_once_with()
         self.mv.ensure_tunnel.assert_not_called()
+
+
+class SpatialMode(unittest.TestCase):
+    """Drive the actual companion launch/stop paths against an in-memory helper."""
+
+    def setUp(self):
+        self.env = mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native",
+            "FRAME_WINDOW_DISPLAYS": "0", "FRAME_NATIVE_HOST": "0"})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+        self.mv = frame_macview.MacView(["ssh"], self.remote_run, "fake-frame")
+        self.mv.agent = mock.Mock(poll=lambda: None)
+        self.mv.workspace_manager = mock.Mock()
+        self.mv.workspace_manager.state.return_value = {"state": "stopped"}
+        self.mv.ensure_tunnel = mock.Mock()
+        self.mv._supervise = mock.Mock()
+        self.mv._end_viewer_browser = mock.Mock()
+        self.mv.call = self.call
+        self.jobs, self.events, self.launches = [], [], []
+        self.mv._dash_run = lambda busy, fn, *args: self.jobs.append((fn, args))
+        self.running, self.removed, self.fail_start = False, True, False
+        self.windows = [self.window(42)]
+        self.streams = []
+
+    @staticmethod
+    def window(wid):
+        return {"id": wid, "src": f"window:{wid}", "title": f"Shell {wid}", "app": "Terminal",
+                "bundleID": "com.apple.Terminal", "w": 900, "h": 600}
+
+    def call(self, path, method="GET", **query):
+        self.events.append((path, query))
+        if path == "/spatial/start":
+            if self.fail_start:
+                raise frame_macview.MacViewError("Mirror Setup Failed")
+            self.running, self.removed = True, False
+        if path == "/spatial/stop":
+            self.running = False
+            self.streams.clear()
+        if path.startswith("/spatial"):
+            return {"state": "running" if self.running else "stopped", "removed": self.removed,
+                    "windows": list(self.windows), "revision": 1}
+        if path == "/status":
+            return {"screen": True, "accessibility": True, "streams": list(self.streams), "finished": []}
+        if path == "/windows":
+            return {"windows": list(self.windows)}
+        if path == "/ticket":
+            self.streams.append({"src": query["src"]})
+            return {"ticket": "single-use"}
+        if path == "/close":
+            self.streams = [s for s in self.streams if s["src"] != query.get("src")]
+            return {"closed": 1}
+        return {}
+
+    def remote_run(self, command, **kwargs):
+        self.events.append(("remote", command))
+        if "'start'" in command:
+            args = shlex.split(command)
+            panel = args[args.index("--panel") + 1]
+            self.launches.append(args)
+            return "registered OpenVR key com.frame-workspace.native.1000.panel-" + panel
+        return "stopped"
+
+    def jobs_once(self):
+        jobs, self.jobs = self.jobs, []
+        for fn, args in jobs:
+            fn(*args)
+
+    def start(self):
+        self.mv.set_mode("spatial")
+        result = self.mv.start_workspace(quality="balanced")
+        self.jobs_once()
+        return result
+
+    def test_start_uses_hidden_home_separate_sources_and_shared_host(self):
+        result = self.start()
+        self.assertEqual(result["mode"], "spatial")
+        self.assertEqual(result["workspace"]["state"], "running")
+        self.mv.workspace_manager.start.assert_not_called()
+        self.assertIsNone(self.mv.workspace_panel_key)
+        self.assertEqual(self.mv.shown, {"separate:42"})
+        self.assertTrue(self.mv.native_panels["separate:42"]["host"])
+        self.assertEqual(self.mv.native_panels["separate:42"]["title"], "Shell 42")
+        self.assertEqual(self.launches[0][0], "FRAME_NATIVE_HOST=1")
+        self.assertIn("src=separate%3A42", " ".join(self.launches[0]))
+        self.assertTrue(self.mv.spatial_workspace["panelsReady"])
+        self.assertTrue(self.mv.dash_state()["workspace"]["running"])
+        self.assertEqual(self.mv.dash_state()["workspace"]["mode"], "spatial")
+        self.assertLess(next(i for i, e in enumerate(self.events) if e[0] == "remote"),
+                        next(i for i, e in enumerate(self.events) if e[0] == "/spatial/start"))
+
+    def test_window_show_waits_for_an_active_spatial_setup(self):
+        self.mv.set_mode("spatial")
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Start Spatial Mode"):
+            self.mv.show("window:42")
+        self.assertFalse(self.launches)
+
+    def test_bar_mode_requests_use_the_same_lifecycle(self):
+        self.mv.set_mode = mock.Mock()
+        self.mv._handle_frame_requests('{"action":"mode_spatial"}\n{"action":"mode_desktop"}')
+        self.jobs_once()
+        self.assertEqual(self.mv.set_mode.call_args_list, [mock.call("spatial"), mock.call("desktop")])
+
+    def test_new_and_closed_windows_reconcile_without_duplicate_launches(self):
+        self.start()
+        self.windows.append(self.window(43))
+        self.mv._spatial_mode_tick()
+        self.mv._spatial_mode_tick()  # a single job while one is pending
+        self.assertEqual(len(self.jobs), 1)
+        self.jobs_once()
+        self.assertEqual(set(self.mv.native_panels), {"separate:42", "separate:43"})
+        self.windows.pop(0)
+        self.mv._spatial_mode_tick()
+        self.jobs_once()
+        self.assertEqual(set(self.mv.native_panels), {"separate:43"})
+        self.assertEqual(len(self.launches), 2)
+
+    def test_unconfirmed_stop_blocks_mode_change_then_retry_restores_first(self):
+        self.start()
+        self.mv.before_workspace_stop = lambda: self.events.append(("snapshot", self.mv.mode))
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Removal Is Still Pending"):
+            self.mv.set_mode("desktop")
+        self.assertEqual(self.mv.mode, "spatial")
+        self.assertEqual(self.mv.workspace_state()["state"], "error")
+        self.mv.workspace_manager.start.assert_not_called()
+        self.removed = True
+        self.mv.set_mode("desktop")
+        self.assertEqual(self.mv.mode, "desktop")
+        self.assertFalse(self.mv.native_panels)
+        self.assertLess(next(i for i, e in enumerate(self.events) if e[0] == "snapshot"),
+                        next(i for i, e in enumerate(self.events) if e[0] == "/spatial/stop"))
+
+    def test_switch_running_mode_restarts_only_after_cleanup(self):
+        self.start()
+        self.removed = True
+        def desktop(*args):
+            self.events.append(("desktop-start", None))
+            self.assertFalse(self.mv.native_panels)
+            self.assertFalse(self.running)
+            return {"workspace": {"state": "running"}}
+        self.mv._start_workspace = desktop
+        self.mv.set_mode("desktop")
+        self.assertEqual(self.events[-1][0], "desktop-start")
+
+    def test_failed_start_rolls_back_and_preserves_unconfirmed_cleanup(self):
+        self.mv.set_mode("spatial")
+        self.fail_start, self.removed = True, False
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Mirror Setup Failed"):
+            self.mv.start_workspace()
+        self.assertEqual(self.events[-1][0], "/spatial/stop")
+        self.assertFalse(self.mv.workspace_state()["removed"])
+        self.assertFalse(self.launches)
+
+    def test_old_panel_job_cannot_run_after_stop_or_mode_change(self):
+        self.mv.set_mode("spatial")
+        self.mv.start_workspace()
+        self.removed = True
+        self.mv.stop_workspace()
+        self.jobs_once()
+        self.assertFalse(self.launches)
+
+    def test_restarted_helper_does_not_inherit_running_spatial_ownership(self):
+        self.start()
+        self.mv.agent = mock.Mock(poll=lambda: None)
+        self.running, self.removed = False, True
+        self.mv._spatial_mode_tick()
+        self.jobs_once()
+        self.assertEqual(self.mv.workspace_state()["state"], "error")
+        self.assertTrue(self.mv.workspace_state()["removed"])
+        self.assertFalse(self.mv.native_panels)
+        self.assertEqual(len(self.launches), 1)
+
+    def test_frame_panel_cleanup_failure_keeps_stop_available_after_mac_restore(self):
+        self.start()
+        self.removed = True
+        self.mv._stop_native_panels = mock.Mock()  # remote host did not acknowledge the removal
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Panel Shutdown Is Unconfirmed"):
+            self.mv.stop_workspace()
+        self.assertFalse(self.running)
+        self.assertTrue(self.mv.workspace_state()["removed"])
+        self.assertTrue(self.mv.workspace_state()["panelCleanupPending"])
+        self.assertEqual(self.mv.workspace_state()["state"], "error")
+
+    def test_mode_choice_persists_without_dashboard_and_old_preferences_still_load(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "last-start.json"
+            self.mv.last_workspace_file = path
+            self.mv.set_mode("spatial")
+            again = frame_macview.MacView([], mock.Mock(), "fake", last_workspace_file=path)
+            self.assertEqual(again.mode, "spatial")
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            path.write_text(json.dumps({"preset": "2880x2560", "scale": 1, "quality": "sharp"}))
+            old = frame_macview.MacView([], mock.Mock(), "fake", last_workspace_file=path)
+            self.assertEqual(old.mode, "desktop")
+            self.assertEqual(old.last_workspace[0], "2880x2560")
+
+    def test_spatial_overrides_desktop_browser_flags_and_accepts_saved_separate_pose(self):
+        self.start()
+        pose = {"version": 1, "width": 1.2, "distance": 2, "curvature": .2,
+                "matrix": [1, 0, 0, 0, 0, 1, 0, 1.4, 0, 0, 1, -2]}
+        self.windows.append(self.window(43))
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "browser", "FRAME_WINDOW_VIEWER": "browser"}):
+            self.mv.show("window:43", pose=pose)
+        args = self.launches[-1]
+        self.assertEqual(json.loads(args[args.index("--pose") + 1]), pose)
+        self.assertEqual(args[0], "FRAME_NATIVE_HOST=1")
+        self.assertIn("separate:43", self.mv.native_panels)
+
+    def test_combined_ui_sync_writes_atomic_private_spatial_state(self):
+        with tempfile.TemporaryDirectory() as temp:
+            state = {"mode": "spatial", "apps": [{"name": "A 'Quoted' App"}],
+                     "switcher": {"open": False, "index": 0, "seq": 0, "chosen": None}}
+            result = subprocess.run(["bash", "-s", "--", "sync", "{}", json.dumps(state)],
+                input=frame_macview.SPATIAL_UI_SYNC + 'test "$#" -eq 2 && test "$1" = sync\n',
+                env={**os.environ, "XDG_RUNTIME_DIR": temp}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            path = Path(temp) / "frame-workspace/spatial-ui.json"
+            self.assertEqual(json.loads(path.read_text()), state)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(list(path.parent.glob(".spatial-ui-*")), [])
+
+    def test_owned_switch_requests_focus_in_both_modes_and_dispatch_app_hooks(self):
+        self.mv.native_panels = {"window:42": {"key": "com.frame-workspace.native.1000.panel-w42", "slot": 0}}
+        handled = []
+        self.mv.spatial_request_handler = handled.append
+        self.mv._handle_frame_requests('\n'.join(json.dumps(r) for r in [
+            {"action": "switch", "key": "com.frame-workspace.native.1000.panel-w99"},
+            {"action": "switch", "key": "com.frame-workspace.native.1000.panel-w42"},
+            {"action": "app", "verb": "hide", "bundleID": "com.apple.Terminal"},
+            {"action": "switcher", "verb": "open"}]))
+        self.jobs_once()
+        self.assertEqual([e for e in self.events if e[0] == "/focus"],
+                         [("/focus", {"src": "window:42", "u": .5, "v": .5})])
+        self.assertEqual([r["action"] for r in handled], ["switch", "app", "switcher"])
 
 
 class WorkspaceLifecycle(unittest.TestCase):

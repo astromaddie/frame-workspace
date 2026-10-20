@@ -36,6 +36,7 @@ class ServerGuards(unittest.TestCase):
     def setUpClass(cls):
         cls.port = free_port()
         cls.ssh_dir = tempfile.mkdtemp(prefix="frame-control-ssh-")  # an empty ~/.ssh: no headsets set up
+        cls.addClassCleanup(shutil.rmtree, cls.ssh_dir, ignore_errors=True)
         env = {**os.environ, "FRAME_ALIAS": "frame-control-test.invalid", "PYTHONDONTWRITEBYTECODE": "1",
                "FRAME_CONTROL_SSH_DIR": cls.ssh_dir}
         cls.log = tempfile.TemporaryFile()
@@ -526,6 +527,10 @@ class PageScripts(unittest.TestCase):
     def test_meta_library_rows_render(self):
         """tests/page/meta_rows.mjs runs the real Meta library row rendering from index.html."""
         r = subprocess.run(["node", str(ROOT / "tests" / "page" / "meta_rows.mjs")], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_workspace_mode_renders_and_switches(self):
+        r = subprocess.run(["node", str(ROOT / "tests/page/spatial_mode.mjs")], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 

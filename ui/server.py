@@ -2331,7 +2331,8 @@ def push_media(path):
 # over anything added after them.
 macview = frame_macview.MacView(["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8"],
                                 lambda remote, stdin=None, timeout=30: ssh(remote, stdin=stdin, timeout=timeout),
-                                FRAME, track=_live_tunnels.add)
+                                FRAME, track=_live_tunnels.add,
+                                last_workspace_file=frame_host.data_dir("workspace", "last-start.json"))
 workspace_profiles = frame_workspace_profiles.ProfileStore(
     frame_host.data_dir("workspace-profiles", "profiles.json"))
 
@@ -2353,6 +2354,14 @@ def macview_action(body):
     if LOCAL:
         raise Failure("Runs on your computer, not the headset.", 400)
     action = body.get("action")
+    if action in ("mode_desktop", "mode_spatial", "workspace_mode"):
+        expected = {"action", "mode"} if action == "workspace_mode" else {"action"}
+        if set(body) != expected or (action == "workspace_mode" and body["mode"] not in ("desktop", "spatial")):
+            raise Failure("Mode Requires Desktop Or Spatial Only.", 400)
+        try:
+            return macview.set_mode(body["mode"] if action == "workspace_mode" else action[5:])
+        except frame_macview.MacViewError as e:
+            raise Failure(str(e), 502)
     if action == "stream_stats":
         if set(body) - {"action", "id", "since", "settle"} or "id" not in body:
             raise Failure("Stream statistics require a current session ID and optional since/settle values.", 400)
@@ -2418,8 +2427,11 @@ def macview_action(body):
             return macview.show(str(body.get("src") or ""), str(body.get("quality") or "balanced"),
                                 int(w) if w else None, int(h) if h else None)
         if action == "workspace_start":
+            if "mode" in body and body["mode"] not in ("desktop", "spatial"):
+                raise Failure("Mode Must Be Desktop Or Spatial.", 400)
             return macview.start_workspace(str(body.get("preset") or "5120x1440"),
-                                           body.get("scale", 1), str(body.get("quality") or "sharp"), resume=True)
+                                           body.get("scale", 1), str(body.get("quality") or "sharp"), resume=True,
+                                           **({"mode": body["mode"]} if "mode" in body else {}))
         if action == "workspace_adjust":
             return macview.adjust_workspace(body["width"], body["distance"])
         if action == "workspace_curvature":
