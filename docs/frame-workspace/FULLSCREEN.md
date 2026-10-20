@@ -8,6 +8,43 @@ entry/exit capture evidence, with a Safari identity-mapping limit. Keep FW-07
 gated until inactive-Space capture
 and the broader app/lifecycle matrix pass.
 
+## Current spike attempt: 2026-10-20
+
+All observations in this section are **verified on macOS 26.3.1 (25D2128),
+2026-10-20 JST**, unless explicitly marked inferred or untested.
+
+- **Verified:** a new diagnostic executable built inside this worktree had
+  existing Screen Recording and Accessibility preflights. Production
+  `SCKSource(.window)` captured only the owned animated AppKit fixture: one
+  40-second run produced at least 600 frames and 39 changing one-second samples.
+  No full-screen or Space-change event occurred in that run. These are windowed
+  capture results, not full-screen or inactive-Space evidence.
+- **Verified:** Computer Use could not resolve the owned fixture window
+  (`cgWindowNotFound`), including after launching it as an app bundle. A read-only
+  `CGSessionCopyCurrentDictionary()` check reported `CGSSessionScreenIsLocked = 1`.
+  The external AX observer accepted all eight notification subscriptions but
+  returned unknown full-screen state (`AXError -25205`) and no mapped window.
+  Notification registration alone does not establish usable state detection.
+- **Inferred:** the locked console explains the inaccessible UI and unusable AX
+  window observations. This is an environment blocker, not evidence that
+  inactive-Space capture fails. No permissions or system settings were changed.
+- **Untested this run:** genuine green-button entry/exit, an actual Space
+  away/back, fullscreen close, minimize/restore, wake, Stage Manager, two
+  simultaneous full-screen apps, and Safari/Chrome/Electron. Earlier results
+  below remain historical evidence; they were not reverified by this attempt.
+
+**Decision: no-go for FW-07 in this attempt.** Path A (observe native full-screen
+state and capture the same window without moving it) remains promising, inferred
+from earlier active-entry/exit evidence. Its inactive-Space gate is still open.
+Path B was not exercised: the task forbids creating virtual displays, and
+`SeparateSource` rejects already-full-screen windows. Do not enable automatic
+panels or substitute a custom shortcut while this gate is unresolved.
+
+The diagnostic now includes the macOS version/build in its startup record and
+activates only its own fixture on launch. Reproduction and compact evidence are
+in [the current attempt record](evidence/fullscreen-2026-10-20.json). Raw logs,
+test bundles and build caches are disposable after summarization.
+
 ## Repaired production path
 
 `SCKSource` now checks fresh ScreenCaptureKit content and a second window-list

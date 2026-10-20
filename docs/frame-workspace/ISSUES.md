@@ -204,6 +204,25 @@ Determine how to respond when the user clicks an app’s normal green macOS Full
 - Today `SeparateSource.start()` returns “take the window out of full screen first”; current implementation does not meet this requirement.
 - Do not promise interception/replacement of the system’s green button. Observe the OS transition and respond only when proof establishes this is possible.
 
+## Progress (2026-10-20)
+- **Verified, macOS 26.3.1 (25D2128), 2026-10-20:** the worktree-local probe
+  had existing Screen Recording/Accessibility access and captured its owned
+  windowed AppKit fixture (at least 600 frames, 39 changing samples in 40 s).
+  The console was locked; Computer Use could not access the fixture and AX
+  full-screen state was unknown. No native full-screen/Space-away transition
+  was established in this attempt.
+- **Inferred:** AX full-screen reads plus app/window/active-Space notifications
+  and identity matching remain the likely Path A detector; bounds/layer alone
+  cannot distinguish native full screen from zoom. Earlier AppKit/Chrome active
+  entry/exit evidence is recorded in [FULLSCREEN.md](FULLSCREEN.md), not
+  reverified here. Ambiguous Safari identity and inactive-Space live capture
+  remain unresolved. Path B was not tested; no virtual display was created.
+- **Decision: no-go for FW-07 in this attempt.** This is an unproven gate,
+  not a finding that capture is impossible. Unlock and run the owned-fixture
+  green-button/Space-away matrix before enabling automation. Full test coverage,
+  reproduction and remaining device checks are in the
+  [current spike record](FULLSCREEN.md#current-spike-attempt-2026-10-20).
+
 ## Verified upstream references
 - [sepcode](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/mac/frame-mac-view/Sources/Separate.swift)
 - [capture](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/mac/frame-mac-view/Sources/Capture.swift)
@@ -237,6 +256,22 @@ During an active Frame Workspace session, clicking the ordinary macOS green Full
 
 ## Risks / non-goals
 - This issue is gated. If FW-06 cannot prove a reliable approach, report the limitation instead of silently substituting a custom full-screen command.
+
+## Progress (2026-10-20)
+- **Verified by source inspection, macOS 26.3.1, 2026-10-20:** native window
+  panels already use `MacView.show("window:<id>")` and direct SCK capture,
+  preserving Mac placement. The existing companion supervisor ticks once per
+  second. Neither full-screen reporting nor automatic detachment is implemented.
+- **Inferred implementation, gated:** report explicit true/false/unknown AX state
+  with stable window identity across Spaces; reconcile only while a Workspace is
+  running. Debounce transitions, preserve manually opened panels, and retire
+  only automatically owned panels on exit/confirmed close. Missing/unknown AX
+  observations must not be treated as exit or closure. Suppress reopening after
+  a manual panel close until a new full-screen entry; support
+  `FRAME_WORKSPACE_AUTODETACH=0` when implemented.
+- FW-06's current no-go keeps these acceptance criteria open. No agent endpoint,
+  watcher, feature flag or full-screen unit tests are claimed delivered. No
+  Workspace, virtual display or headset was started for this spike.
 
 ## Verified upstream references
 - [sepcode](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/mac/frame-mac-view/Sources/Separate.swift)
