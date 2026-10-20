@@ -5,8 +5,12 @@ import CoreGraphics
 /// alive for the whole spatial session; releasing a lease only makes its slot
 /// available for another window.
 struct SpatialPoolPolicy {
-    static let initialPoolSize = 3
-    static let warmSpareCount = 3
+    /// Ready displays kept for new windows (FRAME_SPATIAL_WARM_SPARES, default 3).
+    /// The companion sets 0 for now: on the user's M4 (2026-10-21) changing a
+    /// pooled display's mode while the built-in is mirrored took 2-29 s, so a
+    /// fresh display at each window's size is the faster, reliable path.
+    static let warmSpareCount = max(0, min(8, Int(ProcessInfo.processInfo.environment["FRAME_SPATIAL_WARM_SPARES"] ?? "") ?? 3))
+    static let initialPoolSize = warmSpareCount
     /// Safety ceiling for active displays plus bounded idle/failed cache slots.
     static let maximumPoolSize = 128
 

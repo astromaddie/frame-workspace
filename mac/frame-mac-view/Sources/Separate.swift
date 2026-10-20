@@ -157,9 +157,10 @@ final class VirtualDisplay {
             lastModeConfigurationError = "CGVirtualDisplay rejected the requested window mode"
             return false
         }
-        // Configure once; the spatial pool polls for the resulting mode and
-        // NSScreen publication before returning this display's lease.
-        return applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
+        // macOS may not list the new modes yet, so this first attempt can fail;
+        // the spatial pool applies the mode again while it waits for it.
+        _ = applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
+        return true
     }
 
     private var purposeSupportsReconfiguration: Bool { purpose == .spatialWindow }
@@ -254,6 +255,12 @@ struct AXWindow {
 /// A window on a display of its own, captured as that display.
 final class SeparateSource: CaptureSource, CaptureStopAwaitable {
     let windowID: CGWindowID
+    private let startedAt = Date()
+    /// Each Spatial window's startup steps, in the helper's log.
+    private func log(_ step: String) {
+        FileHandle.standardError.write(Data(String(format: "frame-mac-view: window %u +%.2fs %@\n", windowID,
+                                                   Date().timeIntervalSince(startedAt), step).utf8))
+    }
     var onFrame: ((CVPixelBuffer, CMTime, Int64) -> Void)?
     var onEnded: ((String) -> Void)?
     var onChange: (() -> Void)?
@@ -337,7 +344,9 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
             original = frame
             if startingSpatial {
                 leaseRequestPending = true
+                log("leasing a \(width)x\(height) display")
                 spatial?.leaseDisplay(windowID: windowID, width: width, height: height, owner: leaseOwner) { [weak self] lease, error in
+                    self?.log(lease != nil ? "lease ready" : "lease failed: \(error ?? "no reason")")
                     guard let self else {
                         lease?.release(completion: {})
                         return
@@ -374,6 +383,7 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
         // first frames are captured sharp.
         if vd.screen == nil || !vd.isHiDPI {
             if attempt >= 30 {
+                log("display not ready: screen \(vd.screen != nil), HiDPI \(vd.isHiDPI)")
                 return stopAndWait { completion("the window display did not become ready") }
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -383,7 +393,14 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
         }
         let target = vd.usableRect
         w.setFrame(target)
-        guard let now = w.frame, vd.bounds.intersects(now) else {
+        // An app can take a moment to answer Accessibility right after a move.
+        var moved = w.frame
+        for _ in 0..<10 where moved == nil {
+            Thread.sleep(forTimeInterval: 0.05)
+            moved = w.frame
+        }
+        log("moved to \(target), now \(String(describing: moved))")
+        guard let now = moved, vd.bounds.intersects(now) else {
             return stopAndWait { completion("macOS didn't let the window move to its own display (Stage Manager can prevent this)") }
         }
         let sck = SCKSource(.display(vd.id))
@@ -404,6 +421,7 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
             // startup can't leave a capture running.
             DispatchQueue.main.async {
                 guard let self, !self.stopped else { return sck.stop() }
+                self.log(error.map { "capture failed: \($0)" } ?? "capture started")
                 if let error {
                     return self.stopAndWait { completion(error) }
                 }

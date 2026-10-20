@@ -737,7 +737,8 @@ class MacView:
             if reason:
                 raise MacViewError(reason)
             self.build()
-            env = {**os.environ, "FRAME_MAC_VIEW_TOKEN": self.token}
+            # No ready-made spare displays in Spatial Mode for now (see SpatialPolicy.swift).
+            env = {"FRAME_SPATIAL_WARM_SPARES": "0", **os.environ, "FRAME_MAC_VIEW_TOKEN": self.token}
             # The same port as before when restarting, so a running tunnel still
             # fits; otherwise (or if it's gone) whatever the system gives.
             for port in dict.fromkeys([self.port or 0, 0]):

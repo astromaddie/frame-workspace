@@ -211,7 +211,9 @@ final class SpatialDisplayPool {
         } else {
             // As the Workspace does: macOS may only accept the mode once the
             // new display has appeared, so apply it again while waiting.
-            if display.screen != nil && attempt % 3 == 0 {
+            // Each apply is a display configuration transaction that can block
+            // for a while, so only a few times, not on every poll.
+            if display.screen != nil && (attempt == 4 || attempt == 14 || attempt == 24) {
                 display.applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
@@ -802,7 +804,9 @@ final class SpatialCoordinator {
         } else {
             // As the Workspace does: macOS may only accept the mode once the
             // new display has appeared, so apply it again while waiting.
-            if display.screen != nil && attempt % 3 == 0 {
+            // Each apply is a display configuration transaction that can block
+            // for a while, so only a few times, not on every poll.
+            if display.screen != nil && (attempt == 4 || attempt == 14 || attempt == 24) {
                 display.applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self, weak display] in
@@ -823,11 +827,16 @@ final class SpatialCoordinator {
             return
         }
         if mirrorApplied, let activePhysicalLayout {
-            guard let current = currentPhysicalLayoutStates(),
-                  SpatialLayoutPolicy.isRestored(snapshot: activePhysicalLayout, current: current.1,
-                                                  spatialDisplayIDs: ownedSpatialDisplayIDs) else {
-                completion(false, "the physical display layout changed while spatial mode was active; left it untouched")
-                return
+            // Something else changed the layout during the session. Undoing our
+            // own mirror of the built-in is still safe (it only reverses what we
+            // did) and leaving the laptop screen mirrored would strand the user,
+            // so log what differs and carry on.
+            let current = currentPhysicalLayoutStates()
+            if current == nil || !SpatialLayoutPolicy.isRestored(snapshot: activePhysicalLayout, current: current!.1,
+                                                                 spatialDisplayIDs: ownedSpatialDisplayIDs) {
+                FileHandle.standardError.write(Data(("frame-mac-view: layout differs from the session's at stop; " +
+                    "undoing our mirror anyway. session=\(activePhysicalLayout) current=\(String(describing: current?.1)) " +
+                    "owned=\(ownedSpatialDisplayIDs.sorted())\n").utf8))
             }
         }
         let current = CGDisplayMirrorsDisplay(builtIn)

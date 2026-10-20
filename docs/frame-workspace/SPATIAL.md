@@ -507,6 +507,36 @@ The integrator should perform these steps in an authorized device session:
    steady-state behavior. Dock, app-switcher and Cmd-Tab acceptance follows
    integration of the other worker's modules.
 
+## First device run of Spatial Mode (2026-10-21, user's M4, not worn)
+
+Full run with the user's 66 windows (34 on screen), after recording every window's frame and the
+display layout (a recorder and a restore tool, `restore BEFORE.txt`, in the session's scratch).
+
+- **Desktop Mode** still started and stopped cleanly (6.5 s, 0.8 s).
+- **Pool displays never became ready**: they set their 2x mode once, before macOS had added
+  them. Fixed: re-apply while waiting (a few times only; each is a display transaction).
+- **Stop refused** ("the physical display layout changed while spatial mode was active") and left
+  the built-in mirrored, the pool and home displays up and windows moved. Ending the helper
+  undid the app-only mirror and removed its displays, and its exit path put windows back. Fixed:
+  Stop now logs what differs and still undoes its own mirror.
+- **Windows' streams failed**: first "the requested mode is not in the display mode list" (a pooled
+  display's new modes weren't published yet); then, even with fresh displays sized to each window,
+  leases took 2-147 s or never reached their mode: `CGCompleteDisplayConfiguration returned
+  1001`, macOS picking 1840x1008@2x for a 920x504 window. **While the built-in is mirrored, macOS
+  rejects or stalls the display configuration that each window's display needs** (verified
+  repeatedly tonight). Without mirroring the same per-window displays work (the spike, and
+  eight windows through the shared host on 2026-10-20).
+- Start took 33-41 s standalone and 102 s through the companion; the companion's limit for
+  `/spatial/` calls is now 120 s.
+- After the run: the display layout was exactly as before, and 64 of 66 windows exactly back; two
+  windows that were hidden off screen (a Terminal and an ExpressVPN window) moved.
+
+Changes from this run: Stop always undoes its own mirror; per-window startup steps and display
+mode failures are logged; the companion keeps the helper's log in
+`~/Library/Logs/Frame Control/mac-helper.log`; spare pool displays are off
+(`FRAME_SPATIAL_WARM_SPARES=0` from the companion). **Open decision:** keep the lid-closed mirror
+(and find a way to configure displays while mirrored) or leave the built-in unmirrored and blank it.
+
 ## Spatial UI integration (2026-10-20)
 
 The approved D1 shelf, S1 curved live-thumbnail strip and focus confirmation are
