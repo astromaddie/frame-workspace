@@ -428,7 +428,11 @@ rm -f "$state" "$control"
 trap 'rm -f "$secret"' EXIT
 pose="$pose_file"
 mkdir -p "$(dirname "$pose")"
-panel_args=()
+# Close in the headset asks the companion through this private folder.
+requests="${XDG_RUNTIME_DIR:-/run/user/$uid}/frame-workspace/requests"
+mkdir -p "$requests"
+chmod 700 "$requests"
+panel_args=(--request-dir "$requests")
 if [ -n "$panel_name" ]; then panel_args+=(--overlay-name "$panel_name"); fi
 if [ -n "$initial_pose" ]; then panel_args+=(--initial-pose "$initial_pose"); fi
 vrcmd=/opt/steamvr/bin/linuxarm64/vrcmd

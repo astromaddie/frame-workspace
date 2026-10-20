@@ -810,6 +810,7 @@ class MacView:
                 if self.tunnel_up():
                     self._follow_best_route(tick)
                     self._apply_link_cap()
+                    self._handle_frame_requests()
                     continue
                 if tick % 5:
                     continue
@@ -842,6 +843,40 @@ class MacView:
         if mode not in ("auto", "on", "off"):
             raise MacViewError("Gaze sharpening must be auto, on or off.")
         return self.call("/link", method="POST", sharpen=mode)
+
+    FRAME_REQUESTS = "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/frame-workspace/requests"
+
+    def _handle_frame_requests(self):
+        """Act on requests made in the headset (FW-08): Close on a native panel
+        closes that window's stream, or stops the Workspace. The Frame can only
+        ask for these fixed actions; each request file is read once, then removed."""
+        if not (self.native_panels or self.workspace_panel_key):
+            return
+        try:
+            out = self.run(f'd="{self.FRAME_REQUESTS}"; for f in "$d"/*.json; do '
+                           '[ -f "$f" ] || continue; head -c 512 "$f"; echo; rm -f "$f"; done', timeout=8)
+        except Exception:  # noqa: BLE001 - try again next second
+            return
+        for line in (out or "").splitlines():
+            try:
+                request = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(request, dict):
+                continue
+            action, key = request.get("action"), str(request.get("key") or "")
+            if action != "close" or not re.fullmatch(r"com\.frame-workspace\.native\.\d+\.(workspace|panel-w\d{1,15})", key):
+                continue
+            try:
+                if key.endswith(".workspace"):
+                    if key == self.workspace_panel_key:
+                        self.stop_workspace()
+                else:
+                    src = next((s for s, p in self.native_panels.items() if p["key"] == key), None)
+                    if src:
+                        self.stop(src)
+            except MacViewError:
+                pass  # already gone
 
     def _usb_reachable(self):
         """Whether the Frame's USB-C address still answers (cheap: no ssh)."""

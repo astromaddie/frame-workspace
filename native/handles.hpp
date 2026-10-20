@@ -16,7 +16,7 @@
 
 namespace fw {
 
-enum class Handle { None, Pill, CornerTL, CornerTR, CornerBL, CornerBR, BarLeft, BarRight };
+enum class Handle { None, Pill, Close, CornerTL, CornerTR, CornerBL, CornerBR, BarLeft, BarRight };
 
 // Handle layout around a window of `width` x `height` meters. The chrome
 // surface extends `margin` beyond each edge, plus room for the pill below.
@@ -26,6 +26,9 @@ struct HandleLayout {
   float pillWidth() const { return std::clamp(0.18f * width, 0.16f, 0.5f); }
   float pillHeight() const { return 0.25f * margin(); }
   float pillGap() const { return 0.45f * margin(); }  // window edge to pill centre
+  // A round close button left of the pill, as on visionOS.
+  float closeRadius() const { return 0.6f * pillHeight() + 0.01f; }
+  float closeX() const { return -(pillWidth() / 2 + 0.35f * margin() + closeRadius()); }
   float chromeWidth() const { return width + 2 * margin(); }
   float chromeHeight() const { return height + 2 * margin(); }
 
@@ -40,6 +43,7 @@ struct HandleLayout {
       return y > 0 ? (x < 0 ? Handle::CornerTL : Handle::CornerTR)
                    : (x < 0 ? Handle::CornerBL : Handle::CornerBR);
     if (outX) return x < 0 ? Handle::BarLeft : Handle::BarRight;
+    if (y < 0 && std::fabs(x - closeX()) <= 1.8f * closeRadius()) return Handle::Close;
     if (y < 0 && std::fabs(x) <= pillWidth()) return Handle::Pill;
     return Handle::None;
   }
@@ -122,6 +126,7 @@ struct HandleDrag {
       p.curvature = std::clamp(placementStart.curvature + pull / (0.25f * placementStart.width), 0.f, 1.f);
       break;
     }
+    case Handle::Close: // a click, handled by the caller; never a drag
     case Handle::None:
       break;
     }
@@ -151,9 +156,17 @@ inline void drawHandle(const HandleLayout &l, Handle h, bool held, int pixelsWid
       return std::hypot(px - ax - t * vx, py - ay - t * vy) - r;
     };
     switch (h) {
-    case Handle::Pill: {
+    case Handle::Pill:
+    case Handle::Close: {
       const float y0 = -hy - l.pillGap(), half = l.pillWidth() / 2;
-      return capsule(x, y, -half, y0, half, y0, l.pillHeight() / 2);
+      const float pill = capsule(x, y, -half, y0, half, y0, l.pillHeight() / 2);
+      // The close button: a ring with a cross, drawn as one distance field.
+      const float cx = l.closeX(), r = l.closeRadius();
+      const float ring = std::fabs(std::hypot(x - cx, y - y0) - r) - 0.12f * r;
+      const float a = 0.42f * r;
+      const float cross = std::min(capsule(x, y, cx - a, y0 - a, cx + a, y0 + a, 0.09f * r),
+                                   capsule(x, y, cx - a, y0 + a, cx + a, y0 - a, 0.09f * r));
+      return std::min(pill, std::min(ring, cross));
     }
     case Handle::BarLeft: case Handle::BarRight: {
       const float x0 = (h == Handle::BarLeft ? -1 : 1) * (hx + 0.45f * m);

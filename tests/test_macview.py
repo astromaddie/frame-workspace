@@ -140,6 +140,25 @@ class Helpers(unittest.TestCase):
         self.assertEqual(args[-2:], ["v4l2", "gpu"])
         self.assertEqual(mv.native_panels["window:42"]["key"], "com.frame-workspace.native.1000.panel-w42")
 
+    def test_headset_close_requests_close_only_known_panels(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+        mv.native_panels = {"window:42": {"panel": "w42", "key": "com.frame-workspace.native.1000.panel-w42", "slot": 0}}
+        stopped, workspace = [], []
+        mv.stop = lambda src=None: stopped.append(src)
+        mv.stop_workspace = lambda: workspace.append(True)
+        lines = [
+            '{"action":"close","key":"com.frame-workspace.native.1000.panel-w42"}',
+            '{"action":"close","key":"com.frame-workspace.native.1000.panel-w7"}',  # not ours
+            '{"action":"rm -rf","key":"com.frame-workspace.native.1000.panel-w42"}',  # unknown action
+            'not json',
+            '{"action":"close","key":"com.frame-workspace.native.1000.workspace"}',
+        ]
+        mv.run = lambda cmd, **kw: "\n".join(lines)
+        mv._handle_frame_requests()
+        self.assertEqual(stopped, ["window:42"])
+        self.assertEqual(workspace, [True])
+
     def test_workspace_display_defaults_to_120_hz(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("FRAME_MAC_VIEW_VD_HZ", None)

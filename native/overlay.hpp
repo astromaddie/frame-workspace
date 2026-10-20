@@ -75,6 +75,9 @@ class Overlay {
   HandleDrag drag;
   int dragHand = -1;
   bool grabWas[2] = {};
+public:
+  bool closeRequested = false; // the Close button was selected in the headset
+private:
   bool noVR = false;
   std::unique_ptr<GazeBridge> gazeBridge;
   // The render thread owns placement and texture dimensions. Gaze uses only
@@ -604,7 +607,13 @@ public:
         zone = l.zone(rays[i].x, rays[i].y);
         break;
       }
-      if (h >= 0 && zone != Handle::None && rays[h].grab && !grabWas[h]) {
+      if (h >= 0 && zone == Handle::Close && rays[h].grab && !grabWas[h]) {
+        // Close: hide at once for immediate feedback; the companion then
+        // stops this panel's stream (or the Workspace) and the viewer exits.
+        closeRequested = true;
+        showHandle(l, zone, true);
+        overlay->HideOverlay(handle);
+      } else if (h >= 0 && zone != Handle::None && rays[h].grab && !grabWas[h]) {
         drag.start(zone, rays[h].pose, placement);
         dragHand = h;
         showHandle(l, zone, true);

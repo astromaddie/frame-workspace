@@ -311,6 +311,7 @@ static int selfTest() {
     const float hx = l.width / 2, hy = l.height / 2, m = l.margin();
     require(l.zone(0, 0) == Handle::None && l.zone(hx - 0.01f, hy - 0.01f) == Handle::None, "inside: no handle");
     require(l.zone(0, -hy - 0.5f * m) == Handle::Pill, "below the centre: pill");
+    require(l.zone(l.closeX(), -hy - l.pillGap()) == Handle::Close, "left of the pill: close");
     require(l.zone(l.pillWidth() + 0.05f, -hy - 0.5f * m) == Handle::None, "below but off the pill");
     require(l.zone(hx + 0.5f * m, 0) == Handle::BarRight && l.zone(-hx - 0.5f * m, 0.3f) == Handle::BarLeft, "sides: curve bars");
     require(l.zone(hx + 0.5f * m, -hy - 0.5f * m) == Handle::CornerBR && l.zone(-hx - 0.3f * m, hy + 0.3f * m) == Handle::CornerTL,
@@ -472,6 +473,7 @@ static void convertYuvOracle(Picture &p) {
 }
 int main(int argc, char **argv) {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
+      requestDir,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -520,6 +522,8 @@ int main(int argc, char **argv) {
         initialPose = value();
       else if (a == "--action-manifest")
         actionManifest = value();
+      else if (a == "--request-dir")
+        requestDir = value();
       else if (a == "--inspect-h264")
         inspectFiles.push_back(value());
       else if (a == "--decoder")
@@ -914,6 +918,21 @@ int main(int argc, char **argv) {
       }
       if (overlay.updatePlacementInput())
         atomicWrite(poseFile, placementJSON(overlay.placement));
+      if (overlay.closeRequested) {
+        overlay.closeRequested = false;
+        // A fixed, named request for the companion, which polls this folder;
+        // it closes this panel's stream (or stops the Workspace).
+        if (!requestDir.empty()) {
+          static int sequence = 0;
+          const std::string file = requestDir + "/close-" + std::to_string(getpid()) + "-" +
+                                   std::to_string(++sequence) + ".json";
+          try {
+            atomicWrite(file, "{\"action\":\"close\",\"key\":\"" + key + "\"}");
+          } catch (const std::exception &) {
+            fprintf(stderr, "[native] could not write the close request\n");
+          }
+        }
+      }
       if (now - lastControl > 100) {
         lastControl = now;
         if (!controlFile.empty()) {
