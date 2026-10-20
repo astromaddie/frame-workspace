@@ -146,10 +146,6 @@ Device acceptance is still required after merging the Frame worker:
    Confirm the drag survives the panel boundary, keys remain independent, and closing or
    disconnecting the source during a drag releases buttons without stuck input.
 
-## Still to test
-
-- A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.
-
 ## Shared host foundation (FW-15)
 
 The opt-in Frame implementation is `FRAME_NATIVE_HOST=1`. The companion sends
@@ -252,3 +248,22 @@ With the integrator's Mac changes and an authorized device session:
   first-picture/startup latency and moving-stream throughput. The spike's
   per-process costs do not prove the host's actual saving or a larger decoder
   budget. No host runtime or worn test was performed in this worker session.
+
+## Both foundations together (verified 2026-10-20)
+
+Merged and run on the user's M4 and the Frame (not worn), with `FRAME_WINDOW_DISPLAYS=1` and
+`FRAME_NATIVE_HOST=1`, the Workspace streaming, and eight still 1280x800 test windows (each
+2560x1744 on its own display), twice what one-process-per-window could show:
+
+- All eight showed, with no decoder allocation errors; the budget kept the Workspace and two
+  windows live and six still.
+- **One host process ran all eight panels in about 394 MB** (one viewer per window measured about
+  280 MB each); the Frame had about 2.4 GB available, more than with a single panel before.
+- A `focus` request for a still window (as gaze would send) made it live within 2 s, its decoder
+  reopening at 2560x1744; the previously live windows, unchanged, went still.
+- Rebuilding the Mac helper kept Screen Recording and Accessibility (the companion reported both).
+- Showing a window still took 6.5-12 s, now mostly the Mac creating its display and moving it.
+
+## Still to test
+
+- A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.
