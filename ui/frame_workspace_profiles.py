@@ -1,4 +1,4 @@
-"""Private, versioned logical workspace profiles for MacView.
+"""Private, versioned workspace profiles and native spatial layouts for MacView.
 
 Profiles contain only durable display preferences and stable window matching
 rules. Current Mac window and display IDs, stream tickets, and reconnect keys
@@ -15,7 +15,7 @@ from pathlib import Path
 import frame_macview
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 MAX_STORE_BYTES = 64 * 1024
 MAX_PROFILES = 64
 MAX_RULES = 24
@@ -54,7 +54,14 @@ def _clean_text(value, field, limit):
     return value
 
 
-def validate_profile(value):
+def _pose(value):
+    try:
+        return frame_macview.validate_pose(value)
+    except frame_macview.MacViewError as exc:
+        raise ProfileError(str(exc)) from exc
+
+
+def validate_profile(value, *, allow_poses=True):
     """Validate and return a canonical profile; unknown fields fail closed."""
     if not isinstance(value, dict):
         raise ProfileError("profile must be an object")
@@ -74,8 +81,10 @@ def validate_profile(value):
         raise ProfileError("profile name may contain letters, numbers, spaces, dots, underscores and hyphens")
 
     workspace = value["workspace"]
-    if not isinstance(workspace, dict) or set(workspace) != {"preset", "scale", "quality"}:
-        raise ProfileError("workspace must contain exactly preset, scale and quality")
+    settings = {"preset", "scale", "quality"}
+    if (not isinstance(workspace, dict) or not settings <= set(workspace) or
+            set(workspace) - settings - ({"pose"} if allow_poses else set())):
+        raise ProfileError("workspace must contain exactly preset, scale and quality, with an optional pose")
     preset, scale, quality = workspace["preset"], workspace["scale"], workspace["quality"]
     if not isinstance(preset, str) or preset not in frame_macview.WorkspaceDisplayManager.PRESETS:
         raise ProfileError("workspace preset is unsupported")
@@ -95,8 +104,9 @@ def validate_profile(value):
     canonical_rules = []
     seen = set()
     for index, rule in enumerate(windows, 1):
-        if not isinstance(rule, dict) or set(rule) - {"bundleID", "titleHint"} or "bundleID" not in rule:
-            raise ProfileError(f"window rule {index} must contain bundleID and an optional titleHint only")
+        if (not isinstance(rule, dict) or "bundleID" not in rule or
+                set(rule) - {"bundleID", "titleHint"} - ({"pose"} if allow_poses else set())):
+            raise ProfileError(f"window rule {index} must contain bundleID, optional titleHint and optional pose only")
         bundle_id = _clean_text(rule["bundleID"], f"window rule {index} bundleID", 255)
         if not _BUNDLE_ID.fullmatch(bundle_id) or "." not in bundle_id:
             raise ProfileError(f"window rule {index} bundleID is not a valid stable bundle identifier")
@@ -112,9 +122,14 @@ def validate_profile(value):
         clean_rule = {"bundleID": bundle_id}
         if title_hint is not None:
             clean_rule["titleHint"] = title_hint
+        if "pose" in rule:
+            clean_rule["pose"] = _pose(rule["pose"])
         canonical_rules.append(clean_rule)
 
-    return {"name": name, "workspace": {"preset": preset, "scale": scale, "quality": quality},
+    clean_workspace = {"preset": preset, "scale": scale, "quality": quality}
+    if "pose" in workspace:
+        clean_workspace["pose"] = _pose(workspace["pose"])
+    return {"name": name, "workspace": clean_workspace,
             "windows": canonical_rules}
 
 
@@ -122,7 +137,7 @@ def validate_document(value):
     if not isinstance(value, dict) or set(value) != {"schemaVersion", "profiles"}:
         raise ProfileStoreError("workspace profile file must contain only schemaVersion and profiles")
     version = value["schemaVersion"]
-    if type(version) is not int or version != SCHEMA_VERSION:
+    if type(version) is not int or version not in (1, SCHEMA_VERSION):
         raise ProfileStoreError(f"unsupported workspace profile schema version: {version!r}")
     profiles = value["profiles"]
     if not isinstance(profiles, list) or len(profiles) > MAX_PROFILES:
@@ -130,7 +145,7 @@ def validate_document(value):
     clean = []
     names = set()
     for profile in profiles:
-        item = validate_profile(profile)
+        item = validate_profile(profile, allow_poses=version >= 2)
         key = item["name"].casefold()
         if key in names:
             raise ProfileStoreError("workspace profile names must be unique, ignoring case")
@@ -306,9 +321,40 @@ def match_windows(profile, windows):
     return results
 
 
+def save(store, macview, value):
+    """Snapshot native poses against stable matching rules before atomic save."""
+    profile = validate_profile(value)
+    if frame_macview.workspace_viewer_backend() == "native":
+        state = macview.state()
+        if not state.get("available"):
+            raise frame_macview.MacViewError(state.get("reason") or "MacView is unavailable for pose capture.")
+        matches = match_windows(profile, state.get("windows", [])) if macview._native_windows() else []
+        matched = [item for item in matches if item["status"] == "matched"]
+        poses = macview.read_panel_poses([frame_macview.WorkspaceDisplayManager.KEY] +
+                                        [item["source"] for item in matched])
+        # This save is a fresh snapshot: absent files and unmatched rules must
+        # not carry over a supplied pose from an older session.
+        profile["workspace"].pop("pose", None)
+        for rule in profile["windows"]:
+            rule.pop("pose", None)
+        if "workspace" in poses:
+            profile["workspace"]["pose"] = poses["workspace"]
+        for item in matched:
+            if item["source"] in poses:
+                profile["windows"][item["rule"] - 1]["pose"] = poses[item["source"]]
+    return store.save(profile)
+
+
 def restore(store, macview, name):
     """Run the production Workspace and MacView paths using fresh window IDs."""
     profile = store.get(name)
+    workspace_pose = profile["workspace"].get("pose")
+    window_poses = any("pose" in rule for rule in profile["windows"])
+    native = frame_macview.workspace_viewer_backend() == "native"
+    if (workspace_pose is not None or window_poses) and not native:
+        raise frame_macview.MacViewError("Saved poses require the native viewer; select it before restoring this profile.")
+    if window_poses and not macview._native_windows():
+        raise frame_macview.MacViewError("Saved window poses require native window panels.")
     before_start = macview.state()
     if not before_start.get("available"):
         raise frame_macview.MacViewError(before_start.get("reason") or "MacView is unavailable on this computer.")
@@ -329,23 +375,29 @@ def restore(store, macview, name):
         raise frame_macview.MacViewError("Screen Recording permission became unavailable after Workspace start.")
     resolutions = match_windows(profile, after_start.get("windows", []))
     shown_results = []
+    restored_poses = int(workspace_pose is not None)
     for result in resolutions:
         if result["status"] != "matched":
             shown_results.append({key: value for key, value in result.items() if key != "source"})
             continue
         try:
-            shown = macview.show(result["source"], quality=profile["workspace"]["quality"])
+            pose = profile["windows"][result["rule"] - 1].get("pose")
+            shown = macview.show(result["source"], quality=profile["workspace"]["quality"],
+                                 **({"pose": pose} if pose is not None else {}))
+            restored_poses += int(pose is not None)
             shown_results.append({"rule": result["rule"], "bundleID": result["bundleID"],
                                   "titleHint": result.get("titleHint"), "status": "shown",
-                                  "title": result["title"], "app": result["app"], "panel": shown.get("panel")})
+                                  "title": result["title"], "app": result["app"], "panel": shown.get("panel"),
+                                  "poseRestored": pose is not None})
         except frame_macview.MacViewError as exc:
             shown_results.append({"rule": result["rule"], "bundleID": result["bundleID"],
                                   "titleHint": result.get("titleHint"), "status": "error", "message": str(exc)})
 
     workspace = workspace_result.get("workspace", {})
-    return {"name": profile["name"], "placement": "manual",
-            "spatialRestore": {"available": False,
-                               "message": "Panel placement is manual; no cross-runtime room transform is saved or restored."},
+    return {"name": profile["name"], "placement": "saved" if restored_poses else "manual",
+            "spatialRestore": {"available": native, "restoredPoses": restored_poses,
+                               "message": "Native poses use the current SteamVR room origin; cross-room alignment is not verified."
+                               if native else "Panel placement is manual with the browser viewer."},
             "workspace": {key: workspace[key] for key in ("preset", "scale", "quality", "display", "stream")
                           if key in workspace},
             "windows": shown_results}

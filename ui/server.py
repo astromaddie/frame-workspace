@@ -2396,7 +2396,7 @@ def macview_action(body):
                 return {"schemaVersion": frame_workspace_profiles.SCHEMA_VERSION,
                         "profiles": workspace_profiles.list()}
             if action == "profile_save":
-                return {"profile": workspace_profiles.save(body["profile"])}
+                return {"profile": frame_workspace_profiles.save(workspace_profiles, macview, body["profile"])}
             if action == "profile_delete":
                 return {"deleted": workspace_profiles.delete(body["name"])}
             if action == "profile_reset":

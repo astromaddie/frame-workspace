@@ -43,6 +43,7 @@ WORKSPACE_VIEWER_SCRIPT = ROOT / "scripts" / "workspace-viewer-on-frame.sh"
 WORKSPACE_NATIVE_SCRIPT = ROOT / "scripts" / "workspace-native-on-frame.sh"
 WORKSPACE_DASH_SCRIPT = ROOT / "scripts" / "workspace-dash-on-frame.sh"
 FRAME_VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
+
 AGENT = Path(os.environ.get("FRAME_MAC_VIEW") or ROOT / "mac" / "bin" / "frame-mac-view")
 REMOTE_PORTS = range(47900, 47920)
 SUPPORTED = sys.platform == "darwin"
@@ -239,6 +240,46 @@ exit 1
 
 class MacViewError(Exception):
     pass
+
+def validate_pose(value):
+    """Strict pose-file format; limits and row tolerance follow placement.hpp."""
+    if not isinstance(value, dict) or set(value) != {"version", "width", "distance", "curvature", "matrix"}:
+        raise MacViewError("Pose must contain exactly version, width, distance, curvature and matrix.")
+    if type(value["version"]) is not int or value["version"] != 1:
+        raise MacViewError("Pose version must be 1.")
+
+    def number(v, low, high):
+        if type(v) not in (int, float) or not low <= v <= high or not math.isfinite(v):
+            raise MacViewError("Pose numbers must be finite and within native placement limits.")
+        return v
+
+    width = number(value["width"], .4, 8)
+    distance = number(value["distance"], .4, 10)
+    curvature = number(value["curvature"], 0, 1)
+    matrix = value["matrix"]
+    if not isinstance(matrix, list) or len(matrix) != 12:
+        raise MacViewError("Pose matrix must contain 12 numbers.")
+    matrix = [number(v, -100, 100) for v in matrix]
+    rows = [matrix[i:i + 3] for i in (0, 4, 8)]
+    for r in range(3):
+        for s in range(3):
+            if abs(sum(a * b for a, b in zip(rows[r], rows[s])) - (1 if r == s else 0)) > .02:
+                raise MacViewError("Pose rotation must be orthonormal within 0.02.")
+    a, b, c = rows
+    determinant = (a[0] * (b[1] * c[2] - b[2] * c[1]) -
+                   a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]))
+    if determinant <= 0:
+        raise MacViewError("Pose rotation must be right handed.")
+    return {"version": 1, "width": width, "distance": distance, "curvature": curvature, "matrix": matrix}
+
+
+def _pose_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise MacViewError("Pose JSON contains duplicate keys.")
+        result[key] = value
+    return result
 
 
 class WorkspaceDisplayManager:
@@ -1043,7 +1084,14 @@ class MacView:
 
     # ---- viewers on the Frame ----
 
-    def show(self, src, quality="balanced", width=None, height=None):
+    def show(self, src, quality="balanced", width=None, height=None, pose=None):
+        if pose is not None:
+            pose = validate_pose(pose)
+            if (workspace_viewer_backend() != "native" or
+                    (src != WorkspaceDisplayManager.KEY and
+                     (not self._native_windows() or not src.startswith("window:") or
+                      quality_settings(quality)["codec"] != "h264"))):
+                raise MacViewError("Saved poses require a native Workspace or H.264 window panel.")
         if src.startswith("separate:") and self._native_windows():
             # Native panels show the window at its own size; moving it onto a
             # display of its own (which resizes it) is not needed.
@@ -1056,13 +1104,13 @@ class MacView:
                 if workspace.get("state") != "running":
                     raise MacViewError("Start the Workspace display before showing it.")
                 return self._show(workspace["captureSrc"], quality, width, height,
-                                  panel_key=WorkspaceDisplayManager.KEY, public_src=WorkspaceDisplayManager.KEY)
-            return self._show(src, quality, width, height)
+                                  panel_key=WorkspaceDisplayManager.KEY, public_src=WorkspaceDisplayManager.KEY, pose=pose)
+            return self._show(src, quality, width, height, pose=pose)
         finally:
             with self.viewer_lock:
                 self.launching -= 1
 
-    def _show(self, src, quality, width, height, panel_key=None, public_src=None):
+    def _show(self, src, quality, width, height, panel_key=None, public_src=None, pose=None):
         if src != "test" and not src.startswith(("window:", "display:", "separate:")):
             raise MacViewError("Pick a window or display to show.")
         panel_key = panel_key or src
@@ -1113,7 +1161,8 @@ class MacView:
                 diagnostic = workspace_diagnostic_gaze(gaze=True)
                 if diagnostic:
                     flags.append(diagnostic)
-            script_args = " ".join(_quote(str(a)) for a in ("start", url, w, h, tag, *flags))
+            pose_args = ["--pose", json.dumps(pose, allow_nan=False)] if pose is not None else []
+            script_args = " ".join(_quote(str(a)) for a in (*pose_args, "start", url, w, h, tag, *flags))
             out = self.run("bash -s -- " + script_args, stdin=script.read_text(encoding="utf-8"),
                            timeout=60)
             match = re.search(r"registered OpenVR key (com\.(?:frame-control\.workspace\.\d+\.fc[0-9a-f]{8}|frame-workspace\.native\.\d+\.workspace))\b", out)
@@ -1121,7 +1170,7 @@ class MacView:
                 raise MacViewError("The dedicated Workspace launcher did not report its registered OpenVR panel key.")
             self.workspace_panel_key = match.group(1)
         elif self._native_windows() and q["codec"] == "h264" and src.startswith("window:"):
-            out = self._show_native_window(src, url, tag, width, height)
+            out = self._show_native_window(src, url, tag, width, height, pose=pose)
         else:
             w, h = fit(width or 1280, height or 720)
             args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
@@ -1161,7 +1210,49 @@ class MacView:
             pass
         return None
 
-    def _show_native_window(self, src, url, tag, width, height):
+    def read_panel_poses(self, sources):
+        """Read bounded saved pose files in one Frame call, keyed by current source."""
+        panels = {}
+        for source in sources:
+            if source == WorkspaceDisplayManager.KEY:
+                panels[source] = "workspace"
+            elif re.fullmatch(r"window:[1-9][0-9]{0,14}", source):
+                panels[source] = "w" + source.split(":", 1)[1]
+            else:
+                raise MacViewError("Invalid native panel source for pose capture.")
+        script = '''import json, os, pathlib, sys
+base = pathlib.Path(os.environ.get('XDG_DATA_HOME') or pathlib.Path.home() / '.local/share') / 'frame-workspace'
+poses = {}
+for panel in sys.argv[1:]:
+    path = base / ('workspace-pose.json' if panel == 'workspace' else 'panels/' + panel + '-pose.json')
+    try:
+        with path.open('rb') as stream:
+            raw = stream.read(4097)
+    except FileNotFoundError:
+        continue
+    if len(raw) > 4096:
+        raise SystemExit('Saved panel pose is too large.')
+    poses[panel] = raw.decode('utf-8')
+print(json.dumps(poses))
+'''
+        try:
+            raw = self.run("python3 - " + " ".join(_quote(p) for p in panels.values()), stdin=script, timeout=10)
+            data = json.loads(raw, object_pairs_hook=_pose_object)
+            if not isinstance(data, dict) or set(data) - set(panels.values()):
+                raise MacViewError("Unexpected saved panel pose response.")
+            result = {}
+            for source, panel in panels.items():
+                if panel in data:
+                    if not isinstance(data[panel], str) or len(data[panel]) > 4096:
+                        raise MacViewError("Invalid saved panel pose response.")
+                    result[source] = validate_pose(json.loads(data[panel], object_pairs_hook=_pose_object))
+            return result
+        except Exception as exc:
+            raise MacViewError(f"Could not capture saved native panel poses: {exc}") from exc
+
+    def _show_native_window(self, src, url, tag, width, height, pose=None):
+        if pose is not None:
+            pose = validate_pose(pose)
         digits = re.sub(r"\D", "", src.split(":", 1)[1])[:15]
         if not digits:
             raise MacViewError("Pick a window to show.")
@@ -1170,14 +1261,16 @@ class MacView:
         title = re.sub(r"[\r\n\t]", " ", str(info.get("title") or info.get("app") or "Mac Window"))[:64]
         used = {p["slot"] for s, p in self.native_panels.items() if s != src}
         slot = next(i for i in range(64) if i not in used)
-        pose = ""
-        placement = self._workspace_frame_placement()
+        initial_pose = ""
+        placement = self._workspace_frame_placement() if pose is None else None
         if placement:
             logical = (self.workspace_manager.state().get("display") or {}).get("logicalWidth") or 2880
-            pose = beside_workspace_pose(placement["matrix"], placement["width"], placement["distance"],
-                                         logical, info.get("w") or width or 1280, slot)
+            initial_pose = beside_workspace_pose(placement["matrix"], placement["width"], placement["distance"],
+                                                 logical, info.get("w") or width or 1280, slot)
         w, h = fit(width or info.get("w") or 1280, height or info.get("h") or 720)
-        args = ["--panel", panel, "--name", title] + (["--initial-pose", pose] if pose else []) + \
+        pose_args = (["--pose", json.dumps(pose, allow_nan=False)] if pose is not None else
+                     ["--initial-pose", initial_pose] if initial_pose else [])
+        args = ["--panel", panel, "--name", title] + pose_args + \
                ["start", url, w, h, tag, workspace_decoder(), workspace_conversion()]
         out = self.run("bash -s -- " + " ".join(_quote(str(a)) for a in args),
                        stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=60)
@@ -1365,13 +1458,17 @@ class MacView:
             except Exception as e:  # noqa: BLE001 - preserve the helper's ownership/readiness error
                 raise MacViewError(f"Could not set native Workspace curvature: {e}") from e
 
-    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp"):
+    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp", pose=None):
         """Create/reuse the owned display and show its stable workspace panel.
 
         A size or scale change replaces the old display only after its viewer,
         stream, and macOS virtual display have all stopped successfully.
         """
         request = WorkspaceDisplayManager._validate_request(preset, scale, quality)
+        if pose is not None:
+            pose = validate_pose(pose)
+            if workspace_viewer_backend() != "native":
+                raise MacViewError("Saved Workspace poses require the native viewer.")
         self._remember_workspace(request["preset"], request["scale"], request["quality"])
         with self.workspace_lock:
             if self.workspace_removal_pending:
@@ -1416,7 +1513,7 @@ class MacView:
                 self.build()
             workspace, created = self.workspace_manager.start(request["preset"], request["scale"], request["quality"])
             capture_src = workspace["captureSrc"]
-            if not created and prior_quality == quality and capture_src in self.shown and self.workspace_panel_key:
+            if pose is None and not created and prior_quality == quality and capture_src in self.shown and self.workspace_panel_key:
                 status = self.call("/status")
                 if any(s.get("src") == capture_src for s in status.get("streams", [])):
                     self._focus_workspace_viewer()
@@ -1427,7 +1524,8 @@ class MacView:
                 self.stop(capture_src)
             try:
                 panel = self.show(WorkspaceDisplayManager.KEY, quality=quality,
-                                  width=workspace["stream"]["width"], height=workspace["stream"]["height"])
+                                  width=workspace["stream"]["width"], height=workspace["stream"]["height"],
+                                  **({"pose": pose} if pose is not None else {}))
             except Exception as e:
                 try:
                     self._stop_workspace_viewer()

@@ -10,16 +10,78 @@ pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.j
 # Window panels: `--panel ID` selects one native viewer of its own (unit,
 # runtime files, OpenVR key and saved pose); without it this is the Workspace.
 # `--name` is the panel title SteamVR shows; `--initial-pose JSON` places a new
-# panel (for example beside the Workspace) until it has a saved pose.
-panel="" panel_name="" initial_pose=""
+# panel (for example beside the Workspace) until it has a saved pose. `--pose`
+# replaces the saved pose for the next start, after the previous viewer stops.
+panel="" panel_name="" initial_pose="" pose_override=""
+initial_pose_set=0 pose_override_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --panel) [ "$#" -ge 2 ] || exit 2; panel=$2; shift 2 ;;
     --name) [ "$#" -ge 2 ] || exit 2; panel_name=$2; shift 2 ;;
-    --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; shift 2 ;;
+    --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; initial_pose_set=1; shift 2 ;;
+    --pose) [ "$#" -ge 2 ] || exit 2; pose_override=$2; pose_override_set=1; shift 2 ;;
     *) break ;;
   esac
 done
+if [ "$pose_override_set" -eq 1 ]; then
+  [ "${1:-}" = start ] || { echo '--pose is only valid with start.' >&2; exit 2; }
+  [ "$initial_pose_set" -eq 0 ] || { echo '--pose conflicts with --initial-pose.' >&2; exit 2; }
+  [ -n "$pose_override" ] || { echo '--pose must contain a pose JSON object.' >&2; exit 2; }
+  # Keep this validation ahead of every service query and runtime or pose-file
+  # mutation. It mirrors the native parser while rejecting values it coerces.
+  if ! python3 - "$pose_override" <<'PYPOSE'
+import json, math, sys
+raw = sys.argv[1]
+if len(raw.encode('utf-8')) > 4096:
+    raise SystemExit('--pose JSON must be at most 4096 bytes.')
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate JSON field')
+        result[key] = value
+    return result
+def reject_constant(value):
+    raise ValueError('non-finite JSON number')
+try:
+    pose = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
+except (ValueError, json.JSONDecodeError):
+    raise SystemExit('--pose must be valid JSON without duplicate fields or non-finite values.')
+if not isinstance(pose, dict) or set(pose) != {'version', 'width', 'distance', 'curvature', 'matrix'}:
+    raise SystemExit('--pose must contain exactly version, width, distance, curvature and matrix.')
+if type(pose['version']) is not int or pose['version'] != 1:
+    raise SystemExit('--pose version must be the integer 1.')
+def number(value, label, minimum, maximum):
+    if type(value) not in (int, float):
+        raise SystemExit(f'--pose {label} must be a finite number.')
+    try:
+        value = float(value)
+    except OverflowError:
+        value = math.inf
+    if not math.isfinite(value) or not minimum <= value <= maximum:
+        raise SystemExit(f'--pose {label} must be between {minimum:g} and {maximum:g}.')
+    return value
+number(pose['width'], 'width', 0.4, 8.0)
+number(pose['distance'], 'distance', 0.4, 10.0)
+number(pose['curvature'], 'curvature', 0.0, 1.0)
+matrix = pose['matrix']
+if not isinstance(matrix, list) or len(matrix) != 12:
+    raise SystemExit('--pose matrix must contain exactly 12 numbers.')
+values = [number(value, 'matrix value', -100.0, 100.0) for value in matrix]
+for row in range(3):
+    for other in range(3):
+        dot = sum(values[row * 4 + col] * values[other * 4 + col] for col in range(3))
+        if abs(dot - (1.0 if row == other else 0.0)) > 0.02:
+            raise SystemExit('--pose matrix rotation must be orthonormal within 0.02.')
+a, b, c, d, e, f, g, h, i = (values[row * 4 + col] for row in range(3) for col in range(3))
+determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+if not determinant > 0:
+    raise SystemExit('--pose matrix rotation must be right-handed.')
+PYPOSE
+  then
+    exit 2
+  fi
+fi
 if [ -n "$panel" ]; then
   case "$panel" in *[!a-z0-9]*) echo 'Panel IDs are lowercase letters and digits.' >&2; exit 2 ;; esac
   [ "${#panel}" -le 16 ] || exit 2
@@ -345,7 +407,7 @@ PY
     exit $?
     ;;
   start) ;;
-  *) echo 'usage: workspace-native-on-frame.sh [--panel ID [--name TITLE] [--initial-pose JSON]] start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | pose RIGHT UP CLOSER YAW PITCH ROLL | curvature VALUE | stop' >&2; exit 2 ;;
+  *) echo 'usage: workspace-native-on-frame.sh [--panel ID [--name TITLE] [--initial-pose JSON] [--pose JSON]] start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | pose RIGHT UP CLOSER YAW PITCH ROLL | curvature VALUE | stop' >&2; exit 2 ;;
 esac
 [ "$#" -ge 5 ] && [ "$#" -le 9 ] || exit 2
 url=$2
@@ -418,6 +480,34 @@ if ! stopped; then
 fi
 
 umask 077
+if [ "$pose_override_set" -eq 1 ]; then
+  # mkstemp creates a private same-directory file; os.replace makes the
+  # replacement atomic. This happens only after shutdown has been confirmed.
+  python3 - "$pose_file" "$pose_override" <<'PYWRITEPOSE'
+import os, pathlib, sys, tempfile
+target = pathlib.Path(sys.argv[1])
+target.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix=target.name + '.', suffix='.tmp', dir=target.parent)
+try:
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as output:
+        output.write(sys.argv[2])
+        output.flush()
+        os.fsync(output.fileno())
+    os.replace(temporary, target)
+except BaseException:
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+    raise
+PYWRITEPOSE
+fi
+
 mkdir -p "$runtime"
 chmod 700 "$runtime"
 secret="$runtime/view-$tag.url"

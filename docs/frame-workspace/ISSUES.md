@@ -361,6 +361,30 @@ Find a supported way to record and restore actual VR panel locations, or define 
 **Phase:** M3 — Session polish  
 **Dependencies:** FW-04, FW-08, FW-10
 
+## Progress (2026-10-20)
+- Implemented API-level native spatial snapshots in profile schema v2: the
+  Workspace pose and each uniquely matched window's pose are stored against
+  stable bundle ID/title rules. Schema v1 loads without adding poses or
+  rewriting the file; subsequent writes use v2. No Mac page UI was added.
+- Restore enumerates fresh windows after Workspace startup and passes saved
+  poses through the strictly validated native `--pose` launcher override.
+  The old viewer must stop before its pose file is atomically replaced, so a
+  stale file keyed by a reused Mac window ID cannot override the profile.
+  Workspace pose restore bypasses Show Again's recenter shortcut. Entries
+  without a profile pose retain the existing default placement behavior.
+- Local unit coverage exercises migration, strict numeric/rotation validation,
+  capture failures without profile overwrite, fresh window IDs, repeated
+  same-preset Workspace restore, and launcher replacement ordering with stubbed
+  services. This is source/local test evidence, not device acceptance.
+- **Not yet verified on the device:** save a Coding profile after dragging,
+  resizing and curving the Workspace and multiple windows; change their poses,
+  relaunch apps to get new IDs, restore and compare all transforms/dimensions;
+  confirm a stale per-panel file loses to the profile; repeat restore with the
+  same Workspace already running; reconnect/restart SteamVR and repeat. Also
+  verify missing pose files retain default placement and missing/ambiguous
+  rules are skipped. Physical alignment across room-origin changes remains
+  unproven; FW-10's device acceptance criteria remain open.
+
 ## Goal
 Restart a familiar work setup with named ultrawide and floating-window profiles, using spatial pose restoration only if FW-10 proves it.
 

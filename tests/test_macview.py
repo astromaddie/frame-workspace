@@ -140,6 +140,71 @@ class Helpers(unittest.TestCase):
         self.assertEqual(args[-2:], ["v4l2", "gpu"])
         self.assertEqual(mv.native_panels["window:42"]["key"], "com.frame-workspace.native.1000.panel-w42")
 
+    def test_native_window_saved_pose_overrides_beside_workspace_placement(self):
+        mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        pose = {"version": 1, "width": 1.5, "distance": 3, "curvature": .7,
+                "matrix": [0, 0, 1, 3, 0, 1, 0, 1, -1, 0, 0, -2]}
+        mv.run = mock.Mock(return_value="registered OpenVR key com.frame-workspace.native.1000.panel-w42")
+        mv.call = mock.Mock(return_value={"windows": [{"src": "window:42", "title": "Terminal"}]})
+        mv._workspace_frame_placement = mock.Mock()
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv._show_native_window("window:42", "http://127.0.0.1:1/view?x", "fc12345678", 1200, 800, pose=pose)
+        args = shlex.split(mv.run.call_args.args[0])[3:]
+        self.assertEqual(args[4], "--pose")
+        self.assertEqual(json.loads(args[5]), pose)
+        self.assertNotIn("--initial-pose", args)
+        mv._workspace_frame_placement.assert_not_called()
+
+    def test_invalid_or_unsupported_saved_pose_fails_before_viewer_side_effects(self):
+        mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        mv.call = mock.Mock()
+        mv.build = mock.Mock()
+        mv._remember_workspace = mock.Mock()
+        with self.assertRaises(frame_macview.MacViewError):
+            mv.show("window:42", pose={})
+        with self.assertRaises(frame_macview.MacViewError):
+            mv.start_workspace(pose={})
+        pose = {"version": 1, "width": 1.5, "distance": 3, "curvature": .7,
+                "matrix": [1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, -2]}
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "browser"}):
+            with self.assertRaisesRegex(frame_macview.MacViewError, "native"):
+                mv.show("window:42", pose=pose)
+            with self.assertRaisesRegex(frame_macview.MacViewError, "native"):
+                mv.start_workspace(pose=pose)
+        mv.call.assert_not_called()
+        mv.run.assert_not_called()
+        mv.build.assert_not_called()
+        mv._remember_workspace.assert_not_called()
+
+    def test_pose_capture_reader_uses_xdg_files_and_bounds_reads(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            base = root / "frame-workspace"
+            (base / "panels").mkdir(parents=True)
+            pose = {"version": 1, "width": 1.5, "distance": 3, "curvature": .7,
+                    "matrix": [1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, -2]}
+            path = base / "panels" / "w42-pose.json"
+            path.write_text(json.dumps(pose))
+            (base / "workspace-pose.json").write_text(json.dumps(pose))
+            mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+
+            def local_reader(cmd, stdin, timeout):
+                result = subprocess.run([sys.executable, *shlex.split(cmd)[1:]], input=stdin,
+                                        env={**os.environ, "XDG_DATA_HOME": str(root)},
+                                        text=True, capture_output=True, timeout=timeout, check=True)
+                return result.stdout
+
+            mv.run.side_effect = local_reader
+            self.assertEqual(mv.read_panel_poses(["workspace", "window:42", "window:7"]),
+                             {"workspace": pose, "window:42": pose})
+            path.write_text(" " * 4097)
+            with self.assertRaisesRegex(frame_macview.MacViewError, "capture saved native panel poses"):
+                mv.read_panel_poses(["window:42"])
+            mv.run.reset_mock()
+            with self.assertRaisesRegex(frame_macview.MacViewError, "Invalid native panel source"):
+                mv.read_panel_poses(["window:42;touch bad"])
+            mv.run.assert_not_called()
+
     def test_headset_close_requests_close_only_known_panels(self):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
         mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
