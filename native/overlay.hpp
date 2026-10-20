@@ -5,6 +5,7 @@
 #pragma GCC diagnostic pop
 #include "video.hpp"
 #include "gaze_bridge.hpp"
+#include "session.hpp"
 #include "placement.hpp"
 #include "handles.hpp"
 #include "chrome.hpp"
@@ -29,10 +30,7 @@ inline void atomicWrite(const std::string &path, const std::string &text) {
     throw std::runtime_error("state replace failed");
 }
 class Overlay {
-  SDL_Window *window = nullptr;
-  SDL_GLContext context = nullptr;
-  void *library = nullptr;
-  void (*shutdown)() = nullptr;
+  std::shared_ptr<OverlaySession> session;
   VR_IVROverlay_FnTable *overlay = nullptr;
   VR_IVRSystem_FnTable *system = nullptr;
   VROverlayHandle_t handle = 0;
@@ -320,8 +318,11 @@ private:
       glUniform1f(loc, value);
     };
     uniform1i("yTexture", 0);
-    uniform1i("uTexture", 1);
-    uniform1i("vTexture", 2);
+    // Even unused samplers must name complete textures on strict GL drivers.
+    // RGBA transpose has only plane 0; NV12 has planes 0 and 1.
+    uniform1i("uTexture", p.format == Picture::Format::RGBA ? 0 : 1);
+    uniform1i("vTexture", p.format == Picture::Format::YUV420P ? 2 :
+                             p.format == Picture::Format::RGBA ? 0 : 1);
     uniform1i("nv12", p.format == Picture::Format::RGBA ? -1 : (p.format == Picture::Format::NV12 ? 1 : 0));
     uniform1i("warpMode", p.layout.atlas ? 2 : (p.layout.warped ? 1 : 0));
     auto uniform2f = [&](const char *name, float x, float y) {
@@ -408,102 +409,52 @@ public:
   uint64_t presentGaps[5] = {}; // refreshes between submissions: 1, 2, 3, 4+ (0 unused)
   std::string name = "Frame Workspace"; // shown by SteamVR
   Overlay(bool test, const std::string &overlayKey, bool foveation = false,
-          const std::string &overlayName = "", const std::string &actionManifest = "")
-      : noVR(test), key(overlayKey) {
-    if (!overlayName.empty())
-      name = overlayName;
-    if (SDL_Init(SDL_INIT_VIDEO))
-      throw std::runtime_error("SDL video unavailable");
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 0);
-    window = SDL_CreateWindow("Frame Workspace Native", 0, 0, 32, 32,
-                              SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
-    if (!window)
-      throw std::runtime_error(std::string("GL window unavailable: ") +
-                               SDL_GetError());
-    context = SDL_GL_CreateContext(window);
-    if (!context)
-      throw std::runtime_error("GL context unavailable");
-    fprintf(stderr, "[native] GL vendor=%s renderer=%s\n",
-            glGetString(GL_VENDOR), glGetString(GL_RENDERER));
-    if (noVR)
-      return;
-    const char *paths[] = {"/opt/steamvr/bin/linuxarm64/libopenvr_api.so",
-                           "/opt/steamvr/lib/linuxarm64/libopenvr_api.so",
-                           "libopenvr_api.so"};
-    for (auto path : paths) {
-      library = dlopen(path, RTLD_NOW | RTLD_LOCAL);
-      if (library)
-        break;
-    }
-    if (!library)
-      throw std::runtime_error("OpenVR loader unavailable");
-    auto init =
-        reinterpret_cast<intptr_t (*)(EVRInitError *, EVRApplicationType)>(
-            dlsym(library, "VR_InitInternal"));
-    auto get = reinterpret_cast<intptr_t (*)(const char *, EVRInitError *)>(
-        dlsym(library, "VR_GetGenericInterface"));
-    shutdown =
-        reinterpret_cast<void (*)()>(dlsym(library, "VR_ShutdownInternal"));
-    if (!init || !get || !shutdown)
-      throw std::runtime_error("OpenVR exports unavailable");
-    EVRInitError error = EVRInitError_VRInitError_None;
-    init(&error, EVRApplicationType_VRApplication_Overlay);
-    if (error)
-      throw std::runtime_error("OpenVR init failed code=" +
-                               std::to_string(int(error)));
-    overlay = reinterpret_cast<VR_IVROverlay_FnTable *>(
-        get("FnTable:IVROverlay_027", &error));
-    if (error || !overlay)
-      throw std::runtime_error("OpenVR overlay 027 unavailable");
-    system = reinterpret_cast<VR_IVRSystem_FnTable *>(
-        get("FnTable:IVRSystem_022", &error));
-    if (error || !system)
-      throw std::runtime_error("OpenVR system 022 unavailable");
-    if (foveation) gazeBridge = std::make_unique<GazeBridge>(library);
-    check(overlay->CreateOverlay(key.data(), name.data(), &handle), "CreateOverlay");
-    check(overlay->SetOverlayTextureColorSpace(handle,
-                                               EColorSpace_ColorSpace_Gamma),
-          "color space");
-    check(overlay->SetOverlayInputMethod(handle, VROverlayInputMethod_None),
-          "input method");
-    // Pictures are stored top row first (the first uploaded or rendered row
-    // is GL's t = 0), but SteamVR reads GL textures bottom-up. Flip V so the
-    // desktop is upright in the headset; readback dumps are unaffected.
-    VRTextureBounds_t bounds{0, 1, 1, 0};
-    check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
-    {
-      std::string halfKey = key + ".half", halfName = name;
-      if (overlay->CreateOverlay(halfKey.data(), halfName.data(), &handle2) == EVROverlayError_VROverlayError_None) {
-        overlay->SetOverlayTextureColorSpace(handle2, EColorSpace_ColorSpace_Gamma);
-        overlay->SetOverlayInputMethod(handle2, VROverlayInputMethod_None);
-        overlay->SetOverlaySortOrder(handle2, 1);
-      } else {
-        handle2 = 0; // halves stay even; a one-sided bend applies to both
+          const std::string &overlayName = "", const std::string &actionManifest = "",
+          std::shared_ptr<OverlaySession> shared = {})
+      : session(shared ? std::move(shared) : std::make_shared<OverlaySession>(test)),
+        noVR(test), key(overlayKey) {
+    if (!overlayName.empty()) name = overlayName;
+    overlay = session->overlay; system = session->system;
+    if (noVR) return;
+    if (foveation) gazeBridge = std::make_unique<GazeBridge>(session->library);
+    try {
+      check(overlay->CreateOverlay(key.data(), name.data(), &handle), "CreateOverlay");
+      check(overlay->SetOverlayTextureColorSpace(handle,
+                                                 EColorSpace_ColorSpace_Gamma),
+            "color space");
+      check(overlay->SetOverlayInputMethod(handle, VROverlayInputMethod_None),
+            "input method");
+      // Pictures are stored top row first (the first uploaded or rendered row
+      // is GL's t = 0), but SteamVR reads GL textures bottom-up. Flip V so the
+      // desktop is upright in the headset; readback dumps are unaffected.
+      VRTextureBounds_t bounds{0, 1, 1, 0};
+      check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
+      {
+        std::string halfKey = key + ".half", halfName = name;
+        if (overlay->CreateOverlay(halfKey.data(), halfName.data(), &handle2) == EVROverlayError_VROverlayError_None) {
+          overlay->SetOverlayTextureColorSpace(handle2, EColorSpace_ColorSpace_Gamma);
+          overlay->SetOverlayInputMethod(handle2, VROverlayInputMethod_None);
+          overlay->SetOverlaySortOrder(handle2, 1);
+        } else {
+          handle2 = 0; // halves stay even; a one-sided bend applies to both
+        }
       }
-    }
-    if (!actionManifest.empty())
-      initPlacementInput(get, actionManifest);
+      if (!actionManifest.empty())
+        initPlacementInput(actionManifest);
+    } catch (...) { release(); throw; }
   }
   // Loads the viewer's action set (aim pose + trigger "grab" per hand) and
   // creates the chrome and cursor overlays. Any failure leaves placement
   // input off; the window itself is unaffected.
-  template <class Get> void initPlacementInput(Get get, const std::string &manifest) {
-    EVRInitError error = EVRInitError_VRInitError_None;
-    auto table = reinterpret_cast<VR_IVRInput_FnTable *>(get("FnTable:IVRInput_010", &error));
-    std::string path = manifest;
-    if (error || !table || table->SetActionManifestPath(path.data()) ||
-        table->GetActionSetHandle((char *)"/actions/workspace", &actionSet) ||
-        table->GetActionHandle((char *)"/actions/workspace/in/aim", &aimAction) ||
-        table->GetActionHandle((char *)"/actions/workspace/in/grab", &grabAction) ||
-        table->GetActionHandle((char *)"/actions/workspace/in/squeeze", &squeezeAction) ||
-        table->GetActionHandle((char *)"/actions/workspace/out/haptic", &hapticAction) ||
-        table->GetInputSourceHandle((char *)"/user/hand/left", &hands[0]) ||
-        table->GetInputSourceHandle((char *)"/user/hand/right", &hands[1])) {
+  void initPlacementInput(const std::string &manifest) {
+    if (!session->initInput(manifest)) {
       fprintf(stderr, "[native] placement input unavailable\n");
       return;
     }
+    auto table = session->input;
+    actionSet = session->actionSet; aimAction = session->aim; grabAction = session->grab;
+    squeezeAction = session->squeeze; hapticAction = session->haptic;
+    for (int i = 0; i < 2; ++i) hands[i] = session->hands[i];
     std::string frameKey = key + ".frame", chromeKey = key + ".handles", cursorKey = key + ".cursor";
     std::string frameName = name + " Frame", chromeName = name + " Controls", cursorName = name + " Pointer";
     if (overlay->CreateOverlay(frameKey.data(), frameName.data(), &frameHandle) ||
@@ -576,11 +527,21 @@ public:
   }
   // Where a controller's pointing ray meets the layer `z` in front of the
   // window, in window coordinates (arc positions where it bends).
-  bool layerHit(const HmdMatrix34_t &c, float z, float &x, float &y) const {
+  bool layerHit(const HmdMatrix34_t &c, float z, float &x, float &y, float *distance = nullptr) const {
     const HmdMatrix34_t local = multiply(inverseRigid(placement.matrix), c);
     const float o[3] = {local.m[0][3], local.m[1][3], local.m[2][3]};
     const float d[3] = {-local.m[0][2], -local.m[1][2], -local.m[2][2]};
-    return bendHit(shape(), o, d, z, x, y);
+    return bendHit(shape(), o, d, z, x, y, distance);
+  }
+  // Used by the host to route each hand to the nearest window, while an
+  // ongoing drag keeps ownership even after the ray leaves its panel.
+  float interactionDistance(const HmdMatrix34_t &pose) const {
+    if (!interactive()) return -1;
+    float x = 0, y = 0, distance = 0;
+    HandleLayout l; l.width = placement.width; l.height = panelHeight();
+    if (!layerHit(pose, controlsDepth, x, y, &distance) ||
+        std::fabs(x) > l.chromeWidth() / 2 || std::fabs(y) > l.chromeHeight() / 2) return -1;
+    return distance;
   }
   // What the layers were last placed and drawn for.
   struct LayerGeometry {
@@ -679,12 +640,10 @@ public:
   // slides out the handles the laser is heading for, lights the metal around
   // its tip, and drives a drag while the trigger is held. Returns true when a
   // drag ended, so the caller saves the pose.
-  bool updatePlacementInput() {
+  int draggingHand() const { return dragHand; }
+  bool interactive() const { return texture && !closing; }
+  bool updatePlacementInput(unsigned allowedHands = 3) {
     if (!input || noVR || chromeFailed || closing) return false;
-    VRActiveActionSet_t active{};
-    active.ulActionSet = actionSet;
-    active.nPriority = 0x01000000; // k_nActionSetOverlayGlobalPriorityMin: works beside scene apps
-    if (input->UpdateActionState(&active, sizeof active, 1)) return false;
     const double now = nowMs();
     const float dt = lastChromeUpdate > 0 ? float(std::clamp(now - lastChromeUpdate, 0.0, 100.0) / 1000.0) : 0.f;
     lastChromeUpdate = now;
@@ -695,17 +654,12 @@ public:
                      HmdMatrix34_t pose{}; float x = 0, y = 0, fx = 0, fy = 0; };
     HandRay rays[2];
     for (int i = 0; i < 2; i++) {
-      InputPoseActionData_t pose{};
-      InputDigitalActionData_t grab{}, squeeze{};
-      input->GetPoseActionDataForNextFrame(aimAction, ETrackingUniverseOrigin_TrackingUniverseStanding, &pose,
-                                           sizeof pose, hands[i]);
-      input->GetDigitalActionData(grabAction, &grab, sizeof grab, hands[i]);
-      input->GetDigitalActionData(squeezeAction, &squeeze, sizeof squeeze, hands[i]);
-      rays[i].valid = pose.bActive && pose.pose.bPoseIsValid;
-      rays[i].grab = grab.bActive && grab.bState;
-      rays[i].squeeze = squeeze.bActive && squeeze.bState;
+      const auto &h = session->hand[i];
+      rays[i].valid = h.valid && ((allowedHands & (1u << i)) || dragHand == i);
+      rays[i].grab = h.grab;
+      rays[i].squeeze = h.squeeze;
       if (rays[i].valid) {
-        rays[i].pose = pose.pose.mDeviceToAbsoluteTracking;
+        rays[i].pose = h.pose;
         rays[i].onControls = layerHit(rays[i].pose, controlsDepth, rays[i].x, rays[i].y);
         rays[i].onFrame = layerHit(rays[i].pose, frameDepth, rays[i].fx, rays[i].fy);
         rays[i].hit = rays[i].onControls;
@@ -865,7 +819,8 @@ public:
     if(gazeFlipY) v=1-v;
     return "valid";
   }
-  ~Overlay() {
+  ~Overlay() { release(); }
+  void release() {
     // The main-scope GazeProducer has already joined before this object dies.
     chromeRenderer.release();
     for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
@@ -877,8 +832,6 @@ public:
       overlay->ClearOverlayTexture(handle);
       overlay->DestroyOverlay(handle);
     }
-    if (shutdown)
-      shutdown();
     if (yuvFramebuffer)
       glDeleteFramebuffers(1, &yuvFramebuffer);
     if (yuvProgram)
@@ -893,13 +846,6 @@ public:
     }
     if (!retired.empty())
       glDeleteTextures(GLsizei(retired.size()), retired.data());
-    if (context)
-      SDL_GL_DeleteContext(context);
-    if (window)
-      SDL_DestroyWindow(window);
-    SDL_Quit();
-    if (library)
-      dlclose(library);
   }
   bool recenter() {
     if (noVR)
@@ -1043,22 +989,10 @@ public:
       setEvenBend(placement, result.value);
     return result;
   }
-  bool events() {
-    SDL_Event s;
-    while (SDL_PollEvent(&s))
-      if (s.type == SDL_QUIT) {
-        exitReason = "sdl-quit";
-        return false;
-      }
-    if (noVR)
-      return true;
+  bool events(bool sharedEvents = true) {
+    if (sharedEvents && !session->events()) { exitReason = session->exitReason; return false; }
+    if (noVR) return true;
     VREvent_t e{};
-    while (system->PollNextEvent(&e, sizeof(e)))
-      if (e.eventType == EVREventType_VREvent_Quit) {
-        exitReason = "openvr-system-quit";
-        system->AcknowledgeQuit_Exiting();
-        return false;
-      }
     while (overlay->PollNextOverlayEvent(handle, &e, sizeof(e)))
       if (e.eventType == EVREventType_VREvent_Quit) {
         exitReason = "openvr-overlay-quit";
@@ -1323,6 +1257,7 @@ public:
     if (c.submitted) {
       texture = s.texture;
       displayed = index;
+      shownTransposed = s.transposed;
       shownPicture = picture;
       if (!retired.empty()) {
         glDeleteTextures(GLsizei(retired.size()), retired.data());

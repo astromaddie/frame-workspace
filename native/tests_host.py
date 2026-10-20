@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""Local production host integration; hidden GL, synthetic streams, no OpenVR.
+Usage: python3 native/tests_host.py PATH/TO/frame-workspace-native
+Do not use this test on an in-use headset. Temporary sources/state are removed.
+"""
+import base64
+import hashlib
+import json
+import pathlib
+import queue
+import select
+import socket
+import struct
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+
+def atomic_json(path, value):
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value))
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def send(connection, payload, opcode=1):
+    header = bytes([0x80 | opcode])
+    n = len(payload)
+    header += (bytes([n]) if n < 126 else b"\x7e" + struct.pack("!H", n)
+               if n < 65536 else b"\x7f" + struct.pack("!Q", n))
+    connection.sendall(header + payload)
+
+
+def receive(connection):
+    def exact(size):
+        data = b""
+        while len(data) < size:
+            part = connection.recv(size - len(data))
+            if not part:
+                raise EOFError()
+            data += part
+        return data
+    first, length = exact(2)
+    masked = length & 128
+    length &= 127
+    if length == 126:
+        length = struct.unpack("!H", exact(2))[0]
+    elif length == 127:
+        length = struct.unpack("!Q", exact(8))[0]
+    assert masked, "viewer must mask WebSocket client frames"
+    mask, data = exact(4), exact(length)
+    return first & 15, bytes(value ^ mask[i % 4] for i, value in enumerate(data))
+
+
+class Stream:
+    def __init__(self, encoded):
+        self.encoded = encoded
+        self.listener = socket.socket()
+        self.listener.bind(("127.0.0.1", 0))
+        self.listener.listen()
+        self.listener.settimeout(0.1)
+        self.port = self.listener.getsockname()[1]
+        self.commands = queue.Queue()
+        self.stopped = threading.Event()
+        self.connections = 0
+        self.failures = []
+        self.thread = threading.Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while not self.stopped.is_set():
+            try:
+                connection, _ = self.listener.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            try:
+                with connection:
+                    connection.settimeout(1)
+                    request = b""
+                    while b"\r\n\r\n" not in request:
+                        data = connection.recv(4096)
+                        if not data:
+                            raise EOFError()
+                        request += data
+                    headers = dict(line.split(": ", 1) for line in request.decode().split("\r\n")[1:] if ": " in line)
+                    key = next(v for k, v in headers.items() if k.lower() == "sec-websocket-key")
+                    accept = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+                    connection.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                                        "Sec-WebSocket-Accept: " + accept + "\r\n\r\n").encode())
+                    self.connections += 1
+                    send(connection, b'{"t":"hello","r":"test-reconnect"}')
+                    live, seq, last = True, 0, 0
+                    while not self.stopped.is_set():
+                        try:
+                            command = self.commands.get_nowait()
+                        except queue.Empty:
+                            command = None
+                        if command:
+                            send(connection, json.dumps({"t": command}).encode())
+                            if command in ("still", "live"):
+                                live = command == "live"
+                            if command == "close":
+                                break
+                        now = time.monotonic()
+                        if live and now - last >= 1 / 20:
+                            seq += 1
+                            packet = b"\x01" + b"\x00" * 8 + struct.pack("!I", seq) + b"\x00" * 4 + self.encoded
+                            send(connection, packet, 2)
+                            last = now
+                        if select.select([connection], [], [], .005)[0]:
+                            opcode, payload = receive(connection)
+                            if opcode == 8:
+                                break
+                            message = json.loads(payload)
+                            if message.get("t") == "ping":
+                                send(connection, json.dumps({"t": "pong", "c": message["c"],
+                                                             "a": time.monotonic() * 1e6}).encode())
+            except (EOFError, ConnectionError, OSError):
+                pass
+            except Exception as error:
+                self.failures.append(repr(error))
+
+    def finish(self):
+        self.stopped.set()
+        self.listener.close()
+        self.thread.join(3)
+        assert not self.thread.is_alive(), "test stream did not stop"
+        assert not self.failures, self.failures
+
+
+def encode(color, width, height):
+    return subprocess.check_output([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", f"color=c={color}:s={width}x{height}:r=20",
+        "-frames:v", "1", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+        "-pix_fmt", "yuv420p", "-f", "h264", "pipe:1"])
+
+
+def run(binary):
+    streams = [Stream(encode("red", 320, 180)), Stream(encode("blue", 400, 240))]
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-host-test-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests = root / "specs", root / "requests"
+            specs.mkdir(); requests.mkdir()
+            panels = {}
+            for name, stream in zip(("a", "b"), streams):
+                folder = root / name
+                folder.mkdir()
+                url = folder / "view.url"
+                url.write_text(f"http://127.0.0.1:{stream.port}/view?src=window%3A1&t=local")
+                panels[name] = {"version": 1, "generation": "first-" + name,
+                                "urlFile": str(url), "overlayKey": "test.panel." + name, "overlayName": name,
+                                "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
+                                "poseFile": str(folder / "pose.json"), "requestDir": str(requests),
+                                "decoder": "software", "conversion": "gpu" if name == "b" else "cpu"}
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--state-file", str(root / "host.json"),
+                                            "--no-vr", "--action-manifest", "none", "--seconds", "45"],
+                                           stdout=log, stderr=log)
+                def state(name):
+                    try:
+                        return json.loads((root / name / "state.json").read_text())
+                    except (OSError, ValueError):
+                        return {}
+                def wait(predicate, label):
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited during " + label
+                        value = predicate()
+                        if value:
+                            return value
+                        time.sleep(.03)
+                    raise AssertionError("timed out: " + label)
+                def ready(name, generation=None):
+                    s = state(name)
+                    return s if (s.get("ready") is True and s.get("hostGeneration") ==
+                                 (generation or panels[name]["generation"])) else None
+                try:
+                    atomic_json(specs / "a.json", panels["a"])
+                    a = wait(lambda: ready("a"), "first panel ready")
+                    assert a["hostPid"] == process.pid and a["textureWidth"] == 320
+                    atomic_json(specs / "b.json", panels["b"])
+                    b = wait(lambda: ready("b"), "second panel ready")
+                    assert b["hostPid"] == process.pid and b["textureWidth"] == 400
+                    assert b["conversionActive"] == "gpu"
+                    streams[0].commands.put("still")
+                    a = wait(lambda: state("a") if state("a").get("streamStill") and
+                             state("a").get("decoderSessionOpen") is False else None, "still releases decoder")
+                    assert a["ready"] and a["decoderStillReleases"] == 1 and a["textureWidth"] == 320
+                    uploads, other_uploads = a["uploaded"], state("b")["uploaded"]
+                    wait(lambda: state("b").get("uploaded", 0) >= other_uploads + 10, "other panel continues while still")
+                    assert state("a")["uploaded"] == uploads, "held picture must not be resubmitted each frame"
+                    atomic_json(root / "a" / "control.json", {"revision": 1, "move": [.1, 0, 0],
+                                                              "bend": {"vertical": True, "a": .1, "b": .3}})
+                    wait(lambda: state("a").get("controlRevision") == 1, "independent still-panel controls")
+                    pose = json.loads((root / "a" / "pose.json").read_text())
+                    assert abs(pose["matrix"][3] - .1) < 1e-5 and pose["bend"]["vertical"]
+                    bent_uploads, moving_uploads = state("a")["uploaded"], state("b")["uploaded"]
+                    wait(lambda: state("b").get("uploaded", 0) > moving_uploads + 3, "other panel moves after still bend")
+                    assert state("a")["uploaded"] == bent_uploads, "bent held picture must restage only once"
+                    streams[0].commands.put("live")
+                    a = wait(lambda: state("a") if state("a").get("decoderLiveOpens") == 1 and
+                             state("a").get("uploaded", 0) > uploads else None, "live resumes keyframe")
+                    assert not a["streamStill"] and a["decoderSessionOpen"] and a["errors"] == 0
+                    # One panel's invalid URL produces a terminal generation; it
+                    # never restarts the host, decoder, or another window.
+                    bad = {**panels["a"], "generation": "bad", "urlFile": str(root / "missing.url"),
+                           "overlayKey": "test.panel.bad", "stateFile": str(root / "bad-state.json"),
+                           "controlFile": str(root / "bad-control.json"), "poseFile": str(root / "bad-pose.json")}
+                    atomic_json(specs / "bad.json", bad)
+                    def bad_state():
+                        try:
+                            return json.loads((root / "bad-state.json").read_text())
+                        except (OSError, ValueError):
+                            return {}
+                    wait(lambda: bad_state().get("state") == "error", "failed stream isolation")
+                    bad_time = (root / "bad-state.json").stat().st_mtime_ns
+                    before = state("b")["uploaded"]
+                    wait(lambda: state("b").get("uploaded", 0) > before + 5, "healthy stream survives failure")
+                    assert (root / "bad-state.json").stat().st_mtime_ns == bad_time, "terminal spec must not restart"
+                    (specs / "a.json").unlink()
+                    wait(lambda: state("a").get("state") == "stopped", "individual panel removal")
+                    assert ready("b"), "removing a panel must keep the other ready"
+                    # Match the launcher: clear generation-scoped controls only
+                    # after the prior owner has acknowledged its removal.
+                    (root / "a" / "control.json").unlink()
+                    # Re-add the same key, consuming the saved moved/bent pose.
+                    replacement = {**panels["a"], "generation": "replacement"}
+                    atomic_json(specs / "a.json", replacement)
+                    a = wait(lambda: ready("a", "replacement"), "panel replacement")
+                    assert abs(a["placement"]["matrix"][3] - .1) < 1e-5
+                    assert a["placement"]["bend"]["vertical"] and a["hostPid"] == process.pid
+                    streams[1].commands.put("close")
+                    wait(lambda: state("b").get("exitReason") == "server-close", "server closes one panel")
+                    assert ready("a", "replacement"), "server close must keep other panel alive"
+                    for path in specs.glob("*.json"):
+                        path.unlink()
+                    wait(lambda: state("a").get("state") == "stopped", "last panel removal")
+                    process.terminate()
+                    assert process.wait(5) == 0
+                    log.seek(0)
+                    output = log.read()
+                    assert output.count("[native] GL vendor=") == 1, "host must create exactly one GL context"
+                    assert streams[0].connections == 2 and streams[1].connections == 1
+                    print("host integration passed: one GL context, two streams, still/live, controls/pose, add/remove/re-add, failure and close isolation")
+                except Exception:
+                    log.seek(0)
+                    print(log.read(), file=sys.stderr)
+                    raise
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(5)
+    finally:
+        for stream in streams:
+            stream.finish()
+
+
+if __name__ == "__main__":
+    run(pathlib.Path(sys.argv[1]).resolve())
