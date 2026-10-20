@@ -139,6 +139,16 @@ exit 0
                 finally:
                     context.cleanup()
 
+    def test_pose_override_keeps_a_bend(self):
+        context, root, env, pose_file, _, prefix, _, _ = self.fixture()
+        try:
+            raw = json.dumps({**VALID_POSE, "bend": {"vertical": True, "a": 0.0, "b": 0.35}}, separators=(",", ":"))
+            run = self.run_launcher(env, self.start_args(prefix, "--pose", raw))
+            self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+            self.assertEqual(pose_file.read_text(encoding="utf-8"), raw)
+        finally:
+            context.cleanup()
+
     def test_without_override_preserves_existing_workspace_and_panel_pose(self):
         for panel in (False, True):
             with self.subTest(panel=panel):
@@ -181,6 +191,11 @@ exit 0
             ("matrix not orthonormal", changed(matrix=[2, *VALID_POSE["matrix"][1:]])),
             ("left handed", changed(matrix=[1, 0, 0, 1.25, 0, 1, 0, 1.5, 0, 0, -1, -3.5])),
             ("oversized", (" " * 4097) + VALID_RAW),
+            ("bend not an object", changed(bend=1)),
+            ("bend missing a half", changed(bend={"vertical": False, "a": 0.2})),
+            ("bend extra field", changed(bend={"vertical": False, "a": 0.2, "b": 0.1, "c": 0})),
+            ("bend vertical not boolean", changed(bend={"vertical": 1, "a": 0.2, "b": 0.1})),
+            ("bend half out of range", changed(bend={"vertical": True, "a": 1.2, "b": 0.1})),
         ])
         for label, raw in cases:
             with self.subTest(case=label):

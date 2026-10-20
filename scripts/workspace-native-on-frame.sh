@@ -47,8 +47,9 @@ try:
     pose = json.loads(raw, object_pairs_hook=unique_object, parse_constant=reject_constant)
 except (ValueError, json.JSONDecodeError):
     raise SystemExit('--pose must be valid JSON without duplicate fields or non-finite values.')
-if not isinstance(pose, dict) or set(pose) != {'version', 'width', 'distance', 'curvature', 'matrix'}:
-    raise SystemExit('--pose must contain exactly version, width, distance, curvature and matrix.')
+base = {'version', 'width', 'distance', 'curvature', 'matrix'}
+if not isinstance(pose, dict) or set(pose) not in (base, base | {'bend'}):
+    raise SystemExit('--pose must contain exactly version, width, distance, curvature and matrix, with an optional bend.')
 if type(pose['version']) is not int or pose['version'] != 1:
     raise SystemExit('--pose version must be the integer 1.')
 def number(value, label, minimum, maximum):
@@ -64,6 +65,12 @@ def number(value, label, minimum, maximum):
 number(pose['width'], 'width', 0.4, 8.0)
 number(pose['distance'], 'distance', 0.4, 10.0)
 number(pose['curvature'], 'curvature', 0.0, 1.0)
+if 'bend' in pose:
+    bend = pose['bend']
+    if not isinstance(bend, dict) or set(bend) != {'vertical', 'a', 'b'} or type(bend['vertical']) is not bool:
+        raise SystemExit('--pose bend must contain exactly vertical (true or false), a and b.')
+    number(bend['a'], 'bend a', 0.0, 1.0)
+    number(bend['b'], 'bend b', 0.0, 1.0)
 matrix = pose['matrix']
 if not isinstance(matrix, list) or len(matrix) != 12:
     raise SystemExit('--pose matrix must contain exactly 12 numbers.')

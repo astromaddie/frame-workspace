@@ -176,6 +176,17 @@ class Helpers(unittest.TestCase):
         mv.build.assert_not_called()
         mv._remember_workspace.assert_not_called()
 
+    def test_pose_validation_keeps_an_optional_bend(self):
+        pose = {"version": 1, "width": 2.4, "distance": 2.0, "curvature": 0.0,
+                "matrix": [1, 0, 0, 0, 0, 1, 0, 1.3, 0, 0, 1, -2]}
+        self.assertNotIn("bend", frame_macview.validate_pose(pose))
+        bent = {**pose, "bend": {"vertical": True, "a": 0.1, "b": 0.4}}
+        self.assertEqual(frame_macview.validate_pose(bent)["bend"], {"vertical": True, "a": 0.1, "b": 0.4})
+        for bad in ({"vertical": "yes", "a": 0, "b": 0}, {"vertical": False, "a": 2, "b": 0},
+                    {"vertical": False, "a": 0}, [0, 0]):
+            with self.assertRaises(frame_macview.MacViewError):
+                frame_macview.validate_pose({**pose, "bend": bad})
+
     def test_pose_capture_reader_uses_xdg_files_and_bounds_reads(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

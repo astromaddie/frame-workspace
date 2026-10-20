@@ -242,9 +242,12 @@ class MacViewError(Exception):
     pass
 
 def validate_pose(value):
-    """Strict pose-file format; limits and row tolerance follow placement.hpp."""
-    if not isinstance(value, dict) or set(value) != {"version", "width", "distance", "curvature", "matrix"}:
-        raise MacViewError("Pose must contain exactly version, width, distance, curvature and matrix.")
+    """Strict pose-file format; limits and row tolerance follow placement.hpp.
+    The bend (each half, side to side or top to bottom) is optional."""
+    base = {"version", "width", "distance", "curvature", "matrix"}
+    if not isinstance(value, dict) or set(value) not in (base, base | {"bend"}):
+        raise MacViewError("Pose must contain exactly version, width, distance, curvature and matrix, "
+                           "with an optional bend.")
     if type(value["version"]) is not int or value["version"] != 1:
         raise MacViewError("Pose version must be 1.")
 
@@ -270,7 +273,14 @@ def validate_pose(value):
                    a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0]))
     if determinant <= 0:
         raise MacViewError("Pose rotation must be right handed.")
-    return {"version": 1, "width": width, "distance": distance, "curvature": curvature, "matrix": matrix}
+    pose = {"version": 1, "width": width, "distance": distance, "curvature": curvature, "matrix": matrix}
+    if "bend" in value:
+        bend = value["bend"]
+        if (not isinstance(bend, dict) or set(bend) != {"vertical", "a", "b"} or
+                type(bend["vertical"]) is not bool):
+            raise MacViewError("Pose bend must contain exactly vertical (true or false), a and b.")
+        pose["bend"] = {"vertical": bend["vertical"], "a": number(bend["a"], 0, 1), "b": number(bend["b"], 0, 1)}
+    return pose
 
 
 def _pose_object(pairs):
