@@ -18,6 +18,10 @@
 //   POST /permissions                     ?k=: show macOS's permission prompts
 //   GET  /stats[?id=&since=]              ?k=: per-frame timing records (for benchmarks)
 //   POST /bench?src=&action=...           ?k=: ask viewers of src to type, click or show their overlay
+//   GET  /apps, /apps/icon?bundleID=...    ?k=: Dock apps, 128px PNG icons, and app actions
+//   POST /apps/action?bundleID=&verb=...   ?k=: open, hide, unhide, quit, show_windows
+//   GET  /switcher                         ?k=: spatial Cmd-Tab state
+//   POST /switcher?mode=spatial|desktop    ?k=: panel entries and switcher lease
 // src is window:<CGWindowID>, display:<CGDirectDisplayID> or test.
 import AppKit
 import ApplicationServices
@@ -28,11 +32,11 @@ import Security
 
 let version = "1"
 
-func windowsJSON() -> [[String: Any]] {
+func windowsJSON(onScreenOnly: Bool = true) -> [[String: Any]] {
     let me = ProcessInfo.processInfo.processIdentifier
     let skip: Set<String> = ["Window Server", "Dock", "Control Centre", "Control Center", "Notification Centre",
                              "Notification Center", "Spotlight", "SystemUIServer", "Wallpaper", "WindowManager"]
-    return WindowInfo.all().filter {
+    return WindowInfo.all(onScreenOnly: onScreenOnly).filter {
         $0.layer == 0 && $0.pid != me && !skip.contains($0.app) && $0.bounds.width >= 120 && $0.bounds.height >= 80
     }.map {
         var info: [String: Any] = ["id": $0.id, "src": "window:\($0.id)", "pid": $0.pid,
@@ -852,6 +856,7 @@ final class Agent {
     private let activity = StreamActivityRegistry()
     private let spatial = SpatialStreamState()
     private let cursorMemory = FocusCursorMemory()
+    private let apps = MacApps()
     /// nil means every current and future window stream stays live.
     private var desiredLiveSources: Set<String>?
     private var pointerSharedMode = ProcessInfo.processInfo.environment["FRAME_WINDOW_DISPLAYS"] == "1"
@@ -876,6 +881,8 @@ final class Agent {
         quitting = true
         lock.unlock()
         guard !again else { return }
+        if Thread.isMainThread { apps.stop() }
+        else { DispatchQueue.main.async { self.apps.stop() } }
         for s in all { s.ws.sendJSON(["t": "close"]); s.end() }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { exit(0) }
     }
@@ -1109,7 +1116,8 @@ final class Agent {
             lock.lock(); s["finished"] = Array(finished); lock.unlock()
             c.respond(json: s)
         case ("GET", "/windows"):
-            c.respond(json: ["windows": windowsJSON(), "screen": CGPreflightScreenCaptureAccess()])
+            c.respond(json: ["windows": windowsJSON(onScreenOnly: req.query["all"] != "1"),
+                             "screen": CGPreflightScreenCaptureAccess()])
         case ("GET", "/displays"):
             c.respond(json: ["displays": displaysJSON()])
         case ("POST", "/ticket"):
@@ -1181,6 +1189,16 @@ final class Agent {
         case ("POST", "/permissions"):
             DispatchQueue.main.async { requestPermissions() }
             c.respond(json: permissionsJSON())
+        case ("GET", "/apps"):
+            apps.appsResponse(c)
+        case ("GET", "/apps/icon"):
+            apps.iconResponse(req, c)
+        case ("POST", "/apps/action"):
+            apps.actionResponse(req, c)
+        case ("GET", "/switcher"):
+            apps.switcherResponse(req, c)
+        case ("POST", "/switcher"):
+            apps.configureSwitcherResponse(req, c)
         default:
             c.respond(404, text: "not found")
         }
@@ -1338,9 +1356,13 @@ case "serve":
             agent.quit()
         }
     }
+    signal(SIGINT, SIG_IGN)
     signal(SIGTERM, SIG_IGN)
+    let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
     let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    sigint.setEventHandler { agent.quit() }
     sigterm.setEventHandler { agent.quit() }
+    sigint.resume()
     sigterm.resume()
     let server: Server
     do {
@@ -1363,7 +1385,8 @@ case "serve":
     // the displays Separate mode creates.
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)
-    withExtendedLifetime((server, sigterm)) { app.run() }
+    withExtendedLifetime((server, sigint, sigterm, agent)) { app.run() }
+    agent.quit()
 default:
     FileHandle.standardError.write(Data("usage: frame-mac-view serve|workspace|windows|displays|permissions|request-permissions\n".utf8))
     exit(2)

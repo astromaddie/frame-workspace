@@ -47,6 +47,9 @@ final class Server {
 }
 
 final class HTTPConnection {
+    // The switcher carries its bounded panel list in the authenticated query.
+    // Keep a finite cap while leaving room for URL-encoded JSON entries.
+    private static let maxRequestHeadBytes = 128 * 1024
     let conn: NWConnection
     let queue: DispatchQueue
     private let handle: (Request, HTTPConnection) -> Void
@@ -68,10 +71,13 @@ final class HTTPConnection {
     private func readHead() {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 16384) { [self] data, _, done, error in
             if let data { buffer.append(data) }
+            if buffer.count > Self.maxRequestHeadBytes {
+                return respond(400, text: "request headers too large")
+            }
             if let end = buffer.range(of: Data("\r\n\r\n".utf8)) {
                 guard let req = Self.parse(buffer[..<end.lowerBound]) else { return respond(400, text: "bad request") }
                 handle(req, self)
-            } else if error != nil || done || buffer.count > 16384 {
+            } else if error != nil || done {
                 close()
             } else {
                 readHead()
