@@ -501,6 +501,11 @@ Palladium in silver-lavender, with the physical frame brought forward. See
   whole-piece glow is reserved for dragging, and it glows inside the pressed-in
   recess, off its walls, rather than outside it.
 Built in `native/chrome.hpp` (see `native/README.md`); worn use not yet verified.
+Bending in every direction (2026-10-20, choices made by the user): a side grip
+pulled with the trigger bends its own half, with the grip button both halves;
+top and bottom grips bend top to bottom the same way. Built in `native/bend.hpp`
+and checked against SteamVR's geometry with `native/probe_bends.cpp`; worn use
+not yet verified.
 Native window panels open beside the Workspace and wear the same chrome.
 
 ## Implementation / investigation

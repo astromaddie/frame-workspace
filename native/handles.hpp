@@ -19,8 +19,8 @@
 
 namespace fw {
 
-enum class Handle { None, Pill, Close, CornerTL, CornerTR, CornerBL, CornerBR, BarLeft, BarRight };
-constexpr int handleCount = 8; // Pill..BarRight, indexed handle - 1
+enum class Handle { None, Pill, Close, CornerTL, CornerTR, CornerBL, CornerBR, BarLeft, BarRight, BarTop, BarBottom };
+constexpr int handleCount = 10; // Pill..BarBottom, indexed handle - 1
 inline int handleIndex(Handle h) { return int(h) - 1; }
 
 // Measurements around a window of `width` x `height` meters.
@@ -34,7 +34,8 @@ struct HandleLayout {
   float handleOffset() const { return bezel() + 0.006f + rodWide / 2; }
   float arm() const { return std::clamp(0.07f * width, 0.06f, 0.18f); }
   float bend() const { return 0.24f * arm(); }
-  float gripLength() const { return std::clamp(0.1f * height, 0.08f, 0.25f); }
+  float gripLength() const { return std::clamp(0.1f * height, 0.08f, 0.25f); }   // the side grips
+  float gripLengthAcross() const { return std::clamp(0.1f * width, 0.08f, 0.25f); }  // top and bottom
   // P4: a close disc left of the move pill, 3 cm under the bezel.
   float pillWidth() const { return std::clamp(0.12f * width, 0.11f, 0.33f); }
   float pillHeight() const { return std::clamp(0.18f * pillWidth(), 0.024f, 0.05f); }
@@ -80,6 +81,10 @@ struct HandleLayout {
       const float gx = (h == Handle::BarLeft ? -1 : 1) * (hx + o);
       return segment(x, y, gx, -gripLength() / 2, gx, gripLength() / 2);
     }
+    case Handle::BarTop: case Handle::BarBottom: {
+      const float gy = (h == Handle::BarBottom ? -1 : 1) * (hy + o);
+      return segment(x, y, -gripLengthAcross() / 2, gy, gripLengthAcross() / 2, gy);
+    }
     case Handle::None:
       return 1e9f;
     default: {
@@ -108,6 +113,8 @@ struct HandleLayout {
     set(Handle::CornerBR, right || bottom);
     set(Handle::BarLeft, left);
     set(Handle::BarRight, right);
+    set(Handle::BarTop, top);
+    set(Handle::BarBottom, bottom);
     return m;
   }
   // The handle the laser at (x, y) would take: the nearest shown one within
@@ -153,9 +160,11 @@ inline HmdMatrix34_t inverseRigid(const HmdMatrix34_t &a) {
 // the controller's current pose.
 struct HandleDrag {
   Handle handle = Handle::None;
+  bool bothSides = false;  // a grip taken with the grip button bends both halves
   HmdMatrix34_t controllerStart{};
   Placement placementStart;
   float startDistance = 0;  // corner: controller ray hit distance from centre
+  float startAspect = 2560.f / 2880.f;  // the window's height / width, for top-to-bottom bends
 
   // Where the controller's pointing ray (its -z axis) meets the panel plane,
   // in panel-local x/y. False when it points away from or along the plane.
@@ -174,8 +183,9 @@ struct HandleDrag {
     return true;
   }
 
-  void start(Handle h, const HmdMatrix34_t &controller, const Placement &placement) {
+  void start(Handle h, const HmdMatrix34_t &controller, const Placement &placement, bool both = false) {
     handle = h;
+    bothSides = both;
     controllerStart = controller;
     placementStart = placement;
     float x = 0, y = 0;
@@ -195,13 +205,29 @@ struct HandleDrag {
         p.width = std::clamp(placementStart.width * std::hypot(x, y) / startDistance, 0.4f, 8.f);
       break;
     }
-    case Handle::BarLeft: case Handle::BarRight: {
-      // Pulling the bar towards the viewer bends the window more: about full
-      // OpenVR curvature for a pull of a quarter of the window width.
+    case Handle::BarLeft: case Handle::BarRight: case Handle::BarTop: case Handle::BarBottom: {
+      // Pulling a grip towards the viewer bends the window: about full OpenVR
+      // curvature for a pull of a quarter of the window along the bend. The
+      // trigger bends the grip's own half; the grip button bends both. Side
+      // grips bend side to side, top and bottom grips top to bottom; changing
+      // direction starts from flat.
+      const bool vertical = handle == Handle::BarTop || handle == Handle::BarBottom;
       const auto &m = placementStart.matrix.m;
+      const float span = vertical ? placementStart.width * startAspect : placementStart.width;
       float pull = 0;
       for (int r = 0; r < 3; r++) pull += (controller.m[r][3] - controllerStart.m[r][3]) * m[r][2];
-      p.curvature = std::clamp(placementStart.curvature + pull / (0.25f * placementStart.width), 0.f, 1.f);
+      const bool sameDirection = placementStart.bendVertical == vertical;
+      float a = sameDirection ? placementStart.bendA : 0, b = sameDirection ? placementStart.bendB : 0;
+      // A: left or bottom half; B: right or top.
+      const bool sideB = handle == Handle::BarRight || handle == Handle::BarTop;
+      const float from = sideB ? b : a;
+      const float to = std::clamp(from + pull / (0.25f * span), 0.f, 1.f);
+      if (bothSides) a = b = to;
+      else (sideB ? b : a) = to;
+      p.bendVertical = vertical;
+      p.bendA = a;
+      p.bendB = b;
+      syncCurvature(p);
       break;
     }
     case Handle::Close: // a click, handled by the caller; never a drag

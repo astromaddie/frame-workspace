@@ -29,18 +29,19 @@ public:
   static constexpr float pixelsPerMeter = 1100;
   static constexpr int maxPixels = 3072;
 
-  // Texture size for a layer `meters` wide/high (in the layer's own arc).
-  static void textureSize(float metersWide, float metersHigh, int &w, int &h) {
+  // Texture size for a layer `metersWide` x `metersHigh` (window meters);
+  // transposed (a quarter turn, for top-to-bottom bends) swaps them.
+  static void textureSize(float metersWide, float metersHigh, bool transposed, int &w, int &h) {
     const float ppm = std::min(pixelsPerMeter, maxPixels / std::max(metersWide, metersHigh));
-    w = std::max(16, int(std::lround(metersWide * ppm)));
-    h = std::max(16, int(std::lround(metersHigh * ppm)));
+    w = std::max(16, int(std::lround((transposed ? metersHigh : metersWide) * ppm)));
+    h = std::max(16, int(std::lround((transposed ? metersWide : metersHigh) * ppm)));
   }
 
   // Draws `layer` (0 bezel, 1 controls) into `texture`, w x h pixels covering
-  // `metersWide` (the layer's own arc length) x `metersHigh`. xScale turns the
-  // layer's arc coordinates into the window's (1 when flat).
+  // `metersWide` x `metersHigh` of window coordinates, transposed if asked
+  // (the texture's u then runs up the window from its bottom edge).
   void render(int layer, const HandleLayout &l, const ChromeState &s, float metersWide, float metersHigh,
-              float xScale, GLuint texture, int w, int h) {
+              bool transposed, GLuint texture, int w, int h) {
     ensureProgram();
     glBindTexture(GL_TEXTURE_2D, texture);
     if (allocated[layer][0] != w || allocated[layer][1] != h || allocatedTexture[layer] != texture) {
@@ -68,11 +69,12 @@ public:
     auto u = [&](const char *name) { return glGetUniformLocation(program, name); };
     glUniform1i(u("uLayer"), layer);
     glUniform2f(u("uSize"), metersWide, metersHigh);
-    glUniform1f(u("uXScale"), xScale);
-    glUniform1f(u("uPx"), metersWide * xScale / float(w));
+    glUniform1i(u("uTranspose"), transposed ? 1 : 0);
+    glUniform1f(u("uPx"), metersWide / float(transposed ? h : w));
     glUniform2f(u("uHalf"), l.width / 2, l.height / 2);
     glUniform1f(u("uBezel"), l.bezel());
     glUniform4f(u("uRod"), l.handleOffset(), l.arm(), l.bend(), l.gripLength());
+    glUniform1f(u("uGripAcross"), l.gripLengthAcross());
     glUniform2f(u("uRodWidth"), HandleLayout::rodRest, HandleLayout::rodWide);
     glUniform4f(u("uRow"), l.closeX(), l.pillX(), l.rowY(), l.discDiameter());
     glUniform2f(u("uPill"), l.pillWidth(), l.pillHeight());
@@ -149,18 +151,19 @@ private:
   static const char *fragmentSource() {
     return R"GLSL(#version 120
 uniform int uLayer;
-uniform vec2 uSize;      // the layer, meters (its own arc x, then y)
-uniform float uXScale;   // layer arc x -> window x
+uniform vec2 uSize;      // the layer, window meters
+uniform int uTranspose;  // drawn a quarter turn (top-to-bottom bends)
 uniform float uPx;       // meters per pixel, in window coordinates
 uniform vec2 uHalf;      // the window's half size
 uniform float uBezel;
-uniform vec4 uRod;       // handle offset, arm, bend, grip length
+uniform vec4 uRod;       // handle offset, arm, bend, side grip length
+uniform float uGripAcross; // top and bottom grip length
 uniform vec2 uRodWidth;  // slid out, under the laser
 uniform vec4 uRow;       // close x, pill x, row y, disc diameter
 uniform vec2 uPill;      // pill width, height
-uniform float uReveal[8];
-uniform float uWideAmt[8];
-uniform float uHeld[8];
+uniform float uReveal[10];
+uniform float uWideAmt[10];
+uniform float uHeld[10];
 uniform vec3 uTip;       // x, y, on
 
 // Palladium silver-lavender
@@ -280,12 +283,18 @@ void piece(int i, vec2 p, out float d, out vec2 g, out float R, out vec2 M, out 
     M = C + vec2(sx, sy) * r * .7071;
     T = normalize(vec2(sx, -sy));
     centre = B - vec2(sx, sy) * a * .5; extent = a * .7;
-  } else {                // a side grip
+  } else if (i < 8) {     // a side grip
     float gx = (i == 6 ? -1. : 1.) * (hx + o);
     cp = closest(p, vec2(gx, -uRod.w / 2.), vec2(gx, uRod.w / 2.));
     R = mix(uRodWidth.x, uRodWidth.y, uWideAmt[i]) / 2.;
     M = vec2(gx, 0.); T = vec2(0., 1.);
     centre = M; extent = uRod.w / 2.;
+  } else {                // the top or bottom grip
+    float gy = (i == 9 ? -1. : 1.) * (hy + o);
+    cp = closest(p, vec2(-uGripAcross / 2., gy), vec2(uGripAcross / 2., gy));
+    R = mix(uRodWidth.x, uRodWidth.y, uWideAmt[i]) / 2.;
+    M = vec2(0., gy); T = vec2(1., 0.);
+    centre = M; extent = uGripAcross / 2.;
   }
   g = away(p - cp, vec2(0., 1.));
   d = length(p - cp) - R;
@@ -303,7 +312,7 @@ vec4 controls(vec2 p) {
   float bestD = 1e3, R = 0., ext = 1.;
   vec2 g = vec2(0.), M = vec2(0.), T = vec2(1., 0.), cen = vec2(0.);
   int best = -1;
-  for (int i = 0; i < 8; i++) {
+  for (int i = 0; i < 10; i++) {
     if (i >= 2 && uReveal[i] <= .001) continue;
     float d, r, e; vec2 gi, m, t, c;
     piece(i, p, d, gi, r, m, t, c, e);
@@ -356,7 +365,8 @@ vec4 controls(vec2 p) {
 
 void main() {
   vec2 uv = gl_TexCoord[0].st;   // t = 0 is the top row
-  vec2 p = vec2((uv.x - .5) * uSize.x * uXScale, (.5 - uv.y) * uSize.y);
+  if (uTranspose == 1) uv = vec2(uv.y, 1. - uv.x);
+  vec2 p = vec2((uv.x - .5) * uSize.x, (.5 - uv.y) * uSize.y);
   gl_FragColor = uLayer == 0 ? bezel(p) : controls(p);
 }
 )GLSL";

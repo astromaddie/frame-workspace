@@ -11,13 +11,30 @@
 namespace fw {
 struct Placement {
   float width = 2.4f, distance = 2.0f;
-  float curvature = 0; // OpenVR curvature 0-1, re-applied at startup
+  // An even side-to-side bend as OpenVR curvature 0-1 (what the Mac page sets);
+  // 0 when the halves differ or the bend runs top to bottom.
+  float curvature = 0;
+  // The bend itself (bend.hpp): its direction, and each half in the same units
+  // as `curvature`: A the left (or bottom) half, B the right (or top).
+  bool bendVertical = false;
+  float bendA = 0, bendB = 0;
   HmdMatrix34_t matrix{{{1, 0, 0, 0}, {0, 1, 0, 1.3f}, {0, 0, 1, -2}}};
 };
+// Sets an even side-to-side bend (the Mac page's curvature).
+inline void setEvenBend(Placement &p, float curvature) {
+  p.curvature = p.bendA = p.bendB = curvature;
+  p.bendVertical = false;
+}
+// Keeps `curvature` in step after the halves or direction change.
+inline void syncCurvature(Placement &p) {
+  p.curvature = !p.bendVertical && std::fabs(p.bendA - p.bendB) <= 1e-4f ? p.bendA : 0.f;
+}
 inline std::string placementJSON(const Placement &p) {
   std::string s = "{\"version\":1,\"width\":" + std::to_string(p.width) +
                   ",\"distance\":" + std::to_string(p.distance) +
                   ",\"curvature\":" + std::to_string(p.curvature) +
+                  ",\"bend\":{\"vertical\":" + (p.bendVertical ? "true" : "false") +
+                  ",\"a\":" + std::to_string(p.bendA) + ",\"b\":" + std::to_string(p.bendB) + "}" +
                   ",\"matrix\":[";
   for (int r = 0; r < 3; r++)
     for (int c = 0; c < 4; c++) {
@@ -102,7 +119,26 @@ inline bool parsePlacement(const std::string &text, Placement &p) {
     candidate.distance = std::clamp(num(j, "distance", 2), .4, 10.0);
     // Optional: pose files written before curvature persistence omit it.
     const double curvature = num(j, "curvature", 0);
-    candidate.curvature = std::isfinite(curvature) ? float(std::clamp(curvature, 0.0, 1.0)) : 0.f;
+    setEvenBend(candidate, std::isfinite(curvature) ? float(std::clamp(curvature, 0.0, 1.0)) : 0.f);
+    // Optional: per-half bends and their direction (older files are even, side to side).
+    if (auto bend = field(j, "bend")) {
+      auto member = [&](const char *name) {
+        json_object *v = nullptr;
+        return json_object_object_get_ex(bend, name, &v) ? v : nullptr;
+      };
+      auto amount = [&](const char *name) {
+        auto v = member(name);
+        const double d = v && (json_object_is_type(v, json_type_double) || json_object_is_type(v, json_type_int))
+                             ? json_object_get_double(v) : 0;
+        return std::isfinite(d) ? float(std::clamp(d, 0.0, 1.0)) : 0.f;
+      };
+      auto vertical = member("vertical");
+      candidate.bendVertical = vertical && json_object_is_type(vertical, json_type_boolean) &&
+                               json_object_get_boolean(vertical);
+      candidate.bendA = amount("a");
+      candidate.bendB = amount("b");
+      syncCurvature(candidate);
+    }
     for (int r = 0; r < 3; r++)
       for (int c = 0; c < 4; c++) {
         double v =

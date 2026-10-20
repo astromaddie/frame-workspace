@@ -324,6 +324,8 @@ static int selfTest() {
                       (1u << handleIndex(Handle::BarRight))), "past the right edge: its corners and grip slide out");
     require(l.revealed(0, 0) == 0 && l.revealed(hx + l.reach() + 0.05f, 0) == 0, "inside or far away: none");
     require(l.chromeWidth() > l.frameWidth() && l.chromeHeight() / 2 > -l.rowY(), "the controls layer covers them all");
+    require(l.zone(0, hy + o) == Handle::BarTop && l.zone(0.03f, -hy - o) == Handle::BarBottom, "top and bottom grips");
+    require(l.zone(l.pillX(), l.rowY()) == Handle::Pill, "the pill still wins below the bottom grip");
     Placement start;  // 2 m ahead of the origin, facing it
     start.matrix = {{{1, 0, 0, 0}, {0, 1, 0, 1.5f}, {0, 0, 1, -2}}};
     // Controller at the origin pointing ahead (-z) at the pill.
@@ -348,10 +350,72 @@ static int selfTest() {
     drag.start(Handle::BarRight, c0, start);
     HmdMatrix34_t pulled = c0;
     pulled.m[2][3] += 0.3f;
-    require(std::fabs(drag.update(pulled).curvature - 0.5f) < 1e-3, "bar: pulling it curves the window");
+    {
+      const Placement one = drag.update(pulled);
+      require(std::fabs(one.bendB - 0.5f) < 1e-3 && one.bendA == 0 && one.curvature == 0 && !one.bendVertical,
+              "side grip with the trigger: only its own half bends");
+    }
+    drag.start(Handle::BarRight, c0, start, true);
+    require(std::fabs(drag.update(pulled).curvature - 0.5f) < 1e-3, "side grip with the grip button: both halves");
+    drag.start(Handle::BarTop, c0, start);
+    {
+      const Placement top = drag.update(pulled);
+      require(top.bendVertical && top.bendB > 0.4f && top.bendA == 0, "top grip: the top half bends, top to bottom");
+      drag.start(Handle::BarLeft, c0, top);
+      const Placement back = drag.update(c0);
+      require(!back.bendVertical && back.bendA == 0 && back.bendB == 0, "changing direction starts flat");
+    }
+    {
+      // Bends: a point on the surface, hit back along its normal, is the same
+      // window position, for every shape and both layers in front.
+      auto check = [&](BendShape b, const char *what) {
+        for (float z : {0.f, 0.015f, 0.03f})
+          for (float fx : {-0.55f, -0.3f, -0.01f, 0.01f, 0.2f, 0.52f})
+            for (float fy : {-0.45f, 0.f, 0.3f}) {
+              const float x = fx * (b.vertical ? 2.4f : b.span), y = fy * (b.vertical ? b.span : 2.13f);
+              const HmdMatrix34_t m = bendPointXY(b, x, y, z);
+              const float o[3] = {m.m[0][3] + m.m[0][2] * 2, m.m[1][3] + m.m[1][2] * 2, m.m[2][3] + m.m[2][2] * 2};
+              const float d[3] = {-m.m[0][2], -m.m[1][2], -m.m[2][2]};
+              float hx2 = 0, hy2 = 0;
+              require(bendHit(b, o, d, z, hx2, hy2) && std::fabs(hx2 - x) < 2e-3f && std::fabs(hy2 - y) < 2e-3f, what);
+            }
+        // the halves meet smoothly at the centre line
+        const HmdMatrix34_t l0 = bendPoint(b, -1e-4f, 0, 0), r0 = bendPoint(b, 1e-4f, 0, 0);
+        double gap = 0;
+        for (int r = 0; r < 3; r++) gap += std::fabs(l0.m[r][3] - r0.m[r][3]) + std::fabs(l0.m[r][2] - r0.m[r][2]);
+        require(gap < 1e-3, "halves meet at the centre line, tangent");
+        // each overlay sits on the surface at its middle
+        for (int i = 0; i < b.segments(); i++) {
+          const BendSegment seg = bendSegment(b, i, b.span, 0.015f);
+          const float mid = b.segments() == 2 ? (i == 0 ? -b.span / 4 + 0.001f : b.span / 4 - 0.001f) : 0;
+          const HmdMatrix34_t m = bendPoint(b, mid, 0, 0.015f);
+          double off = 0;
+          for (int r = 0; r < 3; r++) off += std::fabs(seg.local.m[r][3] - m.m[r][3]);
+          require(off < 1e-4 && seg.width > 0 && seg.curvature >= 0 && seg.curvature <= 1, "overlays on the surface");
+        }
+      };
+      check(BendShape{false, 2.4f, {0.2f, 0.2f}}, "even side-to-side bend: hits round-trip");
+      check(BendShape{false, 2.4f, {0.f, 0.35f}}, "right half only: hits round-trip");
+      check(BendShape{false, 2.4f, {0.5f, 0.1f}}, "uneven halves: hits round-trip");
+      check(BendShape{true, 2.13f, {0.3f, 0.3f}}, "even top-to-bottom bend: hits round-trip");
+      check(BendShape{true, 2.13f, {0.f, 0.4f}}, "top half only: hits round-trip");
+      check(BendShape{false, 2.4f, {0.f, 0.f}}, "flat: hits round-trip");
+      require(bendSegment(BendShape{false, 2.4f, {0.f, 0.3f}}, 0, 2.4f, 0).bounds.uMax > 0.5f &&
+              bendSegment(BendShape{false, 2.4f, {0.f, 0.3f}}, 1, 2.4f, 0).bounds.uMin < 0.5f &&
+              bendSegment(BendShape{false, 2.4f, {0.f, 0.3f}}, 0, 2.4f, 0).bounds.uMax < 0.501f,
+              "halves split the texture at its middle, overlapping slightly");
+      Placement saved = start;
+      saved.bendVertical = true;
+      saved.bendA = 0.1f;
+      saved.bendB = 0.4f;
+      Placement loaded;
+      require(parsePlacement(placementJSON(saved), loaded) && loaded.bendVertical &&
+              std::fabs(loaded.bendA - 0.1f) < 1e-4f && std::fabs(loaded.bendB - 0.4f) < 1e-4f,
+              "pose files keep the bend");
+    }
   }
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -948,6 +1012,27 @@ int main(int argc, char **argv) {
                                  num(j, "distance", overlay.placement.distance));
                 if (requestedCurvature)
                   curvatureResult = overlay.setCurvature(float(curvature));
+                // {"bend":{"vertical":bool,"a":0-1,"b":0-1}}: each half on its own
+                // (a: left or bottom, b: right or top), as the grips do.
+                bool bent = false;
+                if (auto bend = field(j, "bend"))
+                  if (json_object_is_type(bend, json_type_object)) {
+                    auto part = [&](const char *name, double &out) {
+                      json_object *v = nullptr;
+                      if (!json_object_object_get_ex(bend, name, &v) ||
+                          !(json_object_is_type(v, json_type_double) || json_object_is_type(v, json_type_int)))
+                        return false;
+                      out = json_object_get_double(v);
+                      return std::isfinite(out) && out >= 0 && out <= 1;
+                    };
+                    json_object *vertical = nullptr;
+                    double a = 0, b = 0;
+                    if (part("a", a) && part("b", b)) {
+                      json_object_object_get_ex(bend, "vertical", &vertical);
+                      overlay.setBend(vertical && json_object_get_boolean(vertical), float(a), float(b));
+                      bent = true;
+                    }
+                  }
                 // Spatial nudges in the panel's own frame: {"move":[x,y,z]}
                 // meters (right, up, toward the viewer) and {"rotate":[yaw,
                 // pitch, roll]} degrees. Each is bounded per command.
@@ -973,7 +1058,7 @@ int main(int argc, char **argv) {
                 }
                 if (triple("move", 2, delta))
                   spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
-                if (spatial || (requestedCurvature && curvatureResult.applied))
+                if (spatial || bent || (requestedCurvature && curvatureResult.applied))
                   atomicWrite(poseFile, placementJSON(overlay.placement));
                 if (flag(j, "recenter"))
                   pendingRecenter = true;
@@ -1022,6 +1107,10 @@ int main(int argc, char **argv) {
         picture = retryPicture;
         lastPattern = now;
       }
+      // The bend turned to (or from) top-to-bottom: redraw the still picture
+      // turned to match, rather than waiting for the desktop to change.
+      if (!picture)
+        picture = overlay.restagePicture();
       std::vector<Overlay::Completion> done;
       auto finished = [&] {
         for (auto &c : done) {

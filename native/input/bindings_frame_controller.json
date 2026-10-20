@@ -9,7 +9,13 @@
       ],
       "sources": [
         {"path": "/user/hand/left/input/trigger", "mode": "button", "inputs": {"click": {"output": "/actions/workspace/in/grab"}}},
-        {"path": "/user/hand/right/input/trigger", "mode": "button", "inputs": {"click": {"output": "/actions/workspace/in/grab"}}}
+        {"path": "/user/hand/right/input/trigger", "mode": "button", "inputs": {"click": {"output": "/actions/workspace/in/grab"}}},
+        {"path": "/user/hand/left/input/grip", "mode": "button", "inputs": {"click": {"output": "/actions/workspace/in/squeeze"}}},
+        {"path": "/user/hand/right/input/grip", "mode": "button", "inputs": {"click": {"output": "/actions/workspace/in/squeeze"}}}
+      ],
+      "haptics": [
+        {"output": "/actions/workspace/out/haptic", "path": "/user/hand/left/output/haptic"},
+        {"output": "/actions/workspace/out/haptic", "path": "/user/hand/right/output/haptic"}
       ]
     }
   }

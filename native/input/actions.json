@@ -2,9 +2,13 @@
   "default_bindings": [{"controller_type": "frame_controller", "binding_url": "bindings_frame_controller.json"}],
   "actions": [
     {"name": "/actions/workspace/in/aim", "type": "pose"},
-    {"name": "/actions/workspace/in/grab", "type": "boolean"}
+    {"name": "/actions/workspace/in/grab", "type": "boolean"},
+    {"name": "/actions/workspace/in/squeeze", "type": "boolean"},
+    {"name": "/actions/workspace/out/haptic", "type": "vibration"}
   ],
   "action_sets": [{"name": "/actions/workspace", "usage": "leftright"}],
   "localization": [{"language_tag": "en_US", "/actions/workspace": "Frame Workspace",
-                    "/actions/workspace/in/aim": "Point at Windows", "/actions/workspace/in/grab": "Grab Handle"}]
+                    "/actions/workspace/in/aim": "Point at Windows", "/actions/workspace/in/grab": "Grab Handle",
+                    "/actions/workspace/in/squeeze": "Grab Handle (Both Sides)",
+                    "/actions/workspace/out/haptic": "Handle Feedback"}]
 }

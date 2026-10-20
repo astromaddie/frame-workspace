@@ -8,6 +8,7 @@
 #include "placement.hpp"
 #include "handles.hpp"
 #include "chrome.hpp"
+#include "bend.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
@@ -35,6 +36,12 @@ class Overlay {
   VR_IVROverlay_FnTable *overlay = nullptr;
   VR_IVRSystem_FnTable *system = nullptr;
   VROverlayHandle_t handle = 0;
+  // The window's second half, shown only while its halves bend differently.
+  VROverlayHandle_t handle2 = 0;
+  bool showingHalf = false;
+  // The last picture shown, kept to redraw it when the bend changes direction.
+  std::shared_ptr<Picture> shownPicture;
+  bool shownTransposed = false;
   // One output texture plus its own source planes per slot. With the fence
   // handoff, the GPU converts one picture while the CPU uploads the next; a
   // slot is reused only after SteamVR has copied a newer submitted texture
@@ -44,7 +51,8 @@ class Overlay {
     GLuint yuv[3] = {};
     int yuvWidth = 0, yuvHeight = 0;
     Picture::Format yuvFormat = Picture::Format::RGBA;
-    int width = 0, height = 0;
+    int width = 0, height = 0;   // the texture (transposed: the picture's height x width)
+    bool transposed = false;     // drawn a quarter turn, for a top-to-bottom bend
     GLsync fence = nullptr;
     std::shared_ptr<Picture> picture;
     double staged = 0;
@@ -67,20 +75,22 @@ class Overlay {
   // and the controls 3 cm out; plus the laser's tip, a small white-hot core.
   VR_IVRInput_FnTable *input = nullptr;
   VRActionSetHandle_t actionSet = 0;
-  VRActionHandle_t aimAction = 0, grabAction = 0;
+  VRActionHandle_t aimAction = 0, grabAction = 0, squeezeAction = 0, hapticAction = 0;
   VRInputValueHandle_t hands[2] = {};
   static constexpr float frameDepth = 0.015f, controlsDepth = 0.03f;
   VROverlayHandle_t frameHandle = 0, chromeHandle = 0, cursorHandle = 0;
+  VROverlayHandle_t frameHandle2 = 0, chromeHandle2 = 0;  // their second halves, for uneven bends
   GLuint frameTexture = 0, chromeTexture = 0, cursorTexture = 0;
   ChromeRenderer chromeRenderer;
   ChromeState chromeState, chromeDrawn, frameDrawn;
-  float drawnGeometry[3] = {-1, -1, -1};     // width, height, curvature last drawn
-  float layerGeometry[3] = {-1, -1, -1};     // ... last given to the layers
   bool chromeShown = false, cursorVisible = false, chromeFailed = false, closing = false;
   double lastChromeUpdate = 0;
   HandleDrag drag;
   int dragHand = -1;
-  bool grabWas[2] = {};
+  bool dragBySqueeze = false;           // the drag was started with the grip button
+  bool grabWas[2] = {}, squeezeWas[2] = {};
+  Handle hotWas[2] = {Handle::None, Handle::None};
+  double shownAt[10] = {};     // when each handle was last asked to slide out
 public:
   bool closeRequested = false; // the Close button was selected in the headset
 private:
@@ -292,7 +302,7 @@ private:
                            s.texture, 0);
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
       throw std::runtime_error("YUV output framebuffer is incomplete");
-    glViewport(0, 0, p.outputWidth(), p.outputHeight());
+    glViewport(0, 0, s.width, s.height);
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_SCISSOR_TEST);
@@ -335,10 +345,19 @@ private:
     uniform1f("bCb", bt709 ? (full ? 1.8556f : 2.112402f)
                             : (full ? 1.772f : 2.017232f));
     glBegin(GL_QUADS);
-    glTexCoord2f(0, 0); glVertex2f(-1, -1);
-    glTexCoord2f(1, 0); glVertex2f(1, -1);
-    glTexCoord2f(1, 1); glVertex2f(1, 1);
-    glTexCoord2f(0, 1); glVertex2f(-1, 1);
+    if (s.transposed) {
+      // A quarter turn (top row first in both): output (u, v) shows the
+      // picture at (v, 1 - u), so u runs up the picture from its bottom edge.
+      glTexCoord2f(0, 1); glVertex2f(-1, -1);
+      glTexCoord2f(0, 0); glVertex2f(1, -1);
+      glTexCoord2f(1, 0); glVertex2f(1, 1);
+      glTexCoord2f(1, 1); glVertex2f(-1, 1);
+    } else {
+      glTexCoord2f(0, 0); glVertex2f(-1, -1);
+      glTexCoord2f(1, 0); glVertex2f(1, -1);
+      glTexCoord2f(1, 1); glVertex2f(1, 1);
+      glTexCoord2f(0, 1); glVertex2f(-1, 1);
+    }
     glEnd();
     glUseProgram(0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -454,6 +473,16 @@ public:
     // desktop is upright in the headset; readback dumps are unaffected.
     VRTextureBounds_t bounds{0, 1, 1, 0};
     check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
+    {
+      std::string halfKey = key + ".half", halfName = name;
+      if (overlay->CreateOverlay(halfKey.data(), halfName.data(), &handle2) == EVROverlayError_VROverlayError_None) {
+        overlay->SetOverlayTextureColorSpace(handle2, EColorSpace_ColorSpace_Gamma);
+        overlay->SetOverlayInputMethod(handle2, VROverlayInputMethod_None);
+        overlay->SetOverlaySortOrder(handle2, 1);
+      } else {
+        handle2 = 0; // halves stay even; a one-sided bend applies to both
+      }
+    }
     if (!actionManifest.empty())
       initPlacementInput(get, actionManifest);
   }
@@ -468,6 +497,8 @@ public:
         table->GetActionSetHandle((char *)"/actions/workspace", &actionSet) ||
         table->GetActionHandle((char *)"/actions/workspace/in/aim", &aimAction) ||
         table->GetActionHandle((char *)"/actions/workspace/in/grab", &grabAction) ||
+        table->GetActionHandle((char *)"/actions/workspace/in/squeeze", &squeezeAction) ||
+        table->GetActionHandle((char *)"/actions/workspace/out/haptic", &hapticAction) ||
         table->GetInputSourceHandle((char *)"/user/hand/left", &hands[0]) ||
         table->GetInputSourceHandle((char *)"/user/hand/right", &hands[1])) {
       fprintf(stderr, "[native] placement input unavailable\n");
@@ -481,8 +512,13 @@ public:
       fprintf(stderr, "[native] placement overlays unavailable\n");
       return;
     }
+    std::string frameHalf = frameKey + ".half", chromeHalf = chromeKey + ".half";
+    if (overlay->CreateOverlay(frameHalf.data(), frameName.data(), &frameHandle2) ||
+        overlay->CreateOverlay(chromeHalf.data(), chromeName.data(), &chromeHandle2))
+      frameHandle2 = chromeHandle2 = 0;
     VRTextureBounds_t bounds{0, 1, 1, 0};
-    for (auto h : {frameHandle, chromeHandle, cursorHandle}) {
+    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2}) {
+      if (!h) continue;
       overlay->SetOverlayTextureBounds(h, &bounds);
       overlay->SetOverlayInputMethod(h, VROverlayInputMethod_None);
       overlay->SetOverlayFlag(h, VROverlayFlags_IsPremultiplied, true);
@@ -491,6 +527,8 @@ public:
     overlay->SetOverlaySortOrder(handle, 1);
     overlay->SetOverlaySortOrder(frameHandle, 2);
     overlay->SetOverlaySortOrder(chromeHandle, 3);
+    if (frameHandle2) overlay->SetOverlaySortOrder(frameHandle2, 2);
+    if (chromeHandle2) overlay->SetOverlaySortOrder(chromeHandle2, 3);
     overlay->SetOverlaySortOrder(cursorHandle, 4);
     overlay->SetOverlayWidthInMeters(cursorHandle, 0.014f);
     // The tip, as in Stargate: a small white-hot core that shows on anything,
@@ -531,75 +569,60 @@ public:
   float panelHeight() const {
     return placement.width * (width > 0 && height > 0 ? float(height) / float(width) : 2560.f / 2880.f);
   }
-  // The window's curvature radius (0 when flat) and, for a layer `z` in front,
-  // the factor from the layer's own arc to the window's (1 when flat).
-  float curveRadius() const {
-    return placement.curvature > 1e-4f ? placement.width / (2 * float(M_PI) * placement.curvature) : 0;
-  }
-  float layerScale(float z) const {
-    const float R = curveRadius();
-    return R > 0 ? R / std::max(R - z, 0.05f) : 1;
-  }
-  // A transform `z` in front of the window at window coordinates (x, y): on its
-  // cylinder when curved, facing the axis.
+  // A transform `z` in front of the window at window coordinates (x, y), on
+  // its bent surface and facing out of it.
   HmdMatrix34_t panelPoint(float x, float y, float z) const {
-    HmdMatrix34_t local{{{1, 0, 0, x}, {0, 1, 0, y}, {0, 0, 1, z}}};
-    const float R = curveRadius();
-    if (R > 0) {
-      const float a = x / R, r = std::max(R - z, 0.05f);
-      local = {{{std::cos(a), 0, -std::sin(a), r * std::sin(a)}, {0, 1, 0, y},
-                {std::sin(a), 0, std::cos(a), R - r * std::cos(a)}}};
-    }
-    return multiply(placement.matrix, local);
+    return multiply(placement.matrix, bendPointXY(shape(), x, y, z));
   }
   // Where a controller's pointing ray meets the layer `z` in front of the
-  // window, in window coordinates (an arc position when curved).
+  // window, in window coordinates (arc positions where it bends).
   bool layerHit(const HmdMatrix34_t &c, float z, float &x, float &y) const {
     const HmdMatrix34_t local = multiply(inverseRigid(placement.matrix), c);
     const float o[3] = {local.m[0][3], local.m[1][3], local.m[2][3]};
     const float d[3] = {-local.m[0][2], -local.m[1][2], -local.m[2][2]};
-    const float R = curveRadius();
-    if (R <= 0) {
-      if (std::fabs(d[2]) < 1e-4f) return false;
-      const float t = (z - o[2]) / d[2];
-      if (t <= 0) return false;
-      x = o[0] + t * d[0];
-      y = o[1] + t * d[1];
-      return true;
-    }
-    const float r = std::max(R - z, 0.05f), ox = o[0], oz = o[2] - R;
-    const float qa = d[0] * d[0] + d[2] * d[2], qb = 2 * (ox * d[0] + oz * d[2]), qc = ox * ox + oz * oz - r * r;
-    const float disc = qb * qb - 4 * qa * qc;
-    if (qa < 1e-8f || disc < 0) return false;
-    float best = -1;
-    for (float t : {(-qb - std::sqrt(disc)) / (2 * qa), (-qb + std::sqrt(disc)) / (2 * qa)})
-      if (t > 0 && o[2] + t * d[2] < R && (best < 0 || t < best)) best = t;
-    if (best < 0) return false;
-    const float px = o[0] + best * d[0], pz = o[2] + best * d[2];
-    x = std::atan2(px, R - pz) * R;
-    y = o[1] + best * d[1];
-    return true;
+    return bendHit(shape(), o, d, z, x, y);
   }
-  // Keeps the bezel and controls layers on the window, matching its size and
-  // curvature (concentric when curved).
+  // What the layers were last placed and drawn for.
+  struct LayerGeometry {
+    float width = -1, height = -1, a = -1, b = -1;
+    bool vertical = false;
+    bool operator==(const LayerGeometry &o) const {
+      return width == o.width && height == o.height && a == o.a && b == o.b && vertical == o.vertical;
+    }
+  };
+  LayerGeometry placedGeometry, drawnLayerGeometry;
+  LayerGeometry currentGeometry(const HandleLayout &l) const {
+    return {placement.width, l.height, placement.bendA, placement.bendB, placement.bendVertical};
+  }
+  // Keeps the bezel and controls on the window: concentric with it, in one
+  // overlay each, or two where its halves bend differently.
   void placeLayers(const HandleLayout &l) {
-    struct { VROverlayHandle_t h; float z, width; } layers[2] = {
-        {frameHandle, frameDepth, l.frameWidth()}, {chromeHandle, controlsDepth, l.chromeWidth()}};
-    const bool resized = layerGeometry[0] != placement.width || layerGeometry[1] != l.height ||
-                         layerGeometry[2] != placement.curvature;
+    struct { VROverlayHandle_t h[2]; float z, width, height; } layers[2] = {
+        {{frameHandle, frameHandle2}, frameDepth, l.frameWidth(), l.frameHeight()},
+        {{chromeHandle, chromeHandle2}, controlsDepth, l.chromeWidth(), l.chromeHeight()}};
+    const LayerGeometry now = currentGeometry(l);
+    const bool resized = !(now == placedGeometry);
+    const BendShape b = shape();
     for (auto &layer : layers) {
-      HmdMatrix34_t m = panelPoint(0, 0, layer.z);
-      overlay->SetOverlayTransformAbsolute(layer.h, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
-      if (resized) {
-        const float arc = layer.width / layerScale(layer.z), R = curveRadius();
-        overlay->SetOverlayWidthInMeters(layer.h, arc);
-        if (overlay->SetOverlayCurvature)
-          overlay->SetOverlayCurvature(layer.h, R > 0 ? std::min(arc / (2 * float(M_PI) * (R - layer.z)), 1.f) : 0.f);
+      const float span = b.vertical ? layer.height : layer.width;
+      for (int i = 0; i < b.segments(); i++) {
+        if (!layer.h[i]) continue;
+        const BendSegment seg = bendSegment(b, i, span, layer.z);
+        HmdMatrix34_t m = multiply(placement.matrix, seg.local);
+        overlay->SetOverlayTransformAbsolute(layer.h[i], ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
+        if (resized) {
+          VRTextureBounds_t bounds = seg.bounds;
+          overlay->SetOverlayWidthInMeters(layer.h[i], seg.width);
+          overlay->SetOverlayTextureBounds(layer.h[i], &bounds);
+          if (overlay->SetOverlayCurvature) overlay->SetOverlayCurvature(layer.h[i], seg.curvature);
+        }
+      }
+      if (layer.h[1] && chromeShown && resized) {
+        if (b.segments() == 2) overlay->ShowOverlay(layer.h[1]);
+        else overlay->HideOverlay(layer.h[1]);
       }
     }
-    layerGeometry[0] = placement.width;
-    layerGeometry[1] = l.height;
-    layerGeometry[2] = placement.curvature;
+    placedGeometry = now;
   }
   static bool sameChrome(const ChromeState &a, const ChromeState &b) {
     for (int i = 0; i < handleCount; i++)
@@ -610,19 +633,19 @@ public:
   }
   // Draws whichever layers changed and hands them to SteamVR.
   void drawChrome(const HandleLayout &l, const ChromeState &frameState) {
-    const bool geometry = drawnGeometry[0] != placement.width || drawnGeometry[1] != l.height ||
-                          drawnGeometry[2] != placement.curvature;
-    struct { int layer; VROverlayHandle_t h; GLuint texture; const ChromeState &state; ChromeState &drawn;
-             float width, height, z; } layers[2] = {
-        {0, frameHandle, frameTexture, frameState, frameDrawn, l.frameWidth(), l.frameHeight(), frameDepth},
-        {1, chromeHandle, chromeTexture, chromeState, chromeDrawn, l.chromeWidth(), l.chromeHeight(), controlsDepth}};
+    const LayerGeometry now = currentGeometry(l);
+    const bool geometry = !(now == drawnLayerGeometry);
+    const bool transposed = placement.bendVertical;
+    struct { int layer; VROverlayHandle_t h[2]; GLuint texture; const ChromeState &state; ChromeState &drawn;
+             float width, height; } layers[2] = {
+        {0, {frameHandle, frameHandle2}, frameTexture, frameState, frameDrawn, l.frameWidth(), l.frameHeight()},
+        {1, {chromeHandle, chromeHandle2}, chromeTexture, chromeState, chromeDrawn, l.chromeWidth(), l.chromeHeight()}};
     for (auto &layer : layers) {
       if (!geometry && sameChrome(layer.state, layer.drawn)) continue;
-      const float scale = layerScale(layer.z), arc = layer.width / scale;
       int w = 0, h = 0;
-      ChromeRenderer::textureSize(arc, layer.height, w, h);
+      ChromeRenderer::textureSize(layer.width, layer.height, transposed, w, h);
       try {
-        chromeRenderer.render(layer.layer, l, layer.state, arc, layer.height, scale, layer.texture, w, h);
+        chromeRenderer.render(layer.layer, l, layer.state, layer.width, layer.height, transposed, layer.texture, w, h);
       } catch (const std::exception &e) {
         fprintf(stderr, "[native] window chrome unavailable: %s\n", e.what());
         chromeFailed = true;
@@ -631,15 +654,24 @@ public:
       glFlush(); // SteamVR copies it on submission, in this context
       Texture_t t{reinterpret_cast<void *>(uintptr_t(layer.texture)), ETextureType_TextureType_OpenGL,
                   EColorSpace_ColorSpace_Gamma};
-      overlay->SetOverlayTexture(layer.h, &t);
+      HmdVector2_t mouseScale{{float(w), float(h)}};
+      for (auto h2 : layer.h)
+        if (h2) {
+          overlay->SetOverlayMouseScale(h2, &mouseScale);
+          overlay->SetOverlayTexture(h2, &t);
+        }
       layer.drawn = layer.state;
     }
-    drawnGeometry[0] = placement.width;
-    drawnGeometry[1] = l.height;
-    drawnGeometry[2] = placement.curvature;
+    drawnLayerGeometry = now;
+  }
+  // A short buzz on one hand's controller: a light tick when the laser comes
+  // onto a handle, a firmer one when it is taken, a soft one on letting go.
+  void pulse(int hand, float seconds, float frequency, float amplitude) {
+    if (input && hapticAction)
+      input->TriggerHapticVibrationAction(hapticAction, 0, seconds, frequency, amplitude, hands[hand]);
   }
   void hideChrome() {
-    for (auto h : {frameHandle, chromeHandle, cursorHandle})
+    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
       if (h) overlay->HideOverlay(h);
     chromeShown = cursorVisible = false;
   }
@@ -659,17 +691,19 @@ public:
     HandleLayout l;
     l.width = placement.width;
     l.height = panelHeight();
-    struct HandRay { bool valid = false, grab = false, hit = false, onControls = false, onFrame = false;
+    struct HandRay { bool valid = false, grab = false, squeeze = false, hit = false, onControls = false, onFrame = false;
                      HmdMatrix34_t pose{}; float x = 0, y = 0, fx = 0, fy = 0; };
     HandRay rays[2];
     for (int i = 0; i < 2; i++) {
       InputPoseActionData_t pose{};
-      InputDigitalActionData_t grab{};
+      InputDigitalActionData_t grab{}, squeeze{};
       input->GetPoseActionDataForNextFrame(aimAction, ETrackingUniverseOrigin_TrackingUniverseStanding, &pose,
                                            sizeof pose, hands[i]);
       input->GetDigitalActionData(grabAction, &grab, sizeof grab, hands[i]);
+      input->GetDigitalActionData(squeezeAction, &squeeze, sizeof squeeze, hands[i]);
       rays[i].valid = pose.bActive && pose.pose.bPoseIsValid;
       rays[i].grab = grab.bActive && grab.bState;
+      rays[i].squeeze = squeeze.bActive && squeeze.bState;
       if (rays[i].valid) {
         rays[i].pose = pose.pose.mDeviceToAbsoluteTracking;
         rays[i].onControls = layerHit(rays[i].pose, controlsDepth, rays[i].x, rays[i].y);
@@ -682,6 +716,7 @@ public:
     if (!chromeShown) {
       for (auto h : {frameHandle, chromeHandle}) overlay->ShowOverlay(h);
       chromeShown = true;
+      placedGeometry = LayerGeometry{}; // shows the halves too, if bent unevenly
     }
     placeLayers(l);
     bool ended = false;
@@ -689,12 +724,9 @@ public:
     Handle hot = Handle::None;
     if (dragHand >= 0) {
       HandRay &r = rays[dragHand];
-      if (r.valid && r.grab) {
-        const float curvature = placement.curvature;
+      if (r.valid && (dragBySqueeze ? r.squeeze : r.grab)) {
         placement = drag.update(r.pose);
         apply();
-        if (std::fabs(placement.curvature - curvature) > 1e-4f)
-          setCurvature(placement.curvature);
         l.width = placement.width;
         l.height = panelHeight();
         placeLayers(l);
@@ -703,6 +735,7 @@ public:
         pointing = dragHand;
         hot = drag.handle;
       } else {
+        pulse(dragHand, 0.012f, 160, 0.2f);
         dragHand = -1;
         ended = true;
       }
@@ -713,20 +746,38 @@ public:
         if (std::fabs(rays[i].x) > l.chromeWidth() / 2 || std::fabs(rays[i].y) > l.chromeHeight() / 2) continue;
         pointing = i;
         hot = l.zone(rays[i].x, rays[i].y);
+        // Keep the handle under the laser a little beyond its edge, so it
+        // doesn't flicker between neighbours or off at the boundary.
+        const Handle was = hotWas[i];
+        if (was != Handle::None && hot != was && (was == Handle::Pill || was == Handle::Close ||
+            chromeState.reveal[handleIndex(was)] > 0) &&
+            l.distance(was, rays[i].x, rays[i].y) < HandleLayout::tolerance * 1.5f)
+          hot = was;
         break;
       }
-      if (pointing >= 0 && hot == Handle::Close && rays[pointing].grab && !grabWas[pointing]) {
+      for (int i = 0; i < 2; i++) {
+        const Handle now = i == pointing ? hot : Handle::None;
+        if (now != Handle::None && now != hotWas[i]) pulse(i, 0.01f, 180, 0.14f);
+        hotWas[i] = now;
+      }
+      const bool pressed = pointing >= 0 && ((rays[pointing].grab && !grabWas[pointing]) ||
+                                             (rays[pointing].squeeze && !squeezeWas[pointing]));
+      if (pressed && hot == Handle::Close) {
         // Close: hide at once for immediate feedback; the companion then
         // stops this panel's stream (or the Workspace) and the viewer exits.
+        pulse(pointing, 0.03f, 100, 0.45f);
         closeRequested = closing = true;
         overlay->HideOverlay(handle);
         hideChrome();
-        for (int i = 0; i < 2; i++) grabWas[i] = rays[i].grab;
+        for (int i = 0; i < 2; i++) { grabWas[i] = rays[i].grab; squeezeWas[i] = rays[i].squeeze; }
         return false;
       }
-      if (pointing >= 0 && hot != Handle::None && rays[pointing].grab && !grabWas[pointing]) {
-        drag.start(hot, rays[pointing].pose, placement);
+      if (pressed && hot != Handle::None) {
+        dragBySqueeze = !(rays[pointing].grab && !grabWas[pointing]);
+        drag.start(hot, rays[pointing].pose, placement, dragBySqueeze);
+        drag.startAspect = panelHeight() / placement.width;
         dragHand = pointing;
+        pulse(pointing, 0.022f, 120, 0.35f);
       }
     }
     // Targets: a side's handles slide out while the laser is past that edge
@@ -741,7 +792,10 @@ public:
       const bool always = h == Handle::Pill || h == Handle::Close;
       const bool isHot = h == hot && hot != Handle::None;
       const bool held = dragHand >= 0 && h == drag.handle;
-      approach(chromeState.reveal[i], always || (shown & (1u << i)) || held ? 1.f : 0.f, 0.12f);
+      if ((shown & (1u << i)) || held) shownAt[i] = now;
+      // Stay out a moment after the laser leaves, so a side doesn't flicker.
+      const bool out = always || now - shownAt[i] < 350;
+      approach(chromeState.reveal[i], out ? 1.f : 0.f, 0.12f);
       approach(chromeState.wide[i], !always && (isHot || held) ? 1.f : 0.f, 0.09f);
       chromeState.held[i] = held ? 1.f : 0.f;
     }
@@ -787,12 +841,15 @@ public:
       overlay->HideOverlay(cursorHandle);
       cursorVisible = false;
     }
-    for (int i = 0; i < 2; i++) grabWas[i] = rays[i].grab;
+    for (int i = 0; i < 2; i++) { grabWas[i] = rays[i].grab; squeezeWas[i] = rays[i].squeeze; }
     return ended;
   }
   const char *gaze(double &u, double &v) {
     if(!gazeBridge) return "unavailable";
     std::lock_guard<std::mutex> lock(gazeGeometryMutex);
+    // Gaze maps through the window's single overlay; halves bent differently
+    // or a turned (top-to-bottom) window are not mapped yet.
+    if(gazePlacement.bendVertical || std::fabs(gazePlacement.bendA-gazePlacement.bendB)>1e-4f) return "bent-window";
     if(gazeTextureChanging) return "overlay-resizing";
     if(!gazeCalibrated && nowMs()-lastGazeCalibration>=1000) {
       lastGazeCalibration=nowMs();gazeCalibrated=calibrateGaze();
@@ -811,7 +868,7 @@ public:
   ~Overlay() {
     // The main-scope GazeProducer has already joined before this object dies.
     chromeRenderer.release();
-    for (auto h : {frameHandle, chromeHandle, cursorHandle})
+    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
       if (h) overlay->DestroyOverlay(h);
     for (auto t : {frameTexture, chromeTexture, cursorTexture})
       if (t) glDeleteTextures(1, &t);
@@ -889,11 +946,36 @@ public:
     gazePlacement = placement;
     if (noVR)
       return;
-    check(overlay->SetOverlayWidthInMeters(handle, placement.width), "width");
-    check(overlay->SetOverlayTransformAbsolute(
-              handle, ETrackingUniverseOrigin_TrackingUniverseStanding,
-              &placement.matrix),
-          "world transform");
+    if (!handle2 && (placement.bendVertical || std::fabs(placement.bendA - placement.bendB) > 1e-4f)) {
+      placement.bendA = placement.bendB = std::max(placement.bendA, placement.bendB);
+      syncCurvature(placement);
+    }
+    const BendShape b = shape();
+    for (int i = 0; i < b.segments(); i++) {
+      const BendSegment seg = bendSegment(b, i, b.span, 0);
+      const VROverlayHandle_t h = i == 0 ? handle : handle2;
+      HmdMatrix34_t m = multiply(placement.matrix, seg.local);
+      VRTextureBounds_t bounds = seg.bounds;
+      check(overlay->SetOverlayWidthInMeters(h, seg.width), "width");
+      check(overlay->SetOverlayTransformAbsolute(h, ETrackingUniverseOrigin_TrackingUniverseStanding, &m),
+            "world transform");
+      overlay->SetOverlayTextureBounds(h, &bounds);
+      if (overlay->SetOverlayCurvature) overlay->SetOverlayCurvature(h, seg.curvature);
+    }
+    const bool half = b.segments() == 2;
+    if (handle2 && half != showingHalf) {
+      if (!half) overlay->HideOverlay(handle2);
+      else if (texture) overlay->ShowOverlay(handle2);
+      showingHalf = half;
+    }
+  }
+  // The window's bend now (bend.hpp).
+  BendShape shape() const { return bendShape(placement, panelHeight()); }
+  bool wantsTransposed() const { return placement.bendVertical; }
+  // A picture to redraw when the bend changed direction since it was shown.
+  std::shared_ptr<Picture> restagePicture() const {
+    return shownPicture && shownTransposed != wantsTransposed() && ready.empty() && inFlight.empty() ? shownPicture
+                                                                                                      : nullptr;
   }
   void focus() {
     if (!noVR && texture)
@@ -915,7 +997,21 @@ public:
     }
     return result;
   }
+  // Bends each half on its own (control file {"bend":{"vertical":..,"a":..,"b":..}}).
+  void setBend(bool vertical, float a, float b) {
+    placement.bendVertical = vertical;
+    placement.bendA = std::clamp(a, 0.f, 1.f);
+    placement.bendB = std::clamp(b, 0.f, 1.f);
+    syncCurvature(placement);
+    apply();
+  }
   CurvatureResult setCurvature(float requested) {
+    // The Mac page's curvature is an even side-to-side bend: back to one overlay.
+    if (std::isfinite(requested) && requested >= 0.f && requested <= 1.f && !noVR &&
+        (placement.bendVertical || std::fabs(placement.bendA - placement.bendB) > 1e-4f)) {
+      setEvenBend(placement, requested);
+      apply();
+    }
     std::lock_guard<std::mutex> lock(gazeGeometryMutex);
     gazeCalibrated = false; lastGazeCalibration = 0;
     CurvatureResult result;
@@ -944,7 +1040,7 @@ public:
     if (current.readable && !result.applied)
       result.errorCode = -4; // The command ran, but readback did not confirm it.
     if (result.applied)
-      placement.curvature = result.value;
+      setEvenBend(placement, result.value);
     return result;
   }
   bool events() {
@@ -968,7 +1064,7 @@ public:
         exitReason = "openvr-overlay-quit";
         return false;
       }
-    for (auto h : {frameHandle, chromeHandle, cursorHandle})
+    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
       if (h)
         while (overlay->PollNextOverlayEvent(h, &e, sizeof(e))) {
         }
@@ -1009,7 +1105,10 @@ public:
     if (index < 0)
       throw std::runtime_error("no free texture slot");
     Slot &s = slots[index];
-    if (!s.texture || p.outputWidth() != s.width || p.outputHeight() != s.height) {
+    const bool transposed = wantsTransposed();
+    const int texW = transposed ? p.outputHeight() : p.outputWidth();
+    const int texH = transposed ? p.outputWidth() : p.outputHeight();
+    if (!s.texture || texW != s.width || texH != s.height || transposed != s.transposed) {
       // New names on resize avoid stale SteamVR texture metadata. The old one
       // may still be displayed, so it is deleted after the next submission.
       if (s.texture)
@@ -1021,13 +1120,13 @@ public:
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, p.outputWidth(), p.outputHeight(), 0, GL_RGBA,
-                   GL_UNSIGNED_BYTE, nullptr);
-      s.width = p.outputWidth();
-      s.height = p.outputHeight();
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, texW, texH, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+      s.width = texW;
+      s.height = texH;
+      s.transposed = transposed;
     } else
       glBindTexture(GL_TEXTURE_2D, s.texture);
-    if (p.format == Picture::Format::RGBA && !p.layout.warped) {
+    if (p.format == Picture::Format::RGBA && !p.layout.warped && !transposed) {
       gpuConvertMs = 0;
       glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, p.width, p.height, GL_RGBA,
@@ -1170,9 +1269,11 @@ public:
   }
   Completion submit(int index) {
     Slot &s = slots[index];
+    std::shared_ptr<Picture> picture = s.picture;
     Completion c{std::move(s.picture), true, s.texture, s.width, s.height};
-    width = s.width;
-    height = s.height;
+    // The window's own size (the texture is turned for a top-to-bottom bend).
+    width = s.transposed ? s.height : s.width;
+    height = s.transposed ? s.width : s.height;
     double submitStart = nowMs();
     if (!noVR) {
       // A resize changes the runtime's intersection aspect ratio. Invalidate
@@ -1182,10 +1283,13 @@ public:
       {
         std::lock_guard<std::mutex> lock(gazeGeometryMutex);
         sizeChanged = width != gazeWidth || height != gazeHeight || gazeTextureChanging;
-        if (sizeChanged) {
-          HmdVector2_t mouseScale{{float(width), float(height)}};
+        if (sizeChanged || s.transposed != shownTransposed) {
+          // SteamVR sizes its intersection tests by this: the texture as
+          // submitted (turned for a top-to-bottom bend).
+          HmdVector2_t mouseScale{{float(s.width), float(s.height)}};
           check(overlay->SetOverlayMouseScale(handle, &mouseScale),
                 "mouse scale");
+          if (handle2) overlay->SetOverlayMouseScale(handle2, &mouseScale);
           gazeTextureChanging = true;
           gazeCalibrated = false; lastGazeCalibration = 0;
         }
@@ -1202,13 +1306,24 @@ public:
         // invalid until a successful retry establishes the displayed size.
         gazeTextureChanging = !c.submitted;
       }
-      if (c.submitted)
+      if (c.submitted) {
         check(overlay->ShowOverlay(handle), "ShowOverlay");
+        if (handle2 && showingHalf) {
+          overlay->SetOverlayTexture(handle2, &t);
+          overlay->ShowOverlay(handle2);
+        }
+        if (s.transposed != shownTransposed) {
+          // The texture turned with the bend: put the overlays on the new shape.
+          shownTransposed = s.transposed;
+          apply();
+        }
+      }
     }
     submitMs = nowMs() - submitStart;
     if (c.submitted) {
       texture = s.texture;
       displayed = index;
+      shownPicture = picture;
       if (!retired.empty()) {
         glDeleteTextures(GLsizei(retired.size()), retired.data());
         retired.clear();

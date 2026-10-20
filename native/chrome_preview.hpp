@@ -18,7 +18,7 @@ inline bool renderChromePreview(const std::string &scene, float windowWidth, con
   if (scene == "all") {
     for (int i = 0; i < handleCount; i++) s.reveal[i] = 1;
   } else if (scene == "hover" || scene == "held") {
-    for (Handle h : {Handle::CornerTR, Handle::CornerBR, Handle::BarRight}) out(h);
+    for (Handle h : {Handle::CornerTR, Handle::CornerBR, Handle::BarRight, Handle::BarTop}) out(h);
     s.tip = true;
     if (scene == "hover") {
       s.wide[handleIndex(Handle::BarRight)] = 1;
@@ -44,10 +44,10 @@ inline bool renderChromePreview(const std::string &scene, float windowWidth, con
   GLuint tex[2];
   glGenTextures(2, tex);
   int fw_ = 0, fh = 0, cw = 0, ch = 0;
-  ChromeRenderer::textureSize(l.frameWidth(), l.frameHeight(), fw_, fh);
-  ChromeRenderer::textureSize(l.chromeWidth(), l.chromeHeight(), cw, ch);
-  r.render(0, l, frame, l.frameWidth(), l.frameHeight(), 1, tex[0], fw_, fh);
-  r.render(1, l, s, l.chromeWidth(), l.chromeHeight(), 1, tex[1], cw, ch);
+  ChromeRenderer::textureSize(l.frameWidth(), l.frameHeight(), false, fw_, fh);
+  ChromeRenderer::textureSize(l.chromeWidth(), l.chromeHeight(), false, cw, ch);
+  r.render(0, l, frame, l.frameWidth(), l.frameHeight(), false, tex[0], fw_, fh);
+  r.render(1, l, s, l.chromeWidth(), l.chromeHeight(), false, tex[1], cw, ch);
   glFinish();
   auto read = [](GLuint t, int w, int h) {
     std::vector<unsigned char> px(size_t(w) * h * 4);

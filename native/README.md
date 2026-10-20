@@ -199,6 +199,37 @@ in front just past the window's edges, with positions across matching the
 window to within 0.001, at curvature 0.168 and 0.45 (the window wrapping 162°;
 2026-10-20). Not yet verified: how they look and feel worn.
 
+**Feel** (2026-10-20): a light controller tick when the laser comes onto a
+handle, a firmer one when it is taken and a soft one on release
+(`/actions/workspace/out/haptic`). A side's handles stay out 0.35 s after the
+laser leaves, and the handle under the laser holds until the laser is 1.5x the
+pick-up distance away, so neither flickers at a boundary.
+
+**Bending** (FW-14, `bend.hpp`): a side grip pulled with the trigger bends only
+its own half; pulled with the grip button (`/actions/workspace/in/squeeze`) it
+bends both evenly. Top and bottom grips bend top to bottom the same way;
+changing direction starts from flat. SteamVR only curves an overlay side to
+side about its middle, so halves that differ are two overlays (the window's
+`<key>.half`, and `.half` copies of the bezel and controls), arcs tangent at the
+centre line and overlapping by 2 mm; a top-to-bottom bend turns each overlay a
+quarter turn on its face and draws its texture transposed (the last picture is
+redrawn at once, so a still desktop turns too). The pose file keeps the bend as
+`"bend":{"vertical":..,"a":..,"b":..}` (a: left or bottom half, b: right or
+top), and the control file accepts the same object. The Mac page's curvature
+sets an even side-to-side bend. Gaze sharpening pauses while a window is bent
+unevenly or top to bottom.
+
+Verified 2026-10-20 on the Frame (not worn) with `probe_bends.cpp`, which
+checks SteamVR's own ray intersections against the expected surfaces: even,
+right half only, uneven halves, top to bottom (even, top only, uneven) and back,
+all within 0.1 mm on the window, bezel and controls. SteamVR's intersection
+geometry follows its mouse scale, so every overlay's mouse scale is its
+submitted texture's size. With the headset idle, SteamVR applies overlay
+changes to its intersection tests a few seconds late; the probe retries. Frame
+pacing was unchanged with the window in two halves (no new drops; pictures
+12-18 ms old); switching shape drops a few pictures. Not yet verified: how the
+bends look and feel worn.
+
 The close disc closes that window (or stops the Workspace): the viewer writes
 `{"action":"close","key":KEY}` into `--request-dir` and the Mac companion
 acts on it.
