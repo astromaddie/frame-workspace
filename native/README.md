@@ -134,7 +134,7 @@ not successful decode or GPU execution timings.
 With the native Workspace viewer selected, Show for a Mac window starts a native
 viewer of its own instead of a Chrome panel. It has its own unit, runtime files,
 OpenVR key `com.frame-workspace.native.UID.panel-wID`, saved pose and hardware
-decoder session (`--panel ID [--name TITLE] [--initial-pose JSON]` before the
+decoder session (`--panel ID [--name TITLE] [--initial-pose JSON | --pose JSON]` before the
 launcher command, plus `stop`). The window is captured as itself at its own size
 and backing scale; it is not moved onto a separate display or resized. Its first
 position is beside the Workspace: on the circle around the viewing point at the
@@ -145,8 +145,35 @@ the window's stream ends its viewer, and the companion removes its runtime files
 Verified on the Frame 2026-10-19 with a 986×729-point Terminal window: a
 1984×1472 texture with V4L2 decoding at ~56 updates/s beside the running
 Workspace, with clean removal on Stop. `FRAME_WINDOW_VIEWER=browser` keeps the
-older Chrome panels. Moving panels in the headset (visionOS-style grab pill,
-resize corners and curve bars) is the next FW-14 stage.
+older Chrome panels. In-headset movement and sizing are described below.
+
+Profile Save now captures the Workspace pose and each uniquely matched native
+window's saved pose from the Frame. Schema v2 stores these against the stable
+bundle ID/title rule, so Profile Restore can apply them to fresh Mac window IDs.
+Files absent at save time leave that entry without a pose; missing, retitled,
+ambiguous and duplicate window matches retain the existing skip diagnostics.
+Browser profiles remain logical only. Pose-bearing profiles require native
+viewers; switching backends does not prevent reading them.
+
+The launcher accepts `--pose JSON` before `start` for either the Workspace or a
+window panel. It strictly validates pose version 1, finite numeric values,
+width 0.4–8 m, distance 0.4–10 m, curvature 0–1, and a 12-number matrix with
+components within ±100 and a right-handed orthonormal rotation (row-dot tolerance
+0.02, matching `placement.hpp`). It then atomically replaces the pose file with
+mode 0600 after confirming the old viewer stopped and before starting the new
+one. This override wins over a stale pose for the current panel ID.
+`--pose` cannot accompany `--initial-pose` or a command other than `start`.
+Without a saved profile pose, the existing pose-file/initial-beside-Workspace
+behavior is unchanged. Restoring a Workspace pose restarts its viewer rather
+than taking the Show Again recenter shortcut; its Mac display can be reused.
+
+Local unit tests cover capture through mocked Frame calls, schema v1 migration,
+fresh-ID restore, and the actual launcher with stubbed services. **Not yet
+verified on the device:** profile save/restore of multiple moved, resized and
+curved panels, stale-pose precedence, same-preset restore while the Workspace
+is running, and placement after a reconnect or SteamVR restart. Poses use the
+SteamVR room origin; preserving the same physical location after room setup or
+origin changes is not established.
 
 ## In-headset placement (FW-14)
 

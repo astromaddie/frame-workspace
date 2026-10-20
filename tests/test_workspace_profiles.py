@@ -1,5 +1,6 @@
 """FW-11 profile storage, fresh matching, and the real MacView restore path."""
 import json
+import copy
 import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
@@ -7,6 +8,7 @@ import io
 import os
 from pathlib import Path
 import re
+import shlex
 import sys
 import threading
 import time
@@ -29,6 +31,11 @@ cli_spec.loader.exec_module(profile_cli)
 def sample_profile(windows=None):
     return {"name": "Coding", "workspace": {"preset": "5120x1440", "scale": 1, "quality": "sharp"},
             "windows": windows or []}
+
+
+def sample_pose(x=0):
+    return {"version": 1, "width": 2.4, "distance": 2, "curvature": .3,
+            "matrix": [1, 0, 0, x, 0, 1, 0, 1.3, 0, 0, 1, -2]}
 
 
 class ProfileStoreTests(unittest.TestCase):
@@ -59,7 +66,7 @@ class ProfileStoreTests(unittest.TestCase):
             self.assertEqual(store.list(), [saved])
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
-            self.assertEqual(json.loads(path.read_text()), {"schemaVersion": 1, "profiles": [saved]})
+            self.assertEqual(json.loads(path.read_text()), {"schemaVersion": 2, "profiles": [saved]})
             replacement = sample_profile([{"bundleID": "com.apple.Terminal"}])
             store.save(replacement)  # replaces the same name, ignoring case
             self.assertEqual(store.list(), [replacement])
@@ -73,7 +80,7 @@ class ProfileStoreTests(unittest.TestCase):
             profiles.validate_profile(invalid)
 
         invalid = sample_profile([{"bundleID": "com.google.Chrome", "sessionID": "old-session"}])
-        with self.assertRaisesRegex(profiles.ProfileError, "bundleID and an optional titleHint only"):
+        with self.assertRaisesRegex(profiles.ProfileError, "bundleID, optional titleHint and optional pose only"):
             profiles.validate_profile(invalid)
 
         invalid = sample_profile([{"bundleID": "../secret"}])
@@ -95,9 +102,9 @@ class ProfileStoreTests(unittest.TestCase):
                 profiles.ProfileStore(path).list()
             self.assertEqual(path.read_bytes(), original)
 
-            path.write_text('{"schemaVersion":2,"profiles":[]}', encoding="utf-8")
+            path.write_text('{"schemaVersion":3,"profiles":[]}', encoding="utf-8")
             path.chmod(0o600)
-            with self.assertRaisesRegex(profiles.ProfileStoreError, "unsupported.*version: 2"):
+            with self.assertRaisesRegex(profiles.ProfileStoreError, "unsupported.*version: 3"):
                 profiles.ProfileStore(path).list()
 
             path.write_text('{"schemaVersion":1,"profiles":[],"profiles":[]}', encoding="utf-8")
@@ -126,7 +133,7 @@ class ProfileStoreTests(unittest.TestCase):
             path = Path(temp) / "profiles.json"
             store = profiles.ProfileStore(path)
             store.save(sample_profile())
-            self.assertEqual(store.reset(), {"schemaVersion": 1, "profiles": []})
+            self.assertEqual(store.reset(), {"schemaVersion": 2, "profiles": []})
             self.assertEqual(store.list(), [])
 
     def test_concurrent_saves_keep_every_distinct_profile(self):
@@ -154,6 +161,146 @@ class ProfileStoreTests(unittest.TestCase):
                     future.result(timeout=10)
             self.assertEqual({item["name"] for item in store.list()},
                              {f"Concurrent {index}" for index in range(count)})
+
+    def test_v1_migrates_in_memory_without_adding_poses_or_rewriting(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "profiles.json"
+            old = sample_profile([{"bundleID": "com.apple.Terminal"}])
+            path.write_text(json.dumps({"schemaVersion": 1, "profiles": [old]}))
+            path.chmod(0o600)
+            original = path.read_bytes()
+            store = profiles.ProfileStore(path)
+            self.assertEqual(store.get("Coding"), old)
+            self.assertEqual(path.read_bytes(), original)
+            new = sample_profile()
+            new["name"] = "Reading"
+            store.save(new)
+            self.assertEqual(json.loads(path.read_text())["schemaVersion"], 2)
+            self.assertEqual(store.get("Coding"), old)
+            old["workspace"]["pose"] = sample_pose()
+            with self.assertRaises(profiles.ProfileError):
+                profiles.validate_document({"schemaVersion": 1, "profiles": [old]})
+
+    def test_pose_validation_is_strict_for_workspace_and_window_rules(self):
+        bad = [None, [], {}, dict(sample_pose(), version=True), dict(sample_pose(), version=1.0),
+               dict(sample_pose(), extra=1), dict(sample_pose(), width=.399), dict(sample_pose(), width=8.001),
+               dict(sample_pose(), distance=.399), dict(sample_pose(), distance=10.001),
+               dict(sample_pose(), curvature=-.01), dict(sample_pose(), curvature=1.01),
+               dict(sample_pose(), width=True), dict(sample_pose(), distance="2"),
+               dict(sample_pose(), width=float("nan")), dict(sample_pose(), curvature=float("inf")),
+               dict(sample_pose(), width=10**400), dict(sample_pose(), matrix=[1] * 11)]
+        for index, value in ((0, 1.02), (1, .1), (3, 100.01), (0, -1), (0, True),
+                             (7, float("inf")), (11, "-2")):
+            pose = sample_pose()
+            pose["matrix"][index] = value
+            bad.append(pose)
+        for pose in bad:
+            for target in ("workspace", "window"):
+                with self.subTest(pose=pose, target=target):
+                    profile = sample_profile([{"bundleID": "com.apple.Terminal"}])
+                    (profile["workspace"] if target == "workspace" else profile["windows"][0])["pose"] = pose
+                    with self.assertRaises(profiles.ProfileError):
+                        profiles.validate_profile(profile)
+        for width, distance, curvature in ((.4, .4, 0), (8, 10, 1)):
+            pose = dict(sample_pose(), width=width, distance=distance, curvature=curvature)
+            pose["matrix"][0] = .999999  # native six-decimal serialization tolerance
+            profile = sample_profile([{"bundleID": "com.apple.Terminal", "pose": pose}])
+            profile["workspace"]["pose"] = pose
+            with tempfile.TemporaryDirectory() as temp:
+                store = profiles.ProfileStore(Path(temp) / "profiles.json")
+                self.assertEqual(store.save(profile), profile)
+                self.assertEqual(store.get("Coding"), profile)
+
+
+class ProfileCaptureTests(unittest.TestCase):
+    def test_save_captures_matched_rules_and_workspace_through_run(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {
+                "FRAME_WORKSPACE_VIEWER": "native", "FRAME_WINDOW_VIEWER": "native"}):
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+            mv.state = mock.Mock(return_value={"available": True, "windows": [
+                {"id": 42, "src": "window:42", "bundleID": "com.apple.Terminal", "title": "Shell"},
+                {"id": 7, "src": "window:7", "bundleID": "com.example.Editor", "title": "Repo"},
+                {"id": 8, "src": "window:8", "bundleID": "com.apple.Preview", "title": "One"},
+                {"id": 9, "src": "window:9", "bundleID": "com.apple.Preview", "title": "Two"}]})
+            window_pose, workspace_pose = sample_pose(1), sample_pose(-1)
+            mv.run = mock.Mock(return_value=json.dumps({"w42": json.dumps(window_pose),
+                                                       "workspace": json.dumps(workspace_pose)}))
+            profile = sample_profile([{"bundleID": "com.apple.Terminal"}, {"bundleID": "com.example.Editor"},
+                                      {"bundleID": "com.example.Missing"}, {"bundleID": "com.apple.Preview"},
+                                      {"bundleID": "com.apple.Terminal", "titleHint": "Shell"},
+                                      {"bundleID": "com.example.Editor", "titleHint": "Old Title"}])
+            original = copy.deepcopy(profile)
+            saved = profiles.save(store, mv, profile)
+            self.assertEqual(saved["windows"][0]["pose"], window_pose)
+            self.assertEqual(saved["workspace"]["pose"], workspace_pose)
+            self.assertTrue(all("pose" not in rule for rule in saved["windows"][1:]))
+            self.assertEqual(shlex.split(mv.run.call_args.args[0]), ["python3", "-", "workspace", "w42", "w7"])
+            self.assertIn("stream.read(4097)", mv.run.call_args.kwargs["stdin"])
+            self.assertEqual(profile, original)
+            self.assertEqual(store.get("Coding"), saved)
+            self.assertNotIn("window:42", store.path.read_text())
+
+    def test_invalid_or_unreadable_pose_aborts_without_overwriting_profile(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            store.save(sample_profile())
+            original = store.path.read_bytes()
+            mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+            mv.state = mock.Mock(return_value={"available": True, "windows": []})
+            for raw in ("not json", '{"workspace":"{}"}', '{"workspace":1}',
+                        json.dumps({"workspace": json.dumps(dict(sample_pose(), width=float("nan")))}),
+                        json.dumps({"workspace": '{"version":1,"version":1}'}),
+                        '{"workspace":"{}","workspace":"{}"}', '{"unexpected":"{}"}'):
+                with self.subTest(raw=raw):
+                    mv.run = mock.Mock(return_value=raw)
+                    with self.assertRaises(frame_macview.MacViewError):
+                        profiles.save(store, mv, sample_profile())
+                    self.assertEqual(store.path.read_bytes(), original)
+            mv.run = mock.Mock(side_effect=RuntimeError("offline"))
+            with self.assertRaisesRegex(frame_macview.MacViewError, "offline"):
+                profiles.save(store, mv, sample_profile())
+            self.assertEqual(store.path.read_bytes(), original)
+
+    def test_missing_files_remove_old_snapshot_and_browser_save_needs_no_frame(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+            mv.state = mock.Mock(return_value={"available": True, "windows": []})
+            mv.run = mock.Mock(return_value="{}")
+            profile = sample_profile([{"bundleID": "com.apple.Terminal", "pose": sample_pose()}])
+            profile["workspace"]["pose"] = sample_pose()
+            with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+                self.assertEqual(profiles.save(store, mv, profile),
+                                 sample_profile([{"bundleID": "com.apple.Terminal"}]))
+            mv.run.reset_mock()
+            mv.state.reset_mock()
+            with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "browser"}):
+                self.assertEqual(profiles.save(store, mv, sample_profile()), sample_profile())
+            mv.run.assert_not_called()
+            mv.state.assert_not_called()
+
+
+class ProfileApiTests(unittest.TestCase):
+    def test_profile_save_action_captures_poses_and_reports_failure_without_overwrite(self):
+        import server
+
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            mv = frame_macview.MacView(["ssh"], mock.Mock(return_value=json.dumps({
+                "workspace": json.dumps(sample_pose())})), "frame")
+            mv.state = mock.Mock(return_value={"available": True, "windows": []})
+            with mock.patch.object(server, "workspace_profiles", store), mock.patch.object(server, "macview", mv), \
+                    mock.patch.object(server, "LOCAL", False):
+                saved = server.macview_action({"action": "profile_save", "profile": sample_profile()})
+                self.assertEqual(saved["profile"]["workspace"]["pose"], sample_pose())
+                self.assertEqual(server.macview_action({"action": "profile_list"})["schemaVersion"], 2)
+                original = store.path.read_bytes()
+                mv.run.side_effect = RuntimeError("offline")
+                with self.assertRaises(server.Failure) as failure:
+                    server.macview_action({"action": "profile_save", "profile": sample_profile()})
+                self.assertEqual(failure.exception.status, 502)
+                self.assertEqual(store.path.read_bytes(), original)
 
 
 class FreshWindowMatchingTests(unittest.TestCase):
@@ -242,6 +389,101 @@ class ProductionRestorePathTests(unittest.TestCase):
             encoding="utf-8")
         path.chmod(0o755)
         return path
+
+    def test_saved_poses_follow_fresh_window_ids_and_replace_running_workspace_viewer(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {
+                "FRAME_WORKSPACE_VIEWER": "native", "FRAME_WINDOW_VIEWER": "native",
+                "FRAME_WORKSPACE_DECODER": "v4l2", "FRAME_WORKSPACE_CONVERSION": "gpu"}):
+            root = Path(temp)
+            profile = sample_profile([{"bundleID": "com.apple.Terminal", "titleHint": "Shell", "pose": sample_pose(3)},
+                                      {"bundleID": "com.example.Editor"}])
+            profile["workspace"]["pose"] = sample_pose(-2)
+            store = profiles.ProfileStore(root / "profiles.json")
+            store.save(profile)
+            manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(root / "fake-frame-mac-view"))
+            mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+            mv.workspace_manager = manager
+            mv.build = mock.Mock()
+            mv.remote_port = 47900
+            mv.ensure_tunnel = mock.Mock()
+            window_id = 42
+            workspace_stream = False
+            calls, tickets = [], []
+
+            def windows():
+                return [{"id": window_id, "src": f"window:{window_id}", "title": "Shell", "bundleID": "com.apple.Terminal"},
+                        {"id": 73, "src": "window:73", "title": "Repo", "bundleID": "com.example.Editor"}]
+
+            mv.state = lambda: {"available": True, "screen": True, "windows": windows()}
+
+            def call(path, **query):
+                if path == "/status":
+                    return {"screen": True, "streams": [{"src": "display:4242"}] if workspace_stream else [], "finished": []}
+                if path == "/windows":
+                    return {"windows": windows()}
+                if path == "/ticket":
+                    tickets.append(query["src"])
+                    return {"ticket": "fresh-ticket"}
+                if path == "/close":
+                    return {"closed": 1}
+                return {"displays": []}
+
+            def run(remote, **kwargs):
+                nonlocal window_id, workspace_stream
+                calls.append(remote)
+                args = shlex.split(remote)
+                if "start" in args:
+                    if "--panel" in args:
+                        return "registered OpenVR key com.frame-workspace.native.1000.panel-" + args[args.index("--panel") + 1]
+                    window_id += 100  # re-enumerate after every viewer start
+                    workspace_stream = True
+                    return "registered OpenVR key com.frame-workspace.native.1000.workspace"
+                if remote.startswith("cat "):
+                    return json.dumps({"ready": True, "placement": sample_pose(-2)})
+                return "stopped"
+
+            mv.call, mv.run = call, mock.Mock(side_effect=run)
+            try:
+                first = profiles.restore(store, mv, "Coding")
+                self.assertEqual(first["placement"], "saved")
+                self.assertEqual(first["spatialRestore"]["restoredPoses"], 2)
+                self.assertEqual([r["poseRestored"] for r in first["windows"]], [True, False])
+                self.assertIn("window:142", tickets)
+                second = profiles.restore(store, mv, "Coding")
+                self.assertEqual(second["spatialRestore"]["restoredPoses"], 2)
+                self.assertIn("window:242", tickets)
+                starts = [shlex.split(c)[3:] for c in calls if "'start'" in c]
+                workspace_starts = [a for a in starts if "--panel" not in a]
+                self.assertEqual(len(workspace_starts), 2)  # no recenter/focus shortcut
+                for args in workspace_starts:
+                    self.assertEqual(json.loads(args[args.index("--pose") + 1]), sample_pose(-2))
+                for panel in ("w142", "w242"):
+                    args = next(a for a in starts if panel in a)
+                    self.assertEqual(json.loads(args[args.index("--pose") + 1]), sample_pose(3))
+                    self.assertNotIn("--initial-pose", args)
+                for args in (a for a in starts if "w73" in a):
+                    self.assertIn("--initial-pose", args)
+                    self.assertNotIn("--pose", args)
+                self.assertNotIn("bash -s -- focus", calls)
+                self.assertNotIn("fresh-ticket", store.path.read_text())
+                self.assertEqual(store.get("Coding"), profile)
+            finally:
+                manager.stop()
+
+    def test_saved_poses_fail_before_starting_an_incompatible_viewer(self):
+        with tempfile.TemporaryDirectory() as temp:
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            profile = sample_profile([{"bundleID": "com.apple.Terminal", "pose": sample_pose()}])
+            store.save(profile)
+            mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+            mv.state = mock.Mock()
+            mv.start_workspace = mock.Mock()
+            for backend, windows in (("browser", "browser"), ("native", "browser")):
+                with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": backend, "FRAME_WINDOW_VIEWER": windows}):
+                    with self.assertRaisesRegex(frame_macview.MacViewError, "native"):
+                        profiles.restore(store, mv, "Coding")
+            mv.state.assert_not_called()
+            mv.start_workspace.assert_not_called()
 
     def test_restore_reenumerates_ids_and_uses_real_macview_start_and_show(self):
         with tempfile.TemporaryDirectory() as temp:
