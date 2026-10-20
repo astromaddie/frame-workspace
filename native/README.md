@@ -275,6 +275,57 @@ The close disc closes that window (or stops the Workspace): the viewer writes
 `{"action":"close","key":KEY}` into `--request-dir` and the Mac companion
 acts on it.
 
+### Spatial stream and focus contract (FW-15)
+
+The Mac helper accepts authenticated `POST /streams/live?src=separate:42,separate:7`
+(`k` is the companion token). The list selects live window sources; all other
+`window:` and `separate:` streams become still. Display streams, including the
+Workspace, stay live. An empty `src` selects no windows; `all=1` removes the
+selection and restores current and future window streams to live.
+
+On each affected stream, WebSocket text `{"t":"still"}` means no more binary
+pictures until `{"t":"live"}`. Keep displaying the last texture; the viewer
+may release its hardware decoder. The first picture after `live` is a keyframe
+with SPS/PPS, sufficient to recreate the decoder. Other text messages (including
+stats) may continue while still. The Mac keeps observing content at a reduced
+capture cadence without encoding it. A new stream delivers its initial picture
+before honoring still, so the viewer has a texture to retain; startup decoder
+headroom remains a device check. `/status` reports per-stream `width` and
+`height` in live encoded pixels, `live`, and `lastChanged` in Unix seconds
+(zero before content is observed), plus `focusedSrc` and `pointerShared`.
+
+Gaze focus uses the existing request directory,
+`$XDG_RUNTIME_DIR/frame-workspace/requests/*.json`. Write a temporary file and
+atomically rename it to `.json`, as for Close:
+
+```json
+{"action":"focus","key":"com.frame-workspace.native.1000.panel-w42","u":0.25,"v":0.75}
+```
+
+`key` is the panel's registered OpenVR key. Coordinates are finite numbers in
+`[0,1]`, with `u` increasing right and `v` down from the top-left. With
+`FRAME_WINDOW_DISPLAYS=1`, the companion resolves an owned window panel key to
+its source and calls `POST /focus?src=separate:42&u=0.25&v=0.75`. Unknown keys
+are ignored, batches keep the newest valid focus request, and dispatch is
+limited to four per second. The helper raises that window and restores its
+remembered window-relative cursor position; the first visit uses `(u,v)`.
+Repeated focus on the same window must leave the cursor where it is.
+
+The companion's one-second supervisor selects live windows within
+`FRAME_SPATIAL_DECODE_MP` (default **18 MP**), after reserving pixels for display
+streams. Focus takes first admission, then recent changes, newest first, with
+one second before optional admission, three seconds of residency, and five
+seconds of eligibility after a change. Focus and capacity override residency.
+Missing dimensions are not admitted; an oversized focused window remains still
+until the stream size or budget permits it. Existing display streams are not
+stopped if they alone exceed the budget. Disabling window displays restores all
+windows to live. `POST /pointer?shared=1|0` synchronizes shared pointer mode:
+mouse buttons carry across viewer sessions, while keys retain session ownership.
+
+These are the Mac-side foundation and shared viewer contract. Integration still
+needs device verification of decoder release/recreation, gaze, cursor memory,
+and cross-panel drags; see [SPATIAL.md](../docs/frame-workspace/SPATIAL.md).
+
 ## SteamVR bar panel (FW-08)
 
 `frame-workspace-dash` (`dash.cpp`, drawn by `dash_ui.hpp` with cairo/Pango)
@@ -290,8 +341,8 @@ second while the Frame is connected. That writes
 `$XDG_RUNTIME_DIR/frame-workspace/dash-state.json`, starts the panel's user
 unit (`frame-workspace-dash-UID.service`) if it isn't running, and hands back
 the requests made since: `workspace_start` (with the settings last used on the
-Mac), `workspace_stop`, `recenter`, and `close` with a panel key. The panel
-can only ask for those; the companion ignores anything else. A state file
+Mac), `workspace_stop`, `recenter`, `close` with a panel key, and Spatial Mode
+`focus` with a window panel key and `(u,v)`. The companion ignores other actions. A state file
 older than 6 s shows "Mac Not Connected", so the entry stays on the bar after
 the companion quits, with the buttons off. `FRAME_WORKSPACE_DASH=0` turns the
 sync off (the MCP adapter's backend does).
