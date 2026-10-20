@@ -1290,28 +1290,42 @@ print(json.dumps(poses))
         w, h = fit(width or info.get("w") or 1280, height or info.get("h") or 720)
         pose_args = (["--pose", json.dumps(pose, allow_nan=False)] if pose is not None else
                      ["--initial-pose", initial_pose] if initial_pose else [])
+        host = os.environ.get("FRAME_NATIVE_HOST") == "1"
         args = ["--panel", panel, "--name", title] + pose_args + \
                ["start", url, w, h, tag, workspace_decoder(), workspace_conversion()]
-        out = self.run("bash -s -- " + " ".join(_quote(str(a)) for a in args),
+        remote_env = "FRAME_NATIVE_HOST=1 " if host else ""
+        out = self.run(remote_env + "bash -s -- " + " ".join(_quote(str(a)) for a in args),
                        stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=60)
         match = re.search(r"registered OpenVR key (com\.frame-workspace\.native\.\d+\.panel-" + panel + r")\b", out)
         if not match:
             raise MacViewError("The native window panel did not report its registered OpenVR panel key.")
-        self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot, "title": title}
+        self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot,
+                                   "title": title, "host": host, "generation": tag}
         return out
 
     def _stop_native_panels(self, src=None):
-        """Best-effort: native panels already exit when their stream closes;
-        this also removes their runtime files. Saved poses stay."""
+        """Stop each native panel owner and remove its runtime files. Saved poses stay."""
         for s in ([src] if src else list(self.native_panels)):
-            info = self.native_panels.pop(s, None)
+            info = self.native_panels.get(s)
             if not info:
                 continue
             try:
-                self.run("bash -s -- " + " ".join(_quote(a) for a in ("--panel", info["panel"], "stop")),
-                         stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=10)
+                args = ["--panel", info["panel"]]
+                remote_env = ""
+                if info.get("host"):
+                    remote_env = "FRAME_NATIVE_HOST=1 "
+                    if info.get("generation"):
+                        args += ["--generation", info["generation"]]
+                args += ["stop"]
+                self.run(remote_env + "bash -s -- " + " ".join(_quote(a) for a in args),
+                         stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"),
+                         timeout=20 if info.get("host") else 10)
             except Exception:  # noqa: BLE001 - the viewer is gone either way
-                pass
+                if not info.get("host") and self.native_panels.get(s) is info:
+                    self.native_panels.pop(s, None)
+            else:
+                if self.native_panels.get(s) is info:
+                    self.native_panels.pop(s, None)
 
     def _stop_workspace_viewer(self):
         try:
@@ -1659,6 +1673,11 @@ print(json.dumps(poses))
         else:
             self.shown.clear()
         if not (self.agent and self.agent.poll() is None):
+            if self.native_panels:
+                # The Mac server may already be gone during shutdown. Native
+                # panels still have independent Frame-side owners and need
+                # their specs removed directly.
+                self._stop_native_panels(src)
             if workspace_error:
                 raise workspace_error
             return {"closed": 0}

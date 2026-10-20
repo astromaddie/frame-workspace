@@ -3,7 +3,8 @@
 set -eu
 uid=$(id -u)
 unit="frame-workspace-viewer-$uid.service"
-runtime="${XDG_RUNTIME_DIR:-/run/user/$uid}/frame-workspace"
+runtime_base="${XDG_RUNTIME_DIR:-/run/user/$uid}/frame-workspace"
+runtime="$runtime_base"
 install="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native"
 key="com.frame-workspace.native.$uid.workspace"
 pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.json"
@@ -12,12 +13,13 @@ pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.j
 # `--name` is the panel title SteamVR shows; `--initial-pose JSON` places a new
 # panel (for example beside the Workspace) until it has a saved pose. `--pose`
 # replaces the saved pose for the next start, after the previous viewer stops.
-panel="" panel_name="" initial_pose="" pose_override=""
+panel="" panel_name="" initial_pose="" pose_override="" expected_generation=""
 initial_pose_set=0 pose_override_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --panel) [ "$#" -ge 2 ] || exit 2; panel=$2; shift 2 ;;
     --name) [ "$#" -ge 2 ] || exit 2; panel_name=$2; shift 2 ;;
+    --generation) [ "$#" -ge 2 ] || exit 2; expected_generation=$2; shift 2 ;;
     --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; initial_pose_set=1; shift 2 ;;
     --pose) [ "$#" -ge 2 ] || exit 2; pose_override=$2; pose_override_set=1; shift 2 ;;
     *) break ;;
@@ -93,19 +95,375 @@ if [ -n "$panel" ]; then
   case "$panel" in *[!a-z0-9]*) echo 'Panel IDs are lowercase letters and digits.' >&2; exit 2 ;; esac
   [ "${#panel}" -le 16 ] || exit 2
   unit="frame-workspace-panel-$uid-$panel.service"
-  runtime="${XDG_RUNTIME_DIR:-/run/user/$uid}/frame-workspace/panel-$panel"
+  runtime="$runtime_base/panel-$panel"
   key="com.frame-workspace.native.$uid.panel-$panel"
   pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/panels/$panel-pose.json"
+fi
+legacy_unit="$unit"
+owner_unit="$unit"
+owner_host=0
+if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
+  owner_unit="frame-workspace-host-$uid.service"
+  owner_host=1
 fi
 [ "${#panel_name}" -le 64 ] || exit 2
 case "$panel_name" in *$'\n'*|*$'\r'*|*$'\t'*) exit 2 ;; esac
 [ "${#initial_pose}" -le 1024 ] || exit 2
+
+# The opt-in native host is a shared process. This self-contained helper is
+# embedded here because this script is sent over SSH on stdin by the companion.
+# Every add/remove/replacement holds one private host lock while it updates the
+# immutable generation spec and waits for the host's per-panel acknowledgement.
+host_panel() {
+  local mode=$1
+  shift
+  python3 - "$mode" "$@" <<'PYHOST'
+import fcntl
+import json
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+(mode, panel, uid, legacy_unit, host_root_raw, panel_runtime_raw, pose_path_raw, key,
+ expected_generation, *start_args) = sys.argv[1:]
+host_root = pathlib.Path(host_root_raw)
+panel_runtime = pathlib.Path(panel_runtime_raw)
+pose_path = pathlib.Path(pose_path_raw)
+host_unit = f'frame-workspace-host-{uid}.service'
+spec_dir = host_root / 'panels'
+spec_path = spec_dir / f'{panel}.json'
+state_path = panel_runtime / 'state.json'
+vrcmd = os.environ.get('FRAME_NATIVE_VRCMD', '/opt/steamvr/bin/linuxarm64/vrcmd')
+
+def atomic_write(path, content):
+    path = pathlib.Path(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=path.name + '.', suffix='.tmp', dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, 'w', encoding='utf-8') as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+
+def read_json(path):
+    try:
+        with open(path, encoding='utf-8') as source:
+            value = json.load(source)
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+def systemctl(*args, timeout=5):
+    try:
+        return subprocess.run(['systemctl', '--user', *args], capture_output=True,
+                              text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+def service_status(unit):
+    load = systemctl('show', unit, '--property=LoadState', '--value')
+    if load is not None and load.stdout.strip() == 'not-found':
+        return 'not-found', 0
+    if load is None or load.returncode != 0 or not load.stdout.strip():
+        return None, None
+    result = systemctl('show', unit, '--property=ActiveState', '--value')
+    if result is None or result.returncode != 0:
+        return None, None
+    active = result.stdout.strip()
+    pid_result = systemctl('show', unit, '--property=MainPID', '--value')
+    if pid_result is None or pid_result.returncode != 0:
+        return active, None
+    try:
+        return active, int(pid_result.stdout.strip())
+    except ValueError:
+        return active, None
+
+def current_spec():
+    value = read_json(spec_path)
+    return value if value and isinstance(value.get('generation'), str) else None
+
+def url_generations():
+    import re
+    generations = []
+    if panel_runtime.exists():
+        for path in panel_runtime.glob('view-*.url'):
+            match = re.fullmatch(r'view-(fc[0-9a-f]{8})\.url', path.name)
+            if match:
+                generations.append(match.group(1))
+    return generations
+
+def wait_stopped(generation, timeout=15):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        active, pid = service_status(host_unit)
+        if active is None:
+            raise RuntimeError('Could not inspect the native host service while stopping a panel.')
+        if active in ('not-found', 'inactive', 'failed') and pid == 0:
+            return
+        if active in ('active', 'activating', 'deactivating') and pid and pid > 0:
+            state = read_json(state_path)
+            if (state and state.get('hostGeneration') == generation and
+                    state.get('overlayKey') == key and state.get('hostPid') == pid and
+                    state.get('ready') is False and state.get('state') in ('stopped', 'error')):
+                return
+        time.sleep(0.1)
+    raise RuntimeError('The native host did not confirm that the requested panel stopped.')
+
+def remove_generation(generation):
+    current = current_spec()
+    if current is not None:
+        actual = current['generation']
+        if generation and actual != generation:
+            raise RuntimeError('The requested native panel generation has changed; leaving it running.')
+        generation = actual
+        spec_path.unlink(missing_ok=True)
+    elif spec_path.exists():
+        raise RuntimeError('Could not read the native panel spec; leaving its runtime files in place.')
+    elif generation is None:
+        if state_path.exists():
+            state = read_json(state_path)
+            if state is None:
+                raise RuntimeError('Could not read the native panel state; leaving its runtime files in place.')
+            generation = state.get('hostGeneration')
+        if not generation:
+            pending = url_generations()
+            if len(pending) > 1:
+                raise RuntimeError('Multiple pending native panel generations exist; leaving them in place.')
+            generation = pending[0] if pending else None
+    if generation:
+        # A spec can be removed just before the host writes its state file.
+        # Its URL remains as the generation witness until the host confirms
+        # removal, so never treat a missing state file as an acknowledgement.
+        wait_stopped(generation)
+    elif state_path.exists():
+        raise RuntimeError('The native panel state has no generation; leaving its runtime files in place.')
+    if panel_runtime.exists():
+        shutil.rmtree(panel_runtime)
+
+def stop_legacy_panel():
+    active, pid = service_status(legacy_unit)
+    if active is None:
+        raise RuntimeError('Could not inspect the standalone native panel service before host migration.')
+    if active in ('not-found', 'inactive', 'failed') and pid == 0:
+        return False
+    if active not in ('active', 'activating', 'deactivating') or not pid or pid <= 0:
+        raise RuntimeError('The standalone native panel service has no confirmed process state.')
+    systemctl('--no-block', 'stop', legacy_unit)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        active, pid = service_status(legacy_unit)
+        if active is None:
+            raise RuntimeError('Could not confirm standalone native panel shutdown before host migration.')
+        if active in ('not-found', 'inactive', 'failed') and pid == 0:
+            return True
+        time.sleep(0.1)
+    raise RuntimeError('The standalone native panel service did not stop before host migration.')
+
+def lock_host():
+    host_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(host_root, 0o700)
+    spec_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(spec_dir, 0o700)
+    fd = os.open(host_root / 'launcher.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    os.fchmod(fd, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return os.fdopen(fd, 'r+')
+
+def ensure_host(binary, runtime_dir):
+    deadline = time.monotonic() + 12
+    active, pid = service_status(host_unit)
+    if active == 'active' and pid and pid > 0:
+        return pid
+    if active in ('active', 'activating', 'deactivating'):
+        while time.monotonic() < deadline:
+            active, pid = service_status(host_unit)
+            if active == 'active' and pid and pid > 0:
+                return pid
+            if active not in ('active', 'activating', 'deactivating'):
+                break
+            time.sleep(0.1)
+        if active in ('active', 'activating', 'deactivating'):
+            raise RuntimeError('The native host service is transitioning without a usable process ID.')
+    if active is None:
+        raise RuntimeError('Could not inspect the native host service before startup.')
+    systemctl('reset-failed', host_unit)
+    try:
+        launch = subprocess.run([
+            'systemd-run', '--user', f'--unit={host_unit}',
+            '--description=Frame Workspace native host', '--collect',
+            '--property=Type=exec', '--property=KillMode=control-group',
+            '--property=Restart=no', '--property=TimeoutStopSec=3s',
+            f'--setenv=HOME={os.environ.get("HOME", "/")}',
+            f'--setenv=XDG_RUNTIME_DIR={runtime_dir}', '--setenv=DISPLAY=:0',
+            '--setenv=LC_ALL=C.UTF-8', binary, '--host-dir', str(spec_dir),
+            '--state-file', str(host_root / 'state.json')],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        launch = None
+    if launch is None or launch.returncode != 0:
+        raise RuntimeError('Could not start the native host service.')
+    while time.monotonic() < deadline:
+        active, pid = service_status(host_unit)
+        if active == 'active' and pid and pid > 0:
+            return pid
+        if active not in ('active', 'activating', 'deactivating') and active is not None:
+            break
+        time.sleep(0.1)
+    raise RuntimeError('The native host did not become active.')
+
+def start_panel():
+    (url, width, height, generation, decoder, conversion, title, initial_pose,
+     pose_override, foveation, diagnostic_gaze, binary, runtime_dir) = start_args
+    old = current_spec()
+    if old is None and spec_path.exists():
+        raise RuntimeError('Could not read the existing native panel spec; leaving it in place.')
+    old_generation = old.get('generation') if old else None
+    old_url = old.get('urlFile') if old else None
+    # A host flag can change between launches. Retire any prior standalone
+    # owner for this key before the shared host can claim it.
+    stop_legacy_panel()
+    if old_generation:
+        remove_generation(old_generation)
+    elif state_path.exists():
+        previous_state = read_json(state_path)
+        if previous_state is None:
+            raise RuntimeError('The existing native panel state has no generation; leaving it in place.')
+        if previous_state.get('hostGeneration'):
+            remove_generation(previous_state['hostGeneration'])
+        elif not previous_state.get('hostPid'):
+            # A prior standalone owner has ended (or was just stopped above).
+            shutil.rmtree(panel_runtime)
+        else:
+            raise RuntimeError('The existing native host state has no generation; leaving it in place.')
+    elif panel_runtime.exists():
+        pending = url_generations()
+        if pending:
+            if len(pending) != 1:
+                raise RuntimeError('Multiple pending native panel generations exist; leaving them in place.')
+            remove_generation(pending[0])
+        else:
+            # No spec, state or generation URL means this panel has no host
+            # owner. A legacy unit may have owned just these runtime files.
+            shutil.rmtree(panel_runtime)
+    if pose_override:
+        # Pose is shared by this panel across generations; both old owner
+        # kinds have been confirmed stopped before replacing it.
+        atomic_write(pose_path, pose_override)
+    ensure_host(binary, runtime_dir)
+    panel_runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(panel_runtime, 0o700)
+    url_path = panel_runtime / f'view-{generation}.url'
+    atomic_write(url_path, url + '\n')
+    request_dir = pathlib.Path(runtime_dir) / 'frame-workspace' / 'requests'
+    request_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(request_dir, 0o700)
+    spec = {
+        'version': 1,
+        'generation': generation,
+        'urlFile': str(url_path),
+        'overlayKey': key,
+        'overlayName': title,
+        'controlFile': str(panel_runtime / 'control.json'),
+        'stateFile': str(state_path),
+        'poseFile': str(pose_path),
+        'initialPose': initial_pose,
+        'requestDir': str(request_dir),
+        'decoder': decoder,
+        'conversion': conversion,
+    }
+    if foveation in ('1', 'gaze'):
+        spec['foveation'] = foveation == '1'
+        spec['gaze'] = foveation == 'gaze'
+    try:
+        atomic_write(spec_path, json.dumps(spec, separators=(',', ':'), allow_nan=False) + '\n')
+    except BaseException:
+        url_path.unlink(missing_ok=True)
+        raise
+
+    deadline = time.monotonic() + 40
+    while time.monotonic() < deadline:
+        active, current_pid = service_status(host_unit)
+        state = read_json(state_path)
+        if active not in ('active', 'activating') or not current_pid or current_pid <= 0:
+            try:
+                remove_generation(generation)
+            except Exception as exc:
+                raise RuntimeError('The native host exited during panel startup, and panel shutdown was not confirmed: ' + str(exc))
+            raise RuntimeError('The native host exited during panel startup.')
+        if state and state.get('hostGeneration') == generation:
+            if state.get('state') == 'error' and state.get('ready') is False:
+                try:
+                    remove_generation(generation)
+                except Exception as exc:
+                    raise RuntimeError('The native host reported a panel error, and shutdown was not confirmed: ' + str(exc))
+                raise RuntimeError('The native host reported an error for this panel generation.')
+            try:
+                ready = (state.get('ready') is True and state.get('hostPid') == current_pid and
+                         state.get('overlayKey') == key and
+                         0 < int(state.get('textureWidth', 0)) <= 5120 and
+                         0 < int(state.get('textureHeight', 0)) <= 5120)
+            except (TypeError, ValueError):
+                ready = False
+            if ready:
+                try:
+                    overlays = subprocess.run([vrcmd, '--overlays'], capture_output=True,
+                                              text=True, timeout=5)
+                except (OSError, subprocess.TimeoutExpired):
+                    overlays = None
+                if overlays and overlays.returncode == 0 and f"'{key}' -- '" in overlays.stdout:
+                    if old_url and old_url != str(url_path):
+                        pathlib.Path(old_url).unlink(missing_ok=True)
+                    print(f'Native Workspace ready: registered OpenVR key {key} in {host_unit}')
+                    return
+        time.sleep(0.1)
+    try:
+        remove_generation(generation)
+    except Exception:
+        # Preserve URL and runtime evidence if shutdown could not be confirmed.
+        raise RuntimeError('The native panel did not become ready; its spec was removed but shutdown was not confirmed.')
+    raise RuntimeError('The native host did not submit a decoded texture and register this panel within 40 seconds.')
+
+host_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+with lock_host():
+    try:
+        if mode == 'stop':
+            remove_generation(expected_generation or None)
+            print(f'Stopped native panel {panel}; shared host remains running.')
+        elif mode == 'start':
+            start_panel()
+        else:
+            raise RuntimeError('Invalid native host launcher operation.')
+    except Exception as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)
+PYHOST
+}
 
 case "${1:-}" in
   stop)
     # Stops this viewer (a window panel, or the Workspace) and removes its
     # runtime files; its saved pose stays for next time.
     [ "$#" -eq 1 ] || exit 2
+    if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
+      host_panel stop "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "$expected_generation"
+      exit $?
+    fi
     systemctl --user stop "$unit" >/dev/null 2>&1 || true
     if [ -n "$panel" ]; then rm -rf "$runtime"; fi
     echo "Stopped $unit"
@@ -113,10 +471,10 @@ case "${1:-}" in
     ;;
   focus)
     [ "$#" -eq 1 ] || exit 2
-    python3 - "$runtime" "$unit" "$key" focus <<'PY'
+    python3 - "$runtime" "$owner_unit" "$key" focus "$owner_host" <<'PY'
 import fcntl, json, math, os, pathlib, subprocess, sys
 p = pathlib.Path(sys.argv[1])
-unit, key, action = sys.argv[2:]
+unit, key, action, host_mode = sys.argv[2:]
 def systemd(prop):
     try:
         r = subprocess.run(['systemctl', '--user', 'show', unit, '--property=' + prop, '--value'],
@@ -128,12 +486,15 @@ def owner():
     if systemd('ActiveState') != 'active':
         return None
     try:
-        if int(systemd('MainPID')) <= 0:
+        owner_pid = int(systemd('MainPID'))
+        if owner_pid <= 0:
             return None
         s = json.loads((p / 'state.json').read_text())
         placement = s.get('placement')
         if (s.get('ready') is not True or s.get('overlayKey') != key or
                 not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        if host_mode == '1' and (type(s.get('hostPid')) is not int or s.get('hostPid') != owner_pid):
             return None
         return s
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -169,10 +530,10 @@ PY
     ;;
   adjust)
     [ "$#" -eq 3 ] || exit 2
-    python3 - "$runtime" "$unit" "$key" "$2" "$3" <<'PY'
+    python3 - "$runtime" "$owner_unit" "$key" "$2" "$3" "$owner_host" <<'PY'
 import fcntl, json, math, os, pathlib, re, subprocess, sys, time
 p = pathlib.Path(sys.argv[1])
-unit, key, raw_width, raw_distance = sys.argv[2:]
+unit, key, raw_width, raw_distance, host_mode = sys.argv[2:]
 def number(raw, label, minimum, maximum):
     if not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', raw):
         raise SystemExit(f'{label} must be a finite number.')
@@ -193,12 +554,15 @@ def owner():
     if systemd('ActiveState') != 'active':
         return None
     try:
-        if int(systemd('MainPID')) <= 0:
+        owner_pid = int(systemd('MainPID'))
+        if owner_pid <= 0:
             return None
         s = json.loads((p / 'state.json').read_text())
         placement = s.get('placement')
         if (s.get('ready') is not True or s.get('overlayKey') != key or
                 not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        if host_mode == '1' and (type(s.get('hostPid')) is not int or s.get('hostPid') != owner_pid):
             return None
         return s
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -255,10 +619,11 @@ PY
     # Relative moves (m: right, up, toward the viewer) and turns (degrees:
     # yaw, pitch, roll) in the panel's own frame.
     [ "$#" -eq 7 ] || exit 2
-    python3 - "$runtime" "$unit" "$key" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+    python3 - "$runtime" "$owner_unit" "$key" "$2" "$3" "$4" "$5" "$6" "$7" "$owner_host" <<'PY'
 import fcntl, json, math, os, pathlib, re, subprocess, sys, time
 p = pathlib.Path(sys.argv[1])
 unit, key = sys.argv[2:4]
+host_mode = sys.argv[10]
 def number(raw, label, limit, unit_name):
     if not re.fullmatch(r'-?[0-9]+(?:\.[0-9]+)?', raw):
         raise SystemExit(f'{label} must be a finite number.')
@@ -279,12 +644,15 @@ def owner():
     if systemd('ActiveState') != 'active':
         return None
     try:
-        if int(systemd('MainPID')) <= 0:
+        owner_pid = int(systemd('MainPID'))
+        if owner_pid <= 0:
             return None
         s = json.loads((p / 'state.json').read_text())
         placement = s.get('placement')
         if (s.get('ready') is not True or s.get('overlayKey') != key or
                 not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        if host_mode == '1' and (type(s.get('hostPid')) is not int or s.get('hostPid') != owner_pid):
             return None
         return s
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -333,10 +701,10 @@ PY
     ;;
   curvature)
     [ "$#" -eq 2 ] || exit 2
-    python3 - "$runtime" "$unit" "$key" "$2" <<'PY'
+    python3 - "$runtime" "$owner_unit" "$key" "$2" "$owner_host" <<'PY'
 import fcntl, json, math, os, pathlib, re, subprocess, sys, time
 p = pathlib.Path(sys.argv[1])
-unit, key, raw = sys.argv[2:]
+unit, key, raw, host_mode = sys.argv[2:]
 if not re.fullmatch(r'(?:0(?:\.[0-9]+)?|1(?:\.0+)?)', raw):
     raise SystemExit('Workspace curvature must be a finite number between 0 and 1.')
 curvature = float(raw)
@@ -353,12 +721,15 @@ def owner():
     if systemd('ActiveState') != 'active':
         return None
     try:
-        if int(systemd('MainPID')) <= 0:
+        owner_pid = int(systemd('MainPID'))
+        if owner_pid <= 0:
             return None
         s = json.loads((p / 'state.json').read_text())
         placement = s.get('placement')
         if (s.get('ready') is not True or s.get('overlayKey') != key or
                 not isinstance(s.get('state'), str) or not isinstance(placement, dict)):
+            return None
+        if host_mode == '1' and (type(s.get('hostPid')) is not int or s.get('hostPid') != owner_pid):
             return None
         return s
     except (OSError, ValueError, TypeError, json.JSONDecodeError):
@@ -462,6 +833,17 @@ binary="$install/frame-workspace-native"
   echo 'The native Workspace viewer is not installed. Install the native build, or restart the companion with FRAME_WORKSPACE_VIEWER=browser.' >&2
   exit 3
 }
+
+if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
+  if [ -n "$diagnostic_gaze" ]; then
+    echo 'Diagnostic gaze is not supported by the native host panel route.' >&2
+    exit 2
+  fi
+  host_panel start "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "" \
+    "$url" "$w" "$h" "$tag" "$decoder" "$conversion" "$panel_name" "$initial_pose" \
+    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}"
+  exit $?
+fi
 
 # Same reserved service as the browser route. Confirm complete shutdown before
 # replacing it, including an orphan left by a previous companion process.
