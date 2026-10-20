@@ -3,6 +3,7 @@
 #include "host.hpp"
 #include "tests_host.hpp"
 #include "chrome_preview.hpp"
+#include "spatial_render.hpp"
 #include "tests_spatial.hpp"
 #include <array>
 #include <cassert>
@@ -540,7 +541,7 @@ static void convertYuvOracle(Picture &p) {
 }
 struct PanelOptions {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
-      requestDir, hostGeneration,
+      requestDir, spatialStateFile, hostGeneration,
       key = "com.frame-workspace.native.workspace", decoderMode = "software", conversionMode = "cpu",
       presentMode = "paced", handoffMode = "fence", testYuvFormat, testYuvRange = "limited",
       testYuvColorSpace = "bt601", testYuvPattern = "sharp", exitReason = "running";
@@ -760,14 +761,14 @@ public:
            ",\"controlRevision\":" + std::to_string(revision) +
            ",\"placement\":" + placementJSON(overlay.placement) + "}";
   }
-  bool tick(bool sharedEvents = true, bool wait = true, unsigned allowedHands = 3) {
+  bool tick(bool sharedEvents = true, bool wait = true, unsigned allowedHands = 3, bool consumeSqueeze = false) {
     if (interrupted || pipe.stop || (seconds > 0 && nowMs() - start >= seconds * 1000)) return false;
     double now = nowMs();
     if (!overlay.events(sharedEvents)) {
       exitReason = overlay.exitReason;
       return false;
     }
-    if (overlay.updatePlacementInput(allowedHands))
+    if (overlay.updatePlacementInput(allowedHands, consumeSqueeze))
       atomicWrite(poseFile, placementJSON(overlay.placement));
     if (overlay.closeRequested) {
       overlay.closeRequested = false;
@@ -1030,7 +1031,59 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;
   PanelBook book;
-  FocusDwell dwell;
+  HostFocus focus;
+  SpatialState spatial;
+  SpatialRenderer spatialRenderer(session);
+  std::string spatialPath = defaults.spatialStateFile;
+  if (spatialPath.empty()) {
+    auto runtime = std::getenv("XDG_RUNTIME_DIR");
+    if (runtime)
+      spatialPath = std::string(runtime) + "/frame-workspace/spatial-ui.json";
+  }
+  std::string spatialRequests =
+      defaults.requestDir.empty()
+          ? std::filesystem::path(spatialPath.empty() ? folder : spatialPath)
+                    .parent_path()
+                    .string() +
+                "/requests"
+          : defaults.requestDir;
+  HmdMatrix34_t anchor = spatialAnchor(Placement{}.matrix, 1.3f, 0);
+  bool anchored = false, buttonWas = false;
+  SpatialPress press;
+  std::string menuID;
+  SpatialNavigation navigation;
+  double lastSpatial = -1000, lastFrame = nowMs();
+  std::set<int64_t> chosenSequences;
+  SpatialVisibility visibility;
+  std::string lastSpatialRaw, gazeKey;
+  double gazeSince = 0;
+  double lastSpatialDraw = -1000;
+  std::vector<SpatialTile> tiles;
+  auto emit = [&](const std::string &body) {
+    static uint64_t serial = 0;
+    atomicWrite(spatialRequests + "/spatial-" + std::to_string(getpid()) + "-" +
+                    std::to_string(++serial) + ".json",
+                body);
+  };
+  auto select = [&](const std::string &key) {
+    for (auto &[path, e] : entries)
+      if (e.panel && e.spec.key == key && e.panel->overlay.interactive()) {
+        auto &o = e.panel->overlay;
+        if (!o.recenter())
+          return false;
+        o.apply();
+        atomicWrite(e.spec.poseFile, placementJSON(o.placement));
+        emit("{\"action\":\"switch\",\"key\":" + jsonString(key) + "}");
+        focus.activate(key);
+        for (auto &[otherPath, other] : entries) if (other.panel)
+          other.panel->overlay.setSpatialForeground(other.spec.key == key);
+        spatial.open = false;
+        visibility.request(false, spatial.seq);
+        menuID.clear();
+        return true;
+      }
+    return false;
+  };
   std::set<std::string> invalid;
   double lastScan = -1000, lastState = -1000, lastFocusAttempt = -1000, start = nowMs();
   uint64_t requests = 0;
@@ -1041,14 +1094,17 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     atomicWrite(stateFile, "{\"version\":1,\"state\":" + jsonString(status) +
         ",\"ready\":" + (std::string(status) == "hosting" ? "true" : "false") +
         ",\"hostPid\":" + std::to_string(getpid()) + ",\"panels\":" + std::to_string(entries.size()) +
-        ",\"runningPanels\":" + std::to_string(running) + ",\"activeKey\":" + jsonString(dwell.active) +
+        ",\"runningPanels\":" + std::to_string(running) + ",\"activeKey\":" + jsonString(focus.active) +
+        ",\"spatialMode\":" + (spatial.spatial ? std::string("true") : "false") +
+        ",\"switcherOpen\":" + (spatial.open ? std::string("true") : "false") +
+        ",\"spatialTiles\":" + std::to_string(tiles.size()) +
         ",\"gazeState\":" + jsonString(gazeStatus) + ",\"exitReason\":" + jsonString(reason) + "}");
   };
   auto remove = [&](const std::string &path) {
     auto it = entries.find(path);
     if (it != entries.end()) {
       if (it->second.panel) {
-        dwell.removed(it->second.spec.key);
+        focus.remove(it->second.spec.key);
         it->second.panel->finish("host-remove");
       }
       // Release only this panel's GL/VR resources, keeping the session alive.
@@ -1127,17 +1183,146 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         }
       }
     }
+    if (now - lastSpatial >= 50) {
+      lastSpatial = now;
+      try {
+        auto raw = readFile(spatialPath, 1024 * 1024);
+        if (raw != lastSpatialRaw) {
+          auto next = SpatialState::parse(raw);
+          lastSpatialRaw = raw;
+          visibility.reconcile(next);
+          navigation.reconcile(next);
+          spatial = std::move(next);
+          if (!spatial.spatial)
+            menuID.clear();
+          if (spatial.spatial && !spatial.chosen.empty() &&
+              !chosenSequences.count(spatial.seq)) {
+            chosenSequences.insert(spatial.seq);
+            select(spatial.chosen);
+          }
+        }
+      } catch (...) {
+      } // Atomic replacement may be temporarily unavailable.
+    }
+    if (spatial.spatial) {
+      TrackedDevicePose_t head{};
+      if (!session->noVR)
+        session->system->GetDeviceToAbsoluteTrackingPose(
+            ETrackingUniverseOrigin_TrackingUniverseStanding, 0, &head, 1);
+      if (session->noVR) {
+        head.bPoseIsValid = true;
+        head.mDeviceToAbsoluteTracking = spatialIdentity();
+      }
+      if (head.bPoseIsValid) {
+        auto next = spatialAnchor(head.mDeviceToAbsoluteTracking, 1.3f, 0);
+        float dot =
+            next.m[0][2] * anchor.m[0][2] + next.m[2][2] * anchor.m[2][2];
+        if (!anchored || dot < std::cos(.8f)) {
+          anchor = next;
+          anchored = true;
+        }
+      }
+    } else
+      anchored = false;
+    bool button = session->hand[0].switcher || session->hand[1].switcher;
+    if (button && !buttonWas && spatial.spatial) {
+      spatial.open = !spatial.open;
+      visibility.request(spatial.open, spatial.seq);
+      try {
+        emit("{\"action\":\"switcher\",\"verb\":" +
+             jsonString(spatial.open ? "open" : "close") + "}");
+      } catch (...) {
+      }
+    }
+    buttonWas = button;
+    bool grip[2]{session->hand[0].valid&&session->hand[0].squeeze,session->hand[1].valid&&session->hand[1].squeeze};
+    navigation.update(spatial,grip);
+    if(spatialAppIndex(spatial,menuID)<0)menuID.clear();
+    tiles = spatialLayout(spatial, anchor, menuID);
+    int hot = -1;
+    PanelPick uiHit;
+    int pointer = -1;
+    for (int hand : {1, 0})
+      if (session->hand[hand].valid) {
+        int h = spatialPick(session->hand[hand].ray(), tiles, &uiHit);
+        if (h >= 0) {
+          hot = h;
+          pointer = hand;
+          break;
+        }
+      }
+    bool grab = pointer >= 0 && session->hand[pointer].grab;
+    std::string handHits[2];
+    bool down[2]{};
+    for (int hand = 0; hand < 2; ++hand) {
+      down[hand] = session->hand[hand].valid && session->hand[hand].grab;
+      if (session->hand[hand].valid) {
+        int t = spatialPick(session->hand[hand].ray(), tiles);
+        if (t >= 0)
+          handHits[hand] = tiles[t].surface.key;
+      }
+    }
+    auto gesture = press.update(handHits, down, now);
+    const bool dismissedMenu = gesture.outside && !menuID.empty();
+    if(gesture.outside)menuID.clear();
+    for (const auto &t : tiles) {
+      if (gesture.hold == t.surface.key && t.kind == SpatialTile::Dock)
+        menuID = spatial.apps[t.index].id;
+      if (gesture.click != t.surface.key)
+        continue;
+      try {
+        if (t.kind == SpatialTile::Window)
+          select(spatial.windows[t.index].key);
+        else if (t.kind == SpatialTile::Shelf)menuID.clear();
+        else {
+          int app = t.kind == SpatialTile::Dock ? t.index : spatialAppIndex(spatial,menuID);
+          if (app >= 0 && app < int(spatial.apps.size())) {
+            auto &a = spatial.apps[app];
+            std::string verb = t.kind == SpatialTile::Dock ? "open"
+                               : t.index == 0              ? "show_windows"
+                               : t.index == 1 ? (a.hidden ? "unhide" : "hide")
+                                              : "quit";
+            emit("{\"action\":\"app\",\"verb\":" + jsonString(verb) +
+                 ",\"bundleID\":" + jsonString(a.id) + "}");
+            menuID.clear();
+          }
+        }
+      } catch (...) {
+      }
+    }
+    tiles = spatialLayout(spatial, anchor, menuID);
+    if (now - lastSpatialDraw >= 33) {
+      lastSpatialDraw = now;
+      spatialRenderer.draw(
+          spatial, tiles, hot, uiHit.u, uiHit.v, grab,
+          std::filesystem::path(spatialPath).parent_path().string() + "/icons",
+          [&](const std::string &key) {
+            for (auto &[p, e] : entries)
+              if (e.panel && e.spec.key == key)
+                return SpatialPicture{e.panel->overlay.spatialTexture(),
+                                      e.panel->overlay.spatialTransposed()};
+            return SpatialPicture{};
+          });
+    }
     std::string handOwner[2];
     for (int hand = 0; hand < 2; ++hand) {
+      if(dismissedMenu || (spatial.spatial&&spatial.open&&grip[hand]))continue;
+      if (session->hand[hand].valid &&
+          spatialPick(session->hand[hand].ray(), tiles) >= 0)
+        continue;
       float nearest = 0;
+      bool nearestForeground = false;
       for (const auto &[path, entry] : entries) {
         if (!entry.panel) continue;
         const auto &o = entry.panel->overlay;
         if (o.draggingHand() == hand) { handOwner[hand] = path; break; }
         if (!session->hand[hand].valid) continue;
         float distance = o.interactionDistance(session->hand[hand].pose);
-        if (distance > 0 && (handOwner[hand].empty() || distance < nearest)) {
-          nearest = distance; handOwner[hand] = path;
+        const bool foreground = o.spatialForeground;
+        if (distance > 0 && (handOwner[hand].empty() ||
+            (foreground && !nearestForeground) ||
+            (foreground == nearestForeground && distance < nearest))) {
+          nearest = distance; nearestForeground = foreground; handOwner[hand] = path;
         }
       }
     }
@@ -1147,14 +1332,15 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       auto &panel = *entry.panel;
       try {
         unsigned hands = (handOwner[0] == path ? 1u : 0u) | (handOwner[1] == path ? 2u : 0u);
-        if (!panel.tick(false, false, hands)) {
-          panel.finish(); dwell.removed(entry.spec.key); entry.panel.reset(); continue;
+        if (!panel.tick(false, false, hands, spatial.spatial && spatial.open)) {
+          panel.finish();
+          focus.remove(entry.spec.key); entry.panel.reset(); continue;
         }
         if (panel.ready && panel.overlay.interactive())
           surfaces.push_back({entry.spec.key, panel.overlay.placement, panel.overlay.panelHeight()});
       } catch (...) {
         fprintf(stderr, "[native-host] panel failed (endpoint redacted)\n");
-        dwell.removed(entry.spec.key);
+        focus.remove(entry.spec.key);
         // Join stream workers before destroying the panel's GL resources.
         entry.panel.reset();
         panelError(entry.spec, "host-panel-error");
@@ -1167,26 +1353,65 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     PanelPick hit;
     std::string source;
     if (eye) {
-      hit = pickPanel(ray, surfaces, dwell.active); source = "eye";
+      hit = spatialPanelPick(ray, surfaces, focus.active); source = "eye";
     } else {
       source = "controller";
       // Right hand wins when both point at a window, matching placement input.
       for (int hand : {1, 0}) if (session->hand[hand].valid) {
-        hit = pickPanel(session->hand[hand].ray(), surfaces, dwell.active);
-        if (hit) break;
-      }
+          if (spatialPick(session->hand[hand].ray(), tiles) >= 0) {
+            hit = {};
+            break;
+          }
+          hit = spatialPanelPick(session->hand[hand].ray(), surfaces, focus.active);
+          if (hit)
+            break;
+        }
     }
-    if (dwell.settled(hit, now, source) && now - lastFocusAttempt >= 100) {
+    // Foreground UI consumes gaze before underlying windows can build focus.
+    if (eye && spatialPick(ray, tiles) >= 0)
+      hit = {};
+    for (auto &[path, e] : entries)
+      if (e.panel)
+        focus.feedback.try_emplace(e.spec.key);
+    if (focus.update(hit, float((now - lastFrame) / 1000), source) &&
+        now - lastFocusAttempt >= 100) {
       lastFocusAttempt = now;
-      for (auto &[path, entry] : entries) if (entry.panel && entry.spec.key == hit.key) {
-        try {
-          const auto file = entry.spec.requestDir + "/focus-" + std::to_string(getpid()) + "-" + std::to_string(++requests) + ".json";
-          atomicWrite(file, "{\"action\":\"focus\",\"key\":" + jsonString(hit.key) + ",\"u\":" +
+      for (auto &[path, e] : entries)
+        if (e.panel && e.spec.key == hit.key)
+          try {
+            atomicWrite(e.spec.requestDir + "/focus-" + std::to_string(getpid()) + "-" + std::to_string(++requests) + ".json", "{\"action\":\"focus\",\"key\":" + jsonString(hit.key) + ",\"u\":" +
                       std::to_string(hit.u) + ",\"v\":" + std::to_string(hit.v) + "}");
-          dwell.activated(hit);
-        } catch (...) { fprintf(stderr, "[native-host] could not write focus request\n"); }
-        break;
+            focus.activate(hit.key);
+            for (auto &[otherPath, other] : entries) if (other.panel)
+              other.panel->overlay.setSpatialForeground(other.spec.key == hit.key);
+          } catch (...) {
+            focus.feedback[hit.key].lose();
+          }
+    }
+    for (auto &[path, e] : entries)
+      if (e.panel)
+        e.panel->overlay.focusFeedback = focus.feedback[e.spec.key];
+    lastFrame = now;
+    if (spatial.open && eye) {
+      PanelPick pick;
+      int tile = spatialPick(ray, tiles, &pick);
+      std::string next = tile >= 0 && tiles[tile].kind == SpatialTile::Window
+                             ? spatial.windows[tiles[tile].index].key
+                             : "";
+      if (next != gazeKey) {
+        gazeKey = next;
+        gazeSince = now;
       }
+      if (!next.empty() && now - gazeSince >= 250) {
+        try {
+          select(next);
+        } catch (...) {
+        }
+        gazeKey.clear();
+      }
+    } else {
+      gazeKey.clear();
+      gazeSince = now;
     }
     if (now - lastState >= 1000) { writeHostState("hosting"); lastState = now; }
     // One short wait for the host, independent of its panel count; every live
@@ -1201,7 +1426,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
 }
 int main(int argc, char **argv) {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
-      requestDir, hostDir,
+      requestDir, hostDir, spatialStateFile,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -1236,6 +1461,8 @@ int main(int argc, char **argv) {
         return selfTest();
       else if (a == "--host-dir")
         hostDir = value();
+      else if (a == "--spatial-state")
+        spatialStateFile = value();
       else if (a == "--url-file")
         urlFile = value();
       else if (a == "--control-file")
@@ -1275,6 +1502,66 @@ int main(int argc, char **argv) {
         Overlay gl(true, "com.frame-workspace.native.preview");
         if (!renderChromePreview(scene, 1.2f, outPath))
           throw std::runtime_error("--render-chrome: unknown scene or unwritable output");
+        return 0;
+      } else if (a == "--render-spatial-style") {
+        auto scene = value(), out = value();
+        auto session = std::make_shared<OverlaySession>(true);
+        SpatialRenderer renderer(session);
+        SpatialState st;
+        st.spatial = true;
+        st.open = true;
+        st.index = 1;
+        for (auto name : {"Safari", "Terminal", "Code", "Finder"}) {
+          st.apps.push_back({name, name, "", true, false});
+          st.windows.push_back({name, "Window", name});
+        }
+        if (!spatialStateFile.empty())
+          st = SpatialState::parse(readFile(spatialStateFile, 1024 * 1024));
+        auto tiles =
+            spatialLayout(st, spatialAnchor(spatialIdentity(), 1.3f, 0),
+                          scene == "menu" && st.apps.size()>1 ? st.apps[1].id : "");
+        if (scene != "rest" && scene != "hover" && scene != "held" &&
+            scene != "menu")
+          throw std::runtime_error("unknown spatial scene");
+        // Asymmetric fixture through the same texture sampling as live panels:
+        // red upper left, blue lower right, with a white top bar. Alternate
+        // cards are physically quarter-turned just like vertical-bend output.
+        GLuint fixture[2];
+        glGenTextures(2, fixture);
+        const int w = 240, h = 160;
+        std::vector<unsigned char> pixels(w * h * 4), turned(w * h * 4);
+        for (int y = 0; y < h; ++y)
+          for (int x = 0; x < w; ++x) {
+            auto k = (y * w + x) * 4;
+            bool bar = y > 12 && y < 22 && x > 12 && x < 150;
+            pixels[k] = bar ? 240 : x < w / 2 ? 150 : 30;
+            pixels[k + 1] = bar ? 240 : y < h / 2 ? 65 : 100;
+            pixels[k + 2] = bar ? 240 : x >= w / 2 ? 180 : 50;
+            pixels[k + 3] = 255;
+            for (int c = 0; c < 4; ++c)
+              turned[(x * h + (h - 1 - y)) * 4 + c] = pixels[k + c];
+          }
+        for (int i = 0; i < 2; ++i) {
+          glBindTexture(GL_TEXTURE_2D, fixture[i]);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, i ? h : w, i ? w : h, 0,
+                       GL_RGBA, GL_UNSIGNED_BYTE,
+                       i ? turned.data() : pixels.data());
+        }
+        renderer.draw(
+            st, tiles, scene == "rest" ? -1 : 2, .45f, .35f, scene == "held",
+            std::filesystem::path(spatialStateFile).parent_path().string() +
+                "/icons",
+            [&](const std::string &key) {
+              size_t i = 0;
+              for (; i < st.windows.size() && st.windows[i].key != key; ++i) {
+              }
+              return SpatialPicture{fixture[i % 2], bool(i % 2)};
+            });
+        if (!renderer.dump(out, tiles))
+          throw std::runtime_error("spatial diagnostic output failed");
+        glDeleteTextures(2, fixture);
         return 0;
       } else if (a == "--rewrite-poc") {
         // Diagnostic: rewrite an Annex B file to POC type 2 (one access unit
@@ -1350,7 +1637,7 @@ int main(int argc, char **argv) {
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-chrome SCENE OUT.ppm | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style rest|hover|held|menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "
@@ -1437,6 +1724,7 @@ int main(int argc, char **argv) {
     options.initialPose = initialPose;
     options.actionManifest = actionManifest;
     options.requestDir = requestDir;
+    options.spatialStateFile = spatialStateFile;
     options.key = key;
     options.decoderMode = decoderMode;
     options.conversionMode = conversionMode;

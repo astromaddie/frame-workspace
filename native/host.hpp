@@ -137,23 +137,4 @@ inline bool binocularRay(const EyeRay (&rays)[2], EyeRay &ray) {
   for (auto &v : ray.direction) v /= std::sqrt(norm);
   return true;
 }
-class FocusDwell {
-  std::string pending, source;
-  double since = 0;
-public:
-  std::string active;
-  static constexpr double dwellMs = 180;
-  bool settled(const PanelPick &hit, double now, const std::string &input) {
-    if (!hit || hit.key == active) { pending.clear(); source = input; return false; }
-    if (pending != hit.key || source != input || now < since) {
-      pending = hit.key; source = input; since = now; return false;
-    }
-    return now - since >= dwellMs;
-  }
-  void activated(const PanelPick &hit) { active = hit.key; pending.clear(); }
-  void removed(const std::string &key) {
-    if (active == key) active.clear();
-    if (pending == key) pending.clear();
-  }
-};
 } // namespace fw

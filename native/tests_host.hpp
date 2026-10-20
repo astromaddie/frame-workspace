@@ -80,15 +80,5 @@ inline void selfTestHost() {
   EyeRay eyes[2]{{{-.03f,0,0},{.03f,0,-1}}, {{.03f,0,0},{-.03f,0,-1}}}, combined;
   check(binocularRay(eyes,combined) && std::fabs(combined.origin[0])<1e-6 && std::fabs(combined.direction[0])<1e-6 &&
         combined.direction[2] == -1, "binocular gaze combines both eyes");
-  FocusDwell dwell;
-  PanelPick one{"flat",.2f,.3f,2}, two{"right",.7f,.8f,2};
-  check(!dwell.settled(one,0,"eye") && !dwell.settled(one,179,"eye") && dwell.settled(one,180,"eye"),
-        "gaze focus waits for dwell");
-  dwell.activated(one);
-  check(!dwell.settled(one,200,"eye") && !dwell.settled(two,250,"eye") && !dwell.settled({},400,"eye") &&
-        !dwell.settled(two,450,"eye") && !dwell.settled(two,600,"controller") && !dwell.settled(two,779,"controller") &&
-        dwell.settled(two,780,"controller"), "dwell resets after misses and tracking source changes");
-  dwell.activated(two); dwell.removed("right");
-  check(dwell.active.empty() && !dwell.settled(two,900,"eye"), "removed focused panel clears focus identity");
 }
 } // namespace fw
