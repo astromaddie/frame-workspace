@@ -3,6 +3,7 @@
 #include "host.hpp"
 #include "tests_host.hpp"
 #include "chrome_preview.hpp"
+#include "tests_spatial.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -417,8 +418,9 @@ static int selfTest() {
     }
   }
   selfTestHost();
+  selfTestSpatial();
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking and dwell\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout and trigger gestures\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
