@@ -25,7 +25,8 @@ using namespace fw;
 static DashState mockState(const std::string &which) {
   DashState s;
   s.macConnected = which != "offline";
-  s.workspaceRunning = which == "running";
+  s.workspaceRunning = which == "running" || which == "spatial";
+  s.spatial = which == "spatial";
   if (s.workspaceRunning)
     s.windows = {{"mads — grok — -zsh — 138×46", "com.frame-workspace.native.1000.panel-w105"},
                  {"Frame Workspace Preview — Google Chrome", "com.frame-workspace.native.1000.panel-w212"},
@@ -105,6 +106,8 @@ static DashState readState(const std::string &path) {
       s.busyText = busy == "stopping" ? "Stopping…" : "Starting…";
     }
     if (json_object_object_get_ex(ws, "label", &v)) s.workspaceLabel = json_object_get_string(v);
+    if (json_object_object_get_ex(ws, "mode", &v) && json_object_is_type(v, json_type_string))
+      s.spatial = std::string(json_object_get_string(v)) == "spatial";
   }
   json_object *windows = nullptr;
   if (json_object_object_get_ex(j, "windows", &windows) && json_object_is_type(windows, json_type_array))
@@ -119,7 +122,7 @@ static DashState readState(const std::string &path) {
 
 static bool sameState(const DashState &a, const DashState &b) {
   if (a.macConnected != b.macConnected || a.workspaceRunning != b.workspaceRunning ||
-      a.workspaceBusy != b.workspaceBusy || a.busyText != b.busyText || a.locked != b.locked || a.workspaceLabel != b.workspaceLabel || a.windows.size() != b.windows.size())
+      a.workspaceBusy != b.workspaceBusy || a.spatial != b.spatial || a.busyText != b.busyText || a.locked != b.locked || a.workspaceLabel != b.workspaceLabel || a.windows.size() != b.windows.size())
     return false;
   for (size_t i = 0; i < a.windows.size(); i++)
     if (a.windows[i].title != b.windows[i].title || a.windows[i].key != b.windows[i].key) return false;

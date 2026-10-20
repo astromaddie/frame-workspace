@@ -1,7 +1,7 @@
 #pragma once
 // Diagnostic: renders both chrome layers for one state into a PPM, flat, over
 // a dark striped stand-in for the window. Needs a current GL context.
-//   scene: rest | all | hover | held | close | close-held
+//   scene: rest | all | hover | held | close | close-held | focus-glow | focus-snap | focused
 #include "chrome.hpp"
 #include <cstdio>
 #include <string>
@@ -34,6 +34,10 @@ inline bool renderChromePreview(const std::string &scene, float windowWidth, con
     s.tipX = l.closeX() + 0.004f;
     s.tipY = l.rowY() + 0.006f;
     if (scene == "close-held") s.held[handleIndex(Handle::Close)] = 1;
+  } else if (scene == "focus-glow" || scene == "focus-snap" || scene == "focused") {
+    frame.focusGlow = scene == "focus-glow" ? 0.7f : 0.f;
+    frame.focused = scene != "focus-glow";
+    frame.focusSnap = scene == "focus-snap" ? 0.4f : 1.f;
   } else if (scene != "rest") {
     return false;
   }

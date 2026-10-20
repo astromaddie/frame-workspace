@@ -18,6 +18,7 @@ struct DashWindow {
 struct DashState {
   bool macConnected = false;
   bool workspaceRunning = false, workspaceBusy = false;
+  bool spatial = false;  // Spatial Mode (every window in the room) rather than Desktop Mode (FW-15)
   std::string busyText = "Starting…";  // shown while busy
   bool locked = false;  // a press is being carried out: every button waits
   std::string workspaceLabel = "9:8 · 2880 × 2560";
@@ -57,14 +58,19 @@ public:
     // Workspace card
     card(32, 92, width - 64, 176);
     text("Workspace", 64, 120, 26, 600, bright);
-    text(s.workspaceBusy ? s.busyText : s.workspaceRunning ? "Running · " + s.workspaceLabel : "Stopped",
+    const std::string running = s.spatial ? "Running · Spatial Mode · " + std::to_string(s.windows.size()) +
+                                                (s.windows.size() == 1 ? " Window" : " Windows")
+                                          : "Running · Desktop Mode · " + s.workspaceLabel;
+    text(s.workspaceBusy ? s.busyText : s.workspaceRunning ? running : "Stopped",
          64, 160, 17, 400, s.workspaceRunning ? green : muted);
     const bool can = s.macConnected && !s.workspaceBusy && !s.locked;
+    // T1: Desktop | Spatial, always on the card; Start starts whichever is chosen.
+    segments(64, 198, s.spatial, hover, can);
     if (s.workspaceRunning) {
-      button(64, 198, 240, 50, "Stop Workspace", "workspace_stop", "", hover, false, can);
-      button(320, 198, 180, 50, "Recenter", "recenter", "", hover, false, can);
+      button(372, 198, 120, 50, "Stop", "workspace_stop", "", hover, false, can);
+      button(508, 198, 160, 50, "Recenter", "recenter", "", hover, false, can);
     } else {
-      button(64, 198, 260, 50, "Start Workspace", "workspace_start", "", hover, true, can);
+      button(372, 198, 260, 50, "Start Workspace", "workspace_start", "", hover, true, can);
     }
     // Windows
     text("WINDOWS", 48, 304, 14, 700, muted, 2.4);
@@ -196,6 +202,53 @@ private:
     pango_font_description_free(font);
     g_object_unref(layout);
     buttons.push_back({x, y, w, h, action, key, enabled});
+  }
+  // A two-part switch: the chosen side lit blue, the other a press away.
+  void segments(double x, double y, bool spatial, const std::string &hover, bool enabled) {
+    const double w = 140, h = 50, pad = 4;
+    rounded(x, y, 2 * w + 3 * pad, h, 10);
+    cairo_set_source_rgba(c, 0, 0, 0, 0.4);
+    cairo_fill(c);
+    const char *labels[2] = {"Desktop", "Spatial"};
+    const char *actions[2] = {"mode_desktop", "mode_spatial"};
+    for (int i = 0; i < 2; i++) {
+      const double sx = x + pad + i * (w + pad), sy = y + pad, sh = h - 2 * pad;
+      const bool on = (i == 1) == spatial;
+      const bool hot = enabled && !on && hover == std::string(actions[i]) + ":";
+      if (on) {
+        rounded(sx, sy, w, sh, 8);
+        cairo_pattern_t *g = cairo_pattern_create_linear(sx, 0, sx + w, 0);
+        cairo_pattern_add_color_stop_rgb(g, 0, 0.278, 0.749, 1);
+        cairo_pattern_add_color_stop_rgb(g, 1, 0.102, 0.267, 0.761);
+        cairo_set_source(c, g);
+        cairo_fill(c);
+        cairo_pattern_destroy(g);
+      } else if (hot) {
+        rounded(sx, sy, w, sh, 8);
+        cairo_set_source_rgba(c, 0.404, 0.439, 0.482, 0.45);
+        cairo_fill(c);
+        rounded(sx - 2, sy - 2, w + 4, sh + 4, 9);
+        cairo_set_source_rgba(c, blue.r, blue.g, blue.b, 0.9);
+        cairo_set_line_width(c, 2.5);
+        cairo_stroke(c);
+      }
+      PangoLayout *layout = pango_cairo_create_layout(c);
+      PangoFontDescription *font = pango_font_description_from_string("Noto Sans, Helvetica Neue, sans-serif");
+      pango_font_description_set_absolute_size(font, 19 * PANGO_SCALE);
+      pango_font_description_set_weight(font, on ? PANGO_WEIGHT_SEMIBOLD : PANGO_WEIGHT_MEDIUM);
+      pango_layout_set_font_description(layout, font);
+      pango_layout_set_text(layout, labels[i], -1);
+      int tw = 0, th = 0;
+      pango_layout_get_pixel_size(layout, &tw, &th);
+      const Rgb &fg = !enabled ? dim : on ? bright : text_;
+      cairo_set_source_rgb(c, fg.r, fg.g, fg.b);
+      cairo_move_to(c, sx + (w - tw) / 2, sy + (sh - th) / 2);
+      pango_cairo_show_layout(c, layout);
+      pango_font_description_free(font);
+      g_object_unref(layout);
+      // The chosen side is not a button; the other switches mode.
+      if (!on) buttons.push_back({sx, sy, w, sh, actions[i], "", enabled});
+    }
   }
   static std::string ellipsize(const std::string &t, size_t n) {
     if (t.size() <= n) return t;

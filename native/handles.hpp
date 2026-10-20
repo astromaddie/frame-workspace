@@ -49,8 +49,10 @@ struct HandleLayout {
   // How close the laser must come to a handle's centre line to take it.
   static constexpr float tolerance = 0.03f;
   // The bezel layer, and the controls layer (symmetric about the centre).
-  float frameWidth() const { return width + 2 * bezel(); }
-  float frameHeight() const { return height + 2 * bezel(); }
+  // The bezel layer, with room around it for the gaze focus halo.
+  static constexpr float haloMargin = 0.02f;
+  float frameWidth() const { return width + 2 * (bezel() + haloMargin); }
+  float frameHeight() const { return height + 2 * (bezel() + haloMargin); }
   float chromeWidth() const { return width + 2 * (handleOffset() + rodWide / 2 + 0.012f); }
   float chromeHeight() const {
     return 2 * std::max(height / 2 + handleOffset() + rodWide / 2 + 0.012f, -rowY() + discDiameter() / 2 + 0.012f);

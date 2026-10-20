@@ -22,6 +22,35 @@ struct ChromeState {
   float held[handleCount] = {};   // 1 while dragged (or pressed, for the disc)
   bool tip = false;               // the laser's tip is on this layer
   float tipX = 0, tipY = 0;       // window coordinates (m)
+  // Gaze focus (FW-15, bezel): the glow building while the window is looked
+  // at, the snap when it takes focus (0 -> 1), and whether it has focus.
+  float focusGlow = 0, focusSnap = 0;
+  bool focused = false;
+};
+
+// Focus confirmation, as the user asked: looking at a window builds a quick
+// glow along its border, then it snaps into focus; fast, but enough that a
+// passing glance doesn't select every window it crosses.
+struct FocusFeedback {
+  static constexpr float dwellSeconds = 0.25f, snapSeconds = 0.15f;
+  float glow = 0, snap = 0;
+  bool focused = false;
+  // Advances by dt; returns true at the moment focus is confirmed.
+  bool update(float dt, bool lookedAt) {
+    bool confirmed = false;
+    if (focused) {
+      snap = std::min(1.f, snap + dt / snapSeconds);
+      glow = 0;
+    } else if (lookedAt) {
+      glow = std::min(1.f, glow + dt / dwellSeconds);
+      if (glow >= 1) { focused = confirmed = true; snap = 0; }
+    } else {
+      glow = std::max(0.f, glow - dt / (dwellSeconds * 0.6f));  // fades a little faster than it builds
+    }
+    return confirmed;
+  }
+  void lose() { focused = false; snap = 0; glow = 0; }
+  void apply(ChromeState &s) const { s.focusGlow = glow; s.focusSnap = snap; s.focused = focused; }
 };
 
 class ChromeRenderer {
@@ -82,6 +111,7 @@ public:
     glUniform1fv(u("uWideAmt"), handleCount, s.wide);
     glUniform1fv(u("uHeld"), handleCount, s.held);
     glUniform3f(u("uTip"), s.tipX, s.tipY, s.tip ? 1.f : 0.f);
+    glUniform3f(u("uFocus"), s.focusGlow, s.focusSnap, s.focused ? 1.f : 0.f);
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0); glVertex2f(-1, -1);
     glTexCoord2f(1, 0); glVertex2f(1, -1);
@@ -165,6 +195,7 @@ uniform float uReveal[10];
 uniform float uWideAmt[10];
 uniform float uHeld[10];
 uniform vec3 uTip;       // x, y, on
+uniform vec3 uFocus;     // gaze glow building, snap 0-1, focused
 
 // Palladium silver-lavender
 const vec3 TOP = vec3(.984, .980, .992), FACE = vec3(.890, .875, .918), BOTTOM = vec3(.796, .769, .839);
@@ -231,7 +262,16 @@ vec4 bezel(vec2 p) {
     float a = .40 * exp(dI / .010) * (.55 + .45 * dot(gI, SHADOW));
     return vec4(0., 0., 0., a);
   }
-  if (dO > uPx) return vec4(0.);
+  // Gaze focus halo just outside the bezel: soft and wide while the window is
+  // looked at, tightening at the snap, a thin line of light while focused.
+  float focused = uFocus.z, snap = uFocus.y;
+  float haloWidth = focused > .5 ? mix(.007, .003, smoothstep(0., 1., snap)) : .007;
+  float haloAmt = focused > .5 ? mix(.75, .45, smoothstep(0., 1., snap)) + (snap < 1. ? .3 * sin(snap * 3.14159) : 0.)
+                               : .6 * uFocus.x;
+  if (dO > uPx) {
+    float h = haloAmt * exp(-(dO - uPx) / haloWidth);
+    return h > .002 ? vec4(vec3(.36, .70, 1.) * h, h) : vec4(0.);
+  }
   float s = dI, ich = .26 * b, ch = .16 * b;
   vec3 n = vec3(0., 0., 1.);
   if (s < ich) n.xy = -gI * .75;                // inner chamfer, facing the content
@@ -243,6 +283,17 @@ vec4 bezel(vec2 p) {
   if (-dO < uPx * 1.2) c = mix(c, BORDER, .6);
   if (s < uPx * 1.2) c = mix(c, BORDER, .5);
   c = tipLight(c, p, n);
+  // Gaze focus: a soft blue glow builds across the bezel while the window is
+  // looked at; at the snap it tightens into a crisp line along the window's
+  // edge, flaring once, and stays while the window has focus.
+  c = mix(c, vec3(.42, .72, 1.), .55 * uFocus.x);
+  if (focused > .5) {
+    // the light gathers into a crisp line along the window's edge
+    float width = mix(.45 * b, .1 * b, smoothstep(0., 1., snap));
+    float flare = snap < 1. ? .3 * sin(snap * 3.14159) : 0.;
+    c = mix(c, vec3(.42, .74, 1.), min(1., .85 + flare) * exp(-s / max(width, 1e-4)));
+    c = mix(c, vec3(.42, .72, 1.), .18 * (1. - smoothstep(0., 1., snap)));
+  }
   float a = clamp(.5 - dO / uPx, 0., 1.) * clamp(.5 + s / uPx, 0., 1.);
   return vec4(c * a, a);
 }
