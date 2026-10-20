@@ -418,6 +418,9 @@
   .mv-workspace { border-bottom: 1px solid rgba(255,255,255,.08); margin: 0 0 10px; padding: 0 0 10px; }
   .mv-workspace-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .mv-workspace-controls > strong { color: var(--bright); font-size: 13px; margin-right: 2px; }
+  .mv-mode-switch { display: inline-flex; gap: 2px; padding: 3px; border-radius: 5px; background: rgba(0,0,0,.28); }
+  .mv-mode-switch button { margin: 0; border-radius: 3px; min-width: 70px; }
+  .mv-mode-switch button[aria-pressed="true"] { background: var(--action); color: var(--bright); }
   .mv-workspace-controls label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
   .mv-workspace-controls select { max-width: 190px; background: rgba(0,0,0,.28); color: var(--text); border: 1px solid transparent; border-radius: 3px; padding: 4px 6px; font: inherit; font-size: 12px; }
   .mv-workspace-controls select:disabled { opacity: .6; }
@@ -1252,6 +1255,10 @@
       <div class="mv-workspace" id="mvWorkspace">
         <div class="mv-workspace-controls">
           <strong>Workspace</strong>
+          <div class="mv-mode-switch" role="group" aria-label="Workspace Mode">
+            <button class="small" id="mvModeDesktop" data-mv="workspace-mode" data-mode="desktop" aria-pressed="true">Desktop</button>
+            <button class="small" id="mvModeSpatial" data-mv="workspace-mode" data-mode="spatial" aria-pressed="false">Spatial</button>
+          </div>
           <label>Desktop<select id="mvWorkspacePreset" aria-label="Workspace desktop size">
             <option value="5120x1440">Wide · 5120 × 1440</option>
             <option value="5120x2160">Tall · 5120 × 2160</option>
@@ -1267,7 +1274,7 @@
           <button class="small action" id="mvWorkspaceStart" data-mv="workspace-start">Start Workspace</button>
 
         </div>
-        <div class="mv-placement-row">
+        <div class="mv-placement-row" id="mvPlacementRow">
           <button class="small danger" id="mvWorkspaceStop" data-mv="workspace-stop" hidden>Stop Workspace</button>
           <div class="mv-placement-group" role="group" aria-label="Workspace width">
             <span>Width</span><button class="small" data-mv="workspace-adjust" data-field="width" data-step="-0.2" id="mvWidthMinus" aria-label="Decrease Workspace width" disabled>−</button>
@@ -4304,6 +4311,9 @@ function workspacePlacement(s) {
 }
 function renderWorkspacePlacement(s) {
   const p = workspacePlacement(s), busy = mvWorkspaceBusy || mvPlacementBusy;
+  const spatial = s && s.workspace && s.workspace.mode === "spatial";
+  $("mvPlacementStatus").hidden = spatial;
+  for (const group of document.querySelectorAll("#mvWorkspace .mv-placement-group")) group.hidden = spatial;
   for (const [field, max] of [["Width", 8], ["Distance", 10]]) {
     const value = p && p[field.toLowerCase()];
     $("mv" + field + "Value").textContent = p ? `${Number(value.toFixed(3))} m` : "—";
@@ -4339,15 +4349,40 @@ async function adjustWorkspacePlacement(b) {
 function renderMvWorkspace(s) {
   renderWorkspacePlacement(s);
   const ws = s.workspace || {state: "stopped"}, running = ws.state === "running";
+  const spatial = ws.mode === "spatial";
   const stream = running && (s.streams || []).find(x => x.src === ws.captureSrc);
   const status = $("mvWorkspaceStatus"), start = $("mvWorkspaceStart"), stop = $("mvWorkspaceStop");
   const preset = $("mvWorkspacePreset"), scale = $("mvWorkspaceScale");
+  preset.parentElement.hidden = spatial;
+  scale.parentElement.hidden = spatial;
+  $("mvSeparate").parentElement.hidden = spatial;
   const size = (w, h) => esc(w) + "×" + esc(h);
   const quality = {sharp: "Sharp", balanced: "Balanced", light: "Light", compatible: "Compatible"}[ws.quality] || ws.quality || "selected quality";
   const d = ws.display || {}, v = ws.stream || {};
-  const pending = ws.state === "starting" || ws.state === "owner_unknown" || (ws.state === "error" && ws.removed === false);
-  const needsStop = ws.state !== "stopped" && !(ws.state === "error" && ws.removed === true);
-  mvWorkspaceActivePreset = running ? ws.preset : null;
+  const pending = ws.state === "starting" || ws.state === "stopping" || ws.state === "owner_unknown" || ws.panelCleanupPending || (ws.state === "error" && ws.removed === false);
+  const needsStop = ws.panelCleanupPending || (ws.state !== "stopped" && !(ws.state === "error" && ws.removed === true));
+  $("mvPlacementRow").hidden = spatial && !needsStop;
+  for (const [mode, id] of [["desktop", "mvModeDesktop"], ["spatial", "mvModeSpatial"]]) {
+    $(id).setAttribute("aria-pressed", String(mode === (spatial ? "spatial" : "desktop")));
+    $(id).disabled = mvWorkspaceBusy || mvPlacementBusy || pending;
+  }
+  mvWorkspaceActivePreset = running && !spatial ? ws.preset : null;
+  if (spatial) {
+    start.disabled = mvWorkspaceBusy || mvPlacementBusy || pending || running || !s.screen || !s.accessibility;
+    start.textContent = mvWorkspaceBusy ? "Working…" : running ? "Running" : "Start Workspace";
+    start.setAttribute("aria-label", "Start Spatial Mode");
+    stop.disabled = mvWorkspaceBusy || mvPlacementBusy;
+    stop.hidden = !needsStop;
+    status.textContent = ws.state === "error" ? (ws.error || "Spatial Mode Stopped Unexpectedly.")
+      : ws.state === "stopping" ? "Restoring Windows And The Laptop Display…"
+      : ws.state === "starting" ? "Starting Spatial Mode…"
+      : running ? "Spatial Mode · " + (s.streams || []).filter(x => /^(window|separate):/.test(x.src)).length + " Window Panels · "
+          + (ws.panelsReady ? "Running" : "Opening Windows…")
+          + (Object.keys(ws.panelErrors || {}).length ? " · Some Windows Are Retrying" : "")
+      : "Every Window Opens In Its Own Panel. The Laptop Mirrors A Hidden Home Display. Stop Restores Your Windows And Display.";
+    status.dataset.state = ws.state || "stopped";
+    return;
+  }
   // Show Workspace Again sends this shared choice. Until the user picks one,
   // mirror the running Workspace so reopening never silently downgrades it.
   const qualityChoice = $("mvQuality");
@@ -4367,7 +4402,7 @@ function renderMvWorkspace(s) {
   stop.disabled = mvWorkspaceBusy || mvPlacementBusy;
   stop.hidden = !needsStop;
   start.textContent = mvWorkspaceBusy ? (applyingSize ? "Applying size…" : "Working…")
-    : applyingSize ? "Apply size change" : running ? "Show again" : "Start Workspace";
+    : applyingSize ? "Apply Size Change" : running ? "Show Again" : "Start Workspace";
   start.setAttribute("aria-label", applyingSize ? "Apply the selected Workspace desktop size"
     : running ? "Show Workspace in the Frame again" : "Start Workspace and show it in the Frame");
 
@@ -4446,6 +4481,19 @@ $("macview").onclick = async e => {
   if (b.dataset.mv === "workspace-adjust") {
     await adjustWorkspacePlacement(b);
     return;
+  } else if (b.dataset.mv === "workspace-mode") {
+    if (mvWorkspaceBusy || mvPlacementBusy || !mvState || b.disabled || mvState.workspace.mode === b.dataset.mode) return;
+    ++mvSeq;
+    mvWorkspaceBusy = true;
+    renderMvWorkspace(mvState);
+    try {
+      await act("Switch Workspace Mode", () => api("/api/macview", {action: "mode_" + b.dataset.mode}), b);
+      mvWorkspacePendingPreset = null;
+    } finally {
+      mvWorkspaceBusy = false;
+      await loadMacView();
+    }
+    return;
   } else if (b.dataset.mv === "show") {
     const as = $("mvSeparate").checked && src.startsWith("window:") ? "separate:" + src.slice(7) : src;
     await act(`Show ${b.dataset.title} in the headset`, async () => {
@@ -4471,7 +4519,8 @@ $("macview").onclick = async e => {
         : workspaceRunning ? "Show Workspace again" : "Start Workspace", async () => {
         const response = await api("/api/macview", {action: "workspace_start", preset: selectedPreset,
                                                       scale: Number($("mvWorkspaceScale").value), quality: $("mvQuality").value});
-        const message = response.replaced ? "Workspace changed to "
+        const message = response.mode === "spatial" ? "Spatial Mode Is Opening Your Window Panels."
+          : response.replaced ? "Workspace changed to "
           + response.workspace.display.logicalWidth + "×" + response.workspace.display.logicalHeight
           + " and reopened in the Frame."
           : response.alreadyRunning ? "Workspace is already open in the Frame."

@@ -213,6 +213,32 @@ class ProfileStoreTests(unittest.TestCase):
 
 
 class ProfileCaptureTests(unittest.TestCase):
+    def test_spatial_profiles_capture_window_poses_without_a_workspace_panel(self):
+        with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "browser"}):
+            store = profiles.ProfileStore(Path(temp) / "profiles.json")
+            mv = frame_macview.MacView([], mock.Mock(), "fake")
+            mv.mode = "spatial"
+            mv.state = mock.Mock(return_value={"available": True, "screen": True, "windows": [
+                {"id": 42, "src": "window:42", "bundleID": "com.apple.Terminal", "title": "Shell"}]})
+            pose = sample_pose(1)
+            mv.read_panel_poses = mock.Mock(return_value={"window:42": pose})
+            value = sample_profile([{"bundleID": "com.apple.Terminal"}])
+            value["workspace"]["pose"] = sample_pose(-1)
+            saved = profiles.save(store, mv, value)
+            mv.read_panel_poses.assert_called_once_with(["window:42"])
+            self.assertNotIn("pose", saved["workspace"])
+            self.assertEqual(saved["windows"][0]["pose"], pose)
+            # A previously saved Desktop Workspace pose remains in the store,
+            # but Spatial restore never counts it as a launched window pose.
+            value["windows"][0]["pose"] = pose
+            store.save(value)
+            mv.start_workspace = mock.Mock(return_value={"workspace": {"state": "running"}})
+            mv.show = mock.Mock(return_value={"panel": "key42"})
+            result = profiles.restore(store, mv, value["name"])
+            self.assertNotIn("pose", mv.start_workspace.call_args.kwargs)
+            self.assertEqual(result["spatialRestore"]["restoredPoses"], 1)
+            self.assertIn("pose", store.get(value["name"])["workspace"])
+
     def test_save_captures_matched_rules_and_workspace_through_run(self):
         with tempfile.TemporaryDirectory() as temp, mock.patch.dict(os.environ, {
                 "FRAME_WORKSPACE_VIEWER": "native", "FRAME_WINDOW_VIEWER": "native"}):
@@ -282,6 +308,25 @@ class ProfileCaptureTests(unittest.TestCase):
 
 
 class ProfileApiTests(unittest.TestCase):
+    def test_workspace_mode_actions_validate_and_forward_to_the_same_lifecycle(self):
+        import server
+        mv = mock.Mock()
+        mv.set_mode.return_value = {"mode": "spatial", "changed": True}
+        with mock.patch.object(server, "macview", mv), mock.patch.object(server, "LOCAL", False):
+            for action, mode in (("mode_spatial", "spatial"), ("mode_desktop", "desktop")):
+                server.macview_action({"action": action})
+                mv.set_mode.assert_called_with(mode)
+            server.macview_action({"action": "workspace_mode", "mode": "spatial"})
+            mv.set_mode.assert_called_with("spatial")
+            for request in ({"action": "mode_spatial", "extra": True},
+                            {"action": "workspace_mode"}, {"action": "workspace_mode", "mode": "other"},
+                            {"action": "workspace_start", "mode": "other"}):
+                with self.subTest(request=request), self.assertRaises(server.Failure) as error:
+                    server.macview_action(request)
+                self.assertEqual(error.exception.status, 400)
+            server.macview_action({"action": "workspace_start", "mode": "spatial"})
+            mv.start_workspace.assert_called_once_with("5120x1440", 1, "sharp", resume=True, mode="spatial")
+
     def test_profile_save_action_captures_poses_and_reports_failure_without_overwrite(self):
         import server
 
@@ -668,3 +713,86 @@ class SessionKeeperTests(unittest.TestCase):
             self.assertEqual(mv.shown, [])
             self.assertEqual(profiles.ProfileStore(os.path.join(tmp, "profiles.json")).list(), [])
             mv.closing = True
+
+    @staticmethod
+    def spatial(mv, ready=True):
+        mv.mode = "spatial"
+        mv.workspace_panel_key = None
+        mv.native_panels = {s.replace("window:", "separate:"): p for s, p in mv.native_panels.items()}
+        mv.workspace_state = lambda: {"state": "running", "mode": "spatial", "preset": "2880x2560",
+                                      "scale": 1, "quality": "sharp", "panelsReady": ready}
+
+    def test_modes_keep_independent_last_sessions_and_separate_panel_poses(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            self.assertTrue(keeper.snapshot())
+            desktop = store.path.read_bytes()
+            self.spatial(mv)
+            self.assertTrue(keeper.snapshot())
+            saved = keeper.stores["spatial"].get(profiles.LAST_SESSION)
+            self.assertNotIn("pose", saved["workspace"])  # there is no Workspace panel in Spatial Mode
+            self.assertTrue(all("pose" in r for r in saved["windows"]))
+            self.assertEqual(store.path.read_bytes(), desktop)
+            self.assertNotEqual(saved["windows"], keeper.store.get(profiles.LAST_SESSION)["windows"])
+            self.assertEqual(keeper.stores["spatial"].path.stat().st_mode & 0o777, 0o600)
+
+    def test_spatial_resume_matches_fresh_ids_before_first_automatic_launch(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            self.spatial(mv)
+            keeper.snapshot()
+            saved = keeper.stores["spatial"].get(profiles.LAST_SESSION)
+            mv.windows[0].update(id=105, src="window:105", title="New Terminal Title")
+            mv.call = mock.Mock(return_value={"windows": mv.windows})
+            mv.native_panels.clear()
+            keeper.paused = True
+            keeper.resume_async(True)
+            self.assertEqual(mv._spatial_resume_poses["separate:105"], saved["windows"][0]["pose"])
+            self.assertEqual(mv.shown, [])  # reconciler starts each window once with its saved pose
+            self.assertFalse(keeper.paused)
+
+    def test_partial_spatial_startup_does_not_overwrite_previous_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            self.spatial(mv)
+            self.assertTrue(keeper.snapshot())
+            before = keeper.stores["spatial"].path.read_bytes()
+            self.spatial(mv, ready=False)
+            mv.native_panels.clear()
+            self.assertFalse(keeper.snapshot())
+            self.assertEqual(keeper.stores["spatial"].path.read_bytes(), before)
+
+    def test_last_session_can_save_more_windows_than_named_profile_limit(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            self.spatial(mv)
+            mv.windows = [{"id": i + 1, "src": f"window:{i + 1}", "bundleID": f"com.example.app{i}"}
+                          for i in range(35)]
+            mv.native_panels = {f"separate:{i + 1}": {"key": f"key{i}"} for i in range(35)}
+            self.assertTrue(keeper.snapshot())
+            saved = keeper.stores["spatial"].get(profiles.LAST_SESSION)
+            self.assertEqual(len(saved["windows"]), 35)
+            with self.assertRaises(profiles.ProfileError):
+                profiles.validate_profile(saved)  # named profiles keep their existing bounded contract
+
+    def test_stale_desktop_resume_cannot_touch_a_new_spatial_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mv, store, keeper = self.keeper(tmp)
+            self.spatial(mv)
+            mv._mode_generation = 2
+            keeper.paused = True
+            self.assertEqual(keeper.resume("desktop", 1), [])
+            self.assertEqual(mv.shown, [])
+            self.assertTrue(keeper.paused)
+
+    def test_desktop_workspace_pose_is_loaded_before_the_viewer_launch(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            keeper.snapshot()
+            pose = keeper.workspace_pose()
+            self.assertEqual(pose, store.get(profiles.LAST_SESSION)["workspace"]["pose"])
+            real = frame_macview.MacView([], mock.Mock(), "fake")
+            real.resume_workspace_pose = keeper.workspace_pose
+            real._start_workspace = mock.Mock(return_value={"workspace": {"state": "running"}})
+            real.start_workspace(resume=True)
+            self.assertEqual(real._start_workspace.call_args.args[3], pose)

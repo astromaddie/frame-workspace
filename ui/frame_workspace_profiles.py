@@ -11,6 +11,7 @@ import stat
 import tempfile
 import threading
 import time
+from contextlib import nullcontext
 from pathlib import Path
 
 import frame_macview
@@ -62,7 +63,7 @@ def _pose(value):
         raise ProfileError(str(exc)) from exc
 
 
-def validate_profile(value, *, allow_poses=True):
+def validate_profile(value, *, allow_poses=True, max_rules=MAX_RULES):
     """Validate and return a canonical profile; unknown fields fail closed."""
     if not isinstance(value, dict):
         raise ProfileError("profile must be an object")
@@ -100,8 +101,8 @@ def validate_profile(value, *, allow_poses=True):
         raise ProfileError("workspace buffer exceeds the safe size limit")
 
     windows = value["windows"]
-    if not isinstance(windows, list) or len(windows) > MAX_RULES:
-        raise ProfileError(f"windows must be a list of at most {MAX_RULES} matching rules")
+    if not isinstance(windows, list) or len(windows) > max_rules:
+        raise ProfileError(f"windows must be a list of at most {max_rules} matching rules")
     canonical_rules = []
     seen = set()
     for index, rule in enumerate(windows, 1):
@@ -134,7 +135,7 @@ def validate_profile(value, *, allow_poses=True):
             "windows": canonical_rules}
 
 
-def validate_document(value):
+def validate_document(value, *, max_rules=MAX_RULES):
     if not isinstance(value, dict) or set(value) != {"schemaVersion", "profiles"}:
         raise ProfileStoreError("workspace profile file must contain only schemaVersion and profiles")
     version = value["schemaVersion"]
@@ -146,7 +147,7 @@ def validate_document(value):
     clean = []
     names = set()
     for profile in profiles:
-        item = validate_profile(profile, allow_poses=version >= 2)
+        item = validate_profile(profile, allow_poses=version >= 2, max_rules=max_rules)
         key = item["name"].casefold()
         if key in names:
             raise ProfileStoreError("workspace profile names must be unique, ignoring case")
@@ -158,8 +159,9 @@ def validate_document(value):
 class ProfileStore:
     """Atomic owner-only JSON store; callers can supply a temporary path in tests."""
 
-    def __init__(self, path):
+    def __init__(self, path, *, max_rules=MAX_RULES, max_bytes=MAX_STORE_BYTES):
         self.path = Path(path)
+        self.max_rules, self.max_bytes = max_rules, max_bytes
         self._lock = threading.Lock()
 
     def _load(self):
@@ -171,7 +173,7 @@ class ProfileStore:
             raise ProfileStoreError(f"could not inspect workspace profile file: {exc}") from exc
         if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
             raise ProfileStoreError("workspace profile path must be a regular file, not a link or special file")
-        if info.st_size > MAX_STORE_BYTES:
+        if info.st_size > self.max_bytes:
             raise ProfileStoreError("workspace profile file is too large; it was left unchanged")
         if os.name != "nt" and stat.S_IMODE(info.st_mode) != 0o600:
             raise ProfileStoreError("workspace profile file permissions must be 0600; it was left unchanged")
@@ -184,8 +186,8 @@ class ProfileStore:
                     raise ProfileStoreError("workspace profile path changed to a special file; it was left unchanged")
                 if os.name != "nt" and stat.S_IMODE(opened.st_mode) != 0o600:
                     raise ProfileStoreError("workspace profile file permissions must be 0600; it was left unchanged")
-                raw = stream.read(MAX_STORE_BYTES + 1)
-            if len(raw) > MAX_STORE_BYTES:
+                raw = stream.read(self.max_bytes + 1)
+            if len(raw) > self.max_bytes:
                 raise ProfileStoreError("workspace profile file is too large; it was left unchanged")
             decoded = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_object)
         except _DuplicateJsonKey as exc:
@@ -198,12 +200,12 @@ class ProfileStore:
             else:
                 reason = str(exc)
             raise ProfileStoreError(f"workspace profile file is unreadable or corrupted ({reason}); it was left unchanged") from exc
-        return validate_document(decoded)
+        return validate_document(decoded, max_rules=self.max_rules)
 
     def _write(self, document):
-        clean = validate_document(document)
+        clean = validate_document(document, max_rules=self.max_rules)
         encoded = (json.dumps(clean, ensure_ascii=False, sort_keys=True, indent=2) + "\n").encode("utf-8")
-        if len(encoded) > MAX_STORE_BYTES:
+        if len(encoded) > self.max_bytes:
             raise ProfileStoreError("workspace profile data exceeds the local size limit")
         parent = self.path.parent
         try:
@@ -251,7 +253,7 @@ class ProfileStore:
         raise ProfileError(f"workspace profile {name!r} was not found")
 
     def save(self, profile):
-        clean = validate_profile(profile)
+        clean = validate_profile(profile, max_rules=self.max_rules)
         with self._lock:
             document = self._load()
             profiles = [p for p in document["profiles"] if p["name"].casefold() != clean["name"].casefold()]
@@ -279,9 +281,9 @@ class ProfileStore:
         return {"schemaVersion": SCHEMA_VERSION, "profiles": []}
 
 
-def match_windows(profile, windows):
+def match_windows(profile, windows, *, max_rules=MAX_RULES):
     """Resolve durable rules against one fresh Mac enumeration, failing closed."""
-    profile = validate_profile(profile)
+    profile = validate_profile(profile, max_rules=max_rules)
     results = []
     used_ids = set()
     for index, rule in enumerate(profile["windows"], 1):
@@ -325,13 +327,14 @@ def match_windows(profile, windows):
 def save(store, macview, value):
     """Snapshot native poses against stable matching rules before atomic save."""
     profile = validate_profile(value)
-    if frame_macview.workspace_viewer_backend() == "native":
+    spatial = getattr(macview, "mode", "desktop") == "spatial"
+    if spatial or frame_macview.workspace_viewer_backend() == "native":
         state = macview.state()
         if not state.get("available"):
             raise frame_macview.MacViewError(state.get("reason") or "MacView is unavailable for pose capture.")
         matches = match_windows(profile, state.get("windows", [])) if macview._native_windows() else []
         matched = [item for item in matches if item["status"] == "matched"]
-        poses = macview.read_panel_poses([frame_macview.WorkspaceDisplayManager.KEY] +
+        poses = macview.read_panel_poses(([] if spatial else [frame_macview.WorkspaceDisplayManager.KEY]) +
                                         [item["source"] for item in matched])
         # This save is a fresh snapshot: absent files and unmatched rules must
         # not carry over a supplied pose from an older session.
@@ -349,9 +352,13 @@ def save(store, macview, value):
 def restore(store, macview, name):
     """Run the production Workspace and MacView paths using fresh window IDs."""
     profile = store.get(name)
-    workspace_pose = profile["workspace"].get("pose")
+    spatial = getattr(macview, "mode", "desktop") == "spatial"
+    settings = dict(profile["workspace"])
+    if spatial:
+        settings.pop("pose", None)
+    workspace_pose = settings.get("pose")
     window_poses = any("pose" in rule for rule in profile["windows"])
-    native = frame_macview.workspace_viewer_backend() == "native"
+    native = spatial or frame_macview.workspace_viewer_backend() == "native"
     if (workspace_pose is not None or window_poses) and not native:
         raise frame_macview.MacViewError("Saved poses require the native viewer; select it before restoring this profile.")
     if window_poses and not macview._native_windows():
@@ -365,7 +372,7 @@ def restore(store, macview, name):
     # start_workspace creates a fresh owned display and opens its normal viewer,
     # minting a one-use ticket through MacView. Window viewers use that same
     # path below, so no ticket or reconnect credential enters the profile store.
-    workspace_result = macview.start_workspace(**profile["workspace"])
+    workspace_result = macview.start_workspace(**settings)
     # A changed preset can replace the virtual display and macOS can rehome,
     # close, or retitle windows during that lifecycle. Resolve durable rules only
     # against this second enumeration, then pass its current IDs to show().
@@ -418,17 +425,22 @@ class SessionKeeper:
     can't be read, the previous snapshot stays."""
 
     INTERVAL = 15
+    MAX_WINDOWS = 128
 
-    def __init__(self, store, macview):
-        self.store = store
+    def __init__(self, store, macview, spatial_store=None):
+        self.store = ProfileStore(store.path, max_rules=self.MAX_WINDOWS, max_bytes=256 * 1024)
+        spatial_path = spatial_store.path if spatial_store else store.path.with_name("last-session-spatial.json")
+        self.stores = {"desktop": self.store, "spatial": ProfileStore(
+            spatial_path, max_rules=self.MAX_WINDOWS, max_bytes=256 * 1024)}
         self.macview = macview
         self.paused = False  # while resuming, and from a stop until the next start
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.thread = None
 
     def start(self):
         self.macview.before_workspace_stop = self.final_snapshot
         self.macview.after_workspace_start = self.resume_async
+        self.macview.resume_workspace_pose = self.workspace_pose
         if self.thread and self.thread.is_alive():
             return
 
@@ -443,11 +455,30 @@ class SessionKeeper:
         self.thread = threading.Thread(target=loop, daemon=True)
         self.thread.start()
 
+    def mode(self):
+        return getattr(self.macview, "mode", "desktop")
+
+    def _workspace_lock(self):
+        return getattr(self.macview, "workspace_lock", nullcontext())
+
+    def workspace_pose(self):
+        """Apply Desktop's saved Workspace pose before its viewer is launched."""
+        if self.mode() != "desktop" or frame_macview.workspace_viewer_backend() != "native":
+            return None
+        try:
+            return self.stores["desktop"].get(LAST_SESSION)["workspace"].get("pose")
+        except ProfileError:
+            return None
+
     def capture(self):
         """The current layout as a profile, or None when no Workspace is running."""
         mv = self.macview
-        workspace = mv.workspace_manager.state()
-        if workspace.get("state") != "running" or not mv.workspace_panel_key:
+        spatial = self.mode() == "spatial"
+        workspace = mv.workspace_state() if hasattr(mv, "workspace_state") else mv.workspace_manager.state()
+        if workspace.get("state") != "running" or (not spatial and not mv.workspace_panel_key):
+            return None
+        # Do not overwrite saved poses with a half-open automatic startup.
+        if spatial and not workspace.get("panelsReady"):
             return None
         state = mv.state()
         if not state.get("available"):
@@ -456,7 +487,8 @@ class SessionKeeper:
         by_source = {w.get("src"): w for w in windows}
         rules, sources, seen = [], [], set()
         for source in list(mv.native_panels):
-            window = by_source.get(source)
+            window_source = "window:" + source.split(":", 1)[1] if source.startswith("separate:") else source
+            window = by_source.get(window_source)
             bundle_id = window.get("bundleID") if window else None
             if not isinstance(bundle_id, str) or not _BUNDLE_ID.fullmatch(bundle_id) or "." not in bundle_id:
                 continue
@@ -467,12 +499,13 @@ class SessionKeeper:
             if title and sum(1 for w in windows if w.get("bundleID") == bundle_id) > 1:
                 rule["titleHint"] = title
             identity = (bundle_id.casefold(), rule.get("titleHint", "").casefold())
-            if identity in seen or len(rules) >= MAX_RULES:
+            if identity in seen or len(rules) >= self.MAX_WINDOWS:
                 continue
             seen.add(identity)
             rules.append(rule)
             sources.append(source)
-        poses = mv.read_panel_poses([frame_macview.WorkspaceDisplayManager.KEY] + sources) if \
+        pose_sources = sources if spatial else [frame_macview.WorkspaceDisplayManager.KEY] + sources
+        poses = mv.read_panel_poses(pose_sources) if spatial or \
             frame_macview.workspace_viewer_backend() == "native" else {}
         for rule, source in zip(rules, sources):
             if source in poses:
@@ -480,50 +513,78 @@ class SessionKeeper:
         settings = {key: workspace.get(key) for key in ("preset", "scale", "quality")}
         if frame_macview.WorkspaceDisplayManager.KEY in poses:
             settings["pose"] = poses[frame_macview.WorkspaceDisplayManager.KEY]
-        return validate_profile({"name": LAST_SESSION, "workspace": settings, "windows": rules})
+        return validate_profile({"name": LAST_SESSION, "workspace": settings, "windows": rules}, max_rules=self.MAX_WINDOWS)
 
     def snapshot(self, force=False):
-        if self.paused and not force:
-            return False
-        try:
-            profile = self.capture()
-            if profile is None:
+        with self._workspace_lock(), self.lock:
+            if self.paused and not force:
                 return False
-            self.store.save(profile)
-            return True
-        except Exception:  # noqa: BLE001 - unreachable Frame, a window mid-change: keep the last one
-            return False
+            try:
+                profile = self.capture()
+                if profile is None:
+                    return False
+                self.stores[self.mode()].save(profile)
+                return True
+            except Exception:  # noqa: BLE001 - unreachable Frame, a window mid-change: keep the last one
+                return False
 
     def final_snapshot(self):
         """Just before the Workspace stops (by hand, on quit, or replaced)."""
-        if not self.paused:
-            self.snapshot(force=True)
-        self.paused = True
+        with self._workspace_lock(), self.lock:
+            if not self.paused:
+                self.snapshot(force=True)
+            self.paused = True
 
     def resume_async(self, resume=True):
         """After any Workspace start: bring the last session back (Mac page and
         headset starts), or just carry on saving (a named profile's restore)."""
-        if resume:
-            threading.Thread(target=self.resume, daemon=True).start()
-        else:
-            self.paused = False
+        with self._workspace_lock():
+            mode, generation = self.mode(), getattr(self.macview, "_mode_generation", None)
+            if resume and mode == "spatial":
+                # Match before automatic opening begins. The reconciler passes
+                # each saved pose to its first launch, avoiding a second viewer.
+                self.macview._spatial_resume_poses = {}
+                try:
+                    profile = self.stores[mode].get(LAST_SESSION)
+                    windows = self.macview.call("/spatial").get("windows", [])
+                    for result in match_windows(profile, windows, max_rules=self.MAX_WINDOWS):
+                        if result["status"] == "matched":
+                            pose = profile["windows"][result["rule"] - 1].get("pose")
+                            if pose is not None:
+                                source = "separate:" + result["source"].split(":", 1)[1]
+                                self.macview._spatial_resume_poses[source] = pose
+                except (ProfileError, frame_macview.MacViewError):
+                    pass
+                self.paused = False
+            elif resume:
+                threading.Thread(target=self.resume, args=(mode, generation), daemon=True).start()
+            else:
+                self.paused = False
 
-    def resume(self):
+    def resume(self, expected_mode=None, expected_generation=None):
         """Brings back the last session's windows at their poses; ones already
         shown, or no longer open on the Mac, are left alone."""
-        with self.lock:
+        with self._workspace_lock(), self.lock:
+            mode = self.mode()
+            generation = getattr(self.macview, "_mode_generation", None)
+            if ((expected_mode is not None and mode != expected_mode) or
+                    (expected_generation is not None and generation != expected_generation)):
+                return []
             self.paused = True
             try:
                 try:
-                    profile = self.store.get(LAST_SESSION)
+                    profile = self.stores[mode].get(LAST_SESSION)
                 except ProfileError:
                     return []
                 state = self.macview.state()
                 if not state.get("available") or not state.get("screen"):
                     return []
                 shown = []
-                for result in match_windows(profile, state.get("windows", [])):
-                    if result["status"] != "matched" or result["source"] in self.macview.native_panels:
+                for result in match_windows(profile, state.get("windows", []), max_rules=self.MAX_WINDOWS):
+                    if result["status"] != "matched":
+                        continue
+                    source = result["source"]
+                    if source in self.macview.native_panels or "separate:" + source.split(":", 1)[1] in self.macview.native_panels:
                         continue
                     pose = profile["windows"][result["rule"] - 1].get("pose")
                     try:

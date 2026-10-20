@@ -367,3 +367,145 @@ Merged and run on the user's M4 and the Frame (not worn), with `FRAME_WINDOW_DIS
 ## Still to test
 
 - A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.
+
+## Spatial Mode stage 2: companion and Mac helper
+
+The companion owns `mode` (`desktop` or `spatial`) and remembers it with the
+last start settings in `workspace/last-start.json`. The approved T1 segmented
+switch is on the Mac page's Workspace card; the existing bar switch uses the
+same lifecycle through `mode_desktop` and `mode_spatial` requests. These actions
+also work through `POST /api/macview`; `workspace_start` uses the chosen mode
+and optionally accepts an explicit `mode`. Choosing while stopped selects the
+next start; choosing while running stops the old setup and starts the other.
+Unconfirmed cleanup blocks replacement. Desktop keeps its existing display
+and viewer behavior. Spatial forces window displays and the shared native host
+without requiring the foundation's two environment flags.
+
+The helper owns the hidden home, mirroring, window restoration and display
+pool in the same `serve` process as the window captures. Its authenticated
+API is `POST /spatial/start`, `GET /spatial`, and `POST /spatial/stop`.
+The home is 1280x800 at 1x. Before creating it, the helper saves the physical
+display modes, origins, mirror links, main display and eligible window frames.
+It makes the home main and mirrors the built-in with an app-only transaction.
+Window sizing uses those original frames rather than frames compressed by
+mirroring. Eligibility requires a regular application's normal AX standard
+window at least 120x80; helper/system windows, dialogs, minimized, hidden and
+full-screen windows are excluded.
+
+The pool starts with three ready 2x displays and refills toward three warm
+spares as leases are consumed. Creation is serialized for background refills;
+active windows can expand the pool up to a 128-slot safety ceiling. Closed or
+stopped windows return leases for reuse without removing their displays.
+A live window must first be parked on the home; failed parking retains the
+lease for Stop to retry. The pure policy test admits 72 simultaneous distinct
+leases, which establishes ownership logic rather than macOS display capacity.
+Stop waits for capture shutdown, lease preparation and refill work, unmirrors,
+restores physical layout and surviving windows, removes the pool/home, then
+verifies restoration again. Failed or deferred cleanup retains its state and
+blocks replacement; display enumeration failures cannot establish removal.
+
+The companion reconciles the helper's eligible window list on its normal
+one-second supervisor, opens native `separate:` panels off that loop, and
+retires closed windows' panels. A panel launch cannot block budget/focus
+observation; queued launches are invalidated by Stop or a mode switch. Panel
+errors remain visible in API state and retry. Closing a panel explicitly
+keeps it closed until that window disappears or the next Spatial start.
+
+The bar state includes `workspace.mode`. Each bar sync atomically writes
+`$XDG_RUNTIME_DIR/frame-workspace/spatial-ui.json` alongside its existing
+state, even if the bar binary is absent; mode and panel changes wake the sync
+immediately. The separate apps module attaches `spatial_ui_provider()` for
+`apps`/`switcher` state and `spatial_request_handler(request)` for app and
+controller-switcher requests. It can wake `dash_wake` when its state changes.
+Owned `switch` keys focus the matching Mac window; the Frame side brings the
+panel forward. App enumeration, icon transfer and physical-keyboard Cmd-Tab
+remain the other worker's scope. No `Apps.swift` or apps module was added here.
+
+Last Session is independent per mode; see [Last session](profiles.md#last-session-auto-saved).
+Spatial matches durable window rules before automatic opening and supplies
+saved poses to the first launch. It does not snapshot a half-open startup over
+the previous complete session. This is locally tested behavior; room alignment
+and device restoration still require acceptance below.
+
+### Local verification (2026-10-20 and 2026-10-21)
+
+The isolated helper build, pure `SpatialPolicyTests`, `SpatialStreamsTests` and
+window-close recovery checks passed. The spatial policy fixture covers 72
+distinct simultaneous leases, spare refill and failure bounds, eligibility,
+layout ownership/restoration and cleanup gates. These are state checks; they
+do not establish macOS display capacity, restoration or pool latency.
+
+The first integrated Python run exposed seven HTTP timeouts: stopped Spatial
+status was doing unnecessary Accessibility discovery on the Desktop status
+path. Discovery is now restricted to starting/running Spatial setups; the
+read-only stopped-status regression also requires an empty window list.
+
+At source checkpoint `1d6dd35`, the required four-module suite passed **188
+tests, with one skip and no failures**. The skip was the missing-Accessibility
+rejection case because this Mac grants Accessibility. Five previously known
+unclosed-WebSocket `ResourceWarning`s remain. The suite also built and ran an
+isolated synthetic helper without creating displays or posting Mac input.
+Both staged and worktree whitespace checks passed. The explicit helper build
+and pure checks above passed; the installed helper and Frame were untouched.
+
+Reproduce from this worktree's root, keeping helper output inside it:
+
+```sh
+mkdir -p mac/frame-mac-view/.fw15-build/tmp
+mac/frame-mac-view/build.sh mac/frame-mac-view/.fw15-build/frame-mac-view
+xcrun swiftc -swift-version 5 mac/frame-mac-view/Sources/SpatialPolicy.swift mac/frame-mac-view/tests/SpatialPolicyTests.swift -o mac/frame-mac-view/.fw15-build/SpatialPolicyTests
+mac/frame-mac-view/.fw15-build/SpatialPolicyTests
+xcrun swiftc -swift-version 5 mac/frame-mac-view/Sources/SpatialStreams.swift mac/frame-mac-view/tests/SpatialStreamsTests.swift -o mac/frame-mac-view/.fw15-build/SpatialStreamsTests
+mac/frame-mac-view/.fw15-build/SpatialStreamsTests
+TMPDIR="$PWD/mac/frame-mac-view/.fw15-build/tmp" /bin/sh mac/frame-mac-view/test-capture-recovery.sh
+(cd tests && python3 -m unittest test_macview test_workspace_profiles test_server test_native_pose_launcher)
+```
+
+The Workspace card's production JavaScript is exercised by
+`tests/page/spatial_mode.mjs`: both modes, control visibility, cleanup retry
+and mode-button requests. No enabled browser surface was available for a
+rendered page check in this session; inspect the switch on the device Mac page.
+
+Cleanup retained source and this compact record, and removed the copied helper
+checkout (33,516 KiB), disposable binaries/module cache/logs (33,484 KiB), and
+generated bytecode (416 KiB): **67,416 KiB (65.8 MiB)** measured with `du -sk`.
+The suite removed its isolated helper directory itself. No recovery copy or
+superseded build was retained; rebuild with the commands above for integration.
+
+### Device acceptance order
+
+The implementation session did not create displays, mirror or move windows,
+post Mac input, contact the Frame, or change the installed/running companion.
+The integrator should perform these steps in an authorized device session:
+
+1. Save work and record the starting physical layout and several fixture window
+   frames. Use an isolated helper/companion build and one active companion owner.
+   Keep an authenticated `workspace_stop` API command ready outside the headset.
+   Verify the native host and bar are installed before changing the Mac layout.
+2. With the headset off, verify Desktop Start/Stop first. Then choose Spatial
+   while stopped and Start. Confirm there is no Frame Workspace display or
+   Workspace viewer, the home is main, the built-in mirrors it, internal
+   displays are absent from the picker, and every eligible normal window
+   obtains a separate panel in one native host. Inspect both the Mac-page
+   switch and bar state. Confirm permission/startup failures roll back cleanly.
+3. Open, close and reopen fixture windows. Check no duplicate panels, no panels
+   for helper/system/tiny/dialog windows, no leaked displays, safe placement
+   of stopped windows before their displays are reused, and first-picture
+   latency. Compare the same window on a ready pool lease and a newly created
+   display; no pool speedup has been measured by this implementation session.
+4. Move and bend panels, wait for a successful session snapshot, and switch to
+   Desktop. Verify every moved window's original frame, physical layout and
+   mirroring are restored and the home/pool are removed before Desktop starts.
+   Give Desktop a distinct window set/poses; switch back and verify Spatial's
+   own saved poses. Stop/restart the companion to check mode persistence and
+   both Last Session files. A running Desktop's Show Again must still recenter.
+5. Test Stop, companion quit and helper termination before sleep/wake cases.
+   Confirm clean restoration on graceful exit and automatic unmirroring when
+   the helper dies. While asleep, exercise deferred removal and retry Stop
+   after wake: it must not report removal or start another setup prematurely.
+   Check repeated open/close churn does not accumulate released displays.
+6. Only after the off-head cleanup checks pass, wear the headset. Verify panel
+   placement and controls, gaze focus/cursor memory, cross-panel drag, still/live
+   decoder release and the existing pixel budget. Measure matched startup and
+   steady-state behavior. Dock, app-switcher and Cmd-Tab acceptance follows
+   integration of the other worker's modules.

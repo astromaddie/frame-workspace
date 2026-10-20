@@ -115,6 +115,12 @@ protocol CaptureSource: AnyObject {
     func pointer(x: Double, y: Double, text: String?)  // for the test pattern
 }
 
+/// Sources that own a moved window or display can signal only after shutdown
+/// has completed, allowing the spatial manager to unmirror after restoration.
+protocol CaptureStopAwaitable: AnyObject {
+    func stopAndWait(_ completion: @escaping () -> Void)
+}
+
 extension CaptureSource {
     var pixelSize: (Int, Int)? { nil }
     func pointer(x: Double, y: Double, text: String?) {}
@@ -131,7 +137,7 @@ extension CaptureSource {
 }
 
 /// ScreenCaptureKit, for a window or a display.
-final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate {
+final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOutput, SCStreamDelegate {
     let source: Source
     var onFrame: ((CVPixelBuffer, CMTime, Int64) -> Void)?
     var onEnded: ((String) -> Void)?
@@ -162,6 +168,8 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     private var closeRecovery: WindowCloseRecovery?
     private var windowConfirmationPending = false
     private var windowConfirmationID: UInt64 = 0
+    private var stopFinished = false
+    private var stopWaiters: [() -> Void] = []
     /// The window or display no longer exists, so retrying can't help.
     private(set) var gone = false
     var onChange: (() -> Void)?  // title or size changed
@@ -276,14 +284,22 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
     }
 
     func stop() {
-        queue.async {
-            self.stopOnQueue()
-        }
+        stopAndWait {}
+    }
+
+    func stopAndWait(_ completion: @escaping () -> Void) {
+        queue.async { self.stopOnQueue(completion: completion) }
     }
 
     /// Stops capture while already on `queue`; late ScreenCaptureKit
     /// confirmation callbacks observe `cancelled` and cannot end the source.
     private func stopOnQueue() {
+        stopOnQueue(completion: nil)
+    }
+
+    private func stopOnQueue(completion: (() -> Void)?) {
+        if stopFinished { completion?(); return }
+        if let completion { stopWaiters.append(completion) }
         guard !cancelled else { return }
         cancelled = true
         closeRecovery?.cancel()
@@ -291,8 +307,20 @@ final class SCKSource: NSObject, CaptureSource, SCStreamOutput, SCStreamDelegate
         windowConfirmationID &+= 1
         poll?.cancel()
         poll = nil
-        stream?.stopCapture { _ in }
-        stream = nil
+        let finish: () -> Void = { [self] in
+            self.queue.async {
+                self.stopFinished = true
+                let waiters = self.stopWaiters
+                self.stopWaiters.removeAll()
+                waiters.forEach { $0() }
+            }
+        }
+        if let stream {
+            self.stream = nil
+            stream.stopCapture { _ in finish() }
+        } else {
+            finish()
+        }
     }
 
     /// Windows move, resize, retitle and close, and displays change mode;
