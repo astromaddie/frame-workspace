@@ -149,3 +149,106 @@ Device acceptance is still required after merging the Frame worker:
 ## Still to test
 
 - A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.
+
+## Shared host foundation (FW-15)
+
+The opt-in Frame implementation is `FRAME_NATIVE_HOST=1`. The companion sends
+window panels to one `frame-workspace-host-UID.service`; the Workspace can keep
+its separate viewer. `frame-workspace-native --host-dir SPEC_FOLDER` watches
+atomic per-panel spec files, keeps one GL context/OpenVR client, and reuses the
+same per-panel overlay/chrome/placement loop as the standalone path. The default
+launcher path is unchanged. See [native host protocol and lifecycle](../../native/README.md#shared-window-host-fw-15-opt-in).
+
+Still/live and focus are the shared worker contracts:
+
+- WebSocket text `{"t":"still"}` keeps the last completed picture and closes
+  the decoder session after processing already accepted packets with a bounded
+  final-output drain. `{"t":"live"}` recreates the session only from the next IDR with SPS/PPS. Per-panel state
+  exposes `streamStill`, `decoderSessionOpen`, `decoderStillReleases` and
+  `decoderLiveOpens`, so decoder ownership can be checked separately from a
+  visible held texture.
+- The host samples eye tracking through `GetEyeTrackedFoveationCenter`, tests
+  the nearest front-facing window surface with the existing bend geometry, and
+  applies a 180 ms dwell plus edge hysteresis. Uneven and vertical halves use
+  original-window UV. Without eye tracking the controller laser picks the
+  window. On a switch it writes an atomic mode-0600 request in the existing
+  requests folder: `{"action":"focus","key":"OPENVR_KEY","u":0.0,"v":0.0}`
+  (u right, v down, top-left origin). The Mac live-set,
+  focus delivery, pointer mode and per-window cursor memory require the
+  companion integration and end-to-end verification.
+
+### Verification record (2026-10-20)
+
+**Verified locally (Mac, Apple M4 GL):** the extended self-test, production
+Pipeline still/live lifecycle, two-stream host integration, ordinary stream and
+reconnect checks passed. All 16 YUV shader layout/range/matrix/pattern cases
+matched the production swscale oracle to within 1 RGB level. A four-second
+BT.601-limited GPU stream passed its existing image, control and timing
+assertions with zero errors. The companion/launcher suite passed: 84 tests run,
+1 skipped.
+
+**Verified on the Frame:** an isolated AArch64 build using the device's system
+libraries (FFmpeg 61.3.100), the build script's self-test and a separate explicit
+`--self-test` passed. All 28 copied C/C++ source/header hashes matched the native
+source checkpoint. `/tmp/fw-host-worker` was removed afterwards. No viewer,
+OpenVR/GL session, hardware decoder, installed artifact, service or SteamVR
+configuration was changed or exercised there.
+
+**Known test harness limitation:** `tests_gpu_conversion.py` reaches a short
+1.2-second stream test whose control observer deadline starts before process/GL
+startup, while the first updated state is periodic. That revision-observer
+assertion fails on both baseline `d877eb1` and this change; the same current
+stream passes at four seconds. Assertions were preserved. The full short GPU
+suite is therefore not a passing result.
+
+Compact source identities, commands and outcomes are recorded in
+`native/evidence/spatial-host-validation.json`. Synthetic streams and geometry
+do not establish worn focus behavior, OpenVR host interaction, hardware
+reclamation, or performance improvements.
+
+Reproduction, on a development machine with the native build dependencies:
+
+```sh
+native/build/frame-workspace-native --self-test
+python3 native/tests_still.py
+python3 native/tests_host.py native/build/frame-workspace-native
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --reconnect
+python3 native/tests_stream.py native/build/frame-workspace-native --use-display --conversion gpu --case bt601-limited --duration 4
+cd tests && python3 -m unittest test_macview test_native_pose_launcher
+```
+
+`tests_host.py` uses a hidden GL window with `--no-vr`, two loopback H.264 streams,
+CPU and GPU conversion, dynamic add/remove/re-add, still/live, independent
+controls and saved bends, and per-stream failure/close isolation. It does not
+contact a companion or initialize OpenVR. The tests remove their fixtures.
+`--self-test` covers spec generations and terminal bookkeeping, nearest hits,
+rotated/asymmetric/vertical surface UV, back-face/invalid/missed rays, dwell,
+edge hysteresis and controller fallback source changes without initializing GL
+or OpenVR.
+
+### Device acceptance still required
+
+With the integrator's Mac changes and an authorized device session:
+
+- Start multiple host panels beside the separately running Workspace; check one
+  host PID/GL/OpenVR session, independent keys and textures, concurrent launch,
+  add/remove/replacement, stream close/error, reconnect and clean shutdown.
+- Verify every existing chrome layer and half, controller hover/haptics,
+  move/resize/bend (both directions and uneven halves), close, control-file
+  commands and saved/profile pose restoration. Overlapping windows must route
+  a hand to the nearest panel and retain a drag until release.
+- Confirm a real V4L2 session closes on `still` while its last picture remains
+  visible, another window can use the freed decoder budget, and repeated
+  `live`/keyframe cycles reopen cleanly. Check rapid transitions, tunnel
+  reconnect and dimension changes. The isolated build/self-test never opens a
+  hardware decoder.
+- Worn: validate eye-ray direction, nearest-window choice and top-left UV;
+  settle on adjacent and overlapping panels without edge flicker; turn eye
+  tracking off and verify controller fallback. Confirm focus requests are
+  consumed once, the intended Mac window activates, cursor memory works, and
+  looking away does not switch to a controller while gaze is valid.
+- Measure the same window set with and without the host: resident memory,
+  first-picture/startup latency and moving-stream throughput. The spike's
+  per-process costs do not prove the host's actual saving or a larger decoder
+  budget. No host runtime or worn test was performed in this worker session.

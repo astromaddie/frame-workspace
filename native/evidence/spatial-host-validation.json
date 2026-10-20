@@ -1,0 +1,191 @@
+{
+  "schema": 1,
+  "date": "2026-10-20",
+  "scope": "FW-15 Frame-side foundation",
+  "nativeSourceCheckpoint": "5bbf2d9cefad6b64ab36634cfe31dce48c5ba590",
+  "local": {
+    "platform": "macOS-26.3.1-arm64-arm-64bit-Mach-O",
+    "renderer": "Apple M4",
+    "binarySha256": "7426723da6bcede67b24774d8f1bd047d96ef4144fa0f5e0c576f1b8a2f66e20",
+    "checks": [
+      {
+        "command": "frame-workspace-native --self-test",
+        "result": "passed",
+        "covers": "existing native checks, host generations/terminal lifecycle, bent/rotated/overlapping gaze picks, UV, dwell and hysteresis"
+      },
+      {
+        "command": "python3 native/tests_still.py",
+        "result": "passed",
+        "covers": "production decoder lifecycle, held final picture, no session while still, IDR/SPS/PPS gate, rapid controls, rewrite-off and reconnect while still"
+      },
+      {
+        "command": "python3 native/tests_host.py BINARY",
+        "result": "passed",
+        "covers": "one GL context, two loopback streams, CPU/GPU conversion, still/live, independent controls/saved bends, add/remove/re-add, stream failure and close isolation"
+      },
+      {
+        "command": "python3 native/tests_stream.py BINARY --use-display",
+        "result": "passed",
+        "decoded": 70,
+        "uploaded": 47,
+        "errors": 0,
+        "max_rgb_difference_vs_ffmpeg": 0,
+        "pose_preserved_on_restart": true,
+        "networkErrors": 0
+      },
+      {
+        "command": "python3 native/tests_stream.py BINARY --use-display --reconnect",
+        "result": "passed",
+        "decoded": 51,
+        "uploaded": 49,
+        "errors": 1,
+        "max_rgb_difference_vs_ffmpeg": 0,
+        "pose_preserved_on_restart": true,
+        "networkErrors": 1
+      },
+      {
+        "command": "python3 native/tests_gpu_conversion.py BINARY --use-display",
+        "result": "partial; full suite failed at a pre-existing short-stream control observer assertion",
+        "shaderLayoutCasesPassed": 16,
+        "maximumRgbDifferenceVsProductionSwscale": 1
+      },
+      {
+        "command": "python3 native/tests_stream.py BINARY --use-display --conversion gpu --case bt601-limited --duration 4",
+        "result": "passed",
+        "decoded": 70,
+        "uploaded": 58,
+        "errors": 0,
+        "maximumRgbDifferenceVsFfmpeg": 1
+      },
+      {
+        "command": "cd tests && python3 -m unittest test_macview test_native_pose_launcher",
+        "result": "passed",
+        "testsRun": 84,
+        "skipped": 1,
+        "failures": 0,
+        "errors": 0
+      },
+      {
+        "command": "bash -n scripts/workspace-native-on-frame.sh; python3 -m py_compile ui/frame_macview.py tests/test_macview.py tests/test_native_pose_launcher.py",
+        "result": "passed"
+      }
+    ]
+  },
+  "shortGpuHarness": {
+    "baselineRevision": "d877eb1",
+    "currentRevision": "5bbf2d9cefad6b64ab36634cfe31dce48c5ba590",
+    "shortCommand": "python3 native/tests_stream.py BINARY --use-display --conversion gpu --case bt601-limited --duration 1.2",
+    "shortResult": "same legacy control-revision observer assertion fails for baseline and current",
+    "diagnostic": {
+      "observer_deadline_seconds": 1.2,
+      "legacy_revision_observed_before_deadline": false,
+      "normalized_control_write_observed": false,
+      "child_return_code": 0,
+      "final_state": {
+        "state": "stopped",
+        "ready": false,
+        "received": 22,
+        "decoded": 22,
+        "uploaded": 3,
+        "errors": 0,
+        "networkErrors": 0,
+        "conversionActive": "gpu",
+        "controlRevision": 1e+18,
+        "controlResultRevision": 1e+18,
+        "exitReason": "timer"
+      },
+      "childWallSeconds": 1.869853875017725
+    },
+    "assessment": {
+      "observation": "Both baseline and current fail the 1.2 second control assertion; current passes at 4 seconds with 58 uploaded, 70 decoded, zero stream errors, and max RGB difference 1.",
+      "source_evidence": "In both revisions, state is initially written as connecting; controlRevision is polled each tick, while updated state is written at most once per 1000 ms after PanelRunner start. The helper starts its 1.2 second deadline before process/GL startup and waits for periodic state to show the legacy revision.",
+      "conclusion": "The short test is timing-sensitive and pre-existing at d877eb1; evidence supports a test synchronization/window issue rather than a current GPU stream control regression. The current 4 second run verifies the production control path completes.",
+      "recommended_correction": "Synchronize on native startup and allow the controller deadline to start after the subprocess reaches that state, or give short GPU cases startup plus one periodic-state interval margin. Keep revision acknowledgement assertions."
+    },
+    "assertionsModified": false,
+    "matchedBaselineAndCurrent": {
+      "baseline_1p2s": {
+        "exit": 1,
+        "failure": "AssertionError: legacy control revision was not replaced by revision 1"
+      },
+      "current_1p2s": {
+        "exit": 1,
+        "failure": "AssertionError: legacy control revision was not replaced by revision 1"
+      }
+    }
+  },
+  "frame": {
+    "commands": [
+      "scripts/build-workspace-native.sh",
+      "native/build/frame-workspace-native --self-test"
+    ],
+    "workingDirectory": "/tmp/fw-host-worker",
+    "architecture": "aarch64",
+    "dependencies": {
+      "sdl2": "2.30.2",
+      "gl": "1.2",
+      "libavcodec": "61.3.100",
+      "libavutil": "59.8.100",
+      "libswscale": "8.1.100",
+      "json-c": "0.17",
+      "openssl": "3.2.1"
+    },
+    "buildExit": 0,
+    "explicitSelfTestExit": 0,
+    "binarySha256": "b8d2c2104b3b3e546791628d9e23488a1ae271da3c20718d88c4c9714950d3d5",
+    "dashBinarySha256": "f8cf11556f3e4bb868b8f8abf52519546fff5c9d8ec498a83c2d3458438fac03",
+    "copiedCodeSha256": {
+      "native/bend.hpp": "6f12789f2d78aa34e4243619b260d02b346bb35714722a1a0b88eb3f8e409936",
+      "native/chrome.hpp": "d3413d036a22617c8615703f459de25fd2b74b6422a2f8b3f53dd3e6a38e0d60",
+      "native/chrome_preview.hpp": "6b58163fa2357f569c277077baf70ac6a306f60670e67902055db312bdf7180b",
+      "native/clock_sync.hpp": "24090f215b03e0c8b8e03458d05860858095e4e9e4b00caeb832b8dd68dc1c1d",
+      "native/dash.cpp": "37096a9526dfc9110b354fcb1a8219940d21405df20a244881c23f0fb24d5383",
+      "native/dash_ui.hpp": "a18ca6f1977d5a67addee979caf09afbbe1286a12f548614d90db34a8b88e1cd",
+      "native/gaze_bridge.cpp": "fc5aa103ea5aa36d9dbce803ac3b2f1a310154a0ebcaff9e0b34e147ad35f14f",
+      "native/gaze_bridge.hpp": "e07212f590a03c5fb886744d3b381acf8802268ca1d0eea91013f8cc4fb1c812",
+      "native/gaze_producer.hpp": "904884195d3c8458079ea87c102b3feee927002a33410e543f9131ca6ce96a44",
+      "native/h264_crop.hpp": "51cb8e58769957800115550f200ad1c24f83f2def9220a5b61d13f27bda7d7fa",
+      "native/h264_poc.hpp": "1b5270ce43d615a5269124be69184b473182d50685d5ea554de041a16bcba58c",
+      "native/handles.hpp": "4a1995c699cd43be0fbbd82646dcbf156cc3ca8afed40ba9db96ad5cf2d6781a",
+      "native/host.hpp": "a2306d0e66e08676d91e557c48beba3a4d9dafbaa35e81469caea8fb6ffc3456",
+      "native/main.cpp": "c18c04f26f79eae3fac9d5acdb91f0679090372e8317954c303228e446b0a281",
+      "native/overlay.hpp": "472c77e236e1c6c5f644ee8c08559302f9c2f177acc200798ea78759a93dc0e1",
+      "native/placement.hpp": "666007319e13d1896c0f1a77b98636829e5f755baee508cca39f312436fd526f",
+      "native/probe_bends.cpp": "aa0628b67b5c9f32f2a50a0fbac3313d6dced64e4471c0c93d594470d10692ed",
+      "native/protocol.hpp": "7aa8ee1323b6a844bd393337c0b6c4c249bdfdf1053291132c9db13e9b03e67c",
+      "native/session.hpp": "f755edf33bdaf7466e1db2494146f5dad218b812ee2f422e83b36a00e7a827ab",
+      "native/tests_clock_sync.cpp": "2cf995ffb40184392d017c019c398fa9442e0f0675014419132ee0f2be9c85b4",
+      "native/tests_direct_protocol.cpp": "bdc49bdb25f261d64f3aef485a78814ba8ebaf78f648523dbd0cdbf122fd97ca",
+      "native/tests_gaze_producer.cpp": "719e3a81a2ce8c1827ebe12b0eb1b2e76fb88958ba1a9424d2066ae40100d599",
+      "native/tests_gaze_render_stall.cpp": "04c4aff0c9ccbe1f23fc03f28a72cbe9540c893995999a02bf870f762b0fa406",
+      "native/tests_host.hpp": "3724b3c9021c8a59cc1b8dd63fe6b7822f2b8c6c5c02d7497c08f752e5274e6d",
+      "native/vendor/openvr/openvr_capi.h": "c80f5733e2381afb4012eb1625c603930388c9cc6030b8fe161ad044c35637c7",
+      "native/vendor/openvr-2.15.6/openvr_capi.h": "3d32d8eb5bcbe2e250610123aee8142c68f0e7d4da823f87513b6a2a333078d7",
+      "native/video.hpp": "3c9c506f5609d07de14ab5e92e9e132fcbb1b27455c203d5ed9ded307cf8d0bb",
+      "native/websocket.hpp": "a88ffa99a15c0524449123b7c1c093653ea192e171470036e6506ed66c05427a"
+    },
+    "copiedCodeMatchedLocal": true,
+    "copiedGitMetadata": false,
+    "installed": false,
+    "viewerStarted": false,
+    "openVrOrGlInitialized": false,
+    "hardwareDecoderOpened": false
+  },
+  "deviceVerificationRequired": [
+    "Live multi-panel OpenVR host behavior beside the separate Workspace, add/remove/replace and stream failure/reconnect lifecycle",
+    "All existing chrome, halves, handles, haptics, drags, resizing, vertical/asymmetric bends, close, controls and saved/profile poses",
+    "Real V4L2 release on still with held picture, freed budget usable by another panel, keyframe reopen and rapid/reconnect/dimension-change cycles",
+    "Worn gaze direction, top-left UV, overlap/edge dwell, controller fallback, end-to-end Mac focus/cursor/live-set behavior",
+    "Matched per-process versus host memory, startup latency and throughput; no performance improvement claimed from this build"
+  ],
+  "cleanup": {
+    "frameTemporaryRemoved": true,
+    "frameTemporaryKiB": 7292,
+    "decoderWorktreeRemovedKiB": 32132,
+    "nativeCheckLocalBundlesRemovedKiB": 720,
+    "baselineDiagnosticRemovedKiB": 9764,
+    "launcherWorktreeRemovedKiB": 32212,
+    "localNativeBuildRemovedKiB": 440
+  },
+  "launcherSourceCommit": "ab0877f"
+}

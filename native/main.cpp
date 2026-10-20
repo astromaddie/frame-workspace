@@ -1,5 +1,7 @@
 #include "overlay.hpp"
 #include "gaze_producer.hpp"
+#include "host.hpp"
+#include "tests_host.hpp"
 #include "chrome_preview.hpp"
 #include <array>
 #include <cassert>
@@ -414,8 +416,9 @@ static int selfTest() {
               "pose files keep the bend");
     }
   }
+  selfTestHost();
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking and dwell\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -533,9 +536,670 @@ static void convertYuvOracle(Picture &p) {
   p.v.clear();
   p.uv.clear();
 }
+struct PanelOptions {
+  std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
+      requestDir, hostGeneration,
+      key = "com.frame-workspace.native.workspace", decoderMode = "software", conversionMode = "cpu",
+      presentMode = "paced", handoffMode = "fence", testYuvFormat, testYuvRange = "limited",
+      testYuvColorSpace = "bt601", testYuvPattern = "sharp", exitReason = "running";
+  bool test = false, noVR = false, testYuvOracle = false, foveation = false, gaze = false,
+      diagnosticGaze = false, diagnosticScan = false, pocRewrite = true;
+  double diagnosticU = 0, diagnosticV = 0, seconds = 0;
+  uint32_t dumpSequence = 0;
+  int dumpWidth = 0, dumpHeight = 0;
+};
+class PanelRunner : public PanelOptions {
+public:
+  Endpoint endpoint;
+  Overlay overlay;
+  Pipeline pipe;
+  GazeProducer gazeProducer;
+  bool pendingRecenter = false, stopped = false;
+  int result = 1;
+  double start = 0, lastState = 0, lastLog = 0, lastControl = 0, lastPattern = 0, previousState = 0;
+  uint64_t uploads = 0, lastUploads = 0, lastDecoded = 0, submitErrors = 0;
+  int w = 0, h = 0, encodedW = 0, encodedH = 0;
+  bool foveationActive = false;
+  double uploadMs = 0, ageMs = 0, decodeFps = 0, uploadFps = 0;
+  bool ready = false, dumped = false;
+  double revision = -1, controlResultRevision = -1;
+  Overlay::CurvatureResult curvatureResult;
+  std::shared_ptr<Picture> retryPicture;
+  explicit PanelRunner(const PanelOptions &options, std::shared_ptr<OverlaySession> session = {})
+      : PanelOptions(options), endpoint(test ? Endpoint{} : parseURL(readFile(urlFile))),
+        overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName, actionManifest, std::move(session)),
+        pipe(decoderMode, conversionMode) {
+    overlay.handoff = handoffMode;
+    overlay.present = presentMode;
+    endpoint.foveation = foveation; endpoint.gaze = gaze;
+    bool persisted = loadPlacement(poseFile, overlay.placement);
+    // A new panel's first position (for example beside the Workspace) when
+    // it has no saved pose of its own.
+    if (!persisted && !initialPose.empty()) {
+      if (!parsePlacement(initialPose, overlay.placement))
+        throw std::runtime_error("invalid initial pose");
+      persisted = true;
+    }
+    pendingRecenter = !persisted;
+    if (pendingRecenter)
+      pendingRecenter = !overlay.recenter();
+    overlay.apply();
+    // Curvature is part of the saved placement; re-apply it (OpenVR readback
+    // confirms it, and an unsupported runtime just stays flat).
+    if (overlay.placement.curvature > 0) {
+      const float saved = overlay.placement.curvature;
+      if (!overlay.setCurvature(saved).applied)
+        overlay.placement.curvature = saved; // keep the user's choice for a later runtime
+    }
+    if (!pendingRecenter)
+      atomicWrite(poseFile, placementJSON(overlay.placement));
+    pipe.pocRewrite = pocRewrite;
+    if (!test)
+      pipe.start(endpoint);
+    start = nowMs(); lastState = lastLog = previousState = start;
+    // Destruction order is producer, pipeline, overlay, including exceptions.
+    // No gaze acquisition or delivery depends on the render loop making progress.
+    if (foveation || gaze) {
+      gazeProducer.start([&](double sampled) {
+        if (diagnosticGaze)
+          return diagnosticGazeReading(sampled, start, diagnosticScan, diagnosticU, diagnosticV);
+        GazeReading reading;
+        reading.status = overlay.gaze(reading.u, reading.v);
+        reading.valid = std::strcmp(reading.status, "valid") == 0;
+        return reading;
+      }, [&](const GazeReading &reading, double sampled) {
+        pipe.gaze(reading.u, reading.v, reading.valid, sampled, reading.diagnostic);
+      });
+    }
+    atomicWrite(stateFile, state("connecting"));
+  }
+  std::string state(const char *status) {
+    auto curvature = overlay.curvatureReadback();
+    const std::string curvatureValue =
+        curvature.readable ? std::to_string(curvature.value) : "null";
+    const std::string resultValue =
+        curvatureResult.hasValue ? std::to_string(curvatureResult.value)
+                                 : "null";
+    return "{\"version\":1,\"state\":\"" + std::string(status) +
+           "\",\"ready\":" + (ready ? "true" : "false") +
+           ",\"diagnostic\":" + (test ? "true" : "false") +
+           ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
+           "\",\"hostGeneration\":" + jsonString(hostGeneration) +
+           ",\"hostPid\":" + std::to_string(hostGeneration.empty() ? 0 : getpid()) +
+           ",\"textureWidth\":" + std::to_string(w) +
+           ",\"textureHeight\":" + std::to_string(h) +
+           ",\"encodedWidth\":" + std::to_string(encodedW) +
+           ",\"encodedHeight\":" + std::to_string(encodedH) +
+           ",\"foveationActive\":" + (foveationActive ? "true" : "false") +
+           ",\"received\":" + std::to_string(pipe.received) +
+           ",\"decoded\":" + std::to_string(pipe.decoded) +
+           ",\"uploaded\":" + std::to_string(uploads) +
+           ",\"decodeFps\":" + std::to_string(decodeFps) +
+           ",\"uploadFps\":" + std::to_string(uploadFps) +
+           ",\"decodeMs\":" + std::to_string(pipe.decodeMs) +
+           ",\"sendMs\":" + std::to_string(pipe.sendMs) +
+           ",\"convertMs\":" + std::to_string(pipe.convertMs) +
+           ",\"planeCopyMs\":" + std::to_string(pipe.planeCopyMs) +
+           ",\"gpuConvertMs\":" + std::to_string(overlay.gpuConvertMs) +
+           ",\"uploadMs\":" + std::to_string(uploadMs) +
+           ",\"syncMs\":" + std::to_string(overlay.syncMs) +
+           ",\"submitMs\":" + std::to_string(overlay.submitMs) +
+           ",\"decodeStepMaxMs\":" + std::to_string(pipe.decodeStepMaxMs.exchange(0)) +
+           ",\"decoderHoldMs\":" + std::to_string(pipe.decoderHoldMs) +
+           ",\"decoderHoldMaxMs\":" + std::to_string(pipe.decoderHoldMaxMs.exchange(0)) +
+           ",\"decoderOutputLag\":" + std::to_string(pipe.decoderOutputLag) +
+           ",\"decoderOutputLagMax\":" + std::to_string(pipe.decoderOutputLagMax.exchange(0)) +
+           ",\"arrivalGapMaxMs\":" + std::to_string(pipe.arrivalGapMaxMs.exchange(0)) +
+           ",\"handoff\":\"" + overlay.handoff +
+           "\",\"gpuLatencyMs\":" + std::to_string(overlay.gpuLatencyMs) +
+           ",\"handoffBlockingWaits\":" + std::to_string(overlay.blockingWaits) +
+           ",\"present\":\"" + (overlay.paced() ? std::string("paced") : std::string("immediate")) +
+           "\",\"pacedDrops\":" + std::to_string(overlay.pacedDrops) +
+           ",\"pacedFallbacks\":" + std::to_string(overlay.pacedFallbacks) +
+           ",\"presentGaps\":[" + std::to_string(overlay.presentGaps[1]) + "," +
+               std::to_string(overlay.presentGaps[2]) + "," + std::to_string(overlay.presentGaps[3]) + "," +
+               std::to_string(overlay.presentGaps[4]) + "]" +
+           ",\"queueAgeMs\":" + std::to_string(ageMs) +
+           ",\"droppedEncoded\":" + std::to_string(pipe.droppedEncoded) +
+           ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
+           ",\"queueOverflows\":" +
+               std::to_string(pipe.packetQueueOverflows) +
+           ",\"packetQueueLimit\":" +
+               std::to_string(Pipeline::maxPacketQueue) +
+           ",\"packetQueueHighWater\":" +
+               std::to_string(pipe.packetQueueHighWater) +
+           ",\"packetQueueWaitMs\":" +
+               std::to_string(pipe.packetQueueWaitMs) +
+           ",\"emptyReceives\":" + std::to_string(pipe.emptyReceives) +
+           ",\"emptyReceiveMaxMs\":" +
+               std::to_string(pipe.emptyReceiveMaxMs) +
+           ",\"emptyReceiveTotalMs\":" +
+               std::to_string(pipe.emptyReceiveTotalMs) +
+           ",\"droppedAwaitingIdr\":" +
+               std::to_string(pipe.droppedAwaitingIdr) +
+           ",\"overflowRecoveryIdrs\":" +
+               std::to_string(pipe.overflowRecoveryIdrs) +
+           ",\"lastOverflowRecoverySeq\":" +
+               std::to_string(pipe.lastOverflowRecoverySeq) +
+           ",\"staleDriverFramesDropped\":" +
+               std::to_string(pipe.staleDriverFramesDropped) +
+           ",\"decoderTimingHighWater\":" +
+               std::to_string(pipe.decoderTimingHighWater) +
+           ",\"decoderOpenAttempts\":" +
+               std::to_string(pipe.decoderOpenAttempts) +
+           ",\"decoderInitialOpens\":" +
+               std::to_string(pipe.decoderInitialOpens) +
+           ",\"decoderReconnectOpens\":" +
+               std::to_string(pipe.decoderReconnectOpens) +
+           ",\"decoderFormatReopens\":" +
+               std::to_string(pipe.decoderFormatReopens) +
+           ",\"decoderOpenFailures\":" +
+               std::to_string(pipe.decoderOpenFailures) +
+           ",\"decoderOpenMs\":" + std::to_string(pipe.decoderOpenMs) +
+           ",\"decoderOpenTotalMs\":" +
+               std::to_string(pipe.decoderOpenMsTotal) +
+           ",\"errors\":" + std::to_string(pipe.errors + submitErrors) +
+           ",\"networkErrors\":" + std::to_string(pipe.networkErrors) +
+           ",\"serverErrors\":" + std::to_string(pipe.serverErrors) +
+           ",\"decoderSendErrors\":" +
+               std::to_string(pipe.decoderSendErrors) +
+           ",\"decoderReceiveErrors\":" +
+               std::to_string(pipe.decoderReceiveErrors) +
+           ",\"decoderFatalErrors\":" +
+               std::to_string(pipe.decoderFatalErrors) +
+           ",\"submitErrors\":" + std::to_string(submitErrors) +
+           ",\"submitError\":" + std::to_string(overlay.lastSubmitError) +
+           ",\"decoder\":\"" + pipe.decoderIdentity() + "\"" +
+           ",\"decoderRequested\":\"" + decoderMode + "\"" +
+           ",\"gazeState\":\"" + gazeProducer.status() + "\"" +
+           ",\"foveationRequested\":" + (foveation ? "true" : "false") +
+           ",\"foveationNegotiated\":" + (pipe.foveationNegotiated ? "true" : "false") +
+           ",\"gazeNegotiated\":" + (pipe.gazeNegotiated ? "true" : "false") +
+           ",\"diagnosticGaze\":" + (diagnosticGaze ? "true" : "false") +
+           ",\"conversionRequested\":\"" + conversionMode + "\"" +
+           ",\"conversionActive\":\"" + pipe.conversionActive.load() +
+           "\"" + ",\"conversionFallbacks\":" +
+               std::to_string(pipe.conversionFallbacks) +
+           ",\"decoderPixelFormat\":" +
+               std::to_string(pipe.decoderPixelFormat) +
+           ",\"decoderColorSpace\":" +
+               std::to_string(pipe.decoderColorSpace) +
+           ",\"decoderColorRange\":" +
+               std::to_string(pipe.decoderColorRange) +
+           ",\"streamStill\":" + (pipe.streamStill ? "true" : "false") +
+           ",\"decoderSessionOpen\":" + (pipe.decoderSessionOpen ? "true" : "false") +
+           ",\"decoderStillReleases\":" + std::to_string(pipe.decoderStillReleases) +
+           ",\"decoderLiveOpens\":" + std::to_string(pipe.decoderLiveOpens) +
+           ",\"decoderActive\":\"" + (pipe.decoderActive ? decoderMode : "") +
+           "\"" + ",\"decoderCodec\":\"" + pipe.codecName() + "\"" +
+           ",\"decoderInputWidth\":" + std::to_string(pipe.inputWidth) +
+           ",\"decoderInputHeight\":" + std::to_string(pipe.inputHeight) +
+           ",\"decoderCodedWidth\":" + std::to_string(pipe.codedWidth) +
+           ",\"decoderCodedHeight\":" + std::to_string(pipe.codedHeight) +
+           ",\"decoderError\":" + std::to_string(pipe.decoderError) +
+           ",\"decoderErrorStage\":\"" + pipe.decoderErrorStage.load() +
+           "\"" + ",\"exitReason\":\"" + exitReason +
+           "\",\"connected\":" + (pipe.connected ? "true" : "false") +
+           ",\"pendingRecenter\":" + (pendingRecenter ? "true" : "false") +
+           ",\"curvature\":{\"readable\":" +
+               (curvature.readable ? "true" : "false") +
+           ",\"value\":" + curvatureValue +
+           ",\"errorCode\":" + std::to_string(curvature.errorCode) +
+           "},\"controlResultRevision\":" +
+               std::to_string(controlResultRevision) +
+           ",\"curvatureResult\":{\"supported\":" +
+               (curvatureResult.supported ? "true" : "false") +
+           ",\"applied\":" +
+               (curvatureResult.applied ? "true" : "false") +
+           ",\"requested\":" + std::to_string(curvatureResult.requested) +
+           ",\"value\":" + resultValue +
+           ",\"errorCode\":" +
+               std::to_string(curvatureResult.errorCode) + "}" +
+           ",\"controlRevision\":" + std::to_string(revision) +
+           ",\"placement\":" + placementJSON(overlay.placement) + "}";
+  }
+  bool tick(bool sharedEvents = true, bool wait = true, unsigned allowedHands = 3) {
+    if (interrupted || pipe.stop || (seconds > 0 && nowMs() - start >= seconds * 1000)) return false;
+    double now = nowMs();
+    if (!overlay.events(sharedEvents)) {
+      exitReason = overlay.exitReason;
+      return false;
+    }
+    if (overlay.updatePlacementInput(allowedHands))
+      atomicWrite(poseFile, placementJSON(overlay.placement));
+    if (overlay.closeRequested) {
+      overlay.closeRequested = false;
+      // A fixed, named request for the companion, which polls this folder;
+      // it closes this panel's stream (or stops the Workspace).
+      if (!requestDir.empty()) {
+        static int sequence = 0;
+        const std::string file = requestDir + "/close-" + std::to_string(getpid()) + "-" +
+                                 std::to_string(++sequence) + ".json";
+        try {
+          atomicWrite(file, "{\"action\":\"close\",\"key\":\"" + key + "\"}");
+        } catch (const std::exception &) {
+          fprintf(stderr, "[native] could not write the close request\n");
+        }
+      }
+    }
+    if (now - lastControl > 100) {
+      lastControl = now;
+      if (!controlFile.empty()) {
+        try {
+          auto j = json(readFile(controlFile));
+          double r = num(j, "revision", -1);
+          if (r >= 0 && r != revision) {
+            auto requestedCurvature = field(j, "curvature");
+            bool validCurvature = true;
+            double curvature = 0;
+            if (requestedCurvature) {
+              if (!json_object_is_type(requestedCurvature, json_type_int) &&
+                  !json_object_is_type(requestedCurvature, json_type_double)) {
+                validCurvature = false;
+              } else {
+                curvature = json_object_get_double(requestedCurvature);
+                validCurvature = std::isfinite(curvature) && curvature >= 0 &&
+                                 curvature <= 1;
+              }
+            }
+            if (!validCurvature) {
+              curvatureResult = Overlay::CurvatureResult{};
+              curvatureResult.errorCode = -3;
+              revision = controlResultRevision = r;
+            } else {
+              const bool placementChanged = field(j, "width") || field(j, "distance");
+              if (placementChanged)
+                overlay.resize(num(j, "width", overlay.placement.width),
+                               num(j, "distance", overlay.placement.distance));
+              if (requestedCurvature)
+                curvatureResult = overlay.setCurvature(float(curvature));
+              // {"bend":{"vertical":bool,"a":0-1,"b":0-1}}: each half on its own
+              // (a: left or bottom, b: right or top), as the grips do.
+              bool bent = false;
+              if (auto bend = field(j, "bend"))
+                if (json_object_is_type(bend, json_type_object)) {
+                  auto part = [&](const char *name, double &out) {
+                    json_object *v = nullptr;
+                    if (!json_object_object_get_ex(bend, name, &v) ||
+                        !(json_object_is_type(v, json_type_double) || json_object_is_type(v, json_type_int)))
+                      return false;
+                    out = json_object_get_double(v);
+                    return std::isfinite(out) && out >= 0 && out <= 1;
+                  };
+                  json_object *vertical = nullptr;
+                  double a = 0, b = 0;
+                  if (part("a", a) && part("b", b)) {
+                    json_object_object_get_ex(bend, "vertical", &vertical);
+                    overlay.setBend(vertical && json_object_get_boolean(vertical), float(a), float(b));
+                    bent = true;
+                  }
+                }
+              // Spatial nudges in the panel's own frame: {"move":[x,y,z]}
+              // meters (right, up, toward the viewer) and {"rotate":[yaw,
+              // pitch, roll]} degrees. Each is bounded per command.
+              auto triple = [&](const char *name, double limit, double out[3]) {
+                auto a = field(j, name);
+                if (!a || !json_object_is_type(a, json_type_array) || json_object_array_length(a) != 3)
+                  return false;
+                for (int i = 0; i < 3; ++i) {
+                  auto v = json_object_array_get_idx(a, i);
+                  if (!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double))
+                    return false;
+                  out[i] = json_object_get_double(v);
+                  if (!std::isfinite(out[i]) || std::fabs(out[i]) > limit)
+                    return false;
+                }
+                return true;
+              };
+              double delta[3];
+              bool spatial = false;
+              if (triple("rotate", 90, delta)) {
+                overlay.rotate(float(delta[0]), float(delta[1]), float(delta[2]));
+                spatial = true;
+              }
+              if (triple("move", 2, delta))
+                spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
+              if (spatial || bent || (requestedCurvature && curvatureResult.applied))
+                atomicWrite(poseFile, placementJSON(overlay.placement));
+              if (flag(j, "recenter"))
+                pendingRecenter = true;
+              if (auto requested = field(j, "present"))
+                if (json_object_is_type(requested, json_type_string)) {
+                  std::string mode = json_object_get_string(requested);
+                  if (mode == "paced" || mode == "immediate")
+                    overlay.present = mode;
+                }
+              if (flag(j, "focus")) {
+                pipe.focus = true;
+                overlay.focus();
+              }
+              if (placementChanged)
+                atomicWrite(poseFile, placementJSON(overlay.placement));
+              revision = controlResultRevision = r;
+              if (flag(j, "stop")) {
+                exitReason = "control-stop";
+                return false;
+              }
+            }
+          }
+        } catch (const std::exception &) { /* Atomic replacement can briefly
+                                              be absent; no secrets logged. */
+        }
+      }
+      if (pendingRecenter && overlay.recenter()) {
+        pendingRecenter = false;
+        overlay.apply();
+        atomicWrite(poseFile, placementJSON(overlay.placement));
+      }
+    }
+    auto picture = pipe.take();
+    if (test && now - lastPattern >= 1000.0 / 30) {
+      if (testYuvFormat.empty())
+        picture = pattern(uploads);
+      else {
+        picture = yuvPattern(testYuvFormat, testYuvRange,
+                             testYuvColorSpace, testYuvPattern);
+        if (testYuvOracle)
+          convertYuvOracle(*picture);
+      }
+      lastPattern = now;
+    }
+    if (!picture && retryPicture && now - lastPattern > 100) {
+      picture = retryPicture;
+      lastPattern = now;
+    }
+    // The bend turned to (or from) top-to-bottom: redraw the still picture
+    // turned to match, rather than waiting for the desktop to change.
+    if (!picture)
+      picture = overlay.restagePicture();
+    std::vector<Overlay::Completion> done;
+    auto finished = [&] {
+      for (auto &c : done) {
+        const auto &picture = c.picture;
+        if (c.dropped)
+          continue;
+        if (c.submitted) {
+          ready = true;
+          ++uploads;
+          w = picture->outputWidth();
+          h = picture->outputHeight();
+          encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.direct || picture->layout.warped;
+          ageMs = nowMs() - picture->received;
+          pipe.report(*picture, nowMs());
+          retryPicture.reset();
+          if (!dumpPath.empty() && !dumped &&
+              (!dumpSequence || picture->seq == dumpSequence) &&
+              (!dumpWidth ||
+               (picture->outputWidth() == dumpWidth && picture->outputHeight() == dumpHeight))) {
+            overlay.dump(dumpPath, c);
+            dumped = true;
+          }
+        } else {
+          ++submitErrors;
+          retryPicture = picture;
+        }
+      }
+      done.clear();
+    };
+    if (picture) {
+      double before = nowMs();
+      overlay.stage(std::move(picture), done);
+      uploadMs = nowMs() - before;
+    }
+    overlay.complete(0, done);
+    overlay.presentReady(done);
+    finished();
+    if (now - lastState >= 1000) {
+      double dt = (now - previousState) / 1000;
+      decodeFps = (pipe.decoded - lastDecoded) / dt;
+      uploadFps = (uploads - lastUploads) / dt;
+      lastDecoded = pipe.decoded;
+      lastUploads = uploads;
+      previousState = now;
+      lastState = now;
+      atomicWrite(stateFile, state(ready ? (test ? "diagnostic" : "streaming")
+                                         : "connecting"));
+    }
+    if (now - lastLog >= 10000) {
+      lastLog = now;
+      fprintf(
+          stderr,
+          "[vr-perf] decoded=%llu uploaded=%llu decode_fps=%.2f "
+          "upload_fps=%.2f decode_ms=%.2f convert_ms=%.2f upload_ms=%.2f "
+          "queue_age_ms=%.2f dropped=%llu errors=%llu (not compositor fps)\n",
+          (unsigned long long)pipe.decoded.load(),
+          (unsigned long long)uploads, decodeFps, uploadFps,
+          pipe.decodeMs.load(), pipe.convertMs.load(), uploadMs, ageMs,
+          (unsigned long long)(pipe.droppedEncoded + pipe.droppedDecoded),
+          (unsigned long long)(pipe.errors + submitErrors));
+    }
+    // Sleep until the GPU finishes in-flight work or a new picture arrives,
+    // rather than a fixed interval after every upload.
+    if (wait) {
+      if (overlay.waiting()) {
+        // A finished picture waits for its paced refresh; a new arrival
+        // still wakes the loop.
+        pipe.waitForPicture(overlay.untilNextSlotMs(overlay.busy() ? 2 : 8));
+        overlay.complete(0, done);
+        overlay.presentReady(done);
+        finished();
+      } else if (overlay.busy()) {
+        overlay.complete(2, done);
+        finished();
+      } else
+        pipe.waitForPicture(test ? 4 : 8);
+    }
+    return true;
+  }
+  int finish(const std::string &reason = "") {
+    if (stopped) return result;
+    stopped = true;
+    if (!reason.empty()) exitReason = reason;
+    if (exitReason == "running") {
+      if (interrupted)
+        exitReason = "signal-" + std::to_string(interrupted);
+      else if (pipe.stop)
+        exitReason = pipe.stopReason.load();
+      else
+        exitReason = "timer";
+    }
+    gazeProducer.finish();
+    pipe.finish();
+    ready = false;
+    fprintf(stderr,
+            "[native] exit reason=%s requested=%s active=%s codec=%s "
+            "decoded=%llu uploaded=%llu errors=%llu\n",
+            exitReason.c_str(), decoderMode.c_str(),
+            pipe.decoderActive ? decoderMode.c_str() : "none", pipe.codecName(),
+            (unsigned long long)pipe.decoded.load(),
+            (unsigned long long)uploads,
+            (unsigned long long)(pipe.errors + submitErrors));
+    atomicWrite(stateFile, state(pipe.decoderError ? "error" : "stopped"));
+    result = uploads && !pipe.decoderError ? 0 : 1;
+    return result;
+  }
+  ~PanelRunner() {
+    try { finish(); } catch (...) { gazeProducer.finish(); pipe.finish(); }
+  }
+};
+static int runHost(const std::string &folder, const std::string &stateFile, const PanelOptions &defaults) {
+  auto session = std::make_shared<OverlaySession>(defaults.noVR);
+  if (!defaults.actionManifest.empty()) session->initInput(defaults.actionManifest);
+  struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
+  std::map<std::string, Entry> entries;
+  PanelBook book;
+  FocusDwell dwell;
+  std::set<std::string> invalid;
+  double lastScan = -1000, lastState = -1000, lastFocusAttempt = -1000, start = nowMs();
+  uint64_t requests = 0;
+  std::string reason = "timer", gazeStatus = "unavailable";
+  auto writeHostState = [&](const char *status) {
+    size_t running = 0;
+    for (const auto &[path, entry] : entries) if (entry.panel) ++running;
+    atomicWrite(stateFile, "{\"version\":1,\"state\":" + jsonString(status) +
+        ",\"ready\":" + (std::string(status) == "hosting" ? "true" : "false") +
+        ",\"hostPid\":" + std::to_string(getpid()) + ",\"panels\":" + std::to_string(entries.size()) +
+        ",\"runningPanels\":" + std::to_string(running) + ",\"activeKey\":" + jsonString(dwell.active) +
+        ",\"gazeState\":" + jsonString(gazeStatus) + ",\"exitReason\":" + jsonString(reason) + "}");
+  };
+  auto remove = [&](const std::string &path) {
+    auto it = entries.find(path);
+    if (it != entries.end()) {
+      if (it->second.panel) {
+        dwell.removed(it->second.spec.key);
+        it->second.panel->finish("host-remove");
+      }
+      // Release only this panel's GL/VR resources, keeping the session alive.
+      entries.erase(it);
+    }
+    book.removed(path);
+  };
+  auto panelError = [&](const PanelSpec &s, const char *error) {
+    atomicWrite(s.stateFile, "{\"version\":1,\"state\":\"error\",\"ready\":false,\"overlayKey\":" + jsonString(s.key) +
+        ",\"hostGeneration\":" + jsonString(s.generation) + ",\"hostPid\":" + std::to_string(getpid()) +
+        ",\"exitReason\":" + jsonString(error) + "}");
+  };
+  writeHostState("hosting");
+  while (!interrupted && (defaults.seconds == 0 || nowMs() - start < defaults.seconds * 1000)) {
+    const double now = nowMs();
+    if (!session->events()) { reason = session->exitReason; break; }
+    if (now - lastScan >= 100) {
+      lastScan = now;
+      std::map<std::string, PanelSpec> desired;
+      std::error_code error;
+      std::filesystem::directory_iterator dir(folder, error), end;
+      // An unavailable directory is not a command to remove every panel.
+      bool scanned = !error;
+      for (; scanned && dir != end; dir.increment(error)) {
+        if (error) { scanned = false; break; }
+        const auto &file = *dir;
+        if (file.path().extension() != ".json") continue;
+        const auto path = file.path().string();
+        try {
+          if (!file.is_regular_file() || file.is_symlink()) throw std::runtime_error("not a spec file");
+          desired[path] = PanelSpec::parse(readFile(path));
+          invalid.erase(path);
+        } catch (...) {
+          if (invalid.insert(path).second) fprintf(stderr, "[native-host] invalid panel spec (contents redacted)\n");
+          auto old = entries.find(path);
+          if (old != entries.end()) desired[path] = old->second.spec;
+        }
+      }
+      if (error) scanned = false;
+      if (scanned) {
+        for (auto it = invalid.begin(); it != invalid.end();) {
+          if (!std::filesystem::exists(*it, error)) it = invalid.erase(it); else ++it;
+        }
+        auto changes = book.plan(desired);
+        for (const auto &path : changes.remove) remove(path);
+        for (const auto &path : changes.add) {
+          const auto &spec = desired.at(path);
+          bool duplicate = false, duplicateState = false;
+          for (const auto &[other, entry] : entries) {
+            const auto &s = entry.spec;
+            duplicateState |= spec.stateFile == s.stateFile;
+            duplicate |= spec.key == s.key || spec.stateFile == s.stateFile || spec.controlFile == s.controlFile ||
+                         spec.poseFile == s.poseFile || spec.urlFile == s.urlFile;
+          }
+          Entry entry{spec, {}};
+          try {
+            if (duplicate) throw std::runtime_error("duplicate panel resources");
+            auto options = defaults;
+            options.urlFile = spec.urlFile; options.key = spec.key; options.overlayName = spec.name;
+            options.controlFile = spec.controlFile; options.stateFile = spec.stateFile; options.poseFile = spec.poseFile;
+            options.initialPose = spec.initialPose; options.requestDir = spec.requestDir; options.hostGeneration = spec.generation;
+            options.decoderMode = spec.decoder; options.conversionMode = spec.conversion;
+            options.foveation = spec.foveation; options.gaze = spec.gaze;
+            // The host duration limits the process, rather than each later panel.
+            options.seconds = 0;
+            entry.panel = std::make_unique<PanelRunner>(options, session);
+          } catch (...) {
+            // A malformed stream or exhausted decoder must leave other panels alive.
+            // Never copy exception text here: parser errors may contain credentials.
+            fprintf(stderr, "[native-host] panel startup failed (endpoint redacted)\n");
+            // A duplicate state path belongs to the existing owner.
+            if (!duplicateState) panelError(spec, duplicate ? "host-panel-conflict" : "host-panel-start-failed");
+          }
+          entries.emplace(path, std::move(entry));
+          book.added(path, spec);
+        }
+      }
+    }
+    std::string handOwner[2];
+    for (int hand = 0; hand < 2; ++hand) {
+      float nearest = 0;
+      for (const auto &[path, entry] : entries) {
+        if (!entry.panel) continue;
+        const auto &o = entry.panel->overlay;
+        if (o.draggingHand() == hand) { handOwner[hand] = path; break; }
+        if (!session->hand[hand].valid) continue;
+        float distance = o.interactionDistance(session->hand[hand].pose);
+        if (distance > 0 && (handOwner[hand].empty() || distance < nearest)) {
+          nearest = distance; handOwner[hand] = path;
+        }
+      }
+    }
+    std::vector<PanelSurface> surfaces;
+    for (auto &[path, entry] : entries) {
+      if (!entry.panel) continue;
+      auto &panel = *entry.panel;
+      try {
+        unsigned hands = (handOwner[0] == path ? 1u : 0u) | (handOwner[1] == path ? 2u : 0u);
+        if (!panel.tick(false, false, hands)) {
+          panel.finish(); dwell.removed(entry.spec.key); entry.panel.reset(); continue;
+        }
+        if (panel.ready && panel.overlay.interactive())
+          surfaces.push_back({entry.spec.key, panel.overlay.placement, panel.overlay.panelHeight()});
+      } catch (...) {
+        fprintf(stderr, "[native-host] panel failed (endpoint redacted)\n");
+        dwell.removed(entry.spec.key);
+        // Join stream workers before destroying the panel's GL resources.
+        entry.panel.reset();
+        panelError(entry.spec, "host-panel-error");
+      }
+    }
+    EyeRay ray, eyes[2];
+    gazeStatus = session->eyes ? session->eyes->sample(eyes) : "unavailable";
+    bool eye = gazeStatus == "valid" && binocularRay(eyes, ray);
+    if (gazeStatus == "valid" && !eye) gazeStatus = "eye-invalid";
+    PanelPick hit;
+    std::string source;
+    if (eye) {
+      hit = pickPanel(ray, surfaces, dwell.active); source = "eye";
+    } else {
+      source = "controller";
+      // Right hand wins when both point at a window, matching placement input.
+      for (int hand : {1, 0}) if (session->hand[hand].valid) {
+        hit = pickPanel(session->hand[hand].ray(), surfaces, dwell.active);
+        if (hit) break;
+      }
+    }
+    if (dwell.settled(hit, now, source) && now - lastFocusAttempt >= 100) {
+      lastFocusAttempt = now;
+      for (auto &[path, entry] : entries) if (entry.panel && entry.spec.key == hit.key) {
+        try {
+          const auto file = entry.spec.requestDir + "/focus-" + std::to_string(getpid()) + "-" + std::to_string(++requests) + ".json";
+          atomicWrite(file, "{\"action\":\"focus\",\"key\":" + jsonString(hit.key) + ",\"u\":" +
+                      std::to_string(hit.u) + ",\"v\":" + std::to_string(hit.v) + "}");
+          dwell.activated(hit);
+        } catch (...) { fprintf(stderr, "[native-host] could not write focus request\n"); }
+        break;
+      }
+    }
+    if (now - lastState >= 1000) { writeHostState("hosting"); lastState = now; }
+    // One short wait for the host, independent of its panel count; every live
+    // stream still has its own bounded network and decode workers.
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+  }
+  if (interrupted) reason = "signal-" + std::to_string(interrupted);
+  for (auto &[path, entry] : entries) if (entry.panel) entry.panel->finish(reason);
+  entries.clear();
+  writeHostState("stopped");
+  return 0;
+}
 int main(int argc, char **argv) {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
-      requestDir,
+      requestDir, hostDir,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -568,6 +1232,8 @@ int main(int argc, char **argv) {
       };
       if (a == "--self-test")
         return selfTest();
+      else if (a == "--host-dir")
+        hostDir = value();
       else if (a == "--url-file")
         urlFile = value();
       else if (a == "--control-file")
@@ -677,7 +1343,7 @@ int main(int argc, char **argv) {
         noVR = true;
       else if (a == "--help") {
         std::cout
-            << "frame-workspace-native --url-file PATH [--control-file PATH] "
+            << "frame-workspace-native --host-dir DIR [--state-file HOST_STATE] | --url-file PATH [--control-file PATH] "
                "[--state-file PATH] [--pose-file PATH] [--overlay-key KEY] [--overlay-name NAME] [--initial-pose JSON] "
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
@@ -739,15 +1405,10 @@ int main(int argc, char **argv) {
       }
       return 0;
     }
-    Endpoint endpoint;
-    if (!test)
-      endpoint = parseURL(readFile(urlFile));
     signal(SIGTERM, signalHandler);
     signal(SIGINT, signalHandler);
     signal(SIGPIPE, SIG_IGN);
     av_log_set_level(AV_LOG_ERROR);
-    endpoint.foveation = foveation;
-    endpoint.gaze = gaze;
     if (overlayName.size() > 64 || overlayName.find_first_of("\r\n\t") != std::string::npos)
       throw std::runtime_error("invalid overlay name");
     // VR placement input: the action manifest installed beside the binary
@@ -764,450 +1425,47 @@ int main(int argc, char **argv) {
       }
     } else if (actionManifest == "none")
       actionManifest.clear();
-    Overlay overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName, actionManifest);
-    overlay.handoff = handoffMode;
-    overlay.present = presentMode;
-    bool persisted = loadPlacement(poseFile, overlay.placement);
-    // A new panel's first position (for example beside the Workspace) when
-    // it has no saved pose of its own.
-    if (!persisted && !initialPose.empty()) {
-      if (!parsePlacement(initialPose, overlay.placement))
-        throw std::runtime_error("invalid initial pose");
-      persisted = true;
+    PanelOptions options;
+    options.urlFile = urlFile;
+    options.controlFile = controlFile;
+    options.stateFile = stateFile;
+    options.poseFile = poseFile;
+    options.dumpPath = dumpPath;
+    options.overlayName = overlayName;
+    options.initialPose = initialPose;
+    options.actionManifest = actionManifest;
+    options.requestDir = requestDir;
+    options.key = key;
+    options.decoderMode = decoderMode;
+    options.conversionMode = conversionMode;
+    options.presentMode = presentMode;
+    options.handoffMode = handoffMode;
+    options.testYuvFormat = testYuvFormat;
+    options.testYuvRange = testYuvRange;
+    options.testYuvColorSpace = testYuvColorSpace;
+    options.testYuvPattern = testYuvPattern;
+    options.test = test;
+    options.noVR = noVR;
+    options.testYuvOracle = testYuvOracle;
+    options.foveation = foveation;
+    options.gaze = gaze;
+    options.diagnosticGaze = diagnosticGaze;
+    options.diagnosticScan = diagnosticScan;
+    options.pocRewrite = pocRewrite;
+    options.diagnosticU = diagnosticU;
+    options.diagnosticV = diagnosticV;
+    options.seconds = seconds;
+    options.dumpSequence = dumpSequence;
+    options.dumpWidth = dumpWidth;
+    options.dumpHeight = dumpHeight;
+    if (!hostDir.empty()) {
+      if (!urlFile.empty() || diagnosticGaze || foveation || gaze)
+        throw std::runtime_error("host streams use per-panel specs");
+      return runHost(hostDir, stateFile, options);
     }
-    bool pendingRecenter = !persisted;
-    if (pendingRecenter)
-      pendingRecenter = !overlay.recenter();
-    overlay.apply();
-    // Curvature is part of the saved placement; re-apply it (OpenVR readback
-    // confirms it, and an unsupported runtime just stays flat).
-    if (overlay.placement.curvature > 0) {
-      const float saved = overlay.placement.curvature;
-      if (!overlay.setCurvature(saved).applied)
-        overlay.placement.curvature = saved; // keep the user's choice for a later runtime
-    }
-    if (!pendingRecenter)
-      atomicWrite(poseFile, placementJSON(overlay.placement));
-    Pipeline pipe(decoderMode, conversionMode);
-    pipe.pocRewrite = pocRewrite;
-    if (!test)
-      pipe.start(endpoint);
-    double start = nowMs(), lastState = start, lastLog = start, lastControl = 0,
-           lastPattern = 0, previousState = start;
-    // Destruction order is producer, pipeline, overlay, including exceptions.
-    // No gaze acquisition or delivery depends on the render loop making progress.
-    GazeProducer gazeProducer;
-    if (foveation || gaze) {
-      gazeProducer.start([&](double sampled) {
-        if (diagnosticGaze)
-          return diagnosticGazeReading(sampled, start, diagnosticScan, diagnosticU, diagnosticV);
-        GazeReading reading;
-        reading.status = overlay.gaze(reading.u, reading.v);
-        reading.valid = std::strcmp(reading.status, "valid") == 0;
-        return reading;
-      }, [&](const GazeReading &reading, double sampled) {
-        pipe.gaze(reading.u, reading.v, reading.valid, sampled, reading.diagnostic);
-      });
-    }
-    uint64_t uploads = 0, lastUploads = 0, lastDecoded = 0, submitErrors = 0;
-    int w = 0, h = 0, encodedW = 0, encodedH = 0;
-    bool foveationActive = false;
-    double uploadMs = 0, ageMs = 0, decodeFps = 0, uploadFps = 0;
-    bool ready = false, dumped = false;
-    double revision = -1, controlResultRevision = -1;
-    Overlay::CurvatureResult curvatureResult;
-    std::shared_ptr<Picture> retryPicture;
-    auto state = [&](const char *status) {
-      auto curvature = overlay.curvatureReadback();
-      const std::string curvatureValue =
-          curvature.readable ? std::to_string(curvature.value) : "null";
-      const std::string resultValue =
-          curvatureResult.hasValue ? std::to_string(curvatureResult.value)
-                                   : "null";
-      return "{\"version\":1,\"state\":\"" + std::string(status) +
-             "\",\"ready\":" + (ready ? "true" : "false") +
-             ",\"diagnostic\":" + (test ? "true" : "false") +
-             ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
-             "\",\"textureWidth\":" + std::to_string(w) +
-             ",\"textureHeight\":" + std::to_string(h) +
-             ",\"encodedWidth\":" + std::to_string(encodedW) +
-             ",\"encodedHeight\":" + std::to_string(encodedH) +
-             ",\"foveationActive\":" + (foveationActive ? "true" : "false") +
-             ",\"received\":" + std::to_string(pipe.received) +
-             ",\"decoded\":" + std::to_string(pipe.decoded) +
-             ",\"uploaded\":" + std::to_string(uploads) +
-             ",\"decodeFps\":" + std::to_string(decodeFps) +
-             ",\"uploadFps\":" + std::to_string(uploadFps) +
-             ",\"decodeMs\":" + std::to_string(pipe.decodeMs) +
-             ",\"sendMs\":" + std::to_string(pipe.sendMs) +
-             ",\"convertMs\":" + std::to_string(pipe.convertMs) +
-             ",\"planeCopyMs\":" + std::to_string(pipe.planeCopyMs) +
-             ",\"gpuConvertMs\":" + std::to_string(overlay.gpuConvertMs) +
-             ",\"uploadMs\":" + std::to_string(uploadMs) +
-             ",\"syncMs\":" + std::to_string(overlay.syncMs) +
-             ",\"submitMs\":" + std::to_string(overlay.submitMs) +
-             ",\"decodeStepMaxMs\":" + std::to_string(pipe.decodeStepMaxMs.exchange(0)) +
-             ",\"decoderHoldMs\":" + std::to_string(pipe.decoderHoldMs) +
-             ",\"decoderHoldMaxMs\":" + std::to_string(pipe.decoderHoldMaxMs.exchange(0)) +
-             ",\"decoderOutputLag\":" + std::to_string(pipe.decoderOutputLag) +
-             ",\"decoderOutputLagMax\":" + std::to_string(pipe.decoderOutputLagMax.exchange(0)) +
-             ",\"arrivalGapMaxMs\":" + std::to_string(pipe.arrivalGapMaxMs.exchange(0)) +
-             ",\"handoff\":\"" + overlay.handoff +
-             "\",\"gpuLatencyMs\":" + std::to_string(overlay.gpuLatencyMs) +
-             ",\"handoffBlockingWaits\":" + std::to_string(overlay.blockingWaits) +
-             ",\"present\":\"" + (overlay.paced() ? std::string("paced") : std::string("immediate")) +
-             "\",\"pacedDrops\":" + std::to_string(overlay.pacedDrops) +
-             ",\"pacedFallbacks\":" + std::to_string(overlay.pacedFallbacks) +
-             ",\"presentGaps\":[" + std::to_string(overlay.presentGaps[1]) + "," +
-                 std::to_string(overlay.presentGaps[2]) + "," + std::to_string(overlay.presentGaps[3]) + "," +
-                 std::to_string(overlay.presentGaps[4]) + "]" +
-             ",\"queueAgeMs\":" + std::to_string(ageMs) +
-             ",\"droppedEncoded\":" + std::to_string(pipe.droppedEncoded) +
-             ",\"droppedDecoded\":" + std::to_string(pipe.droppedDecoded) +
-             ",\"queueOverflows\":" +
-                 std::to_string(pipe.packetQueueOverflows) +
-             ",\"packetQueueLimit\":" +
-                 std::to_string(Pipeline::maxPacketQueue) +
-             ",\"packetQueueHighWater\":" +
-                 std::to_string(pipe.packetQueueHighWater) +
-             ",\"packetQueueWaitMs\":" +
-                 std::to_string(pipe.packetQueueWaitMs) +
-             ",\"emptyReceives\":" + std::to_string(pipe.emptyReceives) +
-             ",\"emptyReceiveMaxMs\":" +
-                 std::to_string(pipe.emptyReceiveMaxMs) +
-             ",\"emptyReceiveTotalMs\":" +
-                 std::to_string(pipe.emptyReceiveTotalMs) +
-             ",\"droppedAwaitingIdr\":" +
-                 std::to_string(pipe.droppedAwaitingIdr) +
-             ",\"overflowRecoveryIdrs\":" +
-                 std::to_string(pipe.overflowRecoveryIdrs) +
-             ",\"lastOverflowRecoverySeq\":" +
-                 std::to_string(pipe.lastOverflowRecoverySeq) +
-             ",\"staleDriverFramesDropped\":" +
-                 std::to_string(pipe.staleDriverFramesDropped) +
-             ",\"decoderTimingHighWater\":" +
-                 std::to_string(pipe.decoderTimingHighWater) +
-             ",\"decoderOpenAttempts\":" +
-                 std::to_string(pipe.decoderOpenAttempts) +
-             ",\"decoderInitialOpens\":" +
-                 std::to_string(pipe.decoderInitialOpens) +
-             ",\"decoderReconnectOpens\":" +
-                 std::to_string(pipe.decoderReconnectOpens) +
-             ",\"decoderFormatReopens\":" +
-                 std::to_string(pipe.decoderFormatReopens) +
-             ",\"decoderOpenFailures\":" +
-                 std::to_string(pipe.decoderOpenFailures) +
-             ",\"decoderOpenMs\":" + std::to_string(pipe.decoderOpenMs) +
-             ",\"decoderOpenTotalMs\":" +
-                 std::to_string(pipe.decoderOpenMsTotal) +
-             ",\"errors\":" + std::to_string(pipe.errors + submitErrors) +
-             ",\"networkErrors\":" + std::to_string(pipe.networkErrors) +
-             ",\"serverErrors\":" + std::to_string(pipe.serverErrors) +
-             ",\"decoderSendErrors\":" +
-                 std::to_string(pipe.decoderSendErrors) +
-             ",\"decoderReceiveErrors\":" +
-                 std::to_string(pipe.decoderReceiveErrors) +
-             ",\"decoderFatalErrors\":" +
-                 std::to_string(pipe.decoderFatalErrors) +
-             ",\"submitErrors\":" + std::to_string(submitErrors) +
-             ",\"submitError\":" + std::to_string(overlay.lastSubmitError) +
-             ",\"decoder\":\"" + pipe.decoderIdentity() + "\"" +
-             ",\"decoderRequested\":\"" + decoderMode + "\"" +
-             ",\"gazeState\":\"" + gazeProducer.status() + "\"" +
-             ",\"foveationRequested\":" + (foveation ? "true" : "false") +
-             ",\"foveationNegotiated\":" + (pipe.foveationNegotiated ? "true" : "false") +
-             ",\"gazeNegotiated\":" + (pipe.gazeNegotiated ? "true" : "false") +
-             ",\"diagnosticGaze\":" + (diagnosticGaze ? "true" : "false") +
-             ",\"conversionRequested\":\"" + conversionMode + "\"" +
-             ",\"conversionActive\":\"" + pipe.conversionActive.load() +
-             "\"" + ",\"conversionFallbacks\":" +
-                 std::to_string(pipe.conversionFallbacks) +
-             ",\"decoderPixelFormat\":" +
-                 std::to_string(pipe.decoderPixelFormat) +
-             ",\"decoderColorSpace\":" +
-                 std::to_string(pipe.decoderColorSpace) +
-             ",\"decoderColorRange\":" +
-                 std::to_string(pipe.decoderColorRange) +
-             ",\"decoderActive\":\"" + (pipe.decoderActive ? decoderMode : "") +
-             "\"" + ",\"decoderCodec\":\"" + pipe.codecName() + "\"" +
-             ",\"decoderInputWidth\":" + std::to_string(pipe.inputWidth) +
-             ",\"decoderInputHeight\":" + std::to_string(pipe.inputHeight) +
-             ",\"decoderCodedWidth\":" + std::to_string(pipe.codedWidth) +
-             ",\"decoderCodedHeight\":" + std::to_string(pipe.codedHeight) +
-             ",\"decoderError\":" + std::to_string(pipe.decoderError) +
-             ",\"decoderErrorStage\":\"" + pipe.decoderErrorStage.load() +
-             "\"" + ",\"exitReason\":\"" + exitReason +
-             "\",\"connected\":" + (pipe.connected ? "true" : "false") +
-             ",\"pendingRecenter\":" + (pendingRecenter ? "true" : "false") +
-             ",\"curvature\":{\"readable\":" +
-                 (curvature.readable ? "true" : "false") +
-             ",\"value\":" + curvatureValue +
-             ",\"errorCode\":" + std::to_string(curvature.errorCode) +
-             "},\"controlResultRevision\":" +
-                 std::to_string(controlResultRevision) +
-             ",\"curvatureResult\":{\"supported\":" +
-                 (curvatureResult.supported ? "true" : "false") +
-             ",\"applied\":" +
-                 (curvatureResult.applied ? "true" : "false") +
-             ",\"requested\":" + std::to_string(curvatureResult.requested) +
-             ",\"value\":" + resultValue +
-             ",\"errorCode\":" +
-                 std::to_string(curvatureResult.errorCode) + "}" +
-             ",\"controlRevision\":" + std::to_string(revision) +
-             ",\"placement\":" + placementJSON(overlay.placement) + "}";
-    };
-    atomicWrite(stateFile, state("connecting"));
-    while (!interrupted && !pipe.stop &&
-           (seconds == 0 || nowMs() - start < seconds * 1000)) {
-      double now = nowMs();
-      if (!overlay.events()) {
-        exitReason = overlay.exitReason;
-        break;
-      }
-      if (overlay.updatePlacementInput())
-        atomicWrite(poseFile, placementJSON(overlay.placement));
-      if (overlay.closeRequested) {
-        overlay.closeRequested = false;
-        // A fixed, named request for the companion, which polls this folder;
-        // it closes this panel's stream (or stops the Workspace).
-        if (!requestDir.empty()) {
-          static int sequence = 0;
-          const std::string file = requestDir + "/close-" + std::to_string(getpid()) + "-" +
-                                   std::to_string(++sequence) + ".json";
-          try {
-            atomicWrite(file, "{\"action\":\"close\",\"key\":\"" + key + "\"}");
-          } catch (const std::exception &) {
-            fprintf(stderr, "[native] could not write the close request\n");
-          }
-        }
-      }
-      if (now - lastControl > 100) {
-        lastControl = now;
-        if (!controlFile.empty()) {
-          try {
-            auto j = json(readFile(controlFile));
-            double r = num(j, "revision", -1);
-            if (r >= 0 && r != revision) {
-              auto requestedCurvature = field(j, "curvature");
-              bool validCurvature = true;
-              double curvature = 0;
-              if (requestedCurvature) {
-                if (!json_object_is_type(requestedCurvature, json_type_int) &&
-                    !json_object_is_type(requestedCurvature, json_type_double)) {
-                  validCurvature = false;
-                } else {
-                  curvature = json_object_get_double(requestedCurvature);
-                  validCurvature = std::isfinite(curvature) && curvature >= 0 &&
-                                   curvature <= 1;
-                }
-              }
-              if (!validCurvature) {
-                curvatureResult = Overlay::CurvatureResult{};
-                curvatureResult.errorCode = -3;
-                revision = controlResultRevision = r;
-              } else {
-                const bool placementChanged = field(j, "width") || field(j, "distance");
-                if (placementChanged)
-                  overlay.resize(num(j, "width", overlay.placement.width),
-                                 num(j, "distance", overlay.placement.distance));
-                if (requestedCurvature)
-                  curvatureResult = overlay.setCurvature(float(curvature));
-                // {"bend":{"vertical":bool,"a":0-1,"b":0-1}}: each half on its own
-                // (a: left or bottom, b: right or top), as the grips do.
-                bool bent = false;
-                if (auto bend = field(j, "bend"))
-                  if (json_object_is_type(bend, json_type_object)) {
-                    auto part = [&](const char *name, double &out) {
-                      json_object *v = nullptr;
-                      if (!json_object_object_get_ex(bend, name, &v) ||
-                          !(json_object_is_type(v, json_type_double) || json_object_is_type(v, json_type_int)))
-                        return false;
-                      out = json_object_get_double(v);
-                      return std::isfinite(out) && out >= 0 && out <= 1;
-                    };
-                    json_object *vertical = nullptr;
-                    double a = 0, b = 0;
-                    if (part("a", a) && part("b", b)) {
-                      json_object_object_get_ex(bend, "vertical", &vertical);
-                      overlay.setBend(vertical && json_object_get_boolean(vertical), float(a), float(b));
-                      bent = true;
-                    }
-                  }
-                // Spatial nudges in the panel's own frame: {"move":[x,y,z]}
-                // meters (right, up, toward the viewer) and {"rotate":[yaw,
-                // pitch, roll]} degrees. Each is bounded per command.
-                auto triple = [&](const char *name, double limit, double out[3]) {
-                  auto a = field(j, name);
-                  if (!a || !json_object_is_type(a, json_type_array) || json_object_array_length(a) != 3)
-                    return false;
-                  for (int i = 0; i < 3; ++i) {
-                    auto v = json_object_array_get_idx(a, i);
-                    if (!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double))
-                      return false;
-                    out[i] = json_object_get_double(v);
-                    if (!std::isfinite(out[i]) || std::fabs(out[i]) > limit)
-                      return false;
-                  }
-                  return true;
-                };
-                double delta[3];
-                bool spatial = false;
-                if (triple("rotate", 90, delta)) {
-                  overlay.rotate(float(delta[0]), float(delta[1]), float(delta[2]));
-                  spatial = true;
-                }
-                if (triple("move", 2, delta))
-                  spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
-                if (spatial || bent || (requestedCurvature && curvatureResult.applied))
-                  atomicWrite(poseFile, placementJSON(overlay.placement));
-                if (flag(j, "recenter"))
-                  pendingRecenter = true;
-                if (auto requested = field(j, "present"))
-                  if (json_object_is_type(requested, json_type_string)) {
-                    std::string mode = json_object_get_string(requested);
-                    if (mode == "paced" || mode == "immediate")
-                      overlay.present = mode;
-                  }
-                if (flag(j, "focus")) {
-                  pipe.focus = true;
-                  overlay.focus();
-                }
-                if (placementChanged)
-                  atomicWrite(poseFile, placementJSON(overlay.placement));
-                revision = controlResultRevision = r;
-                if (flag(j, "stop")) {
-                  exitReason = "control-stop";
-                  break;
-                }
-              }
-            }
-          } catch (const std::exception &) { /* Atomic replacement can briefly
-                                                be absent; no secrets logged. */
-          }
-        }
-        if (pendingRecenter && overlay.recenter()) {
-          pendingRecenter = false;
-          overlay.apply();
-          atomicWrite(poseFile, placementJSON(overlay.placement));
-        }
-      }
-      auto picture = pipe.take();
-      if (test && now - lastPattern >= 1000.0 / 30) {
-        if (testYuvFormat.empty())
-          picture = pattern(uploads);
-        else {
-          picture = yuvPattern(testYuvFormat, testYuvRange,
-                               testYuvColorSpace, testYuvPattern);
-          if (testYuvOracle)
-            convertYuvOracle(*picture);
-        }
-        lastPattern = now;
-      }
-      if (!picture && retryPicture && now - lastPattern > 100) {
-        picture = retryPicture;
-        lastPattern = now;
-      }
-      // The bend turned to (or from) top-to-bottom: redraw the still picture
-      // turned to match, rather than waiting for the desktop to change.
-      if (!picture)
-        picture = overlay.restagePicture();
-      std::vector<Overlay::Completion> done;
-      auto finished = [&] {
-        for (auto &c : done) {
-          const auto &picture = c.picture;
-          if (c.dropped)
-            continue;
-          if (c.submitted) {
-            ready = true;
-            ++uploads;
-            w = picture->outputWidth();
-            h = picture->outputHeight();
-            encodedW=picture->width;encodedH=picture->height;foveationActive=picture->layout.direct || picture->layout.warped;
-            ageMs = nowMs() - picture->received;
-            pipe.report(*picture, nowMs());
-            retryPicture.reset();
-            if (!dumpPath.empty() && !dumped &&
-                (!dumpSequence || picture->seq == dumpSequence) &&
-                (!dumpWidth ||
-                 (picture->outputWidth() == dumpWidth && picture->outputHeight() == dumpHeight))) {
-              overlay.dump(dumpPath, c);
-              dumped = true;
-            }
-          } else {
-            ++submitErrors;
-            retryPicture = picture;
-          }
-        }
-        done.clear();
-      };
-      if (picture) {
-        double before = nowMs();
-        overlay.stage(std::move(picture), done);
-        uploadMs = nowMs() - before;
-      }
-      overlay.complete(0, done);
-      overlay.presentReady(done);
-      finished();
-      if (now - lastState >= 1000) {
-        double dt = (now - previousState) / 1000;
-        decodeFps = (pipe.decoded - lastDecoded) / dt;
-        uploadFps = (uploads - lastUploads) / dt;
-        lastDecoded = pipe.decoded;
-        lastUploads = uploads;
-        previousState = now;
-        lastState = now;
-        atomicWrite(stateFile, state(ready ? (test ? "diagnostic" : "streaming")
-                                           : "connecting"));
-      }
-      if (now - lastLog >= 10000) {
-        lastLog = now;
-        fprintf(
-            stderr,
-            "[vr-perf] decoded=%llu uploaded=%llu decode_fps=%.2f "
-            "upload_fps=%.2f decode_ms=%.2f convert_ms=%.2f upload_ms=%.2f "
-            "queue_age_ms=%.2f dropped=%llu errors=%llu (not compositor fps)\n",
-            (unsigned long long)pipe.decoded.load(),
-            (unsigned long long)uploads, decodeFps, uploadFps,
-            pipe.decodeMs.load(), pipe.convertMs.load(), uploadMs, ageMs,
-            (unsigned long long)(pipe.droppedEncoded + pipe.droppedDecoded),
-            (unsigned long long)(pipe.errors + submitErrors));
-      }
-      // Sleep until the GPU finishes in-flight work or a new picture arrives,
-      // rather than a fixed interval after every upload.
-      if (overlay.waiting()) {
-        // A finished picture waits for its paced refresh; a new arrival
-        // still wakes the loop.
-        pipe.waitForPicture(overlay.untilNextSlotMs(overlay.busy() ? 2 : 8));
-        overlay.complete(0, done);
-        overlay.presentReady(done);
-        finished();
-      } else if (overlay.busy()) {
-        overlay.complete(2, done);
-        finished();
-      } else
-        pipe.waitForPicture(test ? 4 : 8);
-    }
-    if (exitReason == "running") {
-      if (interrupted)
-        exitReason = "signal-" + std::to_string(interrupted);
-      else if (pipe.stop)
-        exitReason = pipe.stopReason.load();
-      else
-        exitReason = "timer";
-    }
-    gazeProducer.finish();
-    pipe.finish();
-    ready = false;
-    fprintf(stderr,
-            "[native] exit reason=%s requested=%s active=%s codec=%s "
-            "decoded=%llu uploaded=%llu errors=%llu\n",
-            exitReason.c_str(), decoderMode.c_str(),
-            pipe.decoderActive ? decoderMode.c_str() : "none", pipe.codecName(),
-            (unsigned long long)pipe.decoded.load(),
-            (unsigned long long)uploads,
-            (unsigned long long)(pipe.errors + submitErrors));
-    atomicWrite(stateFile, state(pipe.decoderError ? "error" : "stopped"));
-    return uploads && !pipe.decoderError ? 0 : 1;
+    PanelRunner panel(options);
+    while (panel.tick()) {}
+    return panel.finish();
   } catch (const std::exception &e) {
     fprintf(stderr, "[native] %s\n", e.what());
     try {

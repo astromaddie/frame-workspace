@@ -132,6 +132,7 @@ class Helpers(unittest.TestCase):
         with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2",
                                           "FRAME_WORKSPACE_CONVERSION": "gpu"}):
             mv._show_native_window("window:42", "http://127.0.0.1:1/view?x", "fc12345678", 1200, 800)
+        self.assertTrue(runs[-1].startswith("bash -s -- "))
         args = shlex.split(runs[-1])[3:]
         self.assertEqual(args[:4], ["--panel", "w42", "--name", "Terminal zsh"])
         self.assertEqual(args[4], "--initial-pose")
@@ -139,6 +140,95 @@ class Helpers(unittest.TestCase):
         self.assertEqual(args[6:8], ["start", "http://127.0.0.1:1/view?x"])
         self.assertEqual(args[-2:], ["v4l2", "gpu"])
         self.assertEqual(mv.native_panels["window:42"]["key"], "com.frame-workspace.native.1000.panel-w42")
+        self.assertIs(mv.native_panels["window:42"]["host"], False)
+
+    def test_native_host_is_opt_in_and_stop_reuses_recorded_host_selection(self):
+        mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        commands = []
+        mv.run = lambda command, **kwargs: commands.append(command) or \
+            "Native Workspace ready: registered OpenVR key com.frame-workspace.native.1000.panel-w42"
+        mv.call = lambda path, **kwargs: {"windows": [{"src": "window:42", "title": "Terminal", "w": 1200, "h": 800}]}
+        mv._workspace_frame_placement = lambda: None
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_NATIVE_HOST": "1"}):
+            mv._show_native_window("window:42", "http://127.0.0.1:1/view?x", "fc12345678", 1200, 800)
+        self.assertTrue(commands[0].startswith("FRAME_NATIVE_HOST=1 bash -s -- "))
+        self.assertIs(mv.native_panels["window:42"]["host"], True)
+        self.assertEqual(mv.native_panels["window:42"]["generation"], "fc12345678")
+
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}, clear=False):
+            os.environ.pop("FRAME_NATIVE_HOST", None)
+            mv._stop_native_panels("window:42")
+        self.assertTrue(commands[1].startswith("FRAME_NATIVE_HOST=1 bash -s -- "))
+        stop_args = shlex.split(commands[1])[4:]
+        self.assertEqual(stop_args, ["--panel", "w42", "--generation", "fc12345678", "stop"])
+        self.assertNotIn("window:42", mv.native_panels)
+
+    def test_stop_closes_companion_stream_before_removing_host_panel_spec(self):
+        mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        order = []
+        finished = threading.Event()
+
+        class Agent:
+            def poll(self): return None
+
+        mv.agent = Agent()
+        mv.shown = {"window:42", "window:99"}
+        mv.native_panels["window:42"] = {"panel": "w42", "key": "com.frame-workspace.native.1000.panel-w42",
+                                         "host": True, "generation": "fc12345678"}
+
+        def close(path, method="GET", **kwargs):
+            order.append(("server", path, method))
+            return {"closed": 1}
+
+        def remove_spec(command, **kwargs):
+            order.append(("frame", command))
+            finished.set()
+            return "Stopped native panel"
+
+        mv.call = close
+        mv.run = remove_spec
+        self.assertEqual(mv.stop("window:42"), {"closed": 1})
+        self.assertTrue(finished.wait(2), "native host spec removal should follow the server close response")
+        self.assertEqual(order[0], ("server", "/close", "POST"))
+        self.assertTrue(order[1][1].startswith("FRAME_NATIVE_HOST=1 bash -s -- "))
+        self.assertEqual(shlex.split(order[1][1])[4:],
+                         ["--panel", "w42", "--generation", "fc12345678", "stop"])
+        self.assertNotIn("window:42", mv.native_panels)
+
+    def test_stop_removes_host_spec_when_companion_server_is_already_closed(self):
+        mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        commands = []
+
+        class ExitedAgent:
+            def poll(self): return 1
+
+        mv.agent = ExitedAgent()
+        mv.shown = {"window:42", "window:99"}
+        mv.native_panels["window:42"] = {"panel": "w42", "key": "com.frame-workspace.native.1000.panel-w42",
+                                         "host": True, "generation": "fc12345678"}
+        mv.call = mock.Mock(side_effect=AssertionError("a closed companion has no HTTP server"))
+        mv.run = lambda command, **kwargs: commands.append(command) or "Stopped native panel"
+        self.assertEqual(mv.stop("window:42"), {"closed": 0})
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0].startswith("FRAME_NATIVE_HOST=1 bash -s -- "))
+        self.assertEqual(shlex.split(commands[0])[4:],
+                         ["--panel", "w42", "--generation", "fc12345678", "stop"])
+        mv.call.assert_not_called()
+        self.assertNotIn("window:42", mv.native_panels)
+
+    def test_slow_host_stop_does_not_remove_a_newer_panel_record(self):
+        mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
+        old = {"panel": "w42", "host": True, "generation": "fc12345678"}
+        replacement = {"panel": "w42", "host": True, "generation": "fc87654321"}
+        mv.native_panels["window:42"] = old
+
+        def slow_stop(command, **kwargs):
+            mv.native_panels["window:42"] = replacement
+            return "Stopped native panel"
+
+        mv.run = slow_stop
+        mv._stop_native_panels("window:42")
+        self.assertIs(mv.native_panels["window:42"], replacement)
 
     def test_native_window_saved_pose_overrides_beside_workspace_placement(self):
         mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")

@@ -109,7 +109,7 @@ inline BendSegment bendSegment(const BendShape &b, int index, float layerSpan, f
 // Where a ray (panel local origin o, direction d) meets the surface `z` in
 // front of the window, in window coordinates. Past the window's edges the
 // outer halves continue, so handles beyond them are still hit.
-inline bool bendHit(const BendShape &b, const float o[3], const float d[3], float z, float &x, float &y) {
+inline bool bendHit(const BendShape &b, const float o[3], const float d[3], float z, float &x, float &y, float *distance = nullptr) {
   // Work in (along, across, depth).
   const float oa = b.vertical ? o[1] : o[0], oc = b.vertical ? o[0] : o[1], od = o[2];
   const float da = b.vertical ? d[1] : d[0], dc = b.vertical ? d[0] : d[1], dd = d[2];
@@ -141,6 +141,7 @@ inline bool bendHit(const BendShape &b, const float o[3], const float d[3], floa
     }
   }
   if (bestT < 0) return false;
+  if (distance) *distance = bestT;
   x = b.vertical ? bestC : bestS;
   y = b.vertical ? bestS : bestC;
   return true;
