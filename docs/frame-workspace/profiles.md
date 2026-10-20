@@ -51,3 +51,28 @@ before the CLI subcommand, for example:
 ```sh
 python3 scripts/workspace-profiles.py --url http://127.0.0.1:60339 restore Coding
 ```
+
+## Last session (auto-saved)
+
+While the Workspace runs, the companion keeps an extra profile named Last
+Session in `workspace/last-session.json` in its data folder, apart from the
+named profiles (it never appears in the list). It records each floating
+window shown in the headset (by bundle ID, with a title hint only when the app
+has more than one window, since titles change) and every pose, bends
+included. It is rewritten every 15 seconds and once more just before the
+Workspace stops, is replaced, or the companion quits; if the Frame can't be
+read at that moment, the previous snapshot stays. So a crash, sleep or dropped
+connection loses at most 15 seconds.
+
+Starting the Workspace from the Mac page or from the headset's Start Workspace
+always brings that session back (the user's choice, 2026-10-20): windows that
+are still open on the Mac reopen at their saved poses; ones already shown, or
+gone, are left alone. Restoring a named profile does not resume the last
+session; saving simply carries on. `FRAME_WORKSPACE_SESSION=0` turns it off
+(the MCP adapter's backend does).
+
+Verified 2026-10-20 on the Frame (not worn): a Finder window was shown, moved
+and given a one-sided bend; the snapshot caught it within 5 s; the companion
+was then killed outright (SIGKILL), which ended the Workspace and its viewers;
+after restarting the companion, Start Workspace brought the window back at the
+identical pose and bend, and the Mac was left with one Frame Workspace display.

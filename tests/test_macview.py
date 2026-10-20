@@ -239,7 +239,7 @@ class Helpers(unittest.TestCase):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
         mv.last_workspace = ("2880x2560", 1, "sharp")
         calls = []
-        mv.start_workspace = lambda *a: calls.append(("start", a))
+        mv.start_workspace = lambda *a, **k: calls.append(("start", a)) if k == {"resume": True} else None
         mv.stop_workspace = lambda: calls.append(("stop",))
         mv._focus_workspace_viewer = lambda: calls.append(("recenter",))
         mv._handle_frame_requests("DASH_STARTED\n" + "\n".join(

@@ -435,6 +435,10 @@ Restart a familiar work setup with named ultrawide and floating-window profiles,
 - [ ] Spatial poses are restored only behind a proven implementation; otherwise users are not misled about saved positions.
 - [ ] App/project settings are stored locally, documented, and versioned for future schema migration.
 
+## Progress
+- 2026-10-20: profiles save and restore each window's pose (and the Workspace's), bends included; and the
+  last session is auto-saved and brought back on every Workspace start. See `profiles.md`.
+
 ## Risks / non-goals
 - Preserving source selections is not the same thing as persisting a compositor-owned room layout.
 

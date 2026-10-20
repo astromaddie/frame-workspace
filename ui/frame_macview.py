@@ -652,6 +652,9 @@ class MacView:
         self.dash_worker = None
         self.last_workspace_file = None
         self.last_workspace = ("5120x1440", 1, "sharp")
+        # Session auto-save (frame_workspace_profiles.SessionKeeper) hooks.
+        self.before_workspace_stop = None
+        self.after_workspace_start = None
 
     # ---- the agent on this Mac ----
 
@@ -996,7 +999,7 @@ class MacView:
                 if re.fullmatch(r"com\.frame-workspace\.native\.\d+\.(workspace|panel-w\d{1,15})", key):
                     self._dash_run(None, self._close_from_frame, key)
             elif action == "workspace_start":
-                self._dash_run("starting", lambda: self.start_workspace(*self.last_workspace))
+                self._dash_run("starting", lambda: self.start_workspace(*self.last_workspace, resume=True))
             elif action == "workspace_stop":
                 self._dash_run("stopping", self.stop_workspace)
             elif action == "recenter":
@@ -1468,7 +1471,15 @@ print(json.dumps(poses))
             except Exception as e:  # noqa: BLE001 - preserve the helper's ownership/readiness error
                 raise MacViewError(f"Could not set native Workspace curvature: {e}") from e
 
-    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp", pose=None):
+    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp", pose=None, resume=False):
+        """Starts the Workspace; with `resume` (the Mac page and the headset's
+        Start), then brings back the last session's windows where they were."""
+        result = self._start_workspace(preset, scale, quality, pose)
+        if self.after_workspace_start:
+            self.after_workspace_start(resume)
+        return result
+
+    def _start_workspace(self, preset="5120x1440", scale=1, quality="sharp", pose=None):
         """Create/reuse the owned display and show its stable workspace panel.
 
         A size or scale change replaces the old display only after its viewer,
@@ -1566,6 +1577,11 @@ print(json.dumps(poses))
 
     def stop_workspace(self):
         """Close only the workspace panel/stream, then release its owned display."""
+        if self.before_workspace_stop and self.workspace_panel_key:
+            try:
+                self.before_workspace_stop()  # the session's last snapshot, before anything closes
+            except Exception:  # noqa: BLE001 - never block a stop
+                pass
         with self.workspace_lock:
             workspace = self.workspace_manager.state()
             capture_src = workspace.get("captureSrc")

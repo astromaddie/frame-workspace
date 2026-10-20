@@ -2419,7 +2419,7 @@ def macview_action(body):
                                 int(w) if w else None, int(h) if h else None)
         if action == "workspace_start":
             return macview.start_workspace(str(body.get("preset") or "5120x1440"),
-                                           body.get("scale", 1), str(body.get("quality") or "sharp"))
+                                           body.get("scale", 1), str(body.get("quality") or "sharp"), resume=True)
         if action == "workspace_adjust":
             return macview.adjust_workspace(body["width"], body["distance"])
         if action == "workspace_curvature":
@@ -3097,6 +3097,11 @@ def main():
         # The SteamVR bar panel; the MCP adapter's server turns it off (one per headset).
         macview.start_dash(connected=lambda: LINK.state.get("phase") == "connected",
                            last_workspace_file=frame_host.data_dir("workspace", "last-start.json"))
+        # Auto-saved session: starting the Workspace brings back its windows.
+        if os.environ.get("FRAME_WORKSPACE_SESSION", "1") != "0":
+            frame_workspace_profiles.SessionKeeper(
+                frame_workspace_profiles.ProfileStore(frame_host.data_dir("workspace", "last-session.json")),
+                macview).start()
     if not frame_host.WINDOWS:
         signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
     if args.exit_on_eof:

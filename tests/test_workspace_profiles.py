@@ -572,3 +572,99 @@ class ProductionRestorePathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SessionKeeperTests(unittest.TestCase):
+    """The auto-saved Last Session: captured while the Workspace runs, kept
+    out of the profile list, and brought back on the next start."""
+
+    class FakeMacView:
+        def __init__(self):
+            self.closing = False
+            self.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+            self.native_panels = {"window:5": {"key": "k5"}, "window:9": {"key": "k9"}}
+            self.windows = [
+                {"id": 5, "src": "window:5", "bundleID": "com.apple.Terminal", "title": "zsh — 80×24", "app": "Terminal"},
+                {"id": 9, "src": "window:9", "bundleID": "com.apple.finder", "title": "Downloads", "app": "Finder"},
+                {"id": 11, "src": "window:11", "bundleID": "com.apple.finder", "title": "Desktop", "app": "Finder"},
+            ]
+            self.shown = []
+            self.fail_poses = False
+            self.workspace_manager = mock.Mock()
+            self.workspace_manager.state.return_value = {"state": "running", "preset": "2880x2560", "scale": 1,
+                                                         "quality": "sharp"}
+            self.before_workspace_stop = self.after_workspace_start = None
+
+        def state(self):
+            return {"available": True, "screen": True, "windows": self.windows}
+
+        def read_panel_poses(self, sources):
+            if self.fail_poses:
+                raise frame_macview.MacViewError("Frame unreachable")
+            return {s: sample_pose(i) for i, s in enumerate(sources)}
+
+        def show(self, src, quality="balanced", pose=None):
+            self.shown.append((src, pose))
+            self.native_panels[src] = {"key": src}
+            return {"panel": src}
+
+    def keeper(self, tmp):
+        mv = self.FakeMacView()
+        store = profiles.ProfileStore(os.path.join(tmp, "last-session.json"))
+        return mv, store, profiles.SessionKeeper(store, mv)
+
+    def test_snapshot_records_windows_and_poses_with_hints_only_where_needed(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            self.assertTrue(keeper.snapshot())
+            saved = store.get(profiles.LAST_SESSION)
+            rules = {r["bundleID"]: r for r in saved["windows"]}
+            self.assertNotIn("titleHint", rules["com.apple.Terminal"])  # one Terminal window: no hint
+            self.assertEqual(rules["com.apple.finder"]["titleHint"], "Downloads")  # two Finder windows
+            self.assertTrue(all("pose" in r for r in saved["windows"]) and "pose" in saved["workspace"])
+
+    def test_unreachable_frame_keeps_the_previous_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            keeper.snapshot()
+            before = store.get(profiles.LAST_SESSION)
+            mv.fail_poses = True
+            mv.native_panels.pop("window:5")
+            self.assertFalse(keeper.snapshot())
+            self.assertEqual(store.get(profiles.LAST_SESSION), before)
+
+    def test_no_workspace_saves_nothing_and_a_stop_freezes_the_last_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            keeper.final_snapshot()  # just before a stop: saved, then frozen
+            self.assertEqual(len(store.get(profiles.LAST_SESSION)["windows"]), 2)
+            mv.native_panels.clear()  # the windows close as the Workspace stops
+            self.assertFalse(keeper.snapshot())
+            self.assertEqual(len(store.get(profiles.LAST_SESSION)["windows"]), 2)
+            mv.workspace_manager.state.return_value = {"state": "stopped"}
+            keeper.paused = False
+            self.assertFalse(keeper.snapshot())
+
+    def test_resume_shows_missing_windows_at_their_poses_and_unpauses(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            keeper.snapshot()
+            saved = store.get(profiles.LAST_SESSION)
+            keeper.final_snapshot()
+            mv.native_panels = {"window:9": {"key": "k9"}}  # Finder still shown, Terminal not
+            shown = keeper.resume()
+            self.assertEqual(shown, ["window:5"])
+            terminal = next(r for r in saved["windows"] if r["bundleID"] == "com.apple.Terminal")
+            self.assertEqual(mv.shown, [("window:5", terminal["pose"])])
+            self.assertFalse(keeper.paused)
+
+    def test_a_named_profile_start_carries_on_saving_without_resuming(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            keeper.start()
+            keeper.paused = True
+            mv.after_workspace_start(False)
+            self.assertFalse(keeper.paused)
+            self.assertEqual(mv.shown, [])
+            self.assertEqual(profiles.ProfileStore(os.path.join(tmp, "profiles.json")).list(), [])
+            mv.closing = True

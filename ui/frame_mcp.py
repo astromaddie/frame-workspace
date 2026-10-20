@@ -143,9 +143,9 @@ def backend(url=None):
         yield Client(url, os.environ.get('FRAME_UI_KEY', '1'))
         return
     key = secrets.token_urlsafe(32)
-    # No SteamVR bar panel from this backend: the companion the user runs owns it.
+    # No SteamVR bar panel or session auto-save from this backend: the companion the user runs owns them.
     env = {**os.environ, 'FRAME_UI_KEY': key, 'DO_NOT_TRACK': '1', 'FRAME_PRIVATE_SSH': '1',
-           'FRAME_WORKSPACE_DASH': '0'}
+           'FRAME_WORKSPACE_DASH': '0', 'FRAME_WORKSPACE_SESSION': '0'}
     proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name('server.py')),
                              '--port', '0', '--exit-on-eof'],
                             env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,

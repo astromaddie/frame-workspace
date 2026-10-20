@@ -10,6 +10,7 @@ import re
 import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import frame_macview
@@ -401,3 +402,136 @@ def restore(store, macview, name):
             "workspace": {key: workspace[key] for key in ("preset", "scale", "quality", "display", "stream")
                           if key in workspace},
             "windows": shown_results}
+
+
+LAST_SESSION = "Last Session"
+
+
+class SessionKeeper:
+    """Auto-saves what is open in the Workspace so that starting it again brings
+    the same windows back where they were, however the last session ended.
+
+    The snapshot is a profile named Last Session in a store of its own (so it
+    never appears among the user's profiles): every INTERVAL seconds while the
+    Workspace runs, and once more just before it stops or the companion quits.
+    A crash or a dropped connection loses at most INTERVAL seconds. If the Frame
+    can't be read, the previous snapshot stays."""
+
+    INTERVAL = 15
+
+    def __init__(self, store, macview):
+        self.store = store
+        self.macview = macview
+        self.paused = False  # while resuming, and from a stop until the next start
+        self.lock = threading.Lock()
+        self.thread = None
+
+    def start(self):
+        self.macview.before_workspace_stop = self.final_snapshot
+        self.macview.after_workspace_start = self.resume_async
+        if self.thread and self.thread.is_alive():
+            return
+
+        def loop():
+            tick = 0
+            while not self.macview.closing:
+                time.sleep(1)
+                tick += 1
+                if tick % self.INTERVAL == 0:
+                    self.snapshot()
+
+        self.thread = threading.Thread(target=loop, daemon=True)
+        self.thread.start()
+
+    def capture(self):
+        """The current layout as a profile, or None when no Workspace is running."""
+        mv = self.macview
+        workspace = mv.workspace_manager.state()
+        if workspace.get("state") != "running" or not mv.workspace_panel_key:
+            return None
+        state = mv.state()
+        if not state.get("available"):
+            return None
+        windows = [w for w in state.get("windows", []) if isinstance(w, dict)]
+        by_source = {w.get("src"): w for w in windows}
+        rules, sources, seen = [], [], set()
+        for source in list(mv.native_panels):
+            window = by_source.get(source)
+            bundle_id = window.get("bundleID") if window else None
+            if not isinstance(bundle_id, str) or not _BUNDLE_ID.fullmatch(bundle_id) or "." not in bundle_id:
+                continue
+            rule = {"bundleID": bundle_id}
+            # A title hint only where the app has more than one window, since
+            # titles change (a terminal's, as it runs commands).
+            title = re.sub(r"[\x00-\x1f\x7f]", " ", str(window.get("title") or "")).strip()[:MAX_TITLE_HINT].strip()
+            if title and sum(1 for w in windows if w.get("bundleID") == bundle_id) > 1:
+                rule["titleHint"] = title
+            identity = (bundle_id.casefold(), rule.get("titleHint", "").casefold())
+            if identity in seen or len(rules) >= MAX_RULES:
+                continue
+            seen.add(identity)
+            rules.append(rule)
+            sources.append(source)
+        poses = mv.read_panel_poses([frame_macview.WorkspaceDisplayManager.KEY] + sources) if \
+            frame_macview.workspace_viewer_backend() == "native" else {}
+        for rule, source in zip(rules, sources):
+            if source in poses:
+                rule["pose"] = poses[source]
+        settings = {key: workspace.get(key) for key in ("preset", "scale", "quality")}
+        if frame_macview.WorkspaceDisplayManager.KEY in poses:
+            settings["pose"] = poses[frame_macview.WorkspaceDisplayManager.KEY]
+        return validate_profile({"name": LAST_SESSION, "workspace": settings, "windows": rules})
+
+    def snapshot(self, force=False):
+        if self.paused and not force:
+            return False
+        try:
+            profile = self.capture()
+            if profile is None:
+                return False
+            self.store.save(profile)
+            return True
+        except Exception:  # noqa: BLE001 - unreachable Frame, a window mid-change: keep the last one
+            return False
+
+    def final_snapshot(self):
+        """Just before the Workspace stops (by hand, on quit, or replaced)."""
+        if not self.paused:
+            self.snapshot(force=True)
+        self.paused = True
+
+    def resume_async(self, resume=True):
+        """After any Workspace start: bring the last session back (Mac page and
+        headset starts), or just carry on saving (a named profile's restore)."""
+        if resume:
+            threading.Thread(target=self.resume, daemon=True).start()
+        else:
+            self.paused = False
+
+    def resume(self):
+        """Brings back the last session's windows at their poses; ones already
+        shown, or no longer open on the Mac, are left alone."""
+        with self.lock:
+            self.paused = True
+            try:
+                try:
+                    profile = self.store.get(LAST_SESSION)
+                except ProfileError:
+                    return []
+                state = self.macview.state()
+                if not state.get("available") or not state.get("screen"):
+                    return []
+                shown = []
+                for result in match_windows(profile, state.get("windows", [])):
+                    if result["status"] != "matched" or result["source"] in self.macview.native_panels:
+                        continue
+                    pose = profile["windows"][result["rule"] - 1].get("pose")
+                    try:
+                        self.macview.show(result["source"], quality=profile["workspace"]["quality"],
+                                          **({"pose": pose} if pose is not None else {}))
+                        shown.append(result["source"])
+                    except frame_macview.MacViewError:
+                        pass  # that window can't be shown now; the others still come back
+                return shown
+            finally:
+                self.paused = False
