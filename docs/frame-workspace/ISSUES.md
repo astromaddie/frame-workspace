@@ -598,3 +598,49 @@ Native window panels open beside the Workspace and wear the same chrome.
 - [native placement controls](NATIVE-CONTROLS.md)
 - [native viewer control file](../../native/README.md#launch-and-control)
 - [OpenVR overlay API](https://github.com/ValveSoftware/openvr/wiki/IVROverlay_Overview)
+
+---
+
+# [FW-15] Spatial Mode: every Mac window in 3D, no monitor
+
+**Tracking ID:** FW-15  
+**Priority:** P1  
+**Phase:** M4 — Spatial computing  
+**Dependencies:** FW-09, FW-12, FW-14
+
+## Goal
+Go beyond a 2D monitor with panels beside it (decided with the user, 2026-10-20). In Spatial Mode the
+headset replaces the laptop screen, and every Mac window is its own panel in the room: no fixed
+resolution or desktop, a VR dock and app switcher, hiding windows or whole apps, and every window
+moved, resized and curved in 3D. Desktop Mode (today's Workspace monitor plus panels) stays, with a
+toggle between the two, because Spatial Mode won't suit every task.
+
+## Decisions (the user's)
+- A toggle between **Desktop Mode** and **Spatial Mode**, reachable from the Mac page and the headset.
+- **Eyes pick the active window:** the window you look at takes focus, and the Mac cursor appears on it.
+- **Each window remembers its cursor:** looking back at a window puts the cursor where it was in that window.
+- The laptop screen stops being a display you use, as if the lid were closed. Mirroring it to the
+  headset display (public API) is the first option; turning it off needs a private API that already
+  failed with error 1014 (verified 2026-09-28).
+- New UI (the dock, the app switcher, the mode toggle) needs mockups and approval before it is built.
+
+## Approach
+Each window gets its own virtual display, sized to it, streamed as its own panel
+(`docs/mac-window-separation.md`, `Separate.swift`, verified 2026-09-28): nothing overlaps it, so
+clicks land; its menus, sheets, popovers and its app's menu bar open on that display, so they show
+in the panel; resizing a panel resizes its display and window; the green button fills the window's
+own display. The helper watches windows open and close (Accessibility) and gives each a panel.
+
+## Stages
+1. **Spike** (no UI): how many window streams the Mac and Frame sustain; mirroring the laptop
+   screen; a drag between two window displays; detecting new windows; gaze picking a panel.
+2. **Spatial Mode:** automatic panels for every window, the laptop screen blacked out, the toggle.
+3. **Dock, app switcher, hiding windows and apps** (mockups first).
+4. **Input and performance:** gaze focus with per-window cursor memory, drag between windows, one
+   viewer for all panels if the spike shows per-panel processes don't scale.
+
+## Risks
+- Stream count: each window is an encode on the Mac and a decode and viewer on the Frame.
+- Displays must touch edge to edge, so the cursor can wander between them; the helper places it.
+- macOS defers removing virtual displays while the screen sleeps; keep a fixed pool and reuse it.
+- Windows must go back where they were when Spatial Mode ends.

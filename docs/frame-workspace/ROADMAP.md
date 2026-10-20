@@ -98,6 +98,7 @@ The dedicated Workspace OpenVR viewer now uses an aspect-matched fullscreen Chro
 3. **M1.5 — Comfortable placement:** FW-14. Adjust the Workspace's position, distance, size and curvature live while wearing the headset, without controllers, and keep those settings across restarts. This comes before M2 because a readable desktop is not usable until it can be placed comfortably.
 4. **M2 — Distinctive interaction:** FW-07, FW-09, FW-12. Native full-screen spatial detachment **only if FW-06 passes**; multi-panel performance and keyboard/pointer behavior.
 5. **M3 — Durable product:** FW-11, FW-13. Named profiles, conditional room transform restore, privacy and failure recovery.
+6. **M4 — Spatial computing:** FW-15. A Spatial Mode beside Desktop Mode: the headset replaces the laptop screen and every Mac window is its own panel in 3D, with a VR dock, app switcher and gaze focus. Starts with a spike on stream count, mirroring, cross-display drags and gaze picking.
 
 **MVP decision rule:** If a giant wide display destroys text legibility or panel positioning cannot be controlled, make multiple **real separated Mac windows** the default instead. Do not ship a giant blurry desktop for the sake of claiming a higher resolution.
 
