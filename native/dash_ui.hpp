@@ -39,7 +39,8 @@ public:
   // The panel height that fits this state with no empty space below.
   int measure(const DashState &s, const std::string &variant = "list") const {
     double bottom = s.windows.empty() ? 336 + 26
-                  : variant == "tiles" ? 334 + double((std::min<size_t>(s.windows.size(), 9) + 2) / 3) * 150 - 18
+                  : variant == "tiles" ? 334 + double((std::min<size_t>(s.windows.size(), 9) + 2) / 3) * 150 - 18 +
+                                             (s.windows.size() > 9 ? 34 : 0)
                                        : 332 + double(std::min<size_t>(s.windows.size(), 6)) * 74 - 12 +
                                              (s.windows.size() > 6 ? 34 : 0);
     if (!s.macConnected) bottom += 50;
@@ -77,6 +78,8 @@ public:
         text(ellipsize(s.windows[i].title, 30), x + 22, y + 22, 18, 500, bright);
         button(x + 22, y + th - 66, 130, 46, "Close", "close", s.windows[i].key, hover, false, s.macConnected && !s.locked);
       }
+      if (s.windows.size() > 9)
+        text("+" + std::to_string(s.windows.size() - 9) + " more", 48, 334 + 3 * 150 - 18 + 6, 16, 400, dim);
     } else {
       for (size_t i = 0; i < s.windows.size() && i < 6; i++) {
         const double y = 332 + double(i) * 74;

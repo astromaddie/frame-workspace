@@ -177,8 +177,9 @@ Workspace): the viewer writes `{"action":"close","key":KEY}` into
 `frame-workspace-dash` (`dash.cpp`, drawn by `dash_ui.hpp` with cairo/Pango)
 is the single "Frame Workspace" entry on the SteamVR bar for all the virtual
 screens. It owns a dashboard overlay, which SteamVR's own laser drives, and
-shows the Workspace (Start Workspace, or Stop Workspace and Recenter) and a row
-per floating window with a Close button. The build script builds it next to
+shows the Workspace (Start Workspace, or Stop Workspace and Recenter) and a tile
+per floating window with a Close button (up to 9, then "+N more"; `--layout
+list` gives one row per window instead). The build script builds it next to
 the viewer; install it in the same folder.
 
 The Mac companion runs `scripts/workspace-dash-on-frame.sh sync STATE` once a
@@ -193,7 +194,7 @@ the companion quits, with the buttons off. `FRAME_WORKSPACE_DASH=0` turns the
 sync off (the MCP adapter's backend does).
 
 ```bash
-frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout list|tiles]
+frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]
 frame-workspace-dash --render-mock OUT.png list|tiles running|stopped|offline
 ```
 

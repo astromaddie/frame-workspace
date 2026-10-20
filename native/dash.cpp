@@ -5,7 +5,7 @@
 // window). The companion rewrites the state file every couple of seconds; an
 // old file means the Mac is not connected.
 //
-//   frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout list|tiles]
+//   frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]
 //   frame-workspace-dash --render-mock OUT.png list|tiles running|stopped|offline
 #include "dash_ui.hpp"
 #include "vendor/openvr/openvr_capi.h"
@@ -151,16 +151,16 @@ int main(int argc, char **argv) {
     return renderPng(r, mockState(which), which == "running" ? "close:com.frame-workspace.native.1000.panel-w212" : "",
                      argv[3], argv[2]).empty() ? 1 : 0;
   }
-  std::string statePath, requestDir, images = "/tmp", layout = "list";
+  std::string statePath, requestDir, images = "/tmp", layout = "tiles";
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string a = argv[i], v = argv[i + 1];
     if (a == "--state") statePath = v;
     else if (a == "--request-dir") requestDir = v;
     else if (a == "--images") images = v;
-    else if (a == "--layout") layout = v == "tiles" ? "tiles" : "list";
+    else if (a == "--layout") layout = v == "list" ? "list" : "tiles";
   }
   if (statePath.empty() || requestDir.empty()) {
-    fprintf(stderr, "usage: frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout list|tiles]\n");
+    fprintf(stderr, "usage: frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]\n");
     return 2;
   }
   signal(SIGTERM, [](int) { stopping = 1; });
