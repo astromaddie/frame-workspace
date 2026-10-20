@@ -44,7 +44,7 @@ enum class RecoveryAction {
   FlushContext,
   SameContextIdrBarrier
 };
-enum class DecoderOpenReason { Initial, Reconnect, FormatChange };
+enum class DecoderOpenReason { Initial, Reconnect, FormatChange, Live };
 enum class TimestampStatus { Mapped, Stale, Unknown };
 inline RecoveryAction recoveryAction(bool hardware, bool contextReady,
                                      bool sizeChanged,
@@ -128,10 +128,35 @@ struct H264Headers {
     return 0;
   }
 };
+inline bool h264HasSpsAndPps(const std::vector<uint8_t> &bytes) {
+  bool sps = false, pps = false;
+  for (size_t i = 0; i + 3 < bytes.size();) {
+    size_t prefix = 0;
+    if (bytes[i] == 0 && bytes[i + 1] == 0 && bytes[i + 2] == 1)
+      prefix = 3;
+    else if (i + 4 <= bytes.size() && bytes[i] == 0 && bytes[i + 1] == 0 &&
+             bytes[i + 2] == 0 && bytes[i + 3] == 1)
+      prefix = 4;
+    if (!prefix) {
+      ++i;
+      continue;
+    }
+    if (i + prefix < bytes.size()) {
+      const int type = bytes[i + prefix] & 0x1f;
+      sps |= type == 7;
+      pps |= type == 8;
+      if (sps && pps)
+        return true;
+    }
+    i += prefix + 1;
+  }
+  return false;
+}
 struct Pipeline {
   const std::string decoderRequested;
   const std::string conversionRequested;
   std::atomic<bool> decoderActive{false};
+  std::atomic<bool> streamStill{false}, decoderSessionOpen{false};
   std::atomic<const char *> conversionActive{"pending"};
   std::atomic<int> conversionFallbacks{0}, decoderPixelFormat{-1},
       decoderColorSpace{AVCOL_SPC_UNSPECIFIED},
@@ -163,7 +188,7 @@ struct Pipeline {
       overflowRecoveryIdrs{0}, staleDriverFramesDropped{0},
       decoderOpenAttempts{0}, decoderInitialOpens{0},
       decoderReconnectOpens{0}, decoderFormatReopens{0},
-      decoderOpenFailures{0};
+      decoderOpenFailures{0}, decoderStillReleases{0}, decoderLiveOpens{0};
   std::atomic<uint32_t> lastOverflowRecoverySeq{0};
   std::atomic<uint64_t> decoderTimingHighWater{0}, packetQueueHighWater{0},
       emptyReceives{0};
@@ -190,6 +215,21 @@ struct Pipeline {
   std::mutex mutex, outMutex;
   std::condition_variable wake, pictureReady;
   std::deque<Packet> packets;
+  // Keep packet ordinals parallel to `packets` so ordered still/live fences do
+  // not change the packet type or the existing queue recovery contract.
+  std::deque<uint64_t> packetOrdinals;
+  struct StreamTransition {
+    uint64_t afterPacket = 0;
+    bool still = false;
+    // Keep a transient still request when controls toggle before the decoder
+    // can apply them. A following live request still has to release the old
+    // session and wait for a fresh parameterized IDR.
+    bool releaseSession = false;
+  };
+  std::deque<StreamTransition> streamTransitions;
+  uint64_t nextPacketOrdinal = 0, processedPacketOrdinal = 0,
+           skippedThroughOrdinal = 0, inFlightPacketOrdinal = 0;
+  bool networkStillRequested = false; // protected by mutex
   std::shared_ptr<Picture> newest;
   std::deque<std::string> outbound;
   struct GazeSample {
@@ -232,11 +272,79 @@ struct Pipeline {
     if (resetPriority(reason) > resetPriority(pendingResetReason))
       pendingResetReason = reason;
   }
+  void dropQueuedLocked() {
+    if (!packetOrdinals.empty())
+      skippedThroughOrdinal =
+          std::max(skippedThroughOrdinal, packetOrdinals.back());
+    packets.clear();
+    packetOrdinals.clear();
+    if (skippedThroughOrdinal) {
+      std::deque<StreamTransition> compacted;
+      bool haveCompacted = false;
+      StreamTransition compactedTransition;
+      for (const auto &transition : streamTransitions) {
+        const bool fenceWasDropped =
+            transition.afterPacket <= skippedThroughOrdinal &&
+            (!inFlightPacketOrdinal ||
+             transition.afterPacket >= inFlightPacketOrdinal);
+        if (!fenceWasDropped) {
+          compacted.push_back(transition);
+          continue;
+        }
+        if (!haveCompacted) {
+          compactedTransition = transition;
+          haveCompacted = true;
+        } else {
+          compactedTransition.still = transition.still;
+          compactedTransition.releaseSession |= transition.releaseSession;
+        }
+      }
+      if (haveCompacted) {
+        compactedTransition.afterPacket = skippedThroughOrdinal;
+        auto position = std::find_if(
+            compacted.begin(), compacted.end(), [&](const auto &transition) {
+              return transition.afterPacket > skippedThroughOrdinal;
+            });
+        compacted.insert(position, compactedTransition);
+      }
+      streamTransitions.swap(compacted);
+    }
+    if (!inFlightPacketOrdinal)
+      processedPacketOrdinal =
+          std::max(processedPacketOrdinal, skippedThroughOrdinal);
+  }
   void connectionOpened(bool resumed) {
     std::lock_guard<std::mutex> lock(mutex);
     droppedEncoded += packets.size();
-    packets.clear();
+    dropQueuedLocked();
+    // Keep the still request across reconnects; post-reconnect video stays
+    // discarded until the server sends a live control.
     requireKeyLocked(resumed ? ResetReason::Reconnect : ResetReason::None);
+    wake.notify_all();
+  }
+  // Text controls enter the same ordered pipeline as video. The decoder sees
+  // a transition only after every accepted packet before its fence completes.
+  void setStreamStill(bool still) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (networkStillRequested == still)
+      return;
+    networkStillRequested = still;
+    if (!streamTransitions.empty() &&
+        streamTransitions.back().afterPacket == nextPacketOrdinal) {
+      // With no accepted picture between controls, retain the final mode but
+      // remember that any still request still requires releasing the session.
+      streamTransitions.back().still = still;
+      streamTransitions.back().releaseSession |= still;
+    } else {
+      streamTransitions.push_back({nextPacketOrdinal, still, still});
+    }
+    if (!still) {
+      // A reopened session must begin at an IDR. Do not ask the decoder to open
+      // here: the network may still be between the live control and that IDR.
+      requireKeyLocked(ResetReason::None);
+      requestKey = true;
+    }
+    wake.notify_all();
   }
   ~Pipeline() { finish(); }
   void finish() {
@@ -253,10 +361,14 @@ struct Pipeline {
     if (lastArrival > 0)
       raiseMax(arrivalGapMaxMs, p.received - lastArrival);
     lastArrival = p.received;
+    if (networkStillRequested) {
+      ++droppedEncoded;
+      return;
+    }
     if (packets.size() >= maxPacketQueue) {
       ++packetQueueOverflows;
       droppedEncoded += packets.size();
-      packets.clear();
+      dropQueuedLocked();
       requireKeyLocked(ResetReason::Overflow);
       requestKey = true;
     }
@@ -272,6 +384,7 @@ struct Pipeline {
       needKey = false;
     }
     packets.push_back(std::move(p));
+    packetOrdinals.push_back(++nextPacketOrdinal);
     if (packets.size() > packetQueueHighWater)
       packetQueueHighWater = packets.size();
     wake.notify_one();
@@ -455,6 +568,10 @@ struct Pipeline {
                             std::to_string(receivedAt - c) + ",\"dec\":\"" +
                             decoderIdentity() + "\"}");
               }
+            } else if (t == "still") {
+              setStreamStill(true);
+            } else if (t == "live") {
+              setStreamStill(false);
             } else if (t == "close" || t == "closed") {
               stopReason = "server-close";
               stop = true;
@@ -493,6 +610,7 @@ struct Pipeline {
     connected = false;
   }
   void decodeLoop() {
+    const bool pocRewriteRequested = pocRewrite;
     const AVCodec *codec = avcodec_find_decoder_by_name(codecName());
     AVCodecContext *context = nullptr;
     AVFrame *frame = av_frame_alloc();
@@ -504,6 +622,7 @@ struct Pipeline {
     // be silently accepted as stale before the first overflow recovery.
     int64_t staleThroughToken = -1;
     bool submitted = false;
+    bool awaitingLiveKey = false;
     H264Headers headers;
     H264CropHeaders cropHeaders;
     auto fail = [&](const char *stage, int code) {
@@ -536,6 +655,7 @@ struct Pipeline {
       };
       av_frame_unref(frame);
       avcodec_free_context(&context);
+      decoderSessionOpen = false;
       timing.clear();
       decoderActive = false;
       context = codec ? avcodec_alloc_context3(codec) : nullptr;
@@ -583,6 +703,9 @@ struct Pipeline {
         return false;
       }
       recordOpenTime();
+      decoderSessionOpen = true;
+      if (reason == DecoderOpenReason::Live)
+        ++decoderLiveOpens;
       fprintf(stderr, "[native] decoder initialized requested=%s codec=%s\n",
               decoderRequested.c_str(), codecName());
       return true;
@@ -774,22 +897,126 @@ struct Pipeline {
       av_frame_unref(frame);
       return result;
     };
+    auto releaseForStill = [&]() {
+      const bool hadSession = context != nullptr;
+      if (context && submitted && !stop) {
+        const double started = nowMs();
+        double lastOutput = started;
+        uint64_t lastDecoded = decoded.load();
+        // Some V4L2 drivers publish a completed final surface shortly after
+        // the last receive returns EAGAIN. Give that output a short bounded
+        // window, then release the session even if the driver keeps waiting.
+        const double maxWaitMs = decoderRequested == "v4l2" ? 100 : 0;
+        const double quietWaitMs = decoderRequested == "v4l2" ? 30 : 0;
+        do {
+          int result = drain();
+          if (result != AVERROR(EAGAIN) && result != AVERROR_EOF && !stop) {
+            if (decoderRequested == "v4l2") {
+              fail("still-drain", result);
+            } else {
+              ++errors;
+              ++decoderReceiveErrors;
+              fprintf(stderr,
+                      "[native] decoder recoverable stage=still-drain code=%d; requesting IDR\n",
+                      result);
+              requestKey = true;
+              std::lock_guard<std::mutex> lock(mutex);
+              requireKeyLocked(ResetReason::DecoderError);
+              droppedEncoded += packets.size();
+              dropQueuedLocked();
+            }
+            break;
+          }
+          uint64_t currentDecoded = decoded.load();
+          if (currentDecoded != lastDecoded) {
+            lastDecoded = currentDecoded;
+            lastOutput = nowMs();
+          }
+          if (nowMs() - lastOutput >= quietWaitMs)
+            break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        } while (nowMs() - started < maxWaitMs && !stop);
+      }
+      avcodec_free_context(&context);
+      decoderSessionOpen = false;
+      decoderActive = false;
+      submitted = false;
+      timing.clear();
+      pocRewriter.reset();
+      pocRewrite = pocRewriteRequested;
+      if (hadSession)
+        ++decoderStillReleases;
+    };
+    auto completePacket = [&](uint64_t ordinal) {
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        inFlightPacketOrdinal = 0;
+        processedPacketOrdinal = std::max(
+            processedPacketOrdinal,
+            std::max(ordinal, skippedThroughOrdinal));
+      }
+      wake.notify_all();
+    };
+    auto rejectLiveKey = [&](uint64_t ordinal) {
+      ++droppedEncoded;
+      requestKey = true;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        requireKeyLocked(ResetReason::None);
+        droppedEncoded += packets.size();
+        dropQueuedLocked();
+      }
+      completePacket(ordinal);
+    };
     while (!stop) {
       Packet p;
+      uint64_t packetOrdinal = 0;
       RecoveryAction action = RecoveryAction::KeepContext;
       bool havePacket = false;
+      bool haveTransition = false, transitionStill = false;
+      bool transitionReleaseSession = false;
       {
         std::unique_lock<std::mutex> l(mutex);
         wake.wait_for(l, std::chrono::milliseconds(5),
-                      [&] { return stop || !packets.empty(); });
-        if (!packets.empty()) {
+                      [&] {
+                        return stop || !packets.empty() ||
+                               (!streamTransitions.empty() &&
+                                streamTransitions.front().afterPacket <=
+                                    processedPacketOrdinal);
+                      });
+        if (!inFlightPacketOrdinal)
+          processedPacketOrdinal =
+              std::max(processedPacketOrdinal, skippedThroughOrdinal);
+        if (!streamTransitions.empty() &&
+            streamTransitions.front().afterPacket <= processedPacketOrdinal) {
+          transitionStill = streamTransitions.front().still;
+          transitionReleaseSession =
+              streamTransitions.front().releaseSession;
+          streamTransitions.pop_front();
+          haveTransition = true;
+        } else if (!packets.empty()) {
           p = std::move(packets.front());
           packets.pop_front();
+          packetOrdinal = packetOrdinals.front();
+          packetOrdinals.pop_front();
+          inFlightPacketOrdinal = packetOrdinal;
           havePacket = true;
         }
       }
       if (stop)
         break;
+      if (haveTransition) {
+        if (transitionReleaseSession)
+          releaseForStill();
+        if (transitionStill) {
+          awaitingLiveKey = false;
+          streamStill = true;
+        } else {
+          awaitingLiveKey = true;
+          streamStill = false;
+        }
+        continue;
+      }
       if (!havePacket) {
         // V4L2 may complete output after the final packet of a static desktop.
         if (submitted && decoderRequested == "v4l2") {
@@ -802,11 +1029,21 @@ struct Pipeline {
       packetQueueWaitMs = nowMs() - p.received;
       const double stepStart = nowMs();
       H264Crop packetCrop;
-      if (decoderRequested == "v4l2") {
+      if (decoderRequested == "v4l2" || !context) {
         int parsed = headers.parse(p.bytes);
         if (parsed < 0) {
+          if (awaitingLiveKey) {
+            rejectLiveKey(packetOrdinal);
+            continue;
+          }
           fail("h264-headers", parsed);
           break;
+        }
+        if (awaitingLiveKey &&
+            (!p.key || headers.parser->key_frame != 1 ||
+             !h264HasSpsAndPps(p.bytes))) {
+          rejectLiveKey(packetOrdinal);
+          continue;
         }
         if (p.layout.present) {
           if (p.resetReason == ResetReason::Reconnect) cropHeaders = H264CropHeaders{};
@@ -816,11 +1053,16 @@ struct Pipeline {
               packetCrop.codedWidth != headers.parser->coded_width ||
               packetCrop.codedHeight != headers.parser->coded_height ||
               !p.layout.matches(packetCrop.width(), packetCrop.height())) {
+            if (awaitingLiveKey) {
+              rejectLiveKey(packetOrdinal);
+              continue;
+            }
             fail("h264-crop", AVERROR_INVALIDDATA);
             break;
           }
         }
-        bool changed = context && (headers.parser->width != inputWidth ||
+        bool changed = decoderRequested == "v4l2" && context &&
+                       (headers.parser->width != inputWidth ||
                                    headers.parser->height != inputHeight ||
                                    headers.parser->coded_width != codedWidth ||
                                    headers.parser->coded_height != codedHeight);
@@ -828,13 +1070,24 @@ struct Pipeline {
                                  p.resetReason != ResetReason::None;
         if (requiresIdr &&
             (!p.key || headers.parser->key_frame != 1)) {
+          if (awaitingLiveKey) {
+            rejectLiveKey(packetOrdinal);
+            continue;
+          }
           ++droppedEncoded;
           requestKey = true;
           std::lock_guard<std::mutex> lock(mutex);
           requireKeyLocked(changed ? ResetReason::FormatChange
                                    : p.resetReason);
           droppedEncoded += packets.size();
-          packets.clear();
+          dropQueuedLocked();
+          // This packet was consumed by the decoder worker; finish its fence
+          // after dropping any later packets under the same queue lock.
+          inFlightPacketOrdinal = 0;
+          processedPacketOrdinal = std::max(
+              processedPacketOrdinal,
+              std::max(packetOrdinal, skippedThroughOrdinal));
+          wake.notify_all();
           continue;
         }
         action = recoveryAction(
@@ -844,7 +1097,11 @@ struct Pipeline {
           // A real reconnect or format change needs a clean driver context.
           // Queue overflow alone recovers at the validated IDR below.
           DecoderOpenReason reason = !context
-                                         ? DecoderOpenReason::Initial
+                                         ? (awaitingLiveKey
+                                                ? DecoderOpenReason::Live
+                                                : p.resetReason == ResetReason::Reconnect
+                                                      ? DecoderOpenReason::Reconnect
+                                                      : DecoderOpenReason::Initial)
                                          : p.resetReason == ResetReason::Reconnect
                                                ? DecoderOpenReason::Reconnect
                                                : DecoderOpenReason::FormatChange;
@@ -853,6 +1110,8 @@ struct Pipeline {
                                                 ResetReason::FormatChange)))
             break;
           submitted = false;
+          if (reason == DecoderOpenReason::Live)
+            awaitingLiveKey = false;
         }
         if (action == RecoveryAction::SameContextIdrBarrier) {
           // IDR starts a new H.264 reference state. Old V4L2 output may still
@@ -888,10 +1147,13 @@ struct Pipeline {
           fprintf(stderr, "[native] POC rewrite unsupported for this stream; using it unchanged from the next IDR\n");
           ++droppedEncoded;
           requestKey = true;
-          std::lock_guard<std::mutex> lock(mutex);
-          requireKeyLocked(ResetReason::FormatChange);
-          droppedEncoded += packets.size();
-          packets.clear();
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            requireKeyLocked(ResetReason::FormatChange);
+            droppedEncoded += packets.size();
+            dropQueuedLocked();
+          }
+          completePacket(packetOrdinal);
           continue;
         }
       }
@@ -943,10 +1205,13 @@ struct Pipeline {
                 "[native] decoder recoverable stage=send code=%d; requesting IDR\n",
                 result);
         requestKey = true;
-        std::lock_guard<std::mutex> l(mutex);
-        requireKeyLocked(ResetReason::DecoderError);
-        droppedEncoded += packets.size();
-        packets.clear();
+        {
+          std::lock_guard<std::mutex> l(mutex);
+          requireKeyLocked(ResetReason::DecoderError);
+          droppedEncoded += packets.size();
+          dropQueuedLocked();
+        }
+        completePacket(packetOrdinal);
         continue;
       }
       submitted = true;
@@ -969,16 +1234,20 @@ struct Pipeline {
                 "[native] decoder recoverable stage=receive code=%d; requesting IDR\n",
                 result);
         requestKey = true;
-        std::lock_guard<std::mutex> l(mutex);
-        requireKeyLocked(ResetReason::DecoderError);
-        droppedEncoded += packets.size();
-        packets.clear();
+        {
+          std::lock_guard<std::mutex> l(mutex);
+          requireKeyLocked(ResetReason::DecoderError);
+          droppedEncoded += packets.size();
+          dropQueuedLocked();
+        }
       }
+      completePacket(packetOrdinal);
     }
     sws_freeContext(sws);
     av_packet_free(&avp);
     av_frame_free(&frame);
     avcodec_free_context(&context);
+    decoderSessionOpen = false;
   }
 };
 } // namespace fw
