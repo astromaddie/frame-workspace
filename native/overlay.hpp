@@ -381,6 +381,22 @@ public:
     float value = 0;
     int errorCode = -1;
   };
+  bool spatialForeground = false;
+  // Preserve each panel's content/bezel/controls ordering while placing the
+  // selected panel ahead of other panels, below the spatial UI's 99/100 band.
+  void setSpatialForeground(bool selected) {
+    if (selected == spatialForeground) return;
+    spatialForeground = selected;
+    if (noVR) return;
+    const uint32_t base = selected ? 50 : 0;
+    for (auto h : {handle, handle2}) if (h) overlay->SetOverlaySortOrder(h, base + 1);
+    for (auto h : {frameHandle, frameHandle2}) if (h) overlay->SetOverlaySortOrder(h, base + 2);
+    for (auto h : {chromeHandle, chromeHandle2}) if (h) overlay->SetOverlaySortOrder(h, base + 3);
+    if (cursorHandle) overlay->SetOverlaySortOrder(cursorHandle, base + 4);
+  }
+  FocusFeedback focusFeedback;
+  GLuint spatialTexture() const { return texture; }
+  bool spatialTransposed() const { return shownTransposed; }
   Placement placement;
   std::string key;
   int lastSubmitError = 0;
@@ -590,7 +606,7 @@ public:
       if (std::fabs(a.reveal[i] - b.reveal[i]) > 1e-3f || std::fabs(a.wide[i] - b.wide[i]) > 1e-3f ||
           a.held[i] != b.held[i])
         return false;
-    return a.tip == b.tip && (!a.tip || (std::fabs(a.tipX - b.tipX) < 5e-4f && std::fabs(a.tipY - b.tipY) < 5e-4f));
+    return std::fabs(a.focusGlow-b.focusGlow)<1e-3f && std::fabs(a.focusSnap-b.focusSnap)<1e-3f && a.focused==b.focused && a.tip == b.tip && (!a.tip || (std::fabs(a.tipX - b.tipX) < 5e-4f && std::fabs(a.tipY - b.tipY) < 5e-4f));
   }
   // Draws whichever layers changed and hands them to SteamVR.
   void drawChrome(const HandleLayout &l, const ChromeState &frameState) {
@@ -642,7 +658,7 @@ public:
   // drag ended, so the caller saves the pose.
   int draggingHand() const { return dragHand; }
   bool interactive() const { return texture && !closing; }
-  bool updatePlacementInput(unsigned allowedHands = 3) {
+  bool updatePlacementInput(unsigned allowedHands = 3, bool consumeSqueeze = false) {
     if (!input || noVR || chromeFailed || closing) return false;
     const double now = nowMs();
     const float dt = lastChromeUpdate > 0 ? float(std::clamp(now - lastChromeUpdate, 0.0, 100.0) / 1000.0) : 0.f;
@@ -657,7 +673,7 @@ public:
       const auto &h = session->hand[i];
       rays[i].valid = h.valid && ((allowedHands & (1u << i)) || dragHand == i);
       rays[i].grab = h.grab;
-      rays[i].squeeze = h.squeeze;
+      rays[i].squeeze = h.squeeze && !consumeSqueeze;
       if (rays[i].valid) {
         rays[i].pose = h.pose;
         rays[i].onControls = layerHit(rays[i].pose, controlsDepth, rays[i].x, rays[i].y);
@@ -755,6 +771,7 @@ public:
     }
     // The laser's light: on the controls near any of them, and on the bezel.
     ChromeState frameState;
+    focusFeedback.apply(frameState);
     chromeState.tip = pointing >= 0 && rays[pointing].onControls;
     if (chromeState.tip) {
       chromeState.tipX = rays[pointing].x;

@@ -159,7 +159,8 @@ def run(binary):
                                 "decoder": "software", "conversion": "gpu" if name == "b" else "cpu"}
             with (root / "viewer.log").open("w+") as log:
                 process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--state-file", str(root / "host.json"),
-                                            "--no-vr", "--action-manifest", "none", "--seconds", "45"],
+                                            "--no-vr", "--action-manifest", "none", "--seconds", "60",
+                                            "--spatial-state", str(root / "spatial-ui.json")],
                                            stdout=log, stderr=log)
                 def state(name):
                     try:
@@ -187,6 +188,45 @@ def run(binary):
                     b = wait(lambda: ready("b"), "second panel ready")
                     assert b["hostPid"] == process.pid and b["textureWidth"] == 400
                     assert b["conversionActive"] == "gpu"
+                    spatial = {"mode": "spatial", "apps": [
+                        {"bundleID": "test.app", "name": "Terminal", "icon": "", "running": True,
+                         "windows": [{"key": "test.panel.a", "title": "One"},
+                                     {"key": "test.panel.b", "title": "Two"}]}],
+                        "switcher": {"open": False, "index": 1, "seq": 8, "chosen": "test.panel.b"}}
+                    spatial["apps"].append({"bundleID": "test.extra", "name": "Additional Windows",
+                        "windows": [{"key": "test.extra." + str(i), "title": "A Window Title " * 18}
+                                    for i in range(80)]})
+                    assert len(json.dumps(spatial)) > 16384, "inventory exceeds small control-file limit"
+                    spatial["switcher"].update(open=True, chosen=None, seq=7)
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    def host_state():
+                        return json.loads((root / "host.json").read_text())
+                    wait(lambda: host_state().get("switcherOpen") and host_state().get("spatialTiles", 0) >= 3,
+                         "live thumbnail strip uses running panel textures")
+                    spatial["switcher"].update(open=False, chosen="test.panel.b", seq=8)
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    def switches():
+                        return [json.loads(p.read_text()) for p in sorted(requests.glob("spatial-*.json"))]
+                    wait(lambda: len(switches()) == 1, "closed switcher chosen event")
+                    assert switches() == [{"action": "switch", "key": "test.panel.b"}]
+                    assert all(p.stat().st_mode & 0o777 == 0o600 for p in requests.glob("spatial-*.json"))
+                    spatial["apps"][0]["name"] = "Renamed"
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    time.sleep(.25)
+                    assert len(switches()) == 1, "same chosen seq must not replay after state update"
+                    spatial["switcher"].update(seq=9, chosen="test.panel.a", open=True, index=0)
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    wait(lambda: len(switches()) == 2, "next exact key selection")
+                    assert switches()[-1]["key"] == "test.panel.a"
+                    spatial["switcher"].update(seq=10, chosen="missing.panel", open=False)
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    time.sleep(.2)
+                    assert len(switches()) == 2, "unavailable key must be ignored"
+                    spatial["mode"] = "desktop"
+                    spatial["switcher"].update(seq=11, chosen="test.panel.b")
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    time.sleep(.2)
+                    assert len(switches()) == 2, "desktop ignores spatial selection"
                     streams[0].commands.put("still")
                     a = wait(lambda: state("a") if state("a").get("streamStill") and
                              state("a").get("decoderSessionOpen") is False else None, "still releases decoder")
@@ -240,13 +280,18 @@ def run(binary):
                     for path in specs.glob("*.json"):
                         path.unlink()
                     wait(lambda: state("a").get("state") == "stopped", "last panel removal")
+                    spatial["mode"] = "spatial"
+                    spatial["switcher"].update(open=False, chosen=None, seq=12)
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    wait(lambda: host_state().get("spatialMode") and host_state().get("runningPanels") == 0,
+                         "empty host retains spatial app shelf")
                     process.terminate()
                     assert process.wait(5) == 0
                     log.seek(0)
                     output = log.read()
                     assert output.count("[native] GL vendor=") == 1, "host must create exactly one GL context"
                     assert streams[0].connections == 2 and streams[1].connections == 1
-                    print("host integration passed: one GL context, two streams, still/live, controls/pose, add/remove/re-add, failure and close isolation")
+                    print("host integration passed: one GL context, two streams, still/live, controls/pose, add/remove/re-add, failure and close isolation, spatial live strip/chosen/seq/desktop/empty-host")
                 except Exception:
                     log.seek(0)
                     print(log.read(), file=sys.stderr)

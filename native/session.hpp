@@ -38,10 +38,10 @@ public:
   VR_IVRSystem_FnTable *system = nullptr;
   VR_IVRInput_FnTable *input = nullptr;
   VRActionSetHandle_t actionSet = 0;
-  VRActionHandle_t aim = 0, grab = 0, squeeze = 0, haptic = 0;
+  VRActionHandle_t aim = 0, grab = 0, squeeze = 0, switcher = 0, haptic = 0;
   VRInputValueHandle_t hands[2]{};
   struct Hand {
-    bool valid = false, grab = false, squeeze = false;
+    bool valid = false, grab = false, squeeze = false, switcher = false;
     HmdMatrix34_t pose{};
     EyeRay ray() const {
       EyeRay r;
@@ -106,6 +106,7 @@ public:
         table->GetActionHandle((char *)"/actions/workspace/out/haptic", &haptic) ||
         table->GetInputSourceHandle((char *)"/user/hand/left", &hands[0]) ||
         table->GetInputSourceHandle((char *)"/user/hand/right", &hands[1])) return false;
+    table->GetActionHandle((char *)"/actions/workspace/in/switcher", &switcher);
     input = table; manifestPath = manifest;
     return true;
   }
@@ -129,11 +130,13 @@ public:
     if (input->UpdateActionState(&active, sizeof active, 1)) return true;
     for (int i = 0; i < 2; ++i) {
       InputPoseActionData_t pose{};
-      InputDigitalActionData_t g{}, s{};
+      InputDigitalActionData_t g{}, s{}, sw{};
       input->GetPoseActionDataForNextFrame(aim, ETrackingUniverseOrigin_TrackingUniverseStanding,
                                          &pose, sizeof pose, hands[i]);
       input->GetDigitalActionData(grab, &g, sizeof g, hands[i]);
       input->GetDigitalActionData(squeeze, &s, sizeof s, hands[i]);
+      if(switcher) input->GetDigitalActionData(switcher, &sw, sizeof sw, hands[i]);
+      hand[i].switcher = sw.bActive && sw.bState;
       hand[i].valid = pose.bActive && pose.pose.bPoseIsValid && pose.pose.bDeviceIsConnected;
       hand[i].pose = pose.pose.mDeviceToAbsoluteTracking;
       hand[i].grab = g.bActive && g.bState;
