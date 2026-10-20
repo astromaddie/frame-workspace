@@ -11,12 +11,11 @@ Small Linux ARM64 viewer for the existing Mac `/view` URL and H.264 stream.
 It owns an OpenVR overlay, not a SteamVR scene application. The last submitted
 picture remains world-locked in the compositor between desktop updates. Head
 tracking is handled by SteamVR; this program does not render eye images or
-sample a pose every video frame. The current HMD pose is sampled only when
-initially placing or explicitly recentering the screen.
+sample a pose every video frame. Window placement samples the HMD when placing
+or recentering the screen; Spatial Mode also samples head yaw for its shelf.
 
-The visible content remains the approved Mac workspace UI. Keyboard and trackpad
-input stay on the Mac. There is no browser window, keyboard capture, new menu,
-scene environment, or MSAA pass.
+Keyboard and trackpad input stay on the Mac. Native chrome and the approved
+Spatial Mode shelf and switcher surround the streamed Mac windows.
 
 ## Build
 
@@ -425,7 +424,8 @@ second while the Frame is connected. That writes
 unit (`frame-workspace-dash-UID.service`) if it isn't running, and hands back
 the requests made since: `workspace_start` (with the settings last used on the
 Mac), `workspace_stop`, `recenter`, `close` with a panel key, and Spatial Mode
-`focus` with a window panel key and `(u,v)`. The companion ignores other actions. A state file
+`focus` with a window panel key and `(u,v)`. Additional Spatial Mode request
+shapes are documented below. A state file
 older than 6 s shows "Mac Not Connected", so the entry stays on the bar after
 the companion quits, with the buttons off. `FRAME_WORKSPACE_DASH=0` turns the
 sync off (the MCP adapter's backend does).
@@ -631,3 +631,117 @@ uses a hidden SDL window and `--no-vr`; it does not restart SteamVR. An error
 return is checked before dependent control acknowledgments so a graphics-startup
 failure is reported directly. All control, image, dimension and error assertions
 remain in effect.
+
+## Spatial shelf, switcher and focus (FW-15)
+
+The shared host reads `$XDG_RUNTIME_DIR/frame-workspace/spatial-ui.json` every
+50 ms, with a 1 MiB file bound for large app/window inventories.
+`--spatial-state PATH` overrides it for isolated runs. `--request-dir DIR`
+overrides the action destination; otherwise it is `requests/` beside that state
+file (or beside the host-spec directory when XDG and the override are absent).
+The host never creates a Mac app/window inventory or changes the mode itself.
+The companion atomically publishes:
+
+```json
+{"mode":"spatial","apps":[{"bundleID":"com.apple.Terminal","name":"Terminal","icon":"com.apple.Terminal.png","running":true,"pinned":true,"hidden":false,"active":true,"windows":[{"key":"PANEL_OPENVR_KEY","title":"zsh"}]}],"switcher":{"open":false,"index":0,"seq":0,"chosen":null}}
+```
+
+`apps` and each app's `windows` retain companion order. `index` addresses the
+flattened windows array. `icons/` beside the state contains actual 128×128 PNGs;
+only filenames are accepted. Missing icons do not prevent interaction; the host
+rechecks icon timestamps once a second so icons arriving after JSON appear. Cairo,
+already required by the bar-panel executable, supplies PNG decoding and UTF-8
+text rasterization through its runtime API; GL draws the Palladium material and
+composites the labels, icons and live panel textures. There is no new native link
+dependency. `mode != "spatial"` hides every spatial UI layer.
+
+The D1 shelf sits 0.48 m below the head's horizontal sightline, 1.3 m forward,
+and reanchors after a yaw change greater than 0.8 radians. Its icons keep the
+companion's order and show running dots. Trigger release opens an app; a
+500 ms uninterrupted hold opens Show All Windows, Hide (Unhide for hidden apps),
+and Quit. An outside trigger click dismisses the menu. Dock presses and open
+menus bind to the bundle ID, so list changes cannot retarget an action. Holding
+the trigger before entering an icon does not click it. The
+shader lights only the laser vicinity; the pressed piece glows only while held.
+
+S1 is an eye-level arc of live thumbnails. It shares the existing panel textures,
+including still frames; it does not create decoders. Vertical-bend textures are
+unturned when sampled. Up to seven cards are visible around the current index;
+Cmd-Tab advances the companion index and brings further windows into view.
+While the strip is open, left/right grip presses move to the previous/next card,
+wrapping at the ends; those grips are consumed before window placement. Local
+controller index survives same-sequence app refreshes; a newer Mac sequence wins.
+The selected index has a lit edge. The default controller binding is left Y
+(`/actions/workspace/in/switcher`) to open/close. A trigger click or 250 ms gaze
+selects a visible window. Selection recenters the existing panel at its saved
+distance, preserves its width/bend, saves its pose, and sends a switch request.
+The selected panel and its chrome use sort orders 51–54; other panels return to
+1–4, below the spatial UI at 99/100. Gaze and controller picks follow that
+foreground priority even when an obscured panel is physically closer.
+Spatial overlays declare premultiplied alpha consistently with window chrome.
+Unavailable/closed keys are ignored. A non-null `chosen` is consumed once per
+`seq` during a host lifetime, even with `open:false`; local dismissal stays closed
+across unrelated state refreshes until acknowledged or a new sequence arrives.
+
+Requests use the existing atomic mode-0600 file writer:
+
+```json
+{"action":"app","verb":"open","bundleID":"com.apple.Terminal"}
+{"action":"app","verb":"show_windows","bundleID":"com.apple.Terminal"}
+{"action":"app","verb":"hide","bundleID":"com.apple.Terminal"}
+{"action":"app","verb":"unhide","bundleID":"com.apple.Terminal"}
+{"action":"app","verb":"quit","bundleID":"com.apple.Terminal"}
+{"action":"switch","key":"PANEL_OPENVR_KEY"}
+{"action":"switcher","verb":"open"}
+{"action":"switcher","verb":"close"}
+```
+
+The visible foreground window receives gaze feedback, otherwise the nearest
+bent window, with controller fallback when eye input is unavailable. An
+uninterrupted 250 ms builds the existing bezel
+halo; successful atomic focus delivery triggers its snap and clears the prior
+focused bezel. Short glances fade without selection; residual glow cannot shorten
+a later dwell. Spatial UI consumes gaze and controller hits so windows behind it
+do not focus or start handle interactions. Still windows keep their usual picture.
+
+Spatial rendering is capped at 30 Hz. Static shelf/menu content is cached until
+its visual state changes. Thumbnail content refreshes even if the source reuses
+the same GL texture name; texture storage is allocated only on size changes.
+No device performance claim follows from these implementation choices.
+
+Local diagnostic scenes use the production renderer:
+
+```sh
+native/build/frame-workspace-native --render-spatial-style rest /tmp/spatial.ppm
+native/build/frame-workspace-native --render-spatial-style hover /tmp/hover.ppm
+native/build/frame-workspace-native --render-spatial-style held /tmp/held.ppm
+native/build/frame-workspace-native --spatial-state /tmp/fixture/spatial-ui.json --render-spatial-style menu /tmp/menu.ppm
+native/build/frame-workspace-native --render-chrome focus-glow /tmp/glow.ppm
+native/build/frame-workspace-native --render-chrome focus-snap /tmp/snap.ppm
+```
+
+The optional state override supplies fixture icons/labels; thumbnails in this
+standalone diagnostic are deliberately asymmetric color fixtures. Alternating
+cards use normal and physically quarter-turned textures. These are renderer
+checks, not captures of Mac windows or a lens image. See
+[evidence/spatial-ui-validation.json](evidence/spatial-ui-validation.json) for
+commands, source identity and verification boundaries.
+
+`--self-test` covers layout, hit tests, focus timing, trigger gestures, menu
+identity and strip navigation. On a development machine with a GL display,
+`tests_host.py` exercises the production host with loopback streams and isolated
+state, including an inventory larger than 16 KiB. The renderer regression test
+checks late icons and in-place live-texture updates through actual GL readback:
+
+```sh
+c++ -std=c++17 -O2 -pthread native/tests_spatial_render.cpp native/gaze_bridge.cpp -o /tmp/fw-spatial-render-test $(pkg-config --cflags --libs sdl2 gl libavcodec libavutil libswscale json-c openssl) -ldl
+/tmp/fw-spatial-render-test
+rm /tmp/fw-spatial-render-test
+```
+
+**Verified 2026-10-20:** local Apple M4 GL build, self-test, host integration and
+renderer regression; isolated Frame AArch64 build using
+`scripts/build-workspace-native.sh` and a second explicit `--self-test`.
+The Frame check exercised no GL/OpenVR session or installed viewer. Real eye
+tracking, controller bindings, SteamVR presentation, Mac action delivery and
+worn comfort remain acceptance checks. Temporary builds and fixtures were removed.

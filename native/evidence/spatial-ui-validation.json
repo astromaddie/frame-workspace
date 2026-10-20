@@ -1,0 +1,150 @@
+{
+  "date": "2026-10-20",
+  "platform": "macOS 26.3.1, Apple M4 OpenGL",
+  "base_revision": "d4e877523f4cef834456d421b23b0546dfa866a7",
+  "source_state": "Verified work/spatial-ui implementation; source hashes identify tested inputs.",
+  "source_sha256": {
+    "native/main.cpp": "641e66fdac1ad2f188851a91496325c3ffdd6f2a007e82498917f953c7192f17",
+    "native/spatial.hpp": "5e5f7518a83411d83d32dbc6a8912c12487d083ba66408a665b3737d62b6c0cd",
+    "native/spatial_render.hpp": "9b075bfc34ee8c7a891f04c6a7366bb0df47f37316a6da8b8b0087feb634645a",
+    "native/tests_spatial.hpp": "077b01dad9870e3ad18640d6c0c32eb049c14ceae6cb66522f9ec01891e52f01",
+    "native/host.hpp": "b6586fe1fc5ad8277a473b76c24e7f67edd73281644e3beeb07aa8bfa400e03d",
+    "native/overlay.hpp": "a1885a23b264a21fb62a3bcd4075a23fa3ed8daa8b96a3a7247d389857c56ad1",
+    "native/session.hpp": "44f31231792b729db5216dbb38f4a358c05302fc571fbb0db0f93307b6729c4f",
+    "native/tests_host.hpp": "5f7c7dd8533db17338aa8c01be949d535531cc04d586d866b8472b7796b27490",
+    "native/tests_host.py": "3f43e7ba67b505036789891a15b0e239d939f8a64a1a0ea4a976230fa523604a",
+    "native/input/actions.json": "ec6be029527d5f0ba6129245a49294808bfea7f6a22e5399bb7d17b63f8fc7cf",
+    "native/input/bindings_frame_controller.json": "a058a507bdb91a3eb8ed021a4be21feacf095247621000b0819b93f26dfdd2cc",
+    "native/tests_spatial_render.cpp": "5c90792f349498c7fad62cad0193550a599c03c719ae6a331f9d34bca64199b0"
+  },
+  "binary": "native/build/frame-workspace-native",
+  "binary_sha256": "29c70c02df4f1211264ab90b23d9a0e04ae797e982e4fc477259228a77bc76f0",
+  "checks": [
+    {
+      "command": "scripts/build-workspace-native.sh",
+      "result": "passed on the Frame in /tmp/fw-ui-worker; Linux script cannot run unchanged on macOS (gl.pc absent)"
+    },
+    {
+      "command": "c++ -std=c++17 -O2 -g -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -pthread native/main.cpp native/gaze_bridge.cpp -o native/build/frame-workspace-native $(pkg-config --cflags --libs sdl2 libavcodec libavutil libswscale json-c openssl) -framework OpenGL",
+      "result": "passed; 8 external json-c unused-function warnings, no source warnings"
+    },
+    {
+      "command": "native/build/frame-workspace-native --self-test",
+      "result": "passed on final source: existing protocol/geometry plus spatial order, layout, desktop isolation, many-window selected visibility, trigger click/hold/entry edges, local visibility reconciliation, dwell/fade/source transition and single-focus state; final repair coverage: grip wrap and off-screen reachability, sequence-aware index reconciliation, bundleID-stable dock/menu targets, disappearance safety, mid-held reorder cancellation and outside clicks; final foreground priority at different depths also passed"
+    },
+    {
+      "command": "python3 native/tests_host.py native/build/frame-workspace-native",
+      "result": "passed: one GL session; live CPU/GPU panels; live spatial thumbnails; atomic switch chosen while closed; exact key; mode-0600 files; duplicate seq; absent key; desktop isolation; empty-host shelf; original still/live, removal/readd and saved vertical bends. Final source passed after grip/menu identity, premultiplied overlay flag and foreground sort-band corrections. No-VR guards exercised; actual SteamVR layer presentation remains unverified. Final integration run also passed with an 80-window additional inventory larger than 16 KiB."
+    },
+    {
+      "command": "c++ -std=c++17 -O2 -Wall -Wextra -Wpedantic -Wno-deprecated-declarations -pthread native/tests_spatial_render.cpp native/gaze_bridge.cpp -o native/build/tests-spatial-render $(pkg-config --cflags --libs sdl2 libavcodec libavutil libswscale json-c openssl) -framework OpenGL; native/build/tests-spatial-render",
+      "result": "passed on Apple M4 GL; actual production renderer readback changed when a missing 128px icon arrived without JSON changes and when a thumbnail source changed pixels while keeping the same texture ID. Fixture self-cleans."
+    },
+    {
+      "command": "native/build/frame-workspace-native --spatial-state /tmp/fw-spatial-style/spatial-ui.json --render-spatial-style menu /tmp/fw-spatial-menu.ppm",
+      "result": "passed and inspected, retained PNG; real Terminal/Notes icons from installed .icns converted with sips -s format png -z 128 128; alternating synthetic normal/quarter-turned textures upright; menu labels readable, selected edge and tip light visible"
+    },
+    {
+      "command": "native/build/frame-workspace-native --spatial-state /tmp/fw-spatial-style/spatial-ui.json --render-spatial-style held /tmp/fw-spatial-held.ppm",
+      "result": "passed on final source and inspected; retained held PNG; tip lighting composited over the actual icon and held tint confined to pressed dock item"
+    },
+    {
+      "command": "native/build/frame-workspace-native --render-chrome focus-snap /tmp/fw-spatial-focus.ppm",
+      "result": "passed and inspected, retained PNG; existing production bezel renderer"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "transient_failure": "One local host-test invocation timed out at its existing 8-second first-panel deadline before any GL startup log. Unchanged retry and subsequent final host-logic run passed. Timeout was not relaxed. No headset startup claim.",
+  "evidence": [
+    "native/evidence/spatial-ui-menu.png",
+    "native/evidence/spatial-ui-focus.png",
+    "native/evidence/spatial-ui-held.png"
+  ],
+  "not_verified": [
+    "OpenVR overlay presentation and live texture synchronization",
+    "left Y controller binding on Frame",
+    "actual eye rays, worn focus timing and shelf comfort",
+    "Mac app action delivery after integration",
+    "performance or increased decoder capacity",
+    "SteamVR premultiplied edges, selected overlay sort band and real grip traversal"
+  ],
+  "cleanup": {
+    "removed": "isolated copied icon/state fixture, temporary PPM/PNG renders, local debug-symbol bundle; test fixture self-cleans streams/logs/state; final local executable, renderer test binary and debug-symbol bundle; isolated Frame build",
+    "files": 19,
+    "logical_bytes_removed": 25850001,
+    "retained": "compact current evidence PNGs, source and reproduction commands; generated executables removed after review",
+    "earlier_fixture_allocated_bytes_removed": 28139520,
+    "final_local_build_allocated_bytes_removed": 6344704,
+    "frame_allocated_bytes_removed": 9412608,
+    "total_allocated_bytes_removed": 43896832,
+    "final_local_build_removed": true
+  },
+  "review_corrections": [
+    "left/right grip rising edges navigate full switcher with wrap; same seq retains local index; newer Mac seq wins",
+    "dock/menu identities bind bundleID and disappear safely; outside click dismisses menu and is consumed",
+    "spatial layers declare premultiplied alpha; selected content/bezel/controls/tip use 51-54 below UI 99/100; other panels restore 1-4",
+    "tip light composited after opaque PNG icon; unchanged source formatting restored",
+    "icon timestamp recheck loads late arriving PNGs without JSON changes",
+    "foreground render priority also applies to gaze/controller hits at different depths",
+    "spatial state uses a 1 MiB bound, verified through the production host with a large inventory"
+  ],
+  "binary_retained": false,
+  "frame": {
+    "operation": "isolated Frame native build and self-test only",
+    "source_identity": {
+      "local_git_base": "d4e877523f4cef834456d421b23b0546dfa866a7",
+      "local_git_head": "d4e877523f4cef834456d421b23b0546dfa866a7",
+      "remote_source_revision": "",
+      "remote_tree_state": "",
+      "build_script_sha256_remote": "96d54447ec72670804a6d109288b1d0e7245c92a4fcb5834bd7726bd8f027bdd",
+      "build_script_sha256_local": "96d54447ec72670804a6d109288b1d0e7245c92a4fcb5834bd7726bd8f027bdd",
+      "build_script_match": true,
+      "code_input_hashes_checked": 34,
+      "code_input_hashes_matching": 34,
+      "code_input_hashes_all_match": true,
+      "mismatches": [],
+      "hash_scope": "native .cpp/.hpp/.h plus native/input/*.json; AppleDouble metadata sidecars excluded"
+    },
+    "results": {
+      "build_script_exit": 0,
+      "explicit_self_test_exit": 0,
+      "self_test": "passed: URL allowlist, wire framing, reconnect/resize recovery policy, PTS metadata, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout and trigger gestures",
+      "native_binary_sha256": "abed444239a85d57808ce206aae7414c2ede616c70be6fc0d66226da40390851",
+      "dash_binary_sha256": "f95ae1d2fcffb6c0c12020568fbaba62e192e09a127b532677b8e21a1034a8e1",
+      "architecture": "aarch64",
+      "dependency_versions": {
+        "sdl2": "2.30.2",
+        "gl": "1.2",
+        "libavcodec": "61.3.100",
+        "libavutil": "59.8.100",
+        "libswscale": "8.1.100",
+        "json-c": "0.17",
+        "openssl": "3.2.1"
+      },
+      "additional_build_script_dependencies": {
+        "cairo": "1.18.0",
+        "pangocairo": "1.52.2"
+      }
+    },
+    "build_notes": {
+      "warnings": 39,
+      "warning_summary": "unused-variable warnings from vendored OpenVR C header; no errors"
+    },
+    "cleanup": {
+      "temporary_directory": "/tmp/fw-ui-worker",
+      "allocated_kib_before_removal": 9192,
+      "removed_confirmed": true,
+      "task_created_local_transfer_removed": true,
+      "local_log_removed_after_report": true
+    },
+    "limitations": [
+      "No viewer, systemd, live service, decoder, GL/OpenVR, or headset runtime checks were run.",
+      "No source revision was embedded because build staging had no .git directory."
+    ]
+  },
+  "rendering_api_reference": "https://github.com/ValveSoftware/openvr/blob/master/headers/openvr.h (IVROverlay::SetOverlaySortOrder: sort order before HMD distance)",
+  "implementation_commit": "b225f605cb7f6b5036cfab74c75eb7c743e53e03"
+}

@@ -165,7 +165,8 @@ Still/live and focus are the shared worker contracts:
   visible held texture.
 - The host samples eye tracking through `GetEyeTrackedFoveationCenter`, tests
   the nearest front-facing window surface with the existing bend geometry, and
-  applies a 180 ms dwell plus edge hysteresis. Uneven and vertical halves use
+  now applies the 250 ms bezel confirmation described below, plus edge hysteresis.
+  Uneven and vertical halves use
   original-window UV. Without eye tracking the controller laser picks the
   window. On a switch it writes an atomic mode-0600 request in the existing
   requests folder: `{"action":"focus","key":"OPENVR_KEY","u":0.0,"v":0.0}`
@@ -267,3 +268,48 @@ Merged and run on the user's M4 and the Frame (not worn), with `FRAME_WINDOW_DIS
 ## Still to test
 
 - A longer mirrored session, and the Mac's behaviour on sleep and wake while mirrored.
+
+## Spatial UI integration (2026-10-20)
+
+The approved D1 shelf, S1 curved live-thumbnail strip and focus confirmation are
+implemented in the shared native host. The exact companion JSON, icon location,
+atomic action verbs, state sequencing and isolated diagnostic flags are in the
+[native spatial contract](../../native/README.md#spatial-shelf-switcher-and-focus-fw-15).
+The host keeps companion order, preserves still-frame appearance, samples
+vertically transposed panel textures correctly, blocks underlying panel picks,
+and applies one successful focus snap at a time. Desktop Mode hides these layers.
+
+The current compact rendering evidence is
+[spatial UI](../../native/evidence/spatial-ui-menu.png),
+[held icon](../../native/evidence/spatial-ui-held.png) and
+[focus confirmation](../../native/evidence/spatial-ui-focus.png). The UI image
+uses installed app icons copied into an isolated fixture and asymmetric synthetic
+thumbnail textures, alternating ordinary and vertical-bend storage. It is a
+production-renderer diagnostic, not headset or Mac-window capture.
+
+Local verification and exact commands are recorded in
+[spatial-ui-validation.json](../../native/evidence/spatial-ui-validation.json).
+**Verified locally:** Apple M4 GL build, self-test, production host integration
+with synthetic streams and an inventory over 16 KiB, and renderer GL readback
+covering late icons and live updates reusing the same texture. Self-tests cover
+the uninterrupted focus dwell, foreground picking, layout, stable app targeting,
+trigger/hold edges and grip traversal beyond seven visible cards.
+
+**Verified on the Frame:** an isolated AArch64 build with
+`scripts/build-workspace-native.sh` and an explicit second `--self-test` passed.
+All 34 native code/input hashes and the build-script hash matched this checkout.
+The build used system FFmpeg 61.3.100, SDL2 2.30.2 and Cairo 1.18.0. The temporary
+`/tmp/fw-ui-worker` directory was removed. No running companion, installed viewer,
+service, real runtime state, GL/OpenVR session or hardware decoder was touched.
+
+Generated build/debug data and temporary fixtures/captures were removed after
+verification; measured cleanup is recorded with the validation results. Compact
+current screenshots, source and reproduction commands are retained.
+
+Remaining acceptance: actual left-Y binding, eye tracking, focus latency and
+short-glance behavior while worn; shelf height/yaw comfort; controller hold/menu
+selection and left/right grip traversal; live and still thumbnail freshness in
+SteamVR; foreground ordering at different depths; Cmd-Tab release selecting
+exactly one intended Mac window; pose persistence and switching after real windows
+close; and no unintended interactions through foreground UI. Local synthetic
+checks do not establish those device behaviors or performance.
