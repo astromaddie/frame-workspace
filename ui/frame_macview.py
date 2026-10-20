@@ -130,6 +130,13 @@ def workspace_diagnostic_gaze(gaze=False):
     return f"{uv[0]:.17g},{uv[1]:.17g}"
 
 
+def window_displays():
+    """FRAME_WINDOW_DISPLAYS=1: native window panels give each window a display
+    of its own (Separate.swift), so its menus, sheets and menu bar come along and
+    nothing overlaps it (FW-15, Spatial Mode). Off: the window alone, at its size."""
+    return os.environ.get("FRAME_WINDOW_DISPLAYS", "0") == "1"
+
+
 def wifi_mbps():
     """Bitrate ceiling on the network route, in Mbit/s (0 = none)."""
     try:
@@ -1105,7 +1112,7 @@ class MacView:
                      (not self._native_windows() or not src.startswith("window:") or
                       quality_settings(quality)["codec"] != "h264"))):
                 raise MacViewError("Saved poses require a native Workspace or H.264 window panel.")
-        if src.startswith("separate:") and self._native_windows():
+        if src.startswith("separate:") and self._native_windows() and not window_displays():
             # Native panels show the window at its own size; moving it onto a
             # display of its own (which resizes it) is not needed.
             src = "window:" + src.split(":", 1)[1]
@@ -1182,7 +1189,7 @@ class MacView:
             if not match:
                 raise MacViewError("The dedicated Workspace launcher did not report its registered OpenVR panel key.")
             self.workspace_panel_key = match.group(1)
-        elif self._native_windows() and q["codec"] == "h264" and src.startswith("window:"):
+        elif self._native_windows() and q["codec"] == "h264" and src.startswith(("window:", "separate:")):
             out = self._show_native_window(src, url, tag, width, height, pose=pose)
         else:
             w, h = fit(width or 1280, height or 720)

@@ -639,6 +639,11 @@ own display. The helper watches windows open and close (Accessibility) and gives
 4. **Input and performance:** gaze focus with per-window cursor memory, drag between windows, one
    viewer for all panels if the spike shows per-panel processes don't scale.
 
+## Progress
+- 2026-10-20 spike, see `SPATIAL.md`: the Frame's hardware decoder fits about 21-25 MP decoded at
+  once (about five typical HiDPI windows beside the Workspace) and memory is tight, so only the
+  window you look at and changing ones can be live at full resolution; one viewer for all panels.
+
 ## Risks
 - Stream count: each window is an encode on the Mac and a decode and viewer on the Frame.
 - Displays must touch edge to edge, so the cursor can wander between them; the helper places it.
