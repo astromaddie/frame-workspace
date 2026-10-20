@@ -45,13 +45,27 @@ func windowsJSON() -> [[String: Any]] {
     }
 }
 
+/// Query the online display count first, then retry if the set grows between
+/// the count and ID calls. `nil` means WindowServer could not confirm the list.
+func onlineDisplayIDs() -> [CGDirectDisplayID]? {
+    var capacity: UInt32 = 0
+    guard CGGetOnlineDisplayList(0, nil, &capacity) == .success else { return nil }
+    for _ in 0..<3 {
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(capacity))
+        var actual: UInt32 = 0
+        guard CGGetOnlineDisplayList(capacity, &ids, &actual) == .success else { return nil }
+        if actual <= capacity { return Array(ids.prefix(Int(actual))) }
+        capacity = actual
+    }
+    return nil
+}
+
 func displaysJSON() -> [[String: Any]] {
-    var ids = [CGDirectDisplayID](repeating: 0, count: 16)
-    var n: UInt32 = 0
     // Online, not active: a display that's asleep is still one you can stream.
-    CGGetOnlineDisplayList(16, &ids, &n)
-    return ids.prefix(Int(n)).filter {
-        CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay && !VirtualDisplay.isOurs($0)  // not a separated window's
+    guard let ids = onlineDisplayIDs() else { return [] }
+    return ids.filter {
+        CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay && !VirtualDisplay.isOurs($0) &&
+            !VirtualDisplay.isSpatial($0)  // not a separated window's or spatial pool display
     }.map { id in
         let b = CGDisplayBounds(id)
         let mode = CGDisplayCopyDisplayMode(id)
@@ -138,6 +152,8 @@ final class Session {
     private let allowDiagnosticGaze = ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_DIAGNOSTIC_GAZE"] == "1"
     private var skipped = false
     private var stopped = false
+    private var captureStopped = false
+    private var endCallbacks: [() -> Void] = []
     private var inFlight = 0
     /// Input posted to the Mac whose effect hasn't been captured yet: the
     /// next picture composited after `after` is tagged with it.
@@ -659,8 +675,14 @@ final class Session {
 
     var isStopped: Bool { lock.lock(); defer { lock.unlock() }; return stopped }
 
-    func end() {
+    func end(completion: @escaping () -> Void = {}) {
         lock.lock()
+        if captureStopped {
+            lock.unlock()
+            completion()
+            return
+        }
+        endCallbacks.append(completion)
         let was = stopped
         stopped = true
         liveGate.stop()
@@ -672,7 +694,20 @@ final class Session {
         activity.unregister(id)
         statsTimer?.cancel()
         gazeTimer?.cancel()
-        capture.stop()
+        let didStopCapture = { [self] in
+            self.lock.lock()
+            self.captureStopped = true
+            let callbacks = self.endCallbacks
+            self.endCallbacks.removeAll()
+            self.lock.unlock()
+            callbacks.forEach { $0() }
+        }
+        if let awaitable = capture as? CaptureStopAwaitable {
+            awaitable.stopAndWait(didStopCapture)
+        } else {
+            capture.stop()
+            didStopCapture()
+        }
         encodeQueue.async { self.encoder.invalidate() }
         let owner = id
         DispatchQueue.main.async { Input.releaseAll(owner: owner) }
@@ -850,7 +885,8 @@ final class Agent {
     var nextId = 1
     let lock = NSLock()
     private let activity = StreamActivityRegistry()
-    private let spatial = SpatialStreamState()
+    private let spatialStreams = SpatialStreamState()
+    private let spatialMode = SpatialCoordinator()
     private let cursorMemory = FocusCursorMemory()
     /// nil means every current and future window stream stays live.
     private var desiredLiveSources: Set<String>?
@@ -864,6 +900,10 @@ final class Agent {
     private var reconnectKeys: [String: String] = [:]
     /// Sources that ended for good (the window closed), for Frame Control.
     private var finished = Set<String>()
+    private var spatialAdmissionBlocked = false
+    private var spatialTransition: UInt64 = 0
+    private var separateSources: [ObjectIdentifier: SeparateSource] = [:]
+    private var spatialSeparateSources = Set<String>()
 
     /// Ends every stream, then exits once separated windows are back on the
     /// Mac's own screens (they're moved back, then their displays go 0.3 s later).
@@ -872,12 +912,30 @@ final class Agent {
     private var quitting = false
     func quit() {
         lock.lock()
-        let all = Array(sessions.values), again = quitting
+        let all = Array(sessions.values), separates = Array(separateSources.values), again = quitting
         quitting = true
+        spatialAdmissionBlocked = true
+        spatialTransition &+= 1
         lock.unlock()
         guard !again else { return }
-        for s in all { s.ws.sendJSON(["t": "close"]); s.end() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { exit(0) }
+        let group = DispatchGroup()
+        for session in all {
+            group.enter()
+            session.ws.sendJSON(["t": "close"])
+            session.end { group.leave() }
+        }
+        for source in separates {
+            group.enter()
+            source.stopAndWait { group.leave() }
+        }
+        group.notify(queue: .main) {
+            self.spatialMode.stop(afterStreams: { $0() }) { success, error, removed in
+                if !success {
+                    FileHandle.standardError.write(Data("frame-mac-view: spatial shutdown incomplete removed=\(removed): \(error ?? "unknown error")\n".utf8))
+                }
+                exit(0)
+            }
+        }
     }
 
     /// While anyone watches, keep the Mac's display on: a sleeping display
@@ -947,9 +1005,9 @@ final class Agent {
     }
 
     private func pruneSpatialSources(_ key: String?) {
-        guard let key else { spatial.clear(); cursorMemory.clear(); return }
+        guard let key else { spatialStreams.clear(); cursorMemory.clear(); return }
         for source in counterpartSourceKeys(key) {
-            spatial.remove(source)
+            spatialStreams.remove(source)
             cursorMemory.remove(source)
         }
     }
@@ -1044,6 +1102,7 @@ final class Agent {
     private func mayStream(_ req: Request, src: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
+        if spatialAdmissionBlocked && src.hasPrefix("separate:") { return nil }
         let now = Date()
         tickets = tickets.filter { $0.value.expiry > now }
         if sameSecret(req.query["k"] ?? "", token) { return randomKey() }
@@ -1062,6 +1121,126 @@ final class Agent {
     /// be used again (also when the ack comes over a reconnection).
     func acknowledged(key: String) {
         lock.lock(); tickets = tickets.filter { $0.value.key != key }; lock.unlock()
+    }
+
+    private func revokeAndStopSeparateStreams(spatialOnly: Bool = false, completion: @escaping (Bool) -> Void) {
+        lock.lock()
+        var keysToRevoke = spatialOnly ? spatialSeparateSources : Set<String>()
+        if spatialOnly {
+            keysToRevoke.formUnion(separateSources.values.filter(\.isSpatialStream).map { "separate:\($0.windowID)" })
+        } else {
+            keysToRevoke.formUnion(tickets.values.map(\.src).filter { $0.hasPrefix("separate:") })
+            keysToRevoke.formUnion(reconnectKeys.values.filter { $0.hasPrefix("separate:") })
+            keysToRevoke.formUnion(finished.filter { $0.hasPrefix("separate:") })
+        }
+        let matching = sessions.values.filter {
+            guard case .separate = $0.source else { return false }
+            if spatialOnly {
+                return keysToRevoke.contains($0.source.key) || ($0.capture as? SeparateSource)?.isSpatialStream == true
+            }
+            return true
+        }
+        keysToRevoke.formUnion(matching.map { $0.source.key })
+        var sourceMap = [ObjectIdentifier: SeparateSource]()
+        for source in separateSources.values where !spatialOnly || source.isSpatialStream {
+            sourceMap[ObjectIdentifier(source)] = source
+        }
+        for source in matching.compactMap({ $0.capture as? SeparateSource }) where !spatialOnly || source.isSpatialStream {
+            sourceMap[ObjectIdentifier(source)] = source
+        }
+        let sources = Array(sourceMap.values)
+        keysToRevoke.formUnion(sources.map { "separate:\($0.windowID)" })
+        tickets = tickets.filter { !keysToRevoke.contains($0.value.src) }
+        reconnectKeys = reconnectKeys.filter { !keysToRevoke.contains($0.value) }
+        finished.subtract(keysToRevoke)
+        spatialSeparateSources.subtract(keysToRevoke)
+        lock.unlock()
+
+        let group = DispatchGroup()
+        for session in matching {
+            group.enter()
+            session.ws.sendJSON(["t": "close"])
+            session.end { group.leave() }
+        }
+        // This includes sources whose Session already left the dictionary but
+        // whose Accessibility restore or display-lease release is still pending.
+        for source in sources {
+            group.enter()
+            source.stopAndWait { group.leave() }
+        }
+        group.notify(queue: .main) {
+            completion(sources.allSatisfy(\.hasCompletedStop))
+        }
+    }
+
+    private func startSpatial(_ c: HTTPConnection) {
+        lock.lock()
+        guard !quitting else { lock.unlock(); return c.respond(409, json: ["state": "error", "error": "helper is shutting down", "removed": false]) }
+        if spatialAdmissionBlocked {
+            lock.unlock()
+            return c.respond(409, json: ["state": "error", "error": "spatial mode is already changing state", "removed": false])
+        }
+        if spatialMode.isRunning {
+            lock.unlock()
+            return spatialMode.start { success, error, removed in
+                var result = self.spatialMode.statusJSON()
+                if let error { result["error"] = error }
+                c.respond(success ? 200 : 409, json: result)
+            }
+        }
+        spatialTransition &+= 1
+        let transition = spatialTransition
+        spatialAdmissionBlocked = true
+        lock.unlock()
+
+        revokeAndStopSeparateStreams { restored in
+            self.lock.lock()
+            let stillCurrent = self.spatialTransition == transition && !self.quitting
+            if !restored && stillCurrent { self.spatialAdmissionBlocked = false }
+            self.lock.unlock()
+            guard stillCurrent else {
+                return c.respond(409, json: ["state": "error", "error": "spatial start was superseded", "removed": false])
+            }
+            guard restored else {
+                return c.respond(409, json: ["state": "error", "error": "existing separated windows could not be restored; retry after macOS accepts the move", "removed": false])
+            }
+            self.spatialMode.start { success, error, removed in
+                self.lock.lock()
+                if self.spatialTransition == transition && removed && !self.quitting { self.spatialAdmissionBlocked = false }
+                self.lock.unlock()
+                var result = self.spatialMode.statusJSON()
+                if let error { result["error"] = error }
+                c.respond(success ? 200 : (removed ? 409 : 500), json: result)
+            }
+        }
+    }
+
+    private func stopSpatial(_ c: HTTPConnection) {
+        lock.lock()
+        spatialTransition &+= 1
+        let transition = spatialTransition
+        spatialAdmissionBlocked = true
+        lock.unlock()
+        revokeAndStopSeparateStreams(spatialOnly: true) { restored in
+            self.lock.lock()
+            let stillCurrent = self.spatialTransition == transition
+            self.lock.unlock()
+            guard stillCurrent else {
+                return c.respond(409, json: ["state": "error", "error": "spatial stop was superseded", "removed": false])
+            }
+            guard restored else {
+                return c.respond(500, json: ["state": "error", "removed": false,
+                                             "error": "spatial windows could not be parked on the home display; retry stop after macOS accepts the move"])
+            }
+            self.spatialMode.stop(afterStreams: { $0() }) { success, error, removed in
+                self.lock.lock()
+                if self.spatialTransition == transition && removed && !self.quitting { self.spatialAdmissionBlocked = false }
+                self.lock.unlock()
+                var result: [String: Any] = ["state": success ? "stopped" : "error", "removed": removed]
+                if let error { result["error"] = error }
+                c.respond(success ? 200 : 500, json: result)
+            }
+        }
     }
 
     func handle(_ req: Request, _ c: HTTPConnection) {
@@ -1085,11 +1264,11 @@ final class Agent {
         case ("GET", "/status"):
             lock.lock()
             let list = sessions.values.map { s -> [String: Any] in
-                let previous = spatial.observation(for: s.source.key)
+                let previous = spatialStreams.observation(for: s.source.key)
                 if let size = s.capture.pixelSize, size.0 > 0, size.1 > 0 {
-                    spatial.observe(s.source.key, width: size.0, height: size.1, changed: false)
+                    spatialStreams.observe(s.source.key, width: size.0, height: size.1, changed: false)
                 }
-                let observed = spatial.observation(for: s.source.key)
+                let observed = spatialStreams.observation(for: s.source.key)
                 var e: [String: Any] = ["id": s.id, "src": s.source.key, "title": s.capture.title, "app": s.capture.app,
                                         "stats": s.streamSummary(), "bitrate": s.encoder.bitrate,
                                         "controller": s.controller.state(),
@@ -1105,23 +1284,34 @@ final class Agent {
             s["version"] = version
             s["streams"] = list
             s["pointerShared"] = sharedPointer
+            s["spatial"] = spatialMode.statusJSON()
             if let focused = cursorMemory.focusedSource { s["focusedSrc"] = focused }
             lock.lock(); s["finished"] = Array(finished); lock.unlock()
             c.respond(json: s)
         case ("GET", "/windows"):
             c.respond(json: ["windows": windowsJSON(), "screen": CGPreflightScreenCaptureAccess()])
+        case ("GET", "/spatial"):
+            c.respond(json: spatialMode.statusJSON())
         case ("GET", "/displays"):
             c.respond(json: ["displays": displaysJSON()])
         case ("POST", "/ticket"):
             guard let src = Source(req.query["src"] ?? "") else { return c.respond(400, text: "bad src") }
+            lock.lock(); let spatialBusy = spatialAdmissionBlocked && src.key.hasPrefix("separate:"); lock.unlock()
+            guard !spatialBusy else { return c.respond(409, json: ["error": "spatial mode is changing state"]) }
             let t = randomKey()
+            let spatialTicket = src.key.hasPrefix("separate:") && spatialMode.isRunning
             lock.lock()
             tickets[t] = (src.key, Date().addingTimeInterval(60), nil)
+            if spatialTicket { spatialSeparateSources.insert(src.key) }
             finished.remove(src.key)
             lock.unlock()
             c.respond(json: ["ticket": t])
         case ("POST", "/streams/live"):
             liveStreamsResponse(req, c)
+        case ("POST", "/spatial/start"):
+            startSpatial(c)
+        case ("POST", "/spatial/stop"):
+            stopSpatial(c)
         case ("POST", "/pointer"):
             pointerResponse(req, c)
         case ("POST", "/focus"):
@@ -1206,15 +1396,26 @@ final class Agent {
         switch src {
         case .display(let id) where wantsDirect: capture = DirectSCKSource(displayID:id)
         case .test: capture = TestSource()
-        case .separate(let id): capture = SeparateSource(windowID: id)
+        case .separate(let id): capture = SeparateSource(windowID: id, spatial: spatialMode)
         default: capture = SCKSource(src)
         }
+        let spatialSeparate = src.key.hasPrefix("separate:") && spatialMode.isRunning
         lock.lock()
         // One live viewer per key: a reconnection (or a second use of an
         // unacknowledged ticket) replaces the one before.
         let replaced = sessions.values.filter { $0.reconnectKey == key }
+        let separate = capture as? SeparateSource
+        if spatialSeparate { spatialSeparateSources.insert(src.key) }
+        let separateID = separate.map { ObjectIdentifier($0) }
+        if let separate, let separateID {
+            separate.onStopComplete = { [weak self] in
+                guard let self else { return }
+                self.lock.lock(); self.separateSources[separateID] = nil; self.lock.unlock()
+            }
+            separateSources[separateID] = separate
+        }
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
-                              bitsPerPixel: bpp, reconnectKey: key, activity: activity, spatial: spatial,
+                              bitsPerPixel: bpp, reconnectKey: key, activity: activity, spatial: spatialStreams,
                               foveation: foveation,
                               foveationAtlas: !wantsDirect && req.query["atlas"] == "1", foveationDirect: wantsDirect,
                               gazeSharpen: codec == .h264 && req.query["gaze"] == "1")

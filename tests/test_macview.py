@@ -2252,11 +2252,24 @@ class Agent(unittest.TestCase):
     def test_token_is_required(self):
         self.assertEqual(self.get("/status")[0], 403)
         self.assertEqual(self.get("/status?k=wrong")[0], 403)
-        for path in ("/streams/live?src=", "/pointer?shared=1", "/focus?src=separate:1&u=0&v=0"):
+        for path in ("/streams/live?src=", "/pointer?shared=1", "/focus?src=separate:1&u=0&v=0",
+                     "/spatial/start", "/spatial/stop"):
             self.assertEqual(self.get(path, method="POST")[0], 403)
+        self.assertEqual(self.get("/spatial")[0], 403)
         status, body = self.get(f"/status?k={self.token}")
         self.assertEqual(status, 200)
         self.assertIn("screen", json.loads(body))
+
+    def test_spatial_status_is_read_only_before_start(self):
+        before = json.loads(self.get(f"/displays?k={self.token}")[1])["displays"]
+        status, body = self.get(f"/spatial?k={self.token}")
+        self.assertEqual(status, 200)
+        spatial = json.loads(body)
+        self.assertEqual(spatial["state"], "stopped")
+        self.assertEqual(spatial["windows"], [])
+        self.assertIsInstance(spatial["revision"], int)
+        self.assertEqual(json.loads(self.get(f"/status?k={self.token}")[1])["spatial"]["state"], "stopped")
+        self.assertEqual(json.loads(self.get(f"/displays?k={self.token}")[1])["displays"], before)
 
     def test_serves_the_viewer_page(self):
         status, body = self.get(f"/view?k={self.token}&src=test")
