@@ -412,16 +412,12 @@ observation; queued launches are invalidated by Stop or a mode switch. Panel
 errors remain visible in API state and retry. Closing a panel explicitly
 keeps it closed until that window disappears or the next Spatial start.
 
-The bar state includes `workspace.mode`. Each bar sync atomically writes
-`$XDG_RUNTIME_DIR/frame-workspace/spatial-ui.json` alongside its existing
-state, even if the bar binary is absent; mode and panel changes wake the sync
-immediately. The separate apps module attaches `spatial_ui_provider()` for
-`apps`/`switcher` state and `spatial_request_handler(request)` for app and
-controller-switcher requests. It can wake `dash_wake` when its state changes.
-Owned `switch` keys focus the matching Mac window; the Frame side brings the
-panel forward. App enumeration, icon transfer and physical-keyboard Cmd-Tab
-remain the other worker's scope. No `Apps.swift` or apps module was added here.
-
+The bar state includes `workspace.mode`. `spatial-ui.json` has one writer, the
+apps module (`ui/frame_spatial_apps.py`, see "Apps and Cmd-Tab contract" above),
+which runs on the same one-second sync, sends icons, and clears the file when
+Spatial Mode ends; it also handles the Frame's `app`, `switch` and `switcher`
+requests (integration, 2026-10-21: the mode branch's own writer and request
+hooks were dropped in favour of it).
 Last Session is independent per mode; see [Last session](profiles.md#last-session-auto-saved).
 Spatial matches durable window rules before automatic opening and supplies
 saved poses to the first launch. It does not snapshot a half-open startup over
