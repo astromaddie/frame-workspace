@@ -154,10 +154,48 @@ class Helpers(unittest.TestCase):
             'not json',
             '{"action":"close","key":"com.frame-workspace.native.1000.workspace"}',
         ]
-        mv.run = lambda cmd, **kw: "\n".join(lines)
-        mv._handle_frame_requests()
+        mv._handle_frame_requests("\n".join(lines))
+        mv.dash_jobs.join()
         self.assertEqual(stopped, ["window:42"])
         self.assertEqual(workspace, [True])
+
+    def test_bar_panel_requests_start_stop_and_recenter_the_workspace(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.last_workspace = ("2880x2560", 1, "sharp")
+        calls = []
+        mv.start_workspace = lambda *a: calls.append(("start", a))
+        mv.stop_workspace = lambda: calls.append(("stop",))
+        mv._focus_workspace_viewer = lambda: calls.append(("recenter",))
+        mv._handle_frame_requests("DASH_STARTED\n" + "\n".join(
+            json.dumps({"action": a}) for a in ("workspace_start", "recenter", "workspace_stop", "reboot")))
+        mv.dash_jobs.join()
+        self.assertEqual(calls, [("start", ("2880x2560", 1, "sharp")), ("recenter",), ("stop",)])
+
+    def test_bar_panel_state_lists_the_workspace_and_windows(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager.state = lambda: {"state": "running", "preset": "2880x2560"}
+        mv.workspace_panel_key = "com.frame-workspace.native.1000.workspace"
+        mv.native_panels = {
+            "window:9": {"panel": "w9", "key": "com.frame-workspace.native.1000.panel-w9", "slot": 1, "title": "Notes"},
+            "window:4": {"panel": "w4", "key": "com.frame-workspace.native.1000.panel-w4", "slot": 0, "title": "Terminal"},
+        }
+        state = mv.dash_state()
+        self.assertEqual(state["workspace"], {"running": True, "busy": None, "label": "9:8 · 2880 × 2560"})
+        self.assertEqual([w["title"] for w in state["windows"]], ["Terminal", "Notes"])
+        mv.workspace_manager.state = lambda: {"state": "stopped"}
+        mv.workspace_panel_key = None
+        self.assertFalse(mv.dash_state()["workspace"]["running"])
+
+    def test_headset_start_uses_the_last_workspace_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "last-start.json")
+            mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv.last_workspace_file = path
+            mv._remember_workspace("3840x2160", 2, "balanced")
+            again = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            again.last_workspace_file = path
+            again._load_last_workspace()
+            self.assertEqual(again.last_workspace, ("3840x2160", 2, "balanced"))
 
     def test_workspace_display_defaults_to_120_hz(self):
         with mock.patch.dict(os.environ, {}, clear=False):

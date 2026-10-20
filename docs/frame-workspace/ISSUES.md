@@ -273,6 +273,13 @@ Make the Mac workspace pleasant to use in the Steam Frame rather than exposing o
 ## Risks / non-goals
 - Current SteamVR dashboard owns overlay layout. Do not assume there is a supported API to programmatically recenter or curve arbitrary dashboard panels.
 
+## Progress
+- 2026-10-20: the gap found in worn testing (no way to start or stop the Workspace from inside the headset) is
+  closed in code. One "Frame Workspace" entry on the SteamVR bar (`native/dash.cpp`, a dashboard overlay)
+  starts, stops and recenters the Workspace and closes any floating window; each native window also has its own
+  Close button beside its move pill. Verified on the Frame through the request folder; laser use on the bar
+  panel is not yet verified worn. See `native/README.md`, "SteamVR bar panel".
+
 ## Verified upstream references
 - [panels](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/docs/panels.md)
 - [panels_py](https://github.com/saphid/frame-control/blob/bcdd9d0830673ef53c6be9987a429dc43bef77e5/ui/frame_panels.py)

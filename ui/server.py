@@ -3094,6 +3094,9 @@ def main():
         frame_report.link = LINK  # its connection summary goes in every report's diagnostics
         frame_report.start_ssh_check()  # ...with which ssh this is, found once in the background
         LINK.start()
+        # The SteamVR bar panel; the MCP adapter's server turns it off (one per headset).
+        macview.start_dash(connected=lambda: LINK.state.get("phase") == "connected",
+                           last_workspace_file=frame_host.data_dir("workspace", "last-start.json"))
     if not frame_host.WINDOWS:
         signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
     if args.exit_on_eof:

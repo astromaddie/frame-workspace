@@ -20,6 +20,7 @@ connection) and the server's `run(remote, stdin=, timeout=)` for commands.
 import json
 import math
 import os
+import queue
 import re
 import secrets
 import shutil
@@ -40,6 +41,7 @@ PAGE = HERE / "mac-view.html"
 SOURCES = ROOT / "mac" / "frame-mac-view"
 WORKSPACE_VIEWER_SCRIPT = ROOT / "scripts" / "workspace-viewer-on-frame.sh"
 WORKSPACE_NATIVE_SCRIPT = ROOT / "scripts" / "workspace-native-on-frame.sh"
+WORKSPACE_DASH_SCRIPT = ROOT / "scripts" / "workspace-dash-on-frame.sh"
 FRAME_VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
 AGENT = Path(os.environ.get("FRAME_MAC_VIEW") or ROOT / "mac" / "bin" / "frame-mac-view")
 REMOTE_PORTS = range(47900, 47920)
@@ -591,6 +593,14 @@ class MacView:
         self.browser_lock = threading.Lock()
         self.browser_cleanup_error = None
         self.workspace_panel_key = None
+        # The SteamVR bar panel (FW-08), see start_dash.
+        self.dash_thread = None
+        self.dash_action = None  # "starting"/"stopping" while a headset press is carried out
+        self.dash_jobs = queue.Queue()
+        self.dash_lock = threading.Lock()
+        self.dash_worker = None
+        self.last_workspace_file = None
+        self.last_workspace = ("5120x1440", 1, "sharp")
 
     # ---- the agent on this Mac ----
 
@@ -810,7 +820,6 @@ class MacView:
                 if self.tunnel_up():
                     self._follow_best_route(tick)
                     self._apply_link_cap()
-                    self._handle_frame_requests()
                     continue
                 if tick % 5:
                     continue
@@ -844,20 +853,87 @@ class MacView:
             raise MacViewError("Gaze sharpening must be auto, on or off.")
         return self.call("/link", method="POST", sharpen=mode)
 
-    FRAME_REQUESTS = "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/frame-workspace/requests"
+    # ---- the SteamVR bar panel (FW-08) ----
 
-    def _handle_frame_requests(self):
-        """Act on requests made in the headset (FW-08): Close on a native panel
-        closes that window's stream, or stops the Workspace. The Frame can only
-        ask for these fixed actions; each request file is read once, then removed."""
-        if not (self.native_panels or self.workspace_panel_key):
+    ASPECTS = {"5120x1440": "32:9", "5120x2160": "21:9", "3440x1440": "21:9", "2560x2880": "8:9",
+               "2880x2560": "9:8", "3840x2160": "16:9"}
+
+    def start_dash(self, connected=lambda: True, last_workspace_file=None):
+        """Keep the "Frame Workspace" entry on the SteamVR bar while the Frame
+        is connected: once a second, send it the Workspace and window list and
+        collect what was pressed there. It stays on the bar after the companion
+        quits, showing that the Mac is not connected. FRAME_WORKSPACE_DASH=0
+        turns it off; it needs the native viewer."""
+        if (not SUPPORTED or os.environ.get("FRAME_WORKSPACE_DASH", "1") == "0" or
+                workspace_viewer_backend() != "native" or (self.dash_thread and self.dash_thread.is_alive())):
+            return
+        self.last_workspace_file = last_workspace_file
+        self._load_last_workspace()
+
+        def loop():
+            tick, failures, missing = 0, 0, False
+            while not self.closing:
+                time.sleep(1)
+                tick += 1
+                # Not installed: look again each minute. Unreachable: every 5 s.
+                if (missing and tick % 60) or (failures and tick % 5) or not connected():
+                    continue
+                try:
+                    out = self.run("bash -s -- sync " + _quote(json.dumps(self.dash_state(), separators=(",", ":"))),
+                                   stdin=WORKSPACE_DASH_SCRIPT.read_text(encoding="utf-8"), timeout=8)
+                    failures = 0
+                except Exception:  # noqa: BLE001 - asleep or out of reach; try again shortly
+                    failures += 1
+                    continue
+                missing = "DASH_MISSING" in out
+                self._handle_frame_requests(out)
+
+        self.dash_thread = threading.Thread(target=loop, daemon=True)
+        self.dash_thread.start()
+
+    def _load_last_workspace(self):
+        try:
+            data = json.loads(Path(self.last_workspace_file).read_text(encoding="utf-8"))
+            request = WorkspaceDisplayManager._validate_request(data["preset"], data["scale"], data["quality"])
+            self.last_workspace = (request["preset"], request["scale"], request["quality"])
+        except Exception:  # noqa: BLE001 - none saved yet, or unreadable: the defaults
+            pass
+
+    def _remember_workspace(self, preset, scale, quality):
+        self.last_workspace = (preset, scale, quality)
+        if not self.last_workspace_file:
             return
         try:
-            out = self.run(f'd="{self.FRAME_REQUESTS}"; for f in "$d"/*.json; do '
-                           '[ -f "$f" ] || continue; head -c 512 "$f"; echo; rm -f "$f"; done', timeout=8)
-        except Exception:  # noqa: BLE001 - try again next second
-            return
+            path = Path(self.last_workspace_file)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"preset": preset, "scale": scale, "quality": quality}) + "\n",
+                            encoding="utf-8")
+        except OSError:
+            pass  # remembered for this run only
+
+    def dash_state(self):
+        """What the bar panel shows: the Workspace, and each floating window
+        with the key its Close button sends back."""
+        workspace = self.workspace_manager.state()
+        running = workspace.get("state") == "running" and bool(self.workspace_panel_key)
+        busy = self.dash_action or ("starting" if workspace.get("state") == "starting" else None)
+        preset = workspace.get("preset") if running else self.last_workspace[0]
+        w, h = WorkspaceDisplayManager.PRESETS.get(preset, (0, 0))
+        label = f"{self.ASPECTS.get(preset, '')} · {w} × {h}".strip(" ·") if w else ""
+        windows = [{"title": p.get("title") or "Mac Window", "key": p["key"]}
+                   for p in sorted(self.native_panels.values(), key=lambda p: p["slot"])]
+        return {"connected": True, "workspace": {"running": running, "busy": busy, "label": label},
+                "windows": windows[:32]}
+
+    def _handle_frame_requests(self, out):
+        """Act on requests made in the headset (FW-08): Close on a native panel
+        or in the bar panel closes that window's stream or stops the Workspace;
+        the bar panel can also start the Workspace (with the last settings used)
+        and recenter it. The Frame can only ask for these fixed actions. Each
+        line is one request, already removed on the Frame."""
         for line in (out or "").splitlines():
+            if not line.startswith("{"):
+                continue
             try:
                 request = json.loads(line)
             except ValueError:
@@ -865,18 +941,54 @@ class MacView:
             if not isinstance(request, dict):
                 continue
             action, key = request.get("action"), str(request.get("key") or "")
-            if action != "close" or not re.fullmatch(r"com\.frame-workspace\.native\.\d+\.(workspace|panel-w\d{1,15})", key):
-                continue
-            try:
-                if key.endswith(".workspace"):
-                    if key == self.workspace_panel_key:
-                        self.stop_workspace()
-                else:
-                    src = next((s for s, p in self.native_panels.items() if p["key"] == key), None)
-                    if src:
-                        self.stop(src)
-            except MacViewError:
-                pass  # already gone
+            if action == "close":
+                if re.fullmatch(r"com\.frame-workspace\.native\.\d+\.(workspace|panel-w\d{1,15})", key):
+                    self._dash_run(None, self._close_from_frame, key)
+            elif action == "workspace_start":
+                self._dash_run("starting", lambda: self.start_workspace(*self.last_workspace))
+            elif action == "workspace_stop":
+                self._dash_run("stopping", self.stop_workspace)
+            elif action == "recenter":
+                self._dash_run(None, self._focus_workspace_viewer)
+
+    def _dash_run(self, busy, fn, *args):
+        """Carry out headset requests in order, off the sync loop, so the
+        panel keeps updating (showing `busy` meanwhile)."""
+        with self.dash_lock:
+            self.dash_jobs.put((busy, fn, args))
+            if self.dash_worker and self.dash_worker.is_alive():
+                return
+
+            def work():
+                while True:
+                    try:
+                        job_busy, job, job_args = self.dash_jobs.get(timeout=5)
+                    except queue.Empty:
+                        with self.dash_lock:
+                            if self.dash_jobs.empty():
+                                self.dash_worker = None
+                                return
+                        continue
+                    self.dash_action = job_busy
+                    try:
+                        job(*job_args)
+                    except Exception:  # noqa: BLE001 - the Mac page shows any Workspace error
+                        pass
+                    finally:
+                        self.dash_action = None
+                        self.dash_jobs.task_done()
+
+            self.dash_worker = threading.Thread(target=work, daemon=True)
+            self.dash_worker.start()
+
+    def _close_from_frame(self, key):
+        if key.endswith(".workspace"):
+            if key == self.workspace_panel_key:
+                self.stop_workspace()
+            return
+        src = next((s for s, p in self.native_panels.items() if p["key"] == key), None)
+        if src:
+            self.stop(src)
 
     def _usb_reachable(self):
         """Whether the Frame's USB-C address still answers (cheap: no ssh)."""
@@ -1072,7 +1184,7 @@ class MacView:
         match = re.search(r"registered OpenVR key (com\.frame-workspace\.native\.\d+\.panel-" + panel + r")\b", out)
         if not match:
             raise MacViewError("The native window panel did not report its registered OpenVR panel key.")
-        self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot}
+        self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot, "title": title}
         return out
 
     def _stop_native_panels(self, src=None):
@@ -1260,6 +1372,7 @@ class MacView:
         stream, and macOS virtual display have all stopped successfully.
         """
         request = WorkspaceDisplayManager._validate_request(preset, scale, quality)
+        self._remember_workspace(request["preset"], request["scale"], request["quality"])
         with self.workspace_lock:
             if self.workspace_removal_pending:
                 # The last Stop could not confirm WindowServer removal. Retry

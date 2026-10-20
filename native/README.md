@@ -168,6 +168,42 @@ towards the viewer. Handles are frosted white when shown and Steam blue while
 held. A finished drag saves the pose. `--action-manifest PATH|none` overrides
 or disables input. Worn use is not yet verified.
 
+A round Close button left of the pill closes that window (or stops the
+Workspace): the viewer writes `{"action":"close","key":KEY}` into
+`--request-dir` and the Mac companion acts on it.
+
+## SteamVR bar panel (FW-08)
+
+`frame-workspace-dash` (`dash.cpp`, drawn by `dash_ui.hpp` with cairo/Pango)
+is the single "Frame Workspace" entry on the SteamVR bar for all the virtual
+screens. It owns a dashboard overlay, which SteamVR's own laser drives, and
+shows the Workspace (Start Workspace, or Stop Workspace and Recenter) and a row
+per floating window with a Close button. The build script builds it next to
+the viewer; install it in the same folder.
+
+The Mac companion runs `scripts/workspace-dash-on-frame.sh sync STATE` once a
+second while the Frame is connected. That writes
+`$XDG_RUNTIME_DIR/frame-workspace/dash-state.json`, starts the panel's user
+unit (`frame-workspace-dash-UID.service`) if it isn't running, and hands back
+the requests made since: `workspace_start` (with the settings last used on the
+Mac), `workspace_stop`, `recenter`, and `close` with a panel key. The panel
+can only ask for those; the companion ignores anything else. A state file
+older than 6 s shows "Mac Not Connected", so the entry stays on the bar after
+the companion quits, with the buttons off. `FRAME_WORKSPACE_DASH=0` turns the
+sync off (the MCP adapter's backend does).
+
+```bash
+frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout list|tiles]
+frame-workspace-dash --render-mock OUT.png list|tiles running|stopped|offline
+```
+
+Verified 2026-10-20 (Frame, SteamOS as installed that day), with the panel not
+yet looked at worn: the panel builds and starts on the Frame, renders the
+offline, stopped, running and one-window states, and requests written to the
+folder start the Workspace, recenter it, close a window panel and stop the
+Workspace. Not yet verified: the bar thumbnail, and laser hover and clicks on
+the dashboard overlay.
+
 ## Bounded pipeline and synchronization
 
 One network thread acknowledges and reads packets independently of one decoder
