@@ -147,6 +147,89 @@ Verified on the Frame 2026-10-19 with a 986×729-point Terminal window: a
 Workspace, with clean removal on Stop. `FRAME_WINDOW_VIEWER=browser` keeps the
 older Chrome panels. In-headset movement and sizing are described below.
 
+### Shared window host (FW-15, opt-in)
+
+`FRAME_NATIVE_HOST=1` on the companion selects one window-host user unit,
+`frame-workspace-host-UID.service`. The native Workspace keeps its own viewer.
+Without the flag, window panels keep the existing per-window units. This reuses
+all existing window overlays and halves, Palladium layers, controller handles,
+drag/resize/bend/close behavior, control files and saved poses; it adds no UI.
+
+The host owns one SDL/GL context and one OpenVR client. Each panel has the same
+bounded network and decoder workers as the standalone path. The shared runtime
+pumps SteamVR events and samples both controllers once per loop. Each hand goes
+to its nearest panel; an ongoing drag retains that hand until release. A bad or
+closed stream ends only that panel. The host stays alive when its last panel is
+removed, so another window can reuse the session.
+
+The launcher sends an atomic mode-0600 spec to
+`$XDG_RUNTIME_DIR/frame-workspace/host/panels/ID.json`. Its public entry point is
+unchanged, with `FRAME_NATIVE_HOST=1` in the remote environment:
+
+```sh
+FRAME_NATIVE_HOST=1 scripts/workspace-native-on-frame.sh --panel w42 --name Terminal \
+  start "$VIEW_URL" 1280 800 fc12345678 v4l2 gpu
+FRAME_NATIVE_HOST=1 scripts/workspace-native-on-frame.sh --panel w42 stop
+```
+
+The executable's direct interface is `--host-dir SPEC_FOLDER --state-file HOST_STATE`.
+Keep the host summary outside the spec folder. A spec has this shape (absolute
+paths, unique window key and files; `initialPose` is an optional pose JSON string):
+
+```json
+{
+  "version": 1,
+  "generation": "fc12345678",
+  "urlFile": "/run/user/1000/frame-workspace/panel-w42/view-fc12345678.url",
+  "overlayKey": "com.frame-workspace.native.1000.panel-w42",
+  "overlayName": "Terminal",
+  "controlFile": "/run/user/1000/frame-workspace/panel-w42/control.json",
+  "stateFile": "/run/user/1000/frame-workspace/panel-w42/state.json",
+  "poseFile": "/home/frame/.local/share/frame-workspace/panels/w42-pose.json",
+  "requestDir": "/run/user/1000/frame-workspace/requests",
+  "decoder": "v4l2",
+  "conversion": "gpu"
+}
+```
+
+Specs are immutable within a `generation`. Removing one stops its panel;
+changing its generation first destroys the old panel, then creates the new one.
+Clear the previous generation's control file after removal is acknowledged,
+before adding a new generation, as the launcher does. An unchanged failed
+generation stays terminal. Malformed spec replacements leave an existing panel
+running. Duplicate keys or private file paths are rejected.
+Per-panel state keeps the existing schema and adds `hostGeneration` and
+`hostPid`; the launcher matches both to avoid stale readiness. The launcher
+serializes host ownership changes, confirms individual removal before replacing
+a saved pose, and removes only that panel after a startup failure. Saved poses
+stay in the existing paths. The companion remembers each launch's host choice
+and generation for cleanup.
+
+WebSocket text `{"t":"still"}` processes already accepted packets, preserves
+the last completed picture/texture, and closes the decoder session on its owning
+thread. The hardware final-output drain is bounded; final-picture availability
+before release still needs device testing. `{"t":"live"}` waits for an IDR
+containing SPS/PPS before reopening.
+These controls work on standalone viewers too. State adds `streamStill`,
+`decoderSessionOpen`, `decoderStillReleases` and `decoderLiveOpens`. A still
+panel retains its display texture and owned picture data, with no open decoder
+session. Receiving `live` alone does not allocate one.
+
+Each host loop samples `GetEyeTrackedFoveationCenter` through `gaze_bridge` and
+combines the two standing-space eye rays. It intersects every ready panel using
+`bend.hpp`, including uneven and vertical bends, and chooses the nearest front
+surface. After a 180 ms dwell on a different window, it atomically writes
+`{"action":"focus","key":"PANEL_OPENVR_KEY","u":0.5,"v":0.5}` to the existing
+requests folder. Coordinates are right/down from the original window's top left,
+independent of its bend. The active panel has a 2 cm edge margin; a new target
+must be 1 cm inside its edge. Missing eye tracking uses the controller ray (right
+hand preferred); looking away with valid eye tracking does not use that fallback.
+Mac-side focus delivery, live-set policy and cursor memory require the companion
+integration and end-to-end verification.
+
+Verification commands and the exact device acceptance boundary are recorded in
+[SPATIAL.md](../docs/frame-workspace/SPATIAL.md#shared-host-foundation-fw-15).
+
 Profile Save now captures the Workspace pose and each uniquely matched native
 window's saved pose from the Frame. Schema v2 stores these against the stable
 bundle ID/title rule, so Profile Restore can apply them to fresh Mac window IDs.
