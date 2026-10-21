@@ -19,11 +19,11 @@ private struct SpatialWindowRecord: Equatable {
     let bundleID: String?
 
     var json: [String: Any] {
-        var value: [String: Any] = ["id": id, "src": "window:\(id)", "pid": pid,
+        var value: [String: Any] = ["id": id, "src": "spatial:\(id)", "pid": pid,
                                    "app": app, "title": title,
                                    "w": Int(bounds.width), "h": Int(bounds.height),
                                    "x": Double(bounds.minX), "y": Double(bounds.minY)]
-        if let bundleID { value["bundleID"] = bundleID }
+        value["bundleID"] = bundleID ?? ""
         return value
     }
 }
@@ -38,249 +38,6 @@ private struct SpatialPhysicalDisplaySnapshot {
 private struct SpatialPhysicalLayoutSnapshot {
     let displays: [SpatialPhysicalDisplaySnapshot]
     let mainDisplayID: CGDirectDisplayID
-}
-
-/// A lease is returned only after its display has adopted the requested mode
-/// and WindowServer exposes the corresponding NSScreen.
-final class SpatialDisplayLease {
-    let display: VirtualDisplay
-    let slot: Int
-    let owner: UUID
-    private let releaseBody: (SpatialDisplayLease, @escaping () -> Void) -> Void
-    private var released = false
-
-    init(display: VirtualDisplay, slot: Int, owner: UUID,
-         release: @escaping (SpatialDisplayLease, @escaping () -> Void) -> Void) {
-        self.display = display
-        self.slot = slot
-        self.owner = owner
-        releaseBody = release
-    }
-
-    func release(completion: @escaping () -> Void) {
-        DispatchQueue.main.async {
-            guard !self.released else { completion(); return }
-            self.released = true
-            self.releaseBody(self, completion)
-        }
-    }
-}
-
-/// Owns a small set of stable virtual-display identities. Displays are
-/// reconfigured and reused between streams; none are removed during churn.
-final class SpatialDisplayPool {
-    static let initialCount = SpatialPoolPolicy.initialPoolSize
-    static let warmSpareCount = SpatialPoolPolicy.warmSpareCount
-    static let maximumCount = SpatialPoolPolicy.maximumPoolSize
-    static let seedWidth = 1280
-    static let seedHeight = 800
-
-    private var policy = SpatialPoolPolicy(capacity: maximumCount)
-    private var displays: [Int: VirtualDisplay] = [:]
-    private var refillsStopped = false
-    private var refillScheduled = false
-    private var refillWaiters: [() -> Void] = []
-    private var lastRefillError: String?
-
-    var displayIDs: [CGDirectDisplayID] { displays.values.map(\.id).sorted() }
-    var activeLeaseCount: Int { policy.outstandingCount }
-
-    func prewarm(completion: @escaping (String?) -> Void) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.prewarm(completion: completion) }
-            return
-        }
-        createInitialSlot(0, completion: completion)
-    }
-
-    private func createInitialSlot(_ slot: Int, completion: @escaping (String?) -> Void) {
-        guard slot < Self.initialCount else { completion(nil); return }
-        guard let display = VirtualDisplay(name: "Frame Spatial Window \(slot + 1)", width: Self.seedWidth,
-                                           height: Self.seedHeight, pixelScale: 2, purpose: .spatialWindow) else {
-            return completion("macOS would not create a pooled window display")
-        }
-        displays[slot] = display
-        waitForModeReady(display, width: Self.seedWidth, height: Self.seedHeight, pixelScale: 2, attempt: 0) { ready in
-            guard ready else { return completion("a pooled window display did not become ready") }
-            guard self.policy.registerFree(slot: slot) else { return completion("could not register a pooled display") }
-            self.createInitialSlot(slot + 1, completion: completion)
-        }
-    }
-
-    func lease(windowID: CGWindowID, width: Int, height: Int, owner: UUID,
-               completion: @escaping (SpatialDisplayLease?, String?) -> Void) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.lease(windowID: windowID, width: width, height: height,
-                                                  owner: owner, completion: completion) }
-            return
-        }
-        guard policy.beginLeasePreparation(owner: owner) else {
-            return completion(nil, "this spatial stream already has a pending display lease")
-        }
-        let finish: (SpatialDisplayLease?, String?) -> Void = { [weak self] lease, error in
-            guard let self else {
-                lease?.release(completion: {})
-                completion(nil, "the spatial display pool stopped during lease preparation")
-                return
-            }
-            _ = self.policy.finishLeasePreparation(owner: owner)
-            completion(lease, error)
-        }
-        switch policy.acquire(owner: owner) {
-        case .alreadyLeased:
-            finish(nil, "this spatial stream already has a display lease")
-        case .alreadyPreparing:
-            finish(nil, "this spatial stream already has a pending display lease")
-        case .full:
-            let detail = lastRefillError.map { "; last spare refill failed: \($0)" } ?? ""
-            finish(nil, "the spatial display safety ceiling of \(Self.maximumCount) slots was reached (\(policy.failedCount) failed slots cached)\(detail)")
-        case .lease(let slot):
-            guard let display = displays[slot] else {
-                _ = policy.release(slot: slot, owner: owner)
-                return finish(nil, "a pooled display is unavailable")
-            }
-            requestWarmRefillIfNeeded()
-            configure(display, slot: slot, owner: owner, width: width, height: height, completion: finish)
-        case .create(let slot):
-            guard let display = VirtualDisplay(name: "Frame Spatial Window \(slot + 1)", width: width,
-                                               height: height, pixelScale: 2, purpose: .spatialWindow) else {
-                _ = policy.failCreation(slot: slot, owner: owner)
-                return finish(nil, "macOS would not add a pooled window display")
-            }
-            displays[slot] = display
-            requestWarmRefillIfNeeded()
-            waitForModeReady(display, width: width, height: height, pixelScale: 2, attempt: 0) { ready in
-                guard ready else {
-                    _ = self.policy.failCreation(slot: slot, owner: owner)
-                    finish(nil, "a refilled window display did not become ready")
-                    return
-                }
-                guard self.policy.finishCreation(slot: slot, owner: owner) else {
-                    finish(nil, "could not register a refilled display")
-                    return
-                }
-                finish(self.makeLease(display, slot: slot, owner: owner), nil)
-            }
-        }
-    }
-
-    private func configure(_ display: VirtualDisplay, slot: Int, owner: UUID, width: Int, height: Int,
-                           completion: @escaping (SpatialDisplayLease?, String?) -> Void) {
-        guard policy.leaseIsCurrent(slot: slot, owner: owner) else {
-            return completion(nil, "the spatial display lease was lost")
-        }
-        let configured = display.reconfigure(width: width, height: height, pixelScale: 2)
-        guard configured else {
-            _ = policy.release(slot: slot, owner: owner)
-            completion(nil, display.lastModeConfigurationError ?? "macOS did not apply the requested window display mode")
-            requestWarmRefillIfNeeded()
-            return
-        }
-        waitForModeReady(display, width: width, height: height, pixelScale: 2, attempt: 0) { ready in
-            guard ready else {
-                _ = self.policy.release(slot: slot, owner: owner)
-                self.requestWarmRefillIfNeeded()
-                return completion(nil, display.lastModeConfigurationError ?? "macOS did not apply the requested window display mode")
-            }
-            completion(self.makeLease(display, slot: slot, owner: owner), nil)
-        }
-    }
-
-    private func makeLease(_ display: VirtualDisplay, slot: Int, owner: UUID) -> SpatialDisplayLease {
-        SpatialDisplayLease(display: display, slot: slot, owner: owner) { [weak self] lease, done in
-            guard let self else { return done() }
-            let released = self.policy.release(slot: lease.slot, owner: lease.owner)
-            if released { self.requestWarmRefillIfNeeded() }
-            done()
-        }
-    }
-
-    /// Polls publication of a mode that was configured once by creation or
-    /// `reconfigure`; polling must not repeat display configuration calls.
-    private func waitForModeReady(_ display: VirtualDisplay, width: Int, height: Int, pixelScale: Int, attempt: Int,
-                                  completion: @escaping (Bool) -> Void) {
-        let mode = CGDisplayCopyDisplayMode(display.id)
-        let ready = display.screen != nil && mode?.width == width && mode?.height == height &&
-            mode?.pixelWidth == pixelScale * width && mode?.pixelHeight == pixelScale * height
-        if ready { completion(true) }
-        else if attempt >= 30 {
-            FileHandle.standardError.write(Data(("frame-mac-view: display \(display.id) not ready: wanted \(width)x\(height)@\(pixelScale)x, " +
-                "has \(mode?.width ?? 0)x\(mode?.height ?? 0) (\(mode?.pixelWidth ?? 0)x\(mode?.pixelHeight ?? 0) px), " +
-                "screen \(display.screen != nil), \(display.lastModeConfigurationError ?? "no mode error")\n").utf8))
-            completion(false)
-        } else {
-            // As the Workspace does: macOS may only accept the mode once the
-            // new display has appeared, so apply it again while waiting.
-            // Each apply is a display configuration transaction that can block
-            // for a while, so only a few times, not on every poll.
-            if display.screen != nil && (attempt == 4 || attempt == 14 || attempt == 24) {
-                display.applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.waitForModeReady(display, width: width, height: height, pixelScale: pixelScale,
-                                       attempt: attempt + 1, completion: completion)
-            }
-        }
-    }
-
-    private func requestWarmRefillIfNeeded() {
-        guard Thread.isMainThread, !refillsStopped, !refillScheduled else { return }
-        refillScheduled = true
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            self.refillScheduled = false
-            guard !self.refillsStopped, let slot = self.policy.beginWarmRefill() else { return }
-            self.createWarmSpare(slot: slot)
-        }
-    }
-
-    private func createWarmSpare(slot: Int) {
-        let name = "Frame Spatial Window \(slot + 1)"
-        guard let display = VirtualDisplay(name: name, width: Self.seedWidth, height: Self.seedHeight,
-                                           pixelScale: 2, purpose: .spatialWindow) else {
-            _ = policy.failWarmRefill(slot: slot)
-            lastRefillError = "macOS would not create a warm spare display"
-            completeRefillWaitersIfReady()
-            return
-        }
-        displays[slot] = display
-        waitForModeReady(display, width: Self.seedWidth, height: Self.seedHeight, pixelScale: 2, attempt: 0) { ready in
-            if ready {
-                if !self.policy.finishWarmRefill(slot: slot) {
-                    self.lastRefillError = "warm spare ownership changed during creation"
-                } else { self.lastRefillError = nil }
-            } else {
-                _ = self.policy.failWarmRefill(slot: slot)
-                self.lastRefillError = "a warm spare display did not become ready"
-            }
-            self.completeRefillWaitersIfReady()
-            if ready { self.requestWarmRefillIfNeeded() }
-        }
-    }
-
-    func stopRefillingAndWait(_ completion: @escaping () -> Void) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.async { self.stopRefillingAndWait(completion) }
-            return
-        }
-        refillsStopped = true
-        if policy.backgroundPreparationCount == 0 { completion() }
-        else { refillWaiters.append(completion) }
-    }
-
-    private func completeRefillWaitersIfReady() {
-        guard policy.backgroundPreparationCount == 0 else { return }
-        let callbacks = refillWaiters
-        refillWaiters.removeAll()
-        callbacks.forEach { $0() }
-    }
-
-    func releaseAllDisplays() -> [VirtualDisplay] {
-        let values = displays.values.sorted { $0.id < $1.id }
-        for display in values { display.release() }
-        displays.removeAll()
-        return values
-    }
 }
 
 /// Window lifecycle observer. AX creation notifications wake reconciliation,
@@ -332,7 +89,8 @@ private final class SpatialWindowDiscovery {
         guard Thread.isMainThread, active, let owner else { return }
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let applications = NSWorkspace.shared.runningApplications.filter {
-            $0.processIdentifier != ownPID && $0.activationPolicy == .regular
+            $0.processIdentifier != ownPID && $0.activationPolicy == .regular &&
+                SpatialCoordinator.allowedPID($0.processIdentifier)
         }
         let livePIDs = Set(applications.map(\.processIdentifier))
         for pid in observers.keys.filter({ !livePIDs.contains($0) }) {
@@ -381,8 +139,8 @@ private final class SpatialWindowDiscovery {
     }
 }
 
-/// The hidden home display, mirror transaction, window snapshots and pool all
-/// share one lifecycle so every moved window is returned before display removal.
+/// One display and persisted window snapshots share a lifecycle. Captures end
+/// before originals are restored and the shared display is removed.
 final class SpatialCoordinator {
     private let lock = NSLock()
     private var state = "stopped"
@@ -391,20 +149,35 @@ final class SpatialCoordinator {
     private var windowJSON: [[String: Any]] = []
     private var fingerprint = Data()
 
-    private var home: VirtualDisplay?
-    private var pool: SpatialDisplayPool?
+    private var shared: VirtualDisplay?
     private var displaysBeingRemoved: [VirtualDisplay] = []
     private var builtIn: CGDirectDisplayID?
-    private var homeDisplayID: CGDirectDisplayID?
+    private var sharedDisplayID: CGDirectDisplayID?
     private var physicalLayout: SpatialPhysicalLayoutSnapshot?
     private var activePhysicalLayout: [SpatialLayoutDisplay]?
     private var restoreLayoutBaseline: [SpatialLayoutDisplay]?
     private var originals: [SpatialWindowIdentity: CGRect] = [:]
-    private var mirrorApplied = false
     private var sleepAssertion: IOPMAssertionID = 0
     private var spatialLeaseFD: Int32 = -1
     private var workspaceLeaseFD: Int32 = -1
     private lazy var discovery = SpatialWindowDiscovery(owner: self)
+    let focus = SpatialFocus()
+    lazy var surfaces = MenuSurfaceWatcher(coordinator: self)
+    private var skipped: [[String: Any]] = []
+    var display: VirtualDisplay? { shared }
+    var coverWindowID: CGWindowID? { cover.map { CGWindowID($0.windowNumber) } }
+    var menuBarDisplayID: CGDirectDisplayID? {
+        guard let shared, let builtIn else { return nil }
+        return SpatialSharedPolicy.menuBarDisplay(shared: shared.id, builtIn: builtIn,
+                                                   separateSpaces: NSScreen.screensHaveSeparateSpaces)
+    }
+    var menuBarRect: CGRect {
+        guard let id = menuBarDisplayID else { return .zero }
+        let bounds = CGDisplayBounds(id)
+        let screen = NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == id }
+        let height = screen.map { $0.frame.maxY - $0.visibleFrame.maxY } ?? 36
+        return CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width, height: max(24, height))
+    }
     private var queuedStop: ((@escaping () -> Void) -> Void, (Bool, String?, Bool) -> Void)?
 
     var stateValue: String { lock.lock(); defer { lock.unlock() }; return state }
@@ -412,6 +185,7 @@ final class SpatialCoordinator {
     var isStopping: Bool { stateValue == "stopping" }
 
     func statusJSON() -> [String: Any] {
+        if !Thread.isMainThread { return DispatchQueue.main.sync { self.statusJSON() } }
         // Desktop status polling must not walk Accessibility windows. Apart
         // from being unnecessary while stopped, remote AX applications can
         // stall the otherwise lightweight /status response.
@@ -423,7 +197,18 @@ final class SpatialCoordinator {
             }
         }
         lock.lock(); defer { lock.unlock() }
-        var result: [String: Any] = ["state": state, "revision": revision, "windows": windowJSON]
+        var result: [String: Any] = ["state": state, "revision": revision, "windows": windowJSON,
+                                     "skipped": skipped, "menus": surfaces.menusJSON,
+                                     "focusedSrc": focus.focusedSource ?? NSNull()]
+        if let shared {
+            let b = shared.bounds
+            result["display"] = ["id": shared.id, "bounds": SpatialSharedPolicy.rectJSON(b),
+                                 "scale": 2, "menuBarDisplay": menuBarDisplayID ?? shared.id]
+        } else { result["display"] = NSNull() }
+        if ProcessInfo.processInfo.environment["FRAME_SPATIAL_DIAGNOSTICS"] == "1" {
+            result["cursorFence"] = ["enabled": focus.fence.enabled, "events": focus.fence.eventCount,
+                                      "rects": focus.fence.rects.map(SpatialSharedPolicy.rectJSON)]
+        }
         if let lastError { result["error"] = lastError }
         return result
     }
@@ -434,7 +219,7 @@ final class SpatialCoordinator {
     }
 
     /// Saves the pre-separation frame on main. Existing snapshots taken before
-    /// mirroring win; newly opened windows get their first discovered frame.
+    /// moving win; newly opened windows get their first discovered frame.
     @discardableResult
     func captureOriginalIfNeeded(windowID: CGWindowID, pid: pid_t) -> Bool {
         guard Thread.isMainThread else {
@@ -445,6 +230,7 @@ final class SpatialCoordinator {
         if originals[identity] != nil { return true }
         guard let frame = AXWindow(windowID: windowID, pid: pid)?.frame else { return false }
         originals[identity] = frame
+        guard persistOriginals() else { originals[identity] = nil; return false }
         return true
     }
 
@@ -453,19 +239,19 @@ final class SpatialCoordinator {
         return originals[SpatialWindowIdentity(id: windowID, pid: pid)]
     }
 
-    /// Move a stopped/reconnecting stream's Mac window onto the shared home
-    /// display before its private pool slot can be reassigned. The mode-wide
-    /// original frame remains in `originals` for final restoration after the
-    /// physical display is unmirrored.
-    func parkWindowOnHomeForLeaseRelease(windowID: CGWindowID, pid: pid_t, window: AXWindow) -> Bool {
-        guard Thread.isMainThread, stateValue == "running" || stateValue == "stopping",
-              let home, let targetFrame = SpatialWindowPolicy.parkedFrame(windowID: windowID,
-                                                                         size: window.frame?.size ?? home.usableRect.size,
-                                                                         homeRect: home.usableRect) else { return false }
-        guard let info = WindowInfo.find(windowID), info.pid == pid else { return true }
-        window.setFrame(targetFrame)
+    func contains(windowID: CGWindowID) -> Bool {
+        windowsJSON().contains { ($0["id"] as? UInt32) == windowID }
+    }
+
+    private func place(_ info: WindowInfo) -> Bool {
+        guard let shared, let window = AXWindow(windowID: info.id, pid: info.pid),
+              captureOriginalIfNeeded(windowID: info.id, pid: info.pid) else { return false }
+        let target = SpatialSharedPolicy.sharedFrame(size: info.bounds.size, display: shared.usableRect,
+                                                       menuBar: menuBarRect)
+        if let actual = window.frame, Self.closeEnough(actual, target) { return true }
+        window.setFrame(target)
         guard let actual = window.frame else { return false }
-        return home.usableRect.insetBy(dx: -2, dy: -2).contains(actual)
+        return shared.bounds.insetBy(dx: -2, dy: -2).contains(actual)
     }
 
     private func setState(_ value: String, error: String? = nil) {
@@ -498,13 +284,33 @@ final class SpatialCoordinator {
             DispatchQueue.main.async { self.reconcileWindows(records, alive: alive, infos: infos, captureFrames: captureFrames) }
             return
         }
+        var accepted = [SpatialWindowRecord]()
+        var failures = [[String: Any]]()
         if captureFrames {
-            for info in infos { captureOriginalIfNeeded(windowID: info.id, pid: info.pid) }
+            for info in infos {
+                guard info.onScreen else { failures.append(["id": info.id, "reason": "Other Space"]); continue }
+                guard place(info), let actual = WindowInfo.find(info.id) else {
+                    failures.append(["id": info.id, "reason": "Window Could Not Move"]); continue
+                }
+                accepted.append(SpatialWindowRecord(id: actual.id, pid: actual.pid, app: actual.app,
+                    title: actual.title, bounds: actual.bounds,
+                    bundleID: NSRunningApplication(processIdentifier: actual.pid)?.bundleIdentifier))
+            }
+            for info in WindowInfo.all(onScreenOnly: false) where Self.allowedPID(info.pid) && info.layer == 0 {
+                if AXWindow(windowID: info.id, pid: info.pid)?.isFullScreen == true {
+                    failures.append(["id": info.id, "reason": "Full Screen"])
+                }
+            }
             originals = originals.filter { alive.contains($0.key) }
-        }
-        let json = records.map(\.json)
+            _ = persistOriginals()
+        } else { accepted = records }
+        accepted.sort { $0.pid == $1.pid ? $0.id < $1.id : $0.pid < $1.pid }
+        if let key = focus.focusedSource, case .spatial(let id)? = Source(key),
+           !accepted.contains(where: { $0.id == id }) { focus.removeWindow(id) }
+        let json = accepted.map(\.json)
         let bytes = (try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])) ?? Data()
         lock.lock()
+        skipped = failures
         if bytes != fingerprint {
             fingerprint = bytes
             windowJSON = json
@@ -519,7 +325,7 @@ final class SpatialCoordinator {
             case "running": completion(true, nil, true); return
             case "starting", "stopping": completion(false, "spatial mode is already changing state", false); return
             case "error":
-                guard self.home == nil, self.pool == nil, self.displaysBeingRemoved.isEmpty,
+                guard self.shared == nil, self.displaysBeingRemoved.isEmpty,
                       self.physicalLayout == nil, self.originals.isEmpty,
                       Self.onlineSpatialIDs()?.isEmpty == true else {
                     completion(false, self.lastError ?? "spatial cleanup must complete before restarting", false)
@@ -581,7 +387,7 @@ final class SpatialCoordinator {
         }
         physicalLayout = snapshot
         self.builtIn = builtIn
-        originals.removeAll()
+        guard originals.isEmpty else { return failStart("Pending Original Frames Must Be Restored First", completion: completion) }
         let existingWindows = WindowInfo.all(onScreenOnly: false).filter(Self.isEligible)
         for info in existingWindows {
             _ = captureOriginalIfNeeded(windowID: info.id, pid: info.pid)
@@ -590,7 +396,7 @@ final class SpatialCoordinator {
             originals[SpatialWindowIdentity(id: $0.id, pid: $0.pid)] == nil
         }
         guard unsnapshotted.isEmpty else {
-            return failStart("could not save the original frame for every eligible window before mirroring",
+            return failStart("could not save the original frame for every eligible window before moving",
                              completion: completion)
         }
         let assertion = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
@@ -600,50 +406,39 @@ final class SpatialCoordinator {
         guard assertion == kIOReturnSuccess else {
             return failStart("macOS would not prevent display sleep while spatial displays are active", completion: completion)
         }
-        guard let display = VirtualDisplay(name: "Frame Spatial Home", width: 1280, height: 800,
-                                           pixelScale: 1, purpose: .spatialHome) else {
-            return failStart("macOS would not create the spatial home display", completion: completion)
+        let size = SpatialSharedPolicy.displaySize(ProcessInfo.processInfo.environment["FRAME_SPATIAL_SHARED_SIZE"])
+        guard let display = VirtualDisplay(name: "Frame Spatial Shared", width: Int(size.width), height: Int(size.height),
+                                           pixelScale: 2, purpose: .spatialShared) else {
+            return failStart("macOS Would Not Create The Shared Spatial Display", completion: completion)
         }
-        home = display
-        homeDisplayID = display.id
+        shared = display
+        sharedDisplayID = display.id
         if let current = currentPhysicalLayoutStates() { restoreLayoutBaseline = current.1 }
-        waitForModeReady(display, width: 1280, height: 800, pixelScale: 1, attempt: 0) { ready in
-            guard ready else { return self.failStart("the spatial home display did not become ready", completion: completion) }
-            let pool = SpatialDisplayPool()
-            self.pool = pool
-            pool.prewarm { error in
-                if let current = self.currentPhysicalLayoutStates() { self.restoreLayoutBaseline = current.1 }
-                if let error { return self.failStart(error, completion: completion) }
-                // The laptop screen: mirrored to the home (FRAME_SPATIAL_MIRROR=1, the
-                // lid-closed setup; while mirrored macOS stalls or rejects the
-                // per-window displays' mode changes, see SPATIAL.md) or, by default,
-                // left as the main display behind a black cover. The home is then
-                // only a hidden parking place, and no layout change is needed.
-                let mirror = Self.mirrorsBuiltIn
-                if mirror {
-                    guard self.applyMirror(builtIn: builtIn, home: display.id) else {
-                        return self.failStart("macOS rejected the built-in display mirror transaction", completion: completion)
-                    }
-                    self.mirrorApplied = true
-                }
-                let verify: (@escaping (Bool) -> Void) -> Void = { done in
-                    if mirror { self.verifyMirror(builtIn: builtIn, home: display.id, attempt: 0, completion: done) }
-                    else { done(true) }
-                }
-                verify { verified in
-                    guard verified else { return self.failStart("the spatial home display did not become the main display", completion: completion) }
-                    if !mirror { self.showCover(on: builtIn) }
-                    guard let activeLayout = self.currentPhysicalLayoutStates()?.1 else {
-                        return self.failStart("WindowServer could not confirm the physical layout after mirroring", completion: completion)
-                    }
-                    self.activePhysicalLayout = activeLayout
-                    self.restoreLayoutBaseline = activeLayout
-                    self.discovery.start()
-                    self.setState("running")
-                    completion(true, nil, true)
-                    self.runQueuedStopIfNeeded()
-                }
+        waitForModeReady(display, width: Int(size.width), height: Int(size.height), pixelScale: 2, attempt: 0) { ready in
+            guard ready else { return self.failStart("The Shared Spatial Display Did Not Become Ready", completion: completion) }
+            let b = CGDisplayBounds(builtIn)
+            var config: CGDisplayConfigRef?
+            guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+                return self.failStart("Could Not Position The Shared Display", completion: completion)
             }
+            guard CGConfigureDisplayOrigin(config, display.id, Int32(b.maxX - 128), Int32(b.maxY)) == .success else {
+                CGCancelDisplayConfiguration(config)
+                return self.failStart("Could Not Position The Shared Display", completion: completion)
+            }
+            guard CGCompleteDisplayConfiguration(config, .forAppOnly) == .success else {
+                return self.failStart("macOS Rejected The Shared Display Position", completion: completion)
+            }
+            guard self.focus.fence.start() else {
+                return self.failStart("macOS Would Not Create The Spatial Cursor Fence", completion: completion)
+            }
+            self.showCover(on: builtIn)
+            self.activePhysicalLayout = self.currentPhysicalLayoutStates()?.1
+            self.restoreLayoutBaseline = self.activePhysicalLayout
+            self.setState("running")
+            self.discovery.start()
+            self.surfaces.start()
+            completion(true, nil, true)
+            self.runQueuedStopIfNeeded()
         }
     }
 
@@ -659,18 +454,7 @@ final class SpatialCoordinator {
         }
     }
 
-    func leaseDisplay(windowID: CGWindowID, width: Int, height: Int, owner: UUID,
-                      completion: @escaping (SpatialDisplayLease?, String?) -> Void) {
-        DispatchQueue.main.async {
-            guard self.stateValue == "running", let pool = self.pool else {
-                return completion(nil, "spatial display pool is not running")
-            }
-            pool.lease(windowID: windowID, width: width, height: height, owner: owner, completion: completion)
-        }
-    }
-
-    /// Stop admission first, then let Agent await every SeparateSource restore
-    /// before unmirroring the physical screen and removing the pool.
+    /// Admission stops before captures, windows and the display are torn down.
     func stop(afterStreams: @escaping (@escaping () -> Void) -> Void,
               completion: @escaping (Bool, String?, Bool) -> Void) {
         DispatchQueue.main.async {
@@ -685,7 +469,7 @@ final class SpatialCoordinator {
             if current == "stopping" {
                 return completion(false, "spatial cleanup is already in progress", false)
             }
-            let hasLocalOwnership = self.spatialLeaseFD >= 0 || self.home != nil || self.pool != nil ||
+            let hasLocalOwnership = self.spatialLeaseFD >= 0 || self.shared != nil ||
                 !self.displaysBeingRemoved.isEmpty
             if !hasLocalOwnership {
                 guard let probe = Self.tryLock(Self.spatialLeasePath) else {
@@ -694,7 +478,7 @@ final class SpatialCoordinator {
                 }
                 self.spatialLeaseFD = probe
             }
-            if current == "stopped" && self.home == nil && self.pool == nil && self.displaysBeingRemoved.isEmpty {
+            if current == "stopped" && self.shared == nil && self.displaysBeingRemoved.isEmpty {
                 guard let orphans = Self.onlineSpatialIDs() else {
                     self.releaseLeases()
                     self.setState("error", error: "WindowServer could not confirm whether spatial displays remain registered")
@@ -726,71 +510,32 @@ final class SpatialCoordinator {
     private func cleanupAfterStreams(message: String?, completion: @escaping (Bool, String?) -> Void) {
         hideCover()
         discovery.stop()
-        if let pool {
-            pool.stopRefillingAndWait { self.finishCleanupAfterRefills(message: message, completion: completion) }
-        } else {
-            finishCleanupAfterRefills(message: message, completion: completion)
-        }
-    }
-
-    private func finishCleanupAfterRefills(message: String?, completion: @escaping (Bool, String?) -> Void) {
-        let outstandingLeases = pool?.activeLeaseCount ?? 0
-        guard SpatialCleanupGate.hasNoOutstandingLeases(outstandingLeases) else {
-            return completion(false, "one or more spatial window displays are still leased")
-        }
-        if home == nil, pool == nil, !displaysBeingRemoved.isEmpty {
-            return waitForRemoval(attempt: 0) { didRemove in
-                guard didRemove else { return completion(false, "spatial display removal is still pending") }
+        surfaces.stop()
+        focus.clear()
+        if shared == nil, !displaysBeingRemoved.isEmpty {
+            return waitForRemoval(attempt: 0) { removed in
+                guard removed else { return completion(false, "spatial display removal is still pending") }
                 self.restoreAfterRemoval(completion: completion)
             }
         }
-        unmirrorIfNeeded { unmirrored, unmirrorError in
-            guard unmirrored else { return completion(false, unmirrorError ?? "could not undo display mirroring") }
-            guard let unmirroredLayout = self.currentPhysicalLayoutStates()?.1 else {
-                return completion(false, "WindowServer could not confirm the physical layout after unmirroring")
-            }
-            self.restoreLayoutBaseline = unmirroredLayout
-            self.restorePhysicalLayout { layoutRestored in
-                guard layoutRestored else {
-                    return completion(false, "the original physical display layout could not be restored; retained it for retry")
+        restorePhysicalLayout { restored in
+            guard restored else { return completion(false, "the original physical display layout could not be restored") }
+            self.restoreOriginals(attempt: 0) { restored in
+                guard SpatialCleanupGate.mayReleaseDisplays(windowsRestored: restored) else {
+                    return completion(false, "Some Original Window Frames Could Not Be Restored")
                 }
-                self.mirrorApplied = false
-                self.restoreOriginals(attempt: 0) { framesRestored in
-                    let stillLeased = self.pool?.activeLeaseCount ?? 0
-                    guard SpatialCleanupGate.mayReleaseDisplays(unmirrored: unmirrored, windowsRestored: framesRestored,
-                                                                 outstandingLeases: stillLeased) else {
-                        return completion(false, framesRestored ? "one or more spatial window displays are still leased" :
-                            "some window frames could not be restored after unmirroring")
-                    }
-                    guard self.physicalLayoutMatchesSnapshot(requireMain: false) && self.originalsMatchCurrentFrames() else {
-                        return completion(false, "display layout or window frames changed before spatial display removal")
-                    }
-                    var removed = self.pool?.releaseAllDisplays() ?? []
-                    if let home = self.home { home.release(); removed.append(home) }
-                    self.home = nil
-                    self.pool = nil
-                    self.displaysBeingRemoved = removed
-                    self.waitForRemoval(attempt: 0) { didRemove in
-                        guard didRemove else {
-                            return completion(false, "spatial display removal is still pending; the helper retained restoration state")
-                        }
-                        self.restoreAfterRemoval(completion: completion)
-                    }
+                if let shared = self.shared {
+                    shared.release()
+                    self.displaysBeingRemoved = [shared]
+                    self.shared = nil
+                }
+                self.waitForRemoval(attempt: 0) { removed in
+                    guard removed else { return completion(false, "spatial display removal is still pending") }
+                    self.restoreAfterRemoval(completion: completion)
                 }
             }
         }
     }
-
-    private func verifyMirror(builtIn: CGDirectDisplayID, home: CGDirectDisplayID, attempt: Int,
-                              completion: @escaping (Bool) -> Void) {
-        let bounds = CGDisplayBounds(home)
-        if CGDisplayMirrorsDisplay(builtIn) == home, CGDisplayIsMain(home) != 0,
-           abs(bounds.minX) < 1, abs(bounds.minY) < 1 { completion(true) }
-        else if attempt >= 30 { completion(false) }
-        else { DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { self.verifyMirror(builtIn: builtIn, home: home, attempt: attempt + 1, completion: completion) } }
-    }
-
-    static let mirrorsBuiltIn = ProcessInfo.processInfo.environment["FRAME_SPATIAL_MIRROR"] == "1"
 
     /// A plain black cover over the laptop screen, just above normal windows,
     /// so the menu bar, Dock and system dialogs stay visible and usable there.
@@ -813,18 +558,6 @@ final class SpatialCoordinator {
         cover?.orderOut(nil)
         cover?.close()
         cover = nil
-    }
-
-    private func applyMirror(builtIn: CGDirectDisplayID, home: CGDirectDisplayID) -> Bool {
-        var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success, let config else { return false }
-        let mirror = CGConfigureDisplayMirrorOfDisplay(config, builtIn, home)
-        let origin = CGConfigureDisplayOrigin(config, home, 0, 0)
-        guard mirror == .success, origin == .success else {
-            CGCancelDisplayConfiguration(config)
-            return false
-        }
-        return CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
     }
 
     /// VirtualDisplay configures its mode once at creation; this polls only for
@@ -856,52 +589,6 @@ final class SpatialCoordinator {
         }
     }
 
-    private func unmirrorIfNeeded(completion: @escaping (Bool, String?) -> Void) {
-        guard let builtIn, let home else {
-            guard let ids = Self.onlineSpatialIDs() else {
-                completion(false, "WindowServer could not confirm whether spatial displays remain registered")
-                return
-            }
-            completion(ids.isEmpty, ids.isEmpty ? nil : "spatial displays remain registered without a live owner")
-            return
-        }
-        if mirrorApplied, let activePhysicalLayout {
-            // Something else changed the layout during the session. Undoing our
-            // own mirror of the built-in is still safe (it only reverses what we
-            // did) and leaving the laptop screen mirrored would strand the user,
-            // so log what differs and carry on.
-            let current = currentPhysicalLayoutStates()
-            if current == nil || !SpatialLayoutPolicy.isRestored(snapshot: activePhysicalLayout, current: current!.1,
-                                                                 spatialDisplayIDs: ownedSpatialDisplayIDs) {
-                FileHandle.standardError.write(Data(("frame-mac-view: layout differs from the session's at stop; " +
-                    "undoing our mirror anyway. session=\(activePhysicalLayout) current=\(String(describing: current?.1)) " +
-                    "owned=\(ownedSpatialDisplayIDs.sorted())\n").utf8))
-            }
-        }
-        let current = CGDisplayMirrorsDisplay(builtIn)
-        guard current == home.id || current == kCGNullDirectDisplay else {
-            completion(false, "the built-in display is mirrored by another display; left untouched")
-            return
-        }
-        guard current == home.id else { completion(true, nil); return }
-        var config: CGDisplayConfigRef?
-        guard CGBeginDisplayConfiguration(&config) == .success, let config else {
-            completion(false, "could not begin the display unmirror transaction")
-            return
-        }
-        let changed = CGConfigureDisplayMirrorOfDisplay(config, builtIn, kCGNullDirectDisplay)
-        guard changed == .success else {
-            CGCancelDisplayConfiguration(config)
-            completion(false, "could not undo the built-in display mirror")
-            return
-        }
-        let applied = CGCompleteDisplayConfiguration(config, .forAppOnly) == .success
-        if applied {
-            mirrorApplied = false
-            completion(true, nil)
-        } else { completion(false, "macOS did not apply the display unmirror transaction") }
-    }
-
     private static func capturePhysicalLayout(onlineIDs: [CGDirectDisplayID]) -> SpatialPhysicalLayoutSnapshot? {
         guard !onlineIDs.isEmpty,
               let main = onlineIDs.first(where: { CGDisplayIsMain($0) != 0 }) else { return nil }
@@ -918,9 +605,8 @@ final class SpatialCoordinator {
 
     private var ownedSpatialDisplayIDs: Set<CGDirectDisplayID> {
         var ids = Set(displaysBeingRemoved.map(\.id))
-        if let home { ids.insert(home.id) }
-        if let homeDisplayID { ids.insert(homeDisplayID) }
-        if let pool { ids.formUnion(pool.displayIDs) }
+        if let shared { ids.insert(shared.id) }
+        if let sharedDisplayID { ids.insert(sharedDisplayID) }
         return ids
     }
 
@@ -961,7 +647,7 @@ final class SpatialCoordinator {
     /// can be retried if WindowServer has not settled yet.
     private func restorePhysicalLayout(completion: @escaping (Bool) -> Void) {
         guard let snapshotStates = snapshotLayoutStates(), let physicalLayout,
-              let builtIn, let current = currentPhysicalLayoutStates() else {
+              let current = currentPhysicalLayoutStates() else {
             completion(physicalLayout == nil)
             return
         }
@@ -974,13 +660,12 @@ final class SpatialCoordinator {
             return
         }
         guard SpatialLayoutPolicy.permitsRestore(snapshot: snapshotStates, current: currentStates,
-                                                  spatialDisplayIDs: owned, ownedMirrorSource: builtIn,
-                                                  ownedMirrorTarget: homeDisplayID,
+                                                  spatialDisplayIDs: owned,
                                                   knownSessionLayout: restoreLayoutBaseline) else {
             completion(false)
             return
         }
-        let requireMain = home == nil && pool == nil
+        let requireMain = shared == nil
         if SpatialLayoutPolicy.isRestored(snapshot: snapshotStates, current: currentStates,
                                           spatialDisplayIDs: owned, requireMain: requireMain) {
             completion(true)
@@ -1089,7 +774,6 @@ final class SpatialCoordinator {
             guard layoutRestored else {
                 return completion(false, "the original physical display layout is still not confirmed after removal")
             }
-            self.mirrorApplied = false
             self.restoreOriginals(attempt: 0) { framesRestored in
                 guard framesRestored, self.physicalLayoutMatchesSnapshot(), self.originalsMatchCurrentFrames() else {
                     return completion(false, "the original physical layout or window frames changed after display removal")
@@ -1107,6 +791,7 @@ final class SpatialCoordinator {
             guard let window = AXWindow(windowID: identity.id, pid: identity.pid) else {
                 pending.append((identity, frame)); continue
             }
+            if let actual = window.frame, Self.closeEnough(actual, frame) { continue }
             window.setFrame(frame)
             if let actual = window.frame, Self.closeEnough(actual, frame) { continue }
             pending.append((identity, frame))
@@ -1144,6 +829,7 @@ final class SpatialCoordinator {
     }
 
     static func isEligible(_ info: WindowInfo) -> Bool {
+        guard allowedPID(info.pid) else { return false }
         let app = NSRunningApplication(processIdentifier: info.pid)
         guard let window = AXWindow(windowID: info.id, pid: info.pid) else { return false }
         let candidate = SpatialWindowCandidate(layer: info.layer, width: info.bounds.width, height: info.bounds.height,
@@ -1194,12 +880,70 @@ final class SpatialCoordinator {
         displaysBeingRemoved.removeAll()
         releaseSleepAssertion()
         builtIn = nil
-        homeDisplayID = nil
+        sharedDisplayID = nil
         physicalLayout = nil
         activePhysicalLayout = nil
         restoreLayoutBaseline = nil
         originals.removeAll()
+        lock.lock(); windowJSON.removeAll(); skipped.removeAll(); fingerprint = Data(); revision &+= 1; lock.unlock()
+        _ = persistOriginals()
         releaseLeases()
+    }
+
+    static func allowedPID(_ pid: pid_t) -> Bool {
+        guard let raw = ProcessInfo.processInfo.environment["FRAME_SPATIAL_ONLY_PIDS"] else { return true }
+        return raw.split(separator: ",").compactMap { Int32($0) }.contains(pid)
+    }
+
+    private var originalsURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            "Library/Application Support/Frame Control/spatial-originals.json")
+    }
+
+    private func persistOriginals() -> Bool {
+        do {
+            if originals.isEmpty {
+                if FileManager.default.fileExists(atPath: originalsURL.path) { try FileManager.default.removeItem(at: originalsURL) }
+                return true
+            }
+            let records = originals.map { identity, rect -> [String: Any] in
+                ["id": identity.id, "pid": identity.pid, "rect": SpatialSharedPolicy.rectJSON(rect)]
+            }
+            try FileManager.default.createDirectory(at: originalsURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: records, options: [.sortedKeys]).write(to: originalsURL, options: .atomic)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: originalsURL.path)
+            return true
+        } catch {
+            FileHandle.standardError.write(Data("frame-mac-view: could not persist spatial originals: \(error)\n".utf8))
+            return false
+        }
+    }
+
+    func restorePersistedAtStartup() {
+        guard Thread.isMainThread, FileManager.default.fileExists(atPath: originalsURL.path) else { return }
+        guard acquireLeases().success else { setState("error", error: "Another Helper Owns Pending Spatial Originals"); return }
+        do {
+            let data = try Data(contentsOf: originalsURL)
+            guard let records = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
+            for record in records {
+                guard let id = record["id"] as? UInt32, let pid = record["pid"] as? Int32,
+                      let rect = record["rect"] as? [Double], rect.count == 4,
+                      rect.allSatisfy(\.isFinite), rect[2] > 0, rect[3] > 0 else { throw CocoaError(.fileReadCorruptFile) }
+                originals[SpatialWindowIdentity(id: id, pid: pid)] = CGRect(x: rect[0], y: rect[1], width: rect[2], height: rect[3])
+            }
+            // Fixture restrictions also apply to recovery; never mutate an unlisted process.
+            guard originals.keys.allSatisfy({ Self.allowedPID($0.pid) }) else {
+                setState("error", error: "Pending Originals Include Processes Outside FRAME_SPATIAL_ONLY_PIDS")
+                return
+            }
+            setState("stopping")
+            restoreOriginals(attempt: 0) { restored in
+                if restored { self.originals.removeAll(); _ = self.persistOriginals(); self.releaseLeases(); self.setState("stopped") }
+                else { self.setState("error", error: "Startup Could Not Restore Spatial Originals") }
+            }
+        } catch { setState("error", error: "Could Not Read Persisted Spatial Originals: \(error)") }
     }
 
     private static var spatialLeasePath: String { "/tmp/frame-spatial-\(getuid()).lock" }

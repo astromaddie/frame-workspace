@@ -17,7 +17,7 @@ final class VirtualDisplay {
     /// Workspace displays remain ordinary entries in the display picker. Only
     /// per-window displays use `vendor`, which `displaysJSON()` intentionally hides.
     static let workspaceVendor: UInt32 = 0xF0C1
-    /// Spatial home and pooled window displays are internal to the helper.
+    /// The shared spatial display is internal to the helper.
     static let spatialVendor: UInt32 = 0xF0C2
     /// How often macOS composites our displays (FRAME_MAC_VIEW_VD_HZ to experiment).
     static let refreshRate = Double(ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_VD_HZ"] ?? "") ?? 60
@@ -29,7 +29,7 @@ final class VirtualDisplay {
     /// can't be reused until it's gone, so each display gets a fresh serial.
     private static var serial = (UInt32(truncatingIfNeeded: ProcessInfo.processInfo.processIdentifier) & 0xFFFF) << 12
 
-    enum Purpose { case separate, workspace, spatialHome, spatialWindow }
+    enum Purpose { case separate, workspace, spatialShared }
 
     init?(name: String, width: Int, height: Int, pixelScale: Int = 2, purpose: Purpose = .separate) {
         var made: CGVirtualDisplay?
@@ -38,24 +38,19 @@ final class VirtualDisplay {
             let d = CGVirtualDisplayDescriptor()
             d.queue = DispatchQueue.main
             d.name = name
-            // Exactly the window's HiDPI size, as for separated windows: with a
-            // larger maximum macOS picks a bigger default mode and, on the user's
-            // M4 (2026-10-21), stalls or refuses (1001) the change to the right one.
-            // (Reshaping pooled displays needs a larger maximum; the pool is off.)
-            let reshapable = purpose == .spatialWindow && SpatialPoolPolicy.warmSpareCount > 0
-            d.maxPixelsWide = UInt32(reshapable ? 5120 : pixelScale * width)
-            d.maxPixelsHigh = UInt32(reshapable ? 3200 : pixelScale * height)
+            d.maxPixelsWide = UInt32(pixelScale * width)
+            d.maxPixelsHigh = UInt32(pixelScale * height)
             d.sizeInMillimeters = CGSize(width: Double(width) * 0.2646, height: Double(height) * 0.2646)
             d.vendorID = purpose == .workspace ? VirtualDisplay.workspaceVendor :
-                (purpose == .spatialHome || purpose == .spatialWindow) ? VirtualDisplay.spatialVendor : VirtualDisplay.vendor
+                (purpose == .spatialShared) ? VirtualDisplay.spatialVendor : VirtualDisplay.vendor
             d.productID = purpose == .workspace ? 0x5E9B :
-                (purpose == .spatialHome || purpose == .spatialWindow) ? 0x5E9C : 0x5E9A
+                (purpose == .spatialShared) ? 0x5E9D : 0x5E9A
             d.serialNum = VirtualDisplay.serial
             d.terminationHandler = { _, _ in }
             guard let vd = CGVirtualDisplay(descriptor: d) else { continue }
             let s = CGVirtualDisplaySettings()
             s.hiDPI = pixelScale == 2 ? 1 : 0
-            let hz = VirtualDisplay.refreshRate
+            let hz = purpose == .spatialShared ? 60 : VirtualDisplay.refreshRate
             if pixelScale == 2 {
                 s.modes = [CGVirtualDisplayMode(width: UInt32(2 * width), height: UInt32(2 * height), refreshRate: hz)!,
                            CGVirtualDisplayMode(width: UInt32(width), height: UInt32(height), refreshRate: hz)!]
@@ -73,7 +68,7 @@ final class VirtualDisplay {
         let modes = (CGDisplayCopyAllDisplayModes(id, [kCGDisplayShowDuplicateLowResolutionModes: true] as CFDictionary)
             as? [CGDisplayMode]) ?? []
         let requestedMode: CGDisplayMode?
-        if purpose == .separate || purpose == .spatialWindow {
+        if purpose == .separate {
             requestedMode = modes.first(where: {
                 $0.width == width && $0.height == height && $0.pixelWidth == 2 * width && $0.refreshRate == VirtualDisplay.refreshRate
             }) ?? modes.first(where: { $0.width == width && $0.height == height && $0.pixelWidth == 2 * width })
@@ -86,7 +81,7 @@ final class VirtualDisplay {
             })
         }
         if let hidpi = requestedMode {
-            if purpose == .separate || purpose == .spatialWindow {
+            if purpose == .separate {
                 var cfg: CGDisplayConfigRef?
                 if CGBeginDisplayConfiguration(&cfg) == .success, let cfg,
                    CGConfigureDisplayWithDisplayMode(cfg, id, hidpi, nil) == .success {
@@ -133,10 +128,10 @@ final class VirtualDisplay {
             lastModeConfigurationError = "CGConfigureDisplayWithDisplayMode returned \(configured.rawValue)"
             return false
         }
-        // Spatial mode changes must keep the same lifetime as its mirror:
+        // Spatial mode changes have the lifetime of the owning helper:
         // macOS rolls them back when the owning helper exits.
         let completed = CGCompleteDisplayConfiguration(config,
-            purpose == .spatialHome || purpose == .spatialWindow ? .forAppOnly : .forSession)
+            purpose == .spatialShared ? .forAppOnly : .forSession)
         guard completed == .success else {
             lastModeConfigurationError = "CGCompleteDisplayConfiguration returned \(completed.rawValue)"
             return false
@@ -144,31 +139,6 @@ final class VirtualDisplay {
         lastModeConfigurationError = nil
         return true
     }
-
-    /// A pooled spatial display keeps one CGVirtualDisplay identity but may
-    /// change its active mode as different windows borrow it.
-    @discardableResult
-    func reconfigure(width: Int, height: Int, pixelScale: Int = 2) -> Bool {
-        guard let display, purposeSupportsReconfiguration else { return false }
-        let settings = CGVirtualDisplaySettings()
-        settings.hiDPI = pixelScale == 2 ? 1 : 0
-        let hz = VirtualDisplay.refreshRate
-        var modes = [CGVirtualDisplayMode(width: UInt32(pixelScale * width), height: UInt32(pixelScale * height), refreshRate: hz)!]
-        if pixelScale == 2 {
-            modes.append(CGVirtualDisplayMode(width: UInt32(width), height: UInt32(height), refreshRate: hz)!)
-        }
-        settings.modes = modes
-        guard display.apply(settings) else {
-            lastModeConfigurationError = "CGVirtualDisplay rejected the requested window mode"
-            return false
-        }
-        // macOS may not list the new modes yet, so this first attempt can fail;
-        // the spatial pool applies the mode again while it waits for it.
-        _ = applyWorkspaceMode(width: width, height: height, pixelScale: pixelScale)
-        return true
-    }
-
-    private var purposeSupportsReconfiguration: Bool { purpose == .spatialWindow }
 
     var isHiDPI: Bool { CGDisplayCopyDisplayMode(id).map { $0.pixelWidth > $0.width } ?? false }
 
@@ -274,10 +244,7 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
     private(set) var app = ""
     private(set) var pid: pid_t?
     private(set) var gone = false
-    private(set) var isSpatialStream = false
-    private let spatial: SpatialCoordinator?
     private var display: VirtualDisplay?
-    private var lease: SpatialDisplayLease?
     private let innerLock = NSLock()
     private var inner: SCKSource?
     private var window: AXWindow?
@@ -290,18 +257,15 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
     private var captureStopFinished = false
     private var restorationInProgress = false
     private var stopCallbacks: [() -> Void] = []
-    private var leaseRequestPending = false
     private let queue = DispatchQueue(label: "frame-mac-view.separate")
-    private let leaseOwner = UUID()
 
     var hasCompletedStop: Bool { stopComplete }
 
-    init(windowID: CGWindowID, spatial: SpatialCoordinator? = nil) {
+    init(windowID: CGWindowID) {
         self.windowID = windowID
-        self.spatial = spatial
     }
 
-    private var activeDisplay: VirtualDisplay? { lease?.display ?? display }
+    private var activeDisplay: VirtualDisplay? { display }
 
     private var currentInner: SCKSource? {
         innerLock.lock(); defer { innerLock.unlock() }
@@ -329,56 +293,18 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
                 return completion("couldn't reach that window through Accessibility")
             }
             if w.isFullScreen { return completion("take the window out of full screen first") }
-            let startingSpatial = spatial?.isRunning == true
-            let frame: CGRect
-            if startingSpatial {
-                guard spatial?.captureOriginalIfNeeded(windowID: windowID, pid: info.pid) == true,
-                      let preSpatialFrame = spatial?.originalFrame(windowID: windowID, pid: info.pid) else {
-                    return completion("couldn't save the window's original frame before separating it")
-                }
-                frame = preSpatialFrame
-                isSpatialStream = true
-            } else {
-                frame = currentFrame
-            }
+            let frame = currentFrame
             // A display the window's size, plus room for the menu bar, in
             // points; within what a panel can show sharply.
             let width = min(max(Int(frame.width.rounded()), 640), 2560) / 2 * 2
             let height = min(max(Int(frame.height.rounded()) + 40, 480), 1600) / 2 * 2
             window = w
             original = frame
-            if startingSpatial {
-                leaseRequestPending = true
-                log("leasing a \(width)x\(height) display")
-                spatial?.leaseDisplay(windowID: windowID, width: width, height: height, owner: leaseOwner) { [weak self] lease, error in
-                    self?.log(lease != nil ? "lease ready" : "lease failed: \(error ?? "no reason")")
-                    guard let self else {
-                        lease?.release(completion: {})
-                        return
-                    }
-                    self.leaseRequestPending = false
-                    guard !self.stopped else {
-                        if let lease { lease.release { self.finishStop() } }
-                        else { self.finishStop() }
-                        return
-                    }
-                    guard let lease else { return completion(error ?? "could not lease a spatial window display") }
-                    self.lease = lease
-                    // Pool leases return only after the requested HiDPI mode is
-                    // active and NSScreen has incorporated the display.
-                    self.placeWindow(attempt: 0, maxLong: maxLong, completion: completion)
-                }
-            } else if spatial?.isStopping == true {
-                stopAndWait { completion("spatial mode is stopping") }
-            } else {
-                guard let vd = VirtualDisplay(name: app.isEmpty ? "Frame Control" : "\(app) (Frame)", width: width, height: height) else {
-                    return completion("macOS wouldn't create a display for this window")
-                }
-                display = vd
-                // The new screen shows up in NSScreen a moment later; its menu bar
-                // decides where the window can go.
-                placeWindow(attempt: 0, maxLong: maxLong, completion: completion)
+            guard let vd = VirtualDisplay(name: app.isEmpty ? "Frame Control" : "\(app) (Frame)", width: width, height: height) else {
+                return completion("macOS wouldn't create a display for this window")
             }
+            display = vd
+            placeWindow(attempt: 0, maxLong: maxLong, completion: completion)
         }
     }
 
@@ -504,9 +430,7 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
         }
     }
 
-    /// A spatial stream returns its window to the shared home display before
-    /// releasing its pool slot. Non-spatial separation keeps the established
-    /// behavior of restoring the frame captured when that stream began.
+    /// Restore the frame captured when this separate stream began.
     private func restoreOrParkWindow() -> (safe: Bool, closed: Bool) {
         guard let window else { return (true, true) }
         guard let current = WindowInfo.find(windowID), current.pid == pid else {
@@ -515,9 +439,7 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
             return (true, true)
         }
         let safe: Bool
-        if isSpatialStream, let pid {
-            safe = spatial?.parkWindowOnHomeForLeaseRelease(windowID: windowID, pid: pid, window: window) == true
-        } else if let frame = original {
+        if let frame = original {
             window.setFrame(frame)
             safe = window.frame.map { Self.closeEnough($0, frame) } ?? false
         } else {
@@ -531,13 +453,10 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
     }
 
     private func restoreForStop(attempt: Int) {
-        guard captureStopFinished, !stopComplete, leaseRequestPending == false else { return }
+        guard captureStopFinished, !stopComplete else { return }
         if !restorationInProgress { restorationInProgress = true }
         let result = restoreOrParkWindow()
-        let mayReleaseSpatialLease = !isSpatialStream ||
-            SpatialCleanupGate.mayReleaseLease(windowParkedOnHome: result.safe && !result.closed,
-                                                windowClosed: result.closed)
-        guard result.safe && mayReleaseSpatialLease else {
+        guard result.safe else {
             guard attempt < 10 else {
                 restorationInProgress = false
                 let callbacks = stopCallbacks
@@ -552,14 +471,9 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self else { return }
-            if let lease = self.lease {
-                self.lease = nil
-                lease.release { self.display?.release(); self.display = nil; self.finishStop() }
-            } else {
-                self.display?.release()
-                self.display = nil
-                self.finishStop()
-            }
+            self.display?.release()
+            self.display = nil
+            self.finishStop()
         }
     }
 
@@ -569,7 +483,7 @@ final class SeparateSource: CaptureSource, CaptureStopAwaitable {
     }
 
     private func finishStop() {
-        guard !stopComplete, !leaseRequestPending else { return }
+        guard !stopComplete else { return }
         stopComplete = true
         let callbacks = stopCallbacks
         stopCallbacks.removeAll()
