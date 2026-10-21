@@ -338,6 +338,8 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
     }
     glViewport(vp[0], vp[1], vp[2], vp[3]);
   }
+  // Borrowed texture after draw(); owned until the renderer is destroyed.
+  GLuint tileTexture(size_t index) const { return layers.at(index).texture; }
   bool dump(const std::string &path, const std::vector<SpatialTile> &tiles) {
     const int w = 1280, h = 720;
     GLuint output;

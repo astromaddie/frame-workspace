@@ -835,3 +835,79 @@ renderer regression; isolated Frame AArch64 build using
 The Frame check exercised no GL/OpenVR session or installed viewer. Real eye
 tracking, controller bindings, SteamVR presentation, Mac action delivery and
 worn comfort remain acceptance checks. Temporary builds and fixtures were removed.
+
+### Offline Spatial Scene
+
+`--render-scene` composites the native host's overlays into a perspective PNG,
+without OpenVR, the headset, or a companion connection:
+
+```sh
+native/build/frame-workspace-native --render-scene native/scene/example.json native/evidence/spatial-scene.png
+native/build/frame-workspace-native --render-scene native/scene/example-slim.json native/evidence/spatial-scene-slim.png
+# Metres; yaw right and pitch up in degrees. Options follow the two paths.
+native/build/frame-workspace-native --render-scene native/scene/example.json /tmp/scene.png --eye 0.08,0.04,0 --look 5,-3 --fov 100 --size 1920x1200
+```
+
+The default camera is at the origin, looking along -Z, with a **100-degree
+horizontal FOV stand-in**: this repository does not document the Frame's lens
+FOV. Output defaults to 1920×1200, rendered at twice each dimension and resolved
+from four samples per pixel. The dark room and floor grid at -1.6 m are depth
+references, not passthrough. This is a monoscopic software composition of the
+host's submitted surfaces, not SteamVR compositor, optical, or worn evidence.
+
+The scene lists `panels` (`id`, `role: "window"`, `placement` in the existing
+version-1 pose format, `texture`, optional metre `height`, `focused`, `focusGlow`,
+`focusSnap`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
+`status`, `dropdown` entries (`texture` and the existing `surface` message).
+PNG paths are relative to the JSON. Input is premultiplied through Cairo.
+Only one window may be focused. The fixture poses are explicitly arranged to
+show an even bend, unequal side bends, and unequal vertical bends; they are not
+a new default layout. `python3 native/scene/generate-fixtures.py` regenerates
+all synthetic textures and both manifests using the existing Cairo dependency.
+No real window content is included in those fixtures.
+
+The compositor consumes `bendSegment` transforms/widths/UV bounds, including
+the 2 mm split seam, curvature radius `width / (2*pi*curvature)`, concentric
+layer offsets, and vertical texture orientation. It uses `ChromeRenderer`
+with the same 15 mm bezel and 30 mm controls offsets, shared cursor texture,
+`SpatialRenderer`'s rendered D1 shelf/dock textures, `SurfaceRenderer`'s
+auxiliary material, and `menuStripPlacement`, `statusStripPlacement`, and
+`surfacePlacement`. Overlay sort bands preserve the selected window in front
+of other windows and the shelf/menu bands above it. The right-controller ray
+is a diagnostic line ending at the production cursor/tip; its pose is synthetic.
+The hot fixture shows one dropdown. The slim fixture hides it because the live
+`MenuStripReveal` keeps the strip wide while a dropdown is open.
+
+To render current Mac window pictures, with existing Screen Recording permission:
+
+```sh
+python3 scripts/render-spatial-scene.py --output /private/tmp/real-spatial-scene.png
+```
+
+The script preflights permission without requesting it, lists up to six normal
+on-screen windows, captures their pictures, exports running-app icons, and
+captures only the built-in display's menu-bar region, split at the leftmost
+intersecting layer-25 status-item window. It calls the companion's actual
+`SpatialSharedPolicy.menuBarSplit` function and uses the same rectangle rules
+as `SpatialShared.refresh()`. It never activates, moves, resizes, or
+closes windows or changes settings. It stops if permission or the built-in
+display is unavailable. The script retains only the requested private PNG and
+its `-slim.png` counterpart; all captured inputs, scene metadata, and compiler
+scratch are deleted on success or failure. Existing outputs are not overwritten.
+There is no synthetic dropdown in the private capture, since opening a menu
+would change the user's desktop. The split uses window bounds only, with no
+accessibility reads. If the hot strip extends outside the default view, the
+script turns the camera toward the midpoint of the surfaces' horizontal angular
+bounds, using the same yaw for both
+images. It retains the 100-degree FOV and all production sizes and positions.
+
+**Actual Spatial defaults overlap.** `ui/frame_macview.py::_show_native_window`
+calls `beside_workspace_pose` only in Desktop Mode. Spatial Mode launches window
+panels without an initial pose unless restoring a saved one; `PanelRunner`
+then uses `Placement` and `Overlay::recenter`: flat, 2.4 m wide, 2 m ahead of
+the HMD, with height from stream aspect. The capture script reproduces those
+unsaved defaults at an identity HMD pose, so the frontmost captured window is
+focused and occludes much of the others. It does not invent an arc or read saved
+headset poses. The separate `spatialLayout` arc is for switcher thumbnails,
+not streamed windows. Menubar scale follows the current host's `2 * panelWidth /
+uploadedWidthPixels` estimate; the status strip follows its fixed .001 m/point.

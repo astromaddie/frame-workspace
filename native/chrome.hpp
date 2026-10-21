@@ -15,6 +15,36 @@
 
 namespace fw {
 
+inline constexpr float frameDepth = 0.015f, controlsDepth = 0.03f;
+
+// Shared by the live overlay and the offscreen compositor.
+inline GLuint createCursorTexture() {
+  GLuint texture = 0;
+  const int n = 64;
+  std::vector<uint8_t> dot(size_t(n) * n * 4, 0);
+  for (int y = 0; y < n; y++)
+    for (int x = 0; x < n; x++) {
+      const float d = std::hypot(x + 0.5f - n / 2.f, y + 0.5f - n / 2.f) / (n / 2.f);
+      const float core = std::clamp((0.3f - d) * 20.f + 0.5f, 0.f, 1.f);
+      const float ring = std::clamp((0.5f - d) * 20.f + 0.5f, 0.f, 1.f) * 0.55f;
+      const float halo = std::exp(-d * d * 9.f) * 0.18f;
+      const float blue = std::max(ring, halo) * (1 - core);
+      uint8_t *o = &dot[(size_t(y) * n + x) * 4];
+      const float a = core + blue;
+      o[0] = uint8_t(std::lround(255 * (core + blue * 0.29f)));
+      o[1] = uint8_t(std::lround(255 * (core + blue * 0.66f)));
+      o[2] = uint8_t(std::lround(255 * (core + blue * 1.0f)));
+      o[3] = uint8_t(std::lround(255 * std::min(a, 1.f)));
+    }
+  glGenTextures(1, &texture);
+  glBindTexture(GL_TEXTURE_2D, texture);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+  glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, dot.data());
+  return texture;
+}
+
 // What the controls show; animated by the caller.
 struct ChromeState {
   float reveal[handleCount] = {}; // 0 hidden .. 1 slid out (the pill and disc are always out)
