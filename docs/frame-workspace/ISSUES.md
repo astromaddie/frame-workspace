@@ -640,6 +640,10 @@ toggle between the two, because Spatial Mode won't suit every task.
   on a strip along the focused window's top bezel, moving with focus. It starts slim and widens into
   the full menu bar only when the cursor moves up to it, so it stays out of the way. **I1**, the
   status items (clock, Wi-Fi, battery, Control Center, app icons) at the right end of the dock shelf.
+- **First layout** (chosen 2026-10-21, `evidence/spatial-layout-l1.png` to `-l3.png`, rendered with
+  `--render-scene`): **L2**, windows without a remembered position open on a curved two-row wall in
+  front of you (about 1.75 m away, columns 25 degrees apart, the lower row clear of the dock
+  shelf), so everything is in view without turning. Last Session still restores positions you set.
 
 ## Approach
 Each window gets its own virtual display, sized to it, streamed as its own panel
