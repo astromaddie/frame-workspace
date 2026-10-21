@@ -308,12 +308,14 @@ class Helpers(unittest.TestCase):
             mv.run.side_effect = local_reader
             self.assertEqual(mv.read_panel_poses(["workspace", "window:42", "window:7"]),
                              {"workspace": pose, "window:42": pose})
+            self.assertEqual(mv.read_panel_poses(["spatial:42"]), {"spatial:42": pose})
             path.write_text(" " * 4097)
             with self.assertRaisesRegex(frame_macview.MacViewError, "capture saved native panel poses"):
                 mv.read_panel_poses(["window:42"])
             mv.run.reset_mock()
-            with self.assertRaisesRegex(frame_macview.MacViewError, "Invalid native panel source"):
-                mv.read_panel_poses(["window:42;touch bad"])
+            for source in ("window:42;touch bad", *frame_macview.SPATIAL_AUX_ROLES):
+                with self.assertRaisesRegex(frame_macview.MacViewError, "Invalid native panel source"):
+                    mv.read_panel_poses([source])
             mv.run.assert_not_called()
 
     def test_headset_close_requests_close_only_known_panels(self):
@@ -1133,7 +1135,7 @@ class SpatialPolicy(unittest.TestCase):
         if path == "/streams/live":
             selected = set(q.get("src", "").split(","))
             for s in self.status["streams"]:
-                if s["src"].startswith(("window:", "separate:")):
+                if s["src"].startswith(("window:", "separate:", "spatial:")):
                     s["live"] = q.get("all") == "1" or s["src"] in selected
         elif path == "/focus":
             self.status["focusedSrc"] = q["src"]
@@ -1279,6 +1281,27 @@ class SpatialPolicy(unittest.TestCase):
         self.tick()
         self.assertEqual(self.live(), {"separate:42"})
 
+    def test_spatial_focus_and_auxiliary_pixels_leave_idle_menu_slots_free(self):
+        key = self.panel("spatial:42", 42)
+        self.stream("spatial:42", 6, age=30)
+        self.stream("spatial:43", 8)
+        self.stream("menubar", 1)
+        self.stream("status", 1)
+        menu = self.stream("menu:0", 2)
+        for i in range(1, 4):
+            self.stream(f"menu:{i}", 0, width=None, height=None)
+        self.focus(key)
+        self.assertEqual(self.calls[-1], ("/focus", "POST", {"src": "spatial:42", "u": .25, "v": .75}))
+        self.tick()
+        self.tick(101)
+        self.assertEqual(self.live() & {"spatial:42", "spatial:43"}, {"spatial:42", "spatial:43"})
+        menu.update(width=3000)
+        self.tick(102)
+        self.assertEqual(self.live() & {"spatial:42", "spatial:43"}, {"spatial:42"})
+        for _, method, query in (c for c in self.calls if c[0] == "/streams/live"):
+            self.assertEqual(method, "POST")
+            self.assertTrue(all(s.startswith("spatial:") for s in query["src"].split(",") if s))
+
     def test_focus_coalesces_latest_and_is_limited_to_four_per_second(self):
         a, b = self.panel("window:1", 1), self.panel("separate:2", 2)
         self.focus(a)
@@ -1357,13 +1380,14 @@ class SpatialMode(unittest.TestCase):
         self.jobs, self.events, self.launches = [], [], []
         self.mv._dash_run = lambda busy, fn, *args: self.jobs.append((fn, args))
         self.running, self.removed, self.fail_start = False, True, False
+        self.failed_panels = set()
         self.windows = [self.window(42)]
         self.streams = []
 
     @staticmethod
     def window(wid):
         return {"id": wid, "src": f"window:{wid}", "title": f"Shell {wid}", "app": "Terminal",
-                "bundleID": "com.apple.Terminal", "w": 900, "h": 600}
+                "bundleID": "com.apple.Terminal", "pid": 123, "x": 1672, "y": 1205, "w": 900, "h": 600}
 
     def call(self, path, method="GET", **query):
         self.events.append((path, query))
@@ -1376,7 +1400,10 @@ class SpatialMode(unittest.TestCase):
             self.streams.clear()
         if path.startswith("/spatial"):
             return {"state": "running" if self.running else "stopped", "removed": self.removed,
-                    "windows": list(self.windows), "revision": 1}
+                    "windows": [{k: v for k, v in w.items() if k != "src"} for w in self.windows],
+                    "display": {"id": 99, "bounds": [1672, 1169, 3600, 2250], "scale": 2, "menuBarDisplay": 99},
+                    "skipped": [{"id": 44, "reason": "Full Screen"}], "menus": [],
+                    "focusedSrc": "spatial:42", "revision": 1}
         if path == "/status":
             return {"screen": True, "accessibility": True, "streams": list(self.streams), "finished": []}
         if path == "/windows":
@@ -1395,6 +1422,8 @@ class SpatialMode(unittest.TestCase):
             args = shlex.split(command)
             panel = args[args.index("--panel") + 1]
             self.launches.append(args)
+            if panel in self.failed_panels:
+                raise frame_macview.MacViewError("Panel Launch Failed")
             return "registered OpenVR key com.frame-workspace.native.1000.panel-" + panel
         return "stopped"
 
@@ -1409,22 +1438,84 @@ class SpatialMode(unittest.TestCase):
         self.jobs_once()
         return result
 
-    def test_start_uses_hidden_home_separate_sources_and_shared_host(self):
+    def test_start_uses_shared_display_spatial_sources_and_shared_host(self):
         result = self.start()
         self.assertEqual(result["mode"], "spatial")
         self.assertEqual(result["workspace"]["state"], "running")
         self.mv.workspace_manager.start.assert_not_called()
         self.assertIsNone(self.mv.workspace_panel_key)
-        self.assertEqual(self.mv.shown, {"separate:42"})
-        self.assertTrue(self.mv.native_panels["separate:42"]["host"])
-        self.assertEqual(self.mv.native_panels["separate:42"]["title"], "Shell 42")
-        self.assertEqual(self.launches[0][0], "FRAME_NATIVE_HOST=1")
-        self.assertIn("src=separate%3A42", " ".join(self.launches[0]))
+        self.assertEqual(self.mv.shown, {"spatial:42", *frame_macview.SPATIAL_AUX_ROLES})
+        self.assertTrue(self.mv.native_panels["spatial:42"]["host"])
+        self.assertEqual(self.mv.native_panels["spatial:42"]["title"], "Shell 42")
+        self.assertEqual(self.launches[-1][0], "FRAME_NATIVE_HOST=1")
+        self.assertIn("src=spatial%3A42", " ".join(self.launches[-1]))
         self.assertTrue(self.mv.spatial_workspace["panelsReady"])
         self.assertTrue(self.mv.dash_state()["workspace"]["running"])
         self.assertEqual(self.mv.dash_state()["workspace"]["mode"], "spatial")
         self.assertLess(next(i for i, e in enumerate(self.events) if e[0] == "remote"),
                         next(i for i, e in enumerate(self.events) if e[0] == "/spatial/start"))
+
+    def test_shared_display_snapshot_and_actual_window_size_reach_panel_launch(self):
+        self.windows[0].update(w=3600, h=2119)
+        self.start()
+        snapshot = self.mv.workspace_state()["home"]
+        self.assertEqual(snapshot["display"]["bounds"], [1672, 1169, 3600, 2250])
+        self.assertEqual(snapshot["skipped"], [{"id": 44, "reason": "Full Screen"}])
+        self.assertEqual(snapshot["menus"], [])
+        self.assertEqual(snapshot["focusedSrc"], "spatial:42")
+        self.assertNotIn("src", snapshot["windows"][0])
+        args = self.launches[-1]
+        start = args.index("start")
+        self.assertEqual(args[start + 2:start + 4], list(map(str, frame_macview.fit(3600, 2119))))
+        self.assertNotIn("spatial:44", self.mv.native_panels)
+
+    def test_auxiliary_roles_launch_first_once_and_stop_with_the_mode(self):
+        self.start()
+        for args, (source, role) in zip(self.launches, frame_macview.SPATIAL_AUX_ROLES.items()):
+            self.assertEqual(args[args.index("--panel") + 1], source.replace(":", ""))
+            self.assertEqual(args[args.index("--role") + 1], role)
+            self.assertIn("src=" + frame_macview.quote(source, safe=""), args[args.index("start") + 1])
+            self.assertTrue(self.mv.native_panels[source]["host"])
+        self.assertEqual(self.mv.native_panels["spatial:42"]["slot"], 0)
+        self.mv._spatial_mode_tick()
+        self.jobs_once()
+        self.assertEqual(len(self.launches), 7)
+        self.removed = True
+        self.mv.stop_workspace()
+        self.assertFalse(self.mv.native_panels)
+        self.assertFalse(self.mv.shown)
+        stopped = [shlex.split(cmd) for event, cmd in self.events
+                   if event == "remote" and shlex.split(cmd)[-1:] == ["stop"]]
+        self.assertEqual({args[args.index("--panel") + 1] for args in stopped},
+                         {"w42", "menubar", "status", "menu0", "menu1", "menu2", "menu3"})
+
+    def test_auxiliary_launch_failure_retries_without_relaunching_other_panels(self):
+        self.failed_panels.add("menu2")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.start()
+        self.assertNotIn("menu:2", self.mv.native_panels)
+        self.assertNotIn("menu:2", self.mv.shown)
+        self.assertIn(("/close", {"src": "menu:2"}), self.events)
+        self.assertIn("menu:2", self.mv.workspace_state()["panelErrors"])
+        self.assertFalse(self.mv.workspace_state()["panelsReady"])
+        self.failed_panels.clear()
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=104):
+            self.mv._spatial_mode_tick()
+            self.jobs_once()
+        self.assertEqual(len(self.launches), 7)
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=105):
+            self.mv._spatial_mode_tick()
+            self.jobs_once()
+        self.assertEqual(len(self.launches), 8)
+        self.assertTrue(self.mv.workspace_state()["panelsReady"])
+        self.assertEqual(self.mv.workspace_state()["panelErrors"], {})
+
+    def test_spatial_sources_need_spatial_mode_and_separate_sources_stay_desktop_only(self):
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Start Spatial Mode"):
+            self.mv.show("spatial:42")
+        self.start()
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Require Desktop Mode"):
+            self.mv.show("separate:42")
 
     def test_window_show_waits_for_an_active_spatial_setup(self):
         self.mv.set_mode("spatial")
@@ -1445,12 +1536,33 @@ class SpatialMode(unittest.TestCase):
         self.mv._spatial_mode_tick()  # a single job while one is pending
         self.assertEqual(len(self.jobs), 1)
         self.jobs_once()
-        self.assertEqual(set(self.mv.native_panels), {"separate:42", "separate:43"})
+        self.assertEqual(set(self.mv.native_panels), {"spatial:42", "spatial:43", *frame_macview.SPATIAL_AUX_ROLES})
         self.windows.pop(0)
         self.mv._spatial_mode_tick()
         self.jobs_once()
-        self.assertEqual(set(self.mv.native_panels), {"separate:43"})
-        self.assertEqual(len(self.launches), 2)
+        self.assertEqual(set(self.mv.native_panels), {"spatial:43", *frame_macview.SPATIAL_AUX_ROLES})
+        self.assertEqual(len(self.launches), 8)
+
+    def test_failed_window_launch_keeps_its_pose_and_retries_the_spatial_source(self):
+        self.start()
+        self.windows.append(self.window(43))
+        pose = {"version": 1, "width": 1.2, "distance": 2, "curvature": .2,
+                "matrix": [1, 0, 0, 0, 0, 1, 0, 1.4, 0, 0, 1, -2]}
+        self.mv._spatial_resume_poses["spatial:43"] = pose
+        self.failed_panels.add("w43")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.mv._spatial_mode_tick()
+            self.jobs_once()
+        self.assertIn("spatial:43", self.mv.workspace_state()["panelErrors"])
+        self.assertEqual(self.mv._spatial_resume_poses["spatial:43"], pose)
+        self.failed_panels.clear()
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=105):
+            self.mv._spatial_mode_tick()
+            self.jobs_once()
+        self.assertIn("spatial:43", self.mv.native_panels)
+        self.assertNotIn("spatial:43", self.mv._spatial_resume_poses)
+        args = self.launches[-1]
+        self.assertEqual(json.loads(args[args.index("--pose") + 1]), pose)
 
     def test_unconfirmed_stop_blocks_mode_change_then_retry_restores_first(self):
         self.start()
@@ -1505,7 +1617,7 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(self.mv.workspace_state()["state"], "error")
         self.assertTrue(self.mv.workspace_state()["removed"])
         self.assertFalse(self.mv.native_panels)
-        self.assertEqual(len(self.launches), 1)
+        self.assertEqual(len(self.launches), 7)
 
     def test_frame_panel_cleanup_failure_keeps_stop_available_after_mac_restore(self):
         self.start()
@@ -1531,7 +1643,7 @@ class SpatialMode(unittest.TestCase):
             self.assertEqual(old.mode, "desktop")
             self.assertEqual(old.last_workspace[0], "2880x2560")
 
-    def test_spatial_overrides_desktop_browser_flags_and_accepts_saved_separate_pose(self):
+    def test_spatial_overrides_desktop_browser_flags_and_accepts_saved_spatial_pose(self):
         self.start()
         pose = {"version": 1, "width": 1.2, "distance": 2, "curvature": .2,
                 "matrix": [1, 0, 0, 0, 0, 1, 0, 1.4, 0, 0, 1, -2]}
@@ -1541,7 +1653,7 @@ class SpatialMode(unittest.TestCase):
         args = self.launches[-1]
         self.assertEqual(json.loads(args[args.index("--pose") + 1]), pose)
         self.assertEqual(args[0], "FRAME_NATIVE_HOST=1")
-        self.assertIn("separate:43", self.mv.native_panels)
+        self.assertIn("spatial:43", self.mv.native_panels)
 
 class WorkspaceLifecycle(unittest.TestCase):
     @staticmethod
@@ -2192,7 +2304,7 @@ class WS:
 class Agent(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix=".macview-test-", dir=ROOT)
+        cls.tmp = tempfile.mkdtemp(prefix="macview-test-")
         cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.bin = Path(cls.tmp) / "frame-mac-view"
         r = subprocess.run(["/bin/sh", str(ROOT / "mac" / "frame-mac-view" / "build.sh"), str(cls.bin)],

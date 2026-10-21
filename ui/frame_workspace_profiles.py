@@ -311,7 +311,7 @@ def match_windows(profile, windows, *, max_rules=MAX_RULES):
             window = candidates[0]
             window_id = window.get("id")
             if (type(window_id) is not int or window_id <= 0
-                    or window.get("src") != f"window:{window_id}"):
+                    or window.get("src") not in (f"window:{window_id}", f"spatial:{window_id}")):
                 results.append({**ref, "status": "unavailable",
                                 "message": f"Mac enumeration returned an invalid current window for {bundle_id}."})
             elif window_id in used_ids:
@@ -334,6 +334,8 @@ def save(store, macview, value):
             raise frame_macview.MacViewError(state.get("reason") or "MacView is unavailable for pose capture.")
         matches = match_windows(profile, state.get("windows", [])) if macview._native_windows() else []
         matched = [item for item in matches if item["status"] == "matched"]
+        if spatial:
+            matched = [{**item, "source": "spatial:" + item["source"].split(":", 1)[1]} for item in matched]
         poses = macview.read_panel_poses(([] if spatial else [frame_macview.WorkspaceDisplayManager.KEY]) +
                                         [item["source"] for item in matched])
         # This save is a fresh snapshot: absent files and unmatched rules must
@@ -487,8 +489,10 @@ class SessionKeeper:
         by_source = {w.get("src"): w for w in windows}
         rules, sources, seen = [], [], set()
         for source in list(mv.native_panels):
-            window_source = "window:" + source.split(":", 1)[1] if source.startswith("separate:") else source
-            window = by_source.get(window_source)
+            if not re.fullmatch(r"(?:window|separate|spatial):[1-9][0-9]{0,14}", source):
+                continue
+            window_source = "window:" + source.split(":", 1)[1]
+            window = by_source.get(source) or by_source.get(window_source)
             bundle_id = window.get("bundleID") if window else None
             if not isinstance(bundle_id, str) or not _BUNDLE_ID.fullmatch(bundle_id) or "." not in bundle_id:
                 continue
@@ -547,11 +551,13 @@ class SessionKeeper:
                 try:
                     profile = self.stores[mode].get(LAST_SESSION)
                     windows = self.macview.call("/spatial").get("windows", [])
+                    windows = [{**w, "src": w.get("src", "spatial:" + str(w.get("id")))}
+                               for w in windows if isinstance(w, dict)]
                     for result in match_windows(profile, windows, max_rules=self.MAX_WINDOWS):
                         if result["status"] == "matched":
                             pose = profile["windows"][result["rule"] - 1].get("pose")
                             if pose is not None:
-                                source = "separate:" + result["source"].split(":", 1)[1]
+                                source = "spatial:" + result["source"].split(":", 1)[1]
                                 self.macview._spatial_resume_poses[source] = pose
                 except (ProfileError, frame_macview.MacViewError):
                     pass
@@ -584,7 +590,8 @@ class SessionKeeper:
                     if result["status"] != "matched":
                         continue
                     source = result["source"]
-                    if source in self.macview.native_panels or "separate:" + source.split(":", 1)[1] in self.macview.native_panels:
+                    if any(prefix + source.split(":", 1)[1] in self.macview.native_panels
+                           for prefix in ("window:", "separate:", "spatial:")):
                         continue
                     pose = profile["windows"][result["rule"] - 1].get("pose")
                     try:

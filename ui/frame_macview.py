@@ -44,6 +44,7 @@ PAGE = HERE / "mac-view.html"
 SOURCES = ROOT / "mac" / "frame-mac-view"
 WORKSPACE_VIEWER_SCRIPT = ROOT / "scripts" / "workspace-viewer-on-frame.sh"
 WORKSPACE_NATIVE_SCRIPT = ROOT / "scripts" / "workspace-native-on-frame.sh"
+SPATIAL_AUX_ROLES = {"menubar": "menubar", "status": "status", **{f"menu:{i}": "menu" for i in range(4)}}
 WORKSPACE_DASH_SCRIPT = ROOT / "scripts" / "workspace-dash-on-frame.sh"
 FRAME_VRCMD = "/opt/steamvr/bin/linuxarm64/vrcmd"
 
@@ -134,9 +135,9 @@ def workspace_diagnostic_gaze(gaze=False):
 
 
 def window_displays():
-    """FRAME_WINDOW_DISPLAYS=1: native window panels give each window a display
+    """FRAME_WINDOW_DISPLAYS=1: Desktop's native panels give each window a display
     of its own (Separate.swift), so its menus, sheets and menu bar come along and
-    nothing overlaps it (FW-15, Spatial Mode). Off: the window alone, at its size."""
+    nothing overlaps it. Off: the window alone, at its size."""
     return os.environ.get("FRAME_WINDOW_DISPLAYS", "0") == "1"
 
 
@@ -737,8 +738,7 @@ class MacView:
             if reason:
                 raise MacViewError(reason)
             self.build()
-            # No ready-made spare displays in Spatial Mode for now (see SpatialPolicy.swift).
-            env = {"FRAME_SPATIAL_WARM_SPARES": "0", **os.environ, "FRAME_MAC_VIEW_TOKEN": self.token}
+            env = {**os.environ, "FRAME_MAC_VIEW_TOKEN": self.token}
             # The same port as before when restarting, so a running tunnel still
             # fits; otherwise (or if it's gone) whatever the system gives.
             for port in dict.fromkeys([self.port or 0, 0]):
@@ -1001,7 +1001,9 @@ class MacView:
                 continue
             w, h = stream.get("width"), stream.get("height")
             pixels = w * h if type(w) is int and type(h) is int and w > 0 and h > 0 else None
-            if not src.startswith(("window:", "separate:")):
+            if not src.startswith(("window:", "separate:", "spatial:")):
+                if pixels is None and SPATIAL_AUX_ROLES.get(src) == "menu":
+                    continue  # an idle slot has no picture or decoder yet
                 # Unknown display dimensions leave no safe optional capacity.
                 reserved += pixels if pixels is not None else spatial_decode_pixels()
                 continue
@@ -1230,7 +1232,7 @@ class MacView:
             self._last_frame_focus = time.monotonic()
         key, u, v = focus
         src = next((s for s, p in list(self.native_panels.items()) if p["key"] == key), None)
-        if src and src.startswith(("window:", "separate:")):
+        if src and src.startswith(("window:", "separate:", "spatial:")):
             self.call("/focus", method="POST", src=src, u=u, v=v)
             with self._spatial_lock:
                 self._spatial_focused = src
@@ -1333,23 +1335,27 @@ class MacView:
         with self.workspace_lock:
             if self.closing:
                 raise MacViewError("The Companion Is Shutting Down.")
-            if (self.mode == "spatial" and src.startswith(("window:", "separate:")) and
+            if (self.mode == "spatial" and src.startswith(("window:", "spatial:")) and
                     self.spatial_workspace.get("state") != "running"):
                 raise MacViewError("Start Spatial Mode Before Showing A Window.")
             result = self._show_source(src, quality, width, height, pose)
             capture_src = result.get("captureSrc", "")
-            if self.mode == "spatial" and capture_src.startswith("separate:"):
+            if self.mode == "spatial" and capture_src.startswith("spatial:"):
                 self._spatial_owned.add(capture_src)
             return result
 
     def _show_source(self, src, quality="balanced", width=None, height=None, pose=None):
         if self.mode == "spatial" and src.startswith("window:"):
-            src = "separate:" + src.split(":", 1)[1]
+            src = "spatial:" + src.split(":", 1)[1]
+        if src.startswith("spatial:") and self.mode != "spatial":
+            raise MacViewError("Start Spatial Mode Before Showing A Window.")
+        if self.mode == "spatial" and src.startswith("separate:"):
+            raise MacViewError("Separate Window Sources Require Desktop Mode.")
         if pose is not None:
             pose = validate_pose(pose)
             if ((self.mode != "spatial" and workspace_viewer_backend() != "native") or
                     (src != WorkspaceDisplayManager.KEY and
-                     (not self._native_windows() or not src.startswith(("window:", "separate:")) or
+                     (not self._native_windows() or not src.startswith(("window:", "separate:", "spatial:")) or
                       quality_settings(quality)["codec"] != "h264"))):
                 raise MacViewError("Saved poses require a native Workspace or H.264 window panel.")
         if src.startswith("separate:") and self._native_windows() and not self._window_displays():
@@ -1370,8 +1376,9 @@ class MacView:
             with self.viewer_lock:
                 self.launching -= 1
 
-    def _show(self, src, quality, width, height, panel_key=None, public_src=None, pose=None):
-        if src != "test" and not src.startswith(("window:", "display:", "separate:")):
+    def _show(self, src, quality, width, height, panel_key=None, public_src=None, pose=None, role="window"):
+        auxiliary = self.mode == "spatial" and SPATIAL_AUX_ROLES.get(src) == role
+        if src != "test" and not src.startswith(("window:", "display:", "separate:", "spatial:")) and not auxiliary:
             raise MacViewError("Pick a window or display to show.")
         panel_key = panel_key or src
         public_src = public_src or src
@@ -1429,8 +1436,9 @@ class MacView:
             if not match:
                 raise MacViewError("The dedicated Workspace launcher did not report its registered OpenVR panel key.")
             self.workspace_panel_key = match.group(1)
-        elif self._native_windows() and q["codec"] == "h264" and src.startswith(("window:", "separate:")):
-            out = self._show_native_window(src, url, tag, width, height, pose=pose)
+        elif self._native_windows() and q["codec"] == "h264" and \
+                (auxiliary or src.startswith(("window:", "separate:", "spatial:"))):
+            out = self._show_native_window(src, url, tag, width, height, pose=pose, role=role)
         else:
             w, h = fit(width or 1280, height or 720)
             args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
@@ -1479,7 +1487,7 @@ class MacView:
         for source in sources:
             if source == WorkspaceDisplayManager.KEY:
                 panels[source] = "workspace"
-            elif re.fullmatch(r"(?:window|separate):[1-9][0-9]{0,14}", source):
+            elif re.fullmatch(r"(?:window|separate|spatial):[1-9][0-9]{0,14}", source):
                 panels[source] = "w" + source.split(":", 1)[1]
             else:
                 raise MacViewError("Invalid native panel source for pose capture.")
@@ -1513,20 +1521,26 @@ print(json.dumps(poses))
         except Exception as exc:
             raise MacViewError(f"Could not capture saved native panel poses: {exc}") from exc
 
-    def _show_native_window(self, src, url, tag, width, height, pose=None):
+    def _show_native_window(self, src, url, tag, width, height, pose=None, role="window"):
         if pose is not None:
             pose = validate_pose(pose)
-        digits = re.sub(r"\D", "", src.split(":", 1)[1])[:15]
-        if not digits:
-            raise MacViewError("Pick a window to show.")
-        panel = "w" + digits
-        window_src = "window:" + digits
-        info = next((w for w in self.call("/windows").get("windows", []) if w.get("src") == window_src), {})
+        if role == "window":
+            digits = re.sub(r"\D", "", src.split(":", 1)[1])[:15]
+            if not digits:
+                raise MacViewError("Pick a window to show.")
+            panel = "w" + digits
+            window_src = "window:" + digits
+            info = next((w for w in self.call("/windows").get("windows", []) if w.get("src") == window_src), {})
+        elif SPATIAL_AUX_ROLES.get(src) == role and pose is None:
+            panel = src.replace(":", "")
+            info = {"title": {"menubar": "Menu Bar", "status": "Status"}.get(src, "Menu")}
+        else:
+            raise MacViewError("Invalid Spatial Panel Role.")
         title = re.sub(r"[\r\n\t]", " ", str(info.get("title") or info.get("app") or "Mac Window"))[:64]
-        used = {p["slot"] for s, p in self.native_panels.items() if s != src}
+        used = {p["slot"] for s, p in self.native_panels.items() if s != src and p.get("role", "window") == "window"}
         slot = next(i for i in range(len(used) + 1) if i not in used)
         initial_pose = ""
-        placement = self._workspace_frame_placement() if pose is None and self.mode == "desktop" else None
+        placement = self._workspace_frame_placement() if pose is None and self.mode == "desktop" and role == "window" else None
         if placement:
             logical = (self.workspace_manager.state().get("display") or {}).get("logicalWidth") or 2880
             initial_pose = beside_workspace_pose(placement["matrix"], placement["width"], placement["distance"],
@@ -1535,7 +1549,8 @@ print(json.dumps(poses))
         pose_args = (["--pose", json.dumps(pose, allow_nan=False)] if pose is not None else
                      ["--initial-pose", initial_pose] if initial_pose else [])
         host = self.mode == "spatial" or os.environ.get("FRAME_NATIVE_HOST") == "1"
-        args = ["--panel", panel, "--name", title] + pose_args + \
+        role_args = ["--role", role] if role != "window" or self.mode == "spatial" else []
+        args = ["--panel", panel, "--name", title] + role_args + pose_args + \
                ["start", url, w, h, tag, workspace_decoder(), workspace_conversion()]
         remote_env = "FRAME_NATIVE_HOST=1 " if host else ""
         out = self.run(remote_env + "bash -s -- " + " ".join(_quote(str(a)) for a in args),
@@ -1545,7 +1560,7 @@ print(json.dumps(poses))
             raise MacViewError("The native window panel did not report its registered OpenVR panel key.")
         self.native_panels[src] = {"panel": panel, "key": match.group(1), "slot": slot,
                                    "title": title, "host": host, "generation": tag,
-                                   "bundleID": info.get("bundleID")}
+                                   "bundleID": info.get("bundleID"), "role": role}
         return out
 
     def _stop_native_panels(self, src=None):
@@ -1767,7 +1782,8 @@ print(json.dumps(poses))
             return {"mode": mode, "workspace": self.workspace_state(), "changed": True}
 
     def _close_window_panels(self):
-        sources = {s for s in self.shown if s.startswith(("window:", "separate:"))} | set(self.native_panels)
+        sources = {s for s in self.shown if s.startswith(("window:", "separate:", "spatial:")) or
+                   s in SPATIAL_AUX_ROLES} | set(self.native_panels)
         for source in sorted(sources):
             if self.agent and self.agent.poll() is None:
                 self.call("/close", method="POST", src=source)
@@ -1839,7 +1855,7 @@ print(json.dumps(poses))
         try:
             home = self.call("/spatial/start", method="POST")
             if home.get("state") != "running":
-                raise MacViewError(home.get("error") or "The Spatial Home Display Is Not Ready.")
+                raise MacViewError(home.get("error") or "The Spatial Shared Display Is Not Ready.")
         except Exception as exc:
             try:
                 cleanup = self.call("/spatial/stop", method="POST")
@@ -1885,7 +1901,8 @@ print(json.dumps(poses))
                     self._close_window_panels()
                     self.spatial_workspace["panelCleanupPending"] = False
                     return
-                windows = {"separate:" + str(w["id"]): w for w in state.get("windows", [])
+                self._ensure_spatial_aux_panels()
+                windows = {"spatial:" + str(w["id"]): w for w in state.get("windows", [])
                            if isinstance(w, dict) and type(w.get("id")) is int and w["id"] > 0}
                 self._spatial_suppressed.intersection_update(windows)
                 for source in list(self._spatial_owned - windows.keys()):
@@ -1915,11 +1932,25 @@ print(json.dumps(poses))
                         self.call("/close", method="POST", src=candidate)
                         self._stop_native_panels(candidate)
                         self._spatial_retry[candidate] = {"after": now + 5, "error": str(exc)}
-                self.spatial_workspace.update(panelsReady=not pending, windowCount=len(windows),
-                    panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows})
+                self.spatial_workspace.update(home=state,
+                    panelsReady=not pending and SPATIAL_AUX_ROLES.keys() <= self.native_panels.keys(), windowCount=len(windows),
+                    panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows or s in SPATIAL_AUX_ROLES})
                 self.dash_wake.set()
             finally:
                 self._spatial_reconcile_queued = False
+
+    def _ensure_spatial_aux_panels(self):
+        now = time.monotonic()
+        for source, role in SPATIAL_AUX_ROLES.items():
+            if source in self.native_panels or self._spatial_retry.get(source, {}).get("after", 0) > now:
+                continue
+            try:
+                self._show(source, self.spatial_workspace["quality"], None, None, role=role)
+                self._spatial_retry.pop(source, None)
+            except Exception as exc:
+                self.call("/close", method="POST", src=source)
+                self._stop_native_panels(source)
+                self._spatial_retry[source] = {"after": now + 5, "error": str(exc)}
 
     def _stop_spatial(self):
         with self.workspace_lock:
@@ -1932,7 +1963,7 @@ print(json.dumps(poses))
             self.spatial_workspace["state"] = "stopping"
             try:
                 # The helper revokes reconnects, ends captures, restores the
-                # original layout/windows, then confirms pool/home removal.
+                # original layout/windows, then confirms shared-display removal.
                 removal = self.call("/spatial/stop", method="POST")
                 if removal.get("removed") is not True or removal.get("state") != "stopped":
                     raise MacViewError(removal.get("error") or "Spatial Display Removal Is Still Pending. Retry Stop After The Mac Wakes.")
@@ -2119,8 +2150,8 @@ print(json.dumps(poses))
             except MacViewError as e:
                 workspace_error = e
         if src:
-            if self.mode == "spatial" and src.startswith(("window:", "separate:")):
-                self._spatial_suppressed.add("separate:" + src.split(":", 1)[1])
+            if self.mode == "spatial" and src.startswith(("window:", "spatial:")):
+                self._spatial_suppressed.add("spatial:" + src.split(":", 1)[1])
             self.shown.discard(src)
         else:
             self.shown.clear()
