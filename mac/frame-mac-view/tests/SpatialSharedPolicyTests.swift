@@ -43,6 +43,20 @@ private enum SpatialSharedPolicyTests {
         expect(SpatialSharedPolicy.displaySize(nil) == CGSize(width: 3600, height: 2250), "the verified shared mode is the default")
         expect(SpatialSharedPolicy.displaySize("1920x1200") == CGSize(width: 1920, height: 1200), "experimental sizes parse")
         expect(SpatialSharedPolicy.displaySize("1x2") == CGSize(width: 3600, height: 2250), "invalid sizes fall back safely")
-        print("SpatialSharedPolicy: 19 geometry, menu, alpha, mapping and separate-Spaces checks passed")
+        let items = [SpatialSharedPolicy.MenuItem(frame: CGRect(x: 100, y: 0, width: 40, height: 36), selected: false),
+                     SpatialSharedPolicy.MenuItem(frame: CGRect(x: 140, y: 0, width: 45, height: 36), selected: true)]
+        let dropdown = CGRect(x: 100, y: 34, width: 200, height: 300)
+        expect(SpatialSharedPolicy.selectedMenuItem(items: items, dropdowns: [dropdown], menuBar: physicalBar) == items[1].frame,
+            "AXSelected takes precedence over dropdown alignment")
+        let unselected = items.map { SpatialSharedPolicy.MenuItem(frame: $0.frame, selected: false) }
+        expect(SpatialSharedPolicy.selectedMenuItem(items: unselected, dropdowns: [dropdown], menuBar: physicalBar) == items[0].frame,
+            "dropdown origin selects the item when AXSelected is absent")
+        expect(SpatialSharedPolicy.selectedMenuItem(items: items, dropdowns: [], menuBar: physicalBar) == nil,
+            "closed dropdown clears stale AX selection")
+        expect(SpatialSharedPolicy.selectedMenuItem(items: items, dropdowns: [CGRect(x: 900, y: 100, width: 80, height: 80)], menuBar: physicalBar) == nil,
+            "context and status panels do not press app menu titles")
+        expect(SpatialSharedPolicy.selectedMenuItem(items: unselected, dropdowns: [CGRect(x: 800, y: 36, width: 80, height: 80)], menuBar: physicalBar) == nil,
+            "unmatched dropdown has no invented title")
+        print("SpatialSharedPolicy: 24 geometry, menu, alpha, mapping and separate-Spaces checks passed")
     }
 }

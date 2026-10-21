@@ -78,10 +78,17 @@ changed by any of this.
 
 ```json
 {"t":"surface","v":1,"seq":7,"visible":true,"rect":[0,0,612,36],"anchor":"menubar",
- "anchorRect":[0,0,612,36],"menusWidth":612,"hot":true}
+ "anchorRect":[0,0,612,36],"menusWidth":612,"selectedRect":[100,0,40,36],"hot":true}
 ```
 
 - `anchor` is `menubar`, `status` or `none`. `rect` and `anchorRect` are global points.
+- `selectedRect`, on `menubar` only, is the selected app menu title's `[x,y,w,h]`
+  in global points. It is absent when no app dropdown is open or no title can be
+  identified. The helper chooses an intersecting `AXMenuBarItem` with `AXSelected`,
+  falling back to the open dropdown's left edge matched to item frames. Status
+  panels and context menus do not select a title. The host clips this rect to the
+  strip picture and maps it at the picture's point scale plus its 6 mm inset;
+  the pressed material follows the same curved region as the strip.
 - `hot`: the Mac cursor is inside the menu-bar rect.
 - The host shows a slot only after it has uploaded a picture that arrived after that `seq`, so a
   stale picture never flashes up.

@@ -9,6 +9,7 @@
 #include "placement.hpp"
 #include "handles.hpp"
 #include "chrome.hpp"
+#include "depth_render.hpp"
 #include "bend.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
@@ -50,8 +51,10 @@ public:
         return sh;
       };
       auto vs = shader(GL_VERTEX_SHADER, "#version 120\nvoid main(){gl_Position=gl_Vertex;gl_TexCoord[0]=gl_MultiTexCoord0;}");
-      auto fs = shader(GL_FRAGMENT_SHADER, R"GLSL(#version 120
-uniform sampler2D picture; uniform vec2 size;
+      std::string fragment = R"GLSL(#version 120
+uniform sampler2D picture; uniform vec2 size; uniform vec4 pressedRect; uniform vec3 uTip; uniform float uPx;
+)GLSL" + ChromeRenderer::materialSource() + R"GLSL(
+
 uniform int role, transposed, sourceTransposed; uniform vec2 metres, pictureSize; uniform float fullHeight, inset;
 vec4 samplePicture(vec2 uv) { return texture2D(picture,sourceTransposed!=0?vec2(1.-uv.y,uv.x):uv); }
 vec3 panelMetal(vec2 p, vec3 normal) {
@@ -76,12 +79,35 @@ void main(){
     if(q.x>0.&&q.y>0.) grad=normalize(q)*signP;
     float px=max(metres.x/size.x,metres.y/size.y), inside=-edge;
     vec3 n=normalize(vec3(grad.x,-grad.y,1.)*vec3(inside<.003?.75:0.,inside<.003?.75:0.,1.));
-    vec3 metal=panelMetal(vec2(p.x-metres.x*.5,fullHeight*.5-p.y),n);
-    if(inside<px*1.2) metal=mix(metal,vec3(.553,.510,.627),.6);
+    vec3 panelColor=panelMetal(vec2(p.x-metres.x*.5,fullHeight*.5-p.y),n);
+    if(inside<px*1.2) panelColor=mix(panelColor,vec3(.553,.510,.627),.6);
     vec2 uv=(p-vec2(inset))/pictureSize;
     bool content=uv.x>=0.&&uv.x<=1.&&uv.y>=0.&&uv.y<=1.&&p.x<metres.x-inset;
     vec4 image=samplePicture(clamp(uv,0.,1.));
-    vec3 color=content?image.rgb+metal*(1.-image.a):metal;
+    vec3 color=content?image.rgb+panelColor*(1.-image.a):panelColor;
+    if(pressedRect.z>0. && pressedRect.w>0.) {
+      vec2 halfRect=pressedRect.zw*.5, g;
+      float d=sdBox(p-pressedRect.xy-halfRect,halfRect,min(.004,halfRect.y*.3),g);
+      float inside=max(-d,0.), R=halfRect.y, band=.22*R;
+      // Same concave bevel, pressed palette and inner reflection as the pill.
+      vec3 normal=normalize(vec3(inside<band?-vec2(g.x,-g.y)*.85*(1.-inside/band):vec2(0.),1.));
+      vec3 c=lit(metal(dot(vec2(p.x-pressedRect.x-halfRect.x,halfRect.y-p.y+pressedRect.y),SHEEN)/(2.*halfRect.x)+.5,true),normal);
+      if(inside<px*1.2)c=mix(c,vec3(.36,.56,.77),.55);
+      c=innerGlow(c,inside,.9*R);
+      // Infer the captured selection fill from its quiet top/bottom corners.
+      // This keeps antialiased ink from transparent fixtures, light menus and
+      // white-on-accent/dark menus; all use readable dark ink in the recess.
+      vec2 a=(pressedRect.xy+pressedRect.zw*vec2(.08,.10)-vec2(inset))/pictureSize;
+      vec2 b=(pressedRect.xy+pressedRect.zw*vec2(.92,.90)-vec2(inset))/pictureSize;
+      vec4 bg=(samplePicture(vec2(a.x,a.y))+samplePicture(vec2(b.x,a.y))+
+               samplePicture(vec2(a.x,b.y))+samplePicture(vec2(b.x,b.y)))*.25;
+      vec3 foreground=image.rgb/max(image.a,.001), background=bg.rgb/max(bg.a,.001);
+      float contrast=length(foreground-background);
+      vec3 inkSource=dot(background,vec3(.2126,.7152,.0722))<.55?vec3(1.):vec3(0.);
+      float ink=image.a*(bg.a<.5?1.:clamp((contrast-.03)/max(length(inkSource-background)-.03,.1),0.,1.));
+      c=mix(c,vec3(.12,.14,.18),ink);
+      color=mix(color,c,clamp(.5-d/px,0.,1.));
+    }
     float alpha=clamp(.5-edge/px,0.,1.);
     gl_FragColor=vec4(color*alpha,alpha); return;
   }
@@ -95,7 +121,8 @@ void main(){
   vec4 image=samplePicture(q);
   vec3 content=image.rgb+metal*(1.-image.a);
   gl_FragColor=vec4(mix(content,metal,rim)*a,a);
-})GLSL");
+})GLSL";
+      auto fs = shader(GL_FRAGMENT_SHADER, fragment.c_str());
       program = glCreateProgram(); glAttachShader(program, vs); glAttachShader(program, fs);
       glLinkProgram(program); glDeleteShader(vs); glDeleteShader(fs);
       GLint ok = 0; glGetProgramiv(program, GL_LINK_STATUS, &ok);
@@ -129,6 +156,8 @@ void main(){
     glUniform2f(glGetUniformLocation(program, "pictureSize"), surface.pictureWidth, surface.pictureHeight);
     glUniform1f(glGetUniformLocation(program, "fullHeight"), surface.fullHeight);
     glUniform1f(glGetUniformLocation(program, "inset"), surface.inset);
+    const auto &r=surface.pressedRect;
+    glUniform4f(glGetUniformLocation(program,"pressedRect"),r.x,r.y,r.w,r.h);
     glBegin(GL_QUADS);
     glTexCoord2f(0,0); glVertex2f(-1,-1); glTexCoord2f(1,0); glVertex2f(1,-1);
     glTexCoord2f(1,1); glVertex2f(1,1); glTexCoord2f(0,1); glVertex2f(-1,1);
@@ -177,18 +206,21 @@ class Overlay {
   int width = 0, height = 0;   // dimensions of the last submitted texture
   // VR-first placement (FW-14): the viewer reads the controllers itself through
   // SteamVR Input (SteamVR's own laser only serves its dashboard). Each window
-  // has two Palladium layers in front of it (chrome.hpp): the bezel 1.5 cm out,
-  // and the controls 3 cm out; plus the laser's tip, a small white-hot core.
+  // has a Palladium bezel meeting its picture at 1.5 cm, four rearward walls,
+  // controls 3 cm out and a host-shared white-hot laser tip.
   VR_IVRInput_FnTable *input = nullptr;
   VRActionSetHandle_t actionSet = 0;
   VRActionHandle_t aimAction = 0, grabAction = 0, squeezeAction = 0, hapticAction = 0;
   VRInputValueHandle_t hands[2] = {};
-  VROverlayHandle_t frameHandle = 0, chromeHandle = 0, cursorHandle = 0;
+  VROverlayHandle_t frameHandle = 0, chromeHandle = 0;
   VROverlayHandle_t frameHandle2 = 0, chromeHandle2 = 0;  // their second halves, for uneven bends
-  GLuint frameTexture = 0, chromeTexture = 0, cursorTexture = 0;
+  GLuint frameTexture = 0, chromeTexture = 0;
+  VROverlayHandle_t wallHandles[4]{};
+  GLuint wallTextures[4]{};
+  FrameWallRenderer wallRenderer;
   ChromeRenderer chromeRenderer;
-  ChromeState chromeState, chromeDrawn, frameDrawn;
-  bool chromeShown = false, cursorVisible = false, chromeFailed = false, closing = false;
+  ChromeState chromeState, chromeDrawn, frameDrawn, wallDrawn;
+  bool chromeShown = false, chromeFailed = false, closing = false;
   double lastChromeUpdate = 0;
   HandleDrag drag;
   int dragHand = -1;
@@ -531,7 +563,8 @@ public:
     for (auto h : {handle, handle2}) if (h) overlay->SetOverlaySortOrder(h, base + 1);
     for (auto h : {frameHandle, frameHandle2}) if (h) overlay->SetOverlaySortOrder(h, base + 2);
     for (auto h : {chromeHandle, chromeHandle2}) if (h) overlay->SetOverlaySortOrder(h, base + 3);
-    if (cursorHandle) overlay->SetOverlaySortOrder(cursorHandle, base + 4);
+    for(auto h:wallHandles)if(h)overlay->SetOverlaySortOrder(h,base+1);
+    if(!selected)session->hideCursor(this);
   }
   FocusFeedback focusFeedback;
   GLuint spatialTexture() const { return texture; }
@@ -585,17 +618,6 @@ public:
       // desktop is upright in the headset; readback dumps are unaffected.
       VRTextureBounds_t bounds{0, 1, 1, 0};
       check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
-      if (!auxiliary() || role == PanelRole::Menubar) {
-        std::string halfKey = key + ".half", halfName = name;
-        if (overlay->CreateOverlay(halfKey.data(), halfName.data(), &handle2) == EVROverlayError_VROverlayError_None) {
-          overlay->SetOverlayTextureColorSpace(handle2, EColorSpace_ColorSpace_Gamma);
-          overlay->SetOverlayInputMethod(handle2, VROverlayInputMethod_None);
-          overlay->SetOverlaySortOrder(handle2, 1);
-        } else {
-          if (role == PanelRole::Menubar) throw std::runtime_error("menu half overlay unavailable");
-          handle2 = 0; // halves stay even; a one-sided bend applies to both
-        }
-      }
       if (auxiliary()) {
         for (auto h : {handle, handle2}) if (h) {
           overlay->SetOverlaySortOrder(h, role == PanelRole::Menu ? 104 : role == PanelRole::Menubar ? 51 : 102);
@@ -618,40 +640,18 @@ public:
     actionSet = session->actionSet; aimAction = session->aim; grabAction = session->grab;
     squeezeAction = session->squeeze; hapticAction = session->haptic;
     for (int i = 0; i < 2; ++i) hands[i] = session->hands[i];
-    std::string frameKey = key + ".frame", chromeKey = key + ".handles", cursorKey = key + ".cursor";
-    std::string frameName = name + " Frame", chromeName = name + " Controls", cursorName = name + " Pointer";
-    if (overlay->CreateOverlay(frameKey.data(), frameName.data(), &frameHandle) ||
-        overlay->CreateOverlay(chromeKey.data(), chromeName.data(), &chromeHandle) ||
-        overlay->CreateOverlay(cursorKey.data(), cursorName.data(), &cursorHandle)) {
-      fprintf(stderr, "[native] placement overlays unavailable\n");
-      return;
+    std::string frameKey=key+".frame", chromeKey=key+".handles";
+    check(overlay->CreateOverlay(frameKey.data(),name.data(),&frameHandle),"frame overlay");
+    check(overlay->CreateOverlay(chromeKey.data(),name.data(),&chromeHandle),"control overlay");
+    for(int i=0;i<4;++i){std::string k=key+".wall"+std::to_string(i);check(overlay->CreateOverlay(k.data(),name.data(),&wallHandles[i]),"wall overlay");}
+    VRTextureBounds_t bounds{0,1,1,0};
+    for(auto h:{frameHandle,chromeHandle,wallHandles[0],wallHandles[1],wallHandles[2],wallHandles[3]}) {
+      overlay->SetOverlayTextureBounds(h,&bounds);overlay->SetOverlayInputMethod(h,VROverlayInputMethod_None);
+      overlay->SetOverlayFlag(h,VROverlayFlags_IsPremultiplied,true);
+      overlay->SetOverlaySortOrder(h,h==frameHandle?2:h==chromeHandle?3:1);
     }
-    std::string frameHalf = frameKey + ".half", chromeHalf = chromeKey + ".half";
-    if (overlay->CreateOverlay(frameHalf.data(), frameName.data(), &frameHandle2) ||
-        overlay->CreateOverlay(chromeHalf.data(), chromeName.data(), &chromeHandle2))
-      frameHandle2 = chromeHandle2 = 0;
-    VRTextureBounds_t bounds{0, 1, 1, 0};
-    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2}) {
-      if (!h) continue;
-      overlay->SetOverlayTextureBounds(h, &bounds);
-      overlay->SetOverlayInputMethod(h, VROverlayInputMethod_None);
-      overlay->SetOverlayFlag(h, VROverlayFlags_IsPremultiplied, true);
-    }
-    // Back to front: the window, its bezel, its controls, the laser's tip.
-    overlay->SetOverlaySortOrder(handle, 1);
-    overlay->SetOverlaySortOrder(frameHandle, 2);
-    overlay->SetOverlaySortOrder(chromeHandle, 3);
-    if (frameHandle2) overlay->SetOverlaySortOrder(frameHandle2, 2);
-    if (chromeHandle2) overlay->SetOverlaySortOrder(chromeHandle2, 3);
-    overlay->SetOverlaySortOrder(cursorHandle, 4);
-    overlay->SetOverlayWidthInMeters(cursorHandle, 0.014f);
-    cursorTexture = createCursorTexture();
-    glGenTextures(1, &frameTexture);
-    glGenTextures(1, &chromeTexture);
-    glFinish();
-    Texture_t t{reinterpret_cast<void *>(uintptr_t(cursorTexture)), ETextureType_TextureType_OpenGL,
-                EColorSpace_ColorSpace_Gamma};
-    overlay->SetOverlayTexture(cursorHandle, &t);
+    overlay->SetOverlaySortOrder(handle,1);
+    glGenTextures(1,&frameTexture);glGenTextures(1,&chromeTexture);glGenTextures(4,wallTextures);
     input = table;
     fprintf(stderr, "[native] placement input ready\n");
   }
@@ -674,12 +674,19 @@ public:
     const float d[3] = {-local.m[0][2], -local.m[1][2], -local.m[2][2]};
     return bendHit(shape(), o, d, z, x, y, distance);
   }
+  bool wallHit(const HmdMatrix34_t &pose,float &x,float &y,float &distance,HmdMatrix34_t *point=nullptr) const {
+    auto local=multiply(inverseRigid(placement.matrix),pose);
+    float o[3]={local.m[0][3],local.m[1][3],local.m[2][3]},d[3]={-local.m[0][2],-local.m[1][2],-local.m[2][2]};
+    HandleLayout l;l.width=placement.width;l.height=panelHeight();
+    return frameWallHit(shape(),l,o,d,x,y,distance,point);
+  }
   // Used by the host to route each hand to the nearest window, while an
   // ongoing drag keeps ownership even after the ray leaves its panel.
   float interactionDistance(const HmdMatrix34_t &pose) const {
     if (!interactive() || auxiliary()) return -1;
     float x = 0, y = 0, distance = 0;
     HandleLayout l; l.width = placement.width; l.height = panelHeight();
+    if(wallHit(pose,x,y,distance))return distance;
     if (!layerHit(pose, controlsDepth, x, y, &distance) ||
         std::fabs(x) > l.chromeWidth() / 2 || std::fabs(y) > l.chromeHeight() / 2) return -1;
     unsigned visible = 0;
@@ -692,6 +699,7 @@ public:
     if (!interactive() || auxiliary()) return -1;
     float x = 0, y = 0, distance = 0;
     HandleLayout l; l.width = placement.width; l.height = panelHeight();
+    if(wallHit(pose,x,y,distance))return distance;
     if (!layerHit(pose, controlsDepth, x, y, &distance)) return -1;
     if ((std::fabs(x) <= l.width/2+l.bezel() && std::fabs(y) <= l.height/2+l.bezel()) || l.revealed(x,y))
       return distance;
@@ -711,7 +719,32 @@ public:
   }
   // Keeps the bezel and controls on the window: concentric with it, in one
   // overlay each, or two where its halves bend differently.
+  void syncHalf(VROverlayHandle_t &h,bool needed,const char *suffix,uint32_t order,GLuint tex) {
+    reconcileHalf(h,needed,[&]() {
+      VROverlayHandle_t created=0;std::string k=key+suffix;
+      check(overlay->CreateOverlay(k.data(),name.data(),&created),"bend half overlay");
+      overlay->SetOverlayInputMethod(created,VROverlayInputMethod_None);
+      overlay->SetOverlayFlag(created,VROverlayFlags_IsPremultiplied,true);
+      overlay->SetOverlayTextureColorSpace(created,EColorSpace_ColorSpace_Gamma);
+      overlay->SetOverlaySortOrder(created,order);
+      if(tex){GLint w=0;glBindTexture(GL_TEXTURE_2D,tex);glGetTexLevelParameteriv(GL_TEXTURE_2D,0,GL_TEXTURE_WIDTH,&w);
+        if(w){Texture_t t{reinterpret_cast<void *>(uintptr_t(tex)),ETextureType_TextureType_OpenGL,EColorSpace_ColorSpace_Gamma};
+          auto error=overlay->SetOverlayTexture(created,&t);if(error){overlay->DestroyOverlay(created);check(error,"bend half texture");}}}
+      return created;
+    },[&](VROverlayHandle_t old){overlay->DestroyOverlay(old);});
+  }
   void placeLayers(const HandleLayout &l) {
+    syncHalf(frameHandle2,shape().split(),".frame.half",spatialForeground?52:2,frameTexture);
+    syncHalf(chromeHandle2,shape().split(),".handles.half",spatialForeground?53:3,chromeTexture);
+    const auto walls=frameWalls(shape(),l);
+    for(int i=0;i<4;++i) {
+      auto m=multiply(placement.matrix,walls[i].local);
+      overlay->SetOverlayTransformAbsolute(wallHandles[i],ETrackingUniverseOrigin_TrackingUniverseStanding,&m);
+      overlay->SetOverlayWidthInMeters(wallHandles[i],walls[i].width);
+      GLint w=0,h=0;glBindTexture(GL_TEXTURE_2D,wallTextures[i]);glGetTexLevelParameteriv(GL_TEXTURE_2D,0,GL_TEXTURE_WIDTH,&w);glGetTexLevelParameteriv(GL_TEXTURE_2D,0,GL_TEXTURE_HEIGHT,&h);
+      if(w&&h)overlay->SetOverlayTexelAspect(wallHandles[i],walls[i].width*h/(walls[i].height*w));
+      if(chromeShown)overlay->ShowOverlay(wallHandles[i]);
+    }
     struct { VROverlayHandle_t h[2]; float z, width, height; } layers[2] = {
         {{frameHandle, frameHandle2}, frameDepth, l.frameWidth(), l.frameHeight()},
         {{chromeHandle, chromeHandle2}, controlsDepth, l.chromeWidth(), l.chromeHeight()}};
@@ -728,6 +761,7 @@ public:
         if (resized) {
           VRTextureBounds_t bounds = seg.bounds;
           overlay->SetOverlayWidthInMeters(layer.h[i], seg.width);
+          overlay->SetOverlayTexelAspect(layer.h[i],seg.width/(span*(seg.bounds.uMax-seg.bounds.uMin)));
           overlay->SetOverlayTextureBounds(layer.h[i], &bounds);
           if (overlay->SetOverlayCurvature) overlay->SetOverlayCurvature(layer.h[i], seg.curvature);
         }
@@ -777,6 +811,16 @@ public:
         }
       layer.drawn = layer.state;
     }
+    if(geometry || !sameChrome(frameState,wallDrawn)) {
+      const auto walls=frameWalls(shape(),l);
+      for(int i=0;i<4;++i) {
+        wallRenderer.render(walls[i],l,frameState,wallTextures[i]);glFlush();
+        Texture_t t{reinterpret_cast<void *>(uintptr_t(wallTextures[i])),ETextureType_TextureType_OpenGL,EColorSpace_ColorSpace_Gamma};
+        overlay->SetOverlayTexture(wallHandles[i],&t);
+      }
+      wallDrawn=frameState;
+      placeLayers(l);
+    }
     drawnLayerGeometry = now;
   }
   // A short buzz on one hand's controller: a light tick when the laser comes
@@ -786,9 +830,10 @@ public:
       input->TriggerHapticVibrationAction(hapticAction, 0, seconds, frequency, amplitude, hands[hand]);
   }
   void hideChrome() {
-    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
+    for (auto h : {frameHandle, chromeHandle, frameHandle2, chromeHandle2, handle2, wallHandles[0], wallHandles[1], wallHandles[2], wallHandles[3]})
       if (h) overlay->HideOverlay(h);
-    chromeShown = cursorVisible = false;
+    chromeShown = false;
+    session->hideCursor(this);
   }
   // One step of VR placement: reads both hands, shows the window's chrome,
   // slides out the handles the laser is heading for, lights the metal around
@@ -812,7 +857,8 @@ public:
       const auto &h = session->hand[i];
       if (h.valid && (revealHands & (1u << i))) {
         float x = 0, y = 0;
-        if (layerHit(h.pose, controlsDepth, x, y)) revealZones |= l.revealed(x, y);
+        float distance;
+        if (wallHit(h.pose,x,y,distance) || layerHit(h.pose, controlsDepth, x, y)) revealZones |= l.revealed(x, y);
       }
       rays[i].valid = h.valid && ((allowedHands & (1u << i)) || dragHand == i);
       rays[i].grab = h.grab;
@@ -821,6 +867,10 @@ public:
         rays[i].pose = h.pose;
         rays[i].onControls = layerHit(rays[i].pose, controlsDepth, rays[i].x, rays[i].y);
         rays[i].onFrame = layerHit(rays[i].pose, frameDepth, rays[i].fx, rays[i].fy);
+        float wallDistance;
+        if(wallHit(rays[i].pose,rays[i].fx,rays[i].fy,wallDistance)) {
+          rays[i].onFrame=true;rays[i].x=rays[i].fx;rays[i].y=rays[i].fy;rays[i].onControls=true;
+        }
         rays[i].hit = rays[i].onControls;
       }
     }
@@ -943,18 +993,14 @@ public:
         const float ex = std::fabs(rays[pointing].fx) - l.width / 2, ey = std::fabs(rays[pointing].fy) - l.height / 2;
         if (rays[pointing].onFrame && std::max(ex, ey) >= 0 && std::max(ex, ey) <= l.bezel()) {
           x = rays[pointing].fx; y = rays[pointing].fy; z = frameDepth + 0.002f;
-        } else if (layerHit(rays[pointing].pose, 0, x, y)) {
-          z = 0.002f;
+        } else if (layerHit(rays[pointing].pose, pictureDepth, x, y)) {
+          z = pictureDepth + 0.002f;
         }
       }
-      HmdMatrix34_t m = panelPoint(x, y, z);
-      overlay->SetOverlayTransformAbsolute(cursorHandle, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
-      if (!cursorVisible) overlay->ShowOverlay(cursorHandle);
-      cursorVisible = true;
-    } else if (cursorVisible) {
-      overlay->HideOverlay(cursorHandle);
-      cursorVisible = false;
-    }
+      HmdMatrix34_t m = panelPoint(x, y, z),wallPoint;float wallDistance;
+      if(hot==Handle::None && wallHit(rays[pointing].pose,x,y,wallDistance,&wallPoint))m=multiply(placement.matrix,wallPoint);
+      session->showCursor(this,m,spatialForeground?54:4,spatialForeground);
+    } else session->hideCursor(this);
     for (int i = 0; i < 2; i++) { grabWas[i] = rays[i].grab; squeezeWas[i] = rays[i].squeeze; }
     return ended;
   }
@@ -982,11 +1028,13 @@ public:
   ~Overlay() { release(); }
   void release() {
     // The main-scope GazeProducer has already joined before this object dies.
+    session->hideCursor(this);
+    wallRenderer.release();
     chromeRenderer.release();
     surfaceRenderer.release();
-    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
+    for (auto h : {frameHandle, chromeHandle, frameHandle2, chromeHandle2, handle2, wallHandles[0], wallHandles[1], wallHandles[2], wallHandles[3]})
       if (h) overlay->DestroyOverlay(h);
-    for (auto t : {frameTexture, chromeTexture, cursorTexture})
+    for (auto t : {frameTexture, chromeTexture, wallTextures[0], wallTextures[1], wallTextures[2], wallTextures[3]})
       if (t) glDeleteTextures(1, &t);
     if (handle) {
       overlay->HideOverlay(handle);
@@ -1054,6 +1102,9 @@ public:
     gazePlacement = placement;
     if (noVR)
       return;
+    const bool split = surfaceGeometry.region.attached ? surfaceGeometry.region.segments(placement.width,surfaceHeight)==2 : shape().split();
+    syncHalf(handle2,split,".half",auxiliary()?(role==PanelRole::Menubar?51:104):(spatialForeground?51:1),texture);
+    if(!split)showingHalf=false;
     if (surfaceGeometry.region.attached) {
       const auto &region = surfaceGeometry.region;
       const int count = region.segments(placement.width,surfaceHeight);
@@ -1084,17 +1135,14 @@ public:
     }
     if (auxiliary() && width > 0 && height > 0 && surfaceHeight > 0)
       overlay->SetOverlayTexelAspect(handle, placement.width * height / (surfaceHeight * width));
-    if (!handle2 && (placement.bendVertical || std::fabs(placement.bendA - placement.bendB) > 1e-4f)) {
-      placement.bendA = placement.bendB = std::max(placement.bendA, placement.bendB);
-      syncCurvature(placement);
-    }
     const BendShape b = shape();
     for (int i = 0; i < b.segments(); i++) {
-      const BendSegment seg = bendSegment(b, i, b.span, 0);
+      const BendSegment seg = bendSegment(b, i, b.span, auxiliary()?0:pictureDepth);
       const VROverlayHandle_t h = i == 0 ? handle : handle2;
       HmdMatrix34_t m = multiply(placement.matrix, seg.local);
       VRTextureBounds_t bounds = seg.bounds;
       check(overlay->SetOverlayWidthInMeters(h, seg.width), "width");
+      if(!auxiliary())overlay->SetOverlayTexelAspect(h,seg.width/(b.span*(seg.bounds.uMax-seg.bounds.uMin)));
       check(overlay->SetOverlayTransformAbsolute(h, ETrackingUniverseOrigin_TrackingUniverseStanding, &m),
             "world transform");
       overlay->SetOverlayTextureBounds(h, &bounds);
@@ -1190,7 +1238,7 @@ public:
         exitReason = "openvr-overlay-quit";
         return false;
       }
-    for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
+    for (auto h : {frameHandle, chromeHandle, frameHandle2, chromeHandle2, handle2, wallHandles[0], wallHandles[1], wallHandles[2], wallHandles[3]})
       if (h)
         while (overlay->PollNextOverlayEvent(h, &e, sizeof(e))) {
         }

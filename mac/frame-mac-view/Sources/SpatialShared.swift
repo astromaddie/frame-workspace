@@ -136,15 +136,18 @@ struct SpatialSurface: Equatable {
     var anchor = "none"
     var anchorRect = CGRect.zero
     var menusWidth: CGFloat = 0
+    var selectedRect: CGRect? = nil
     var hot = false
     var visible = false
     var displayID: CGDirectDisplayID = 0
     var seq: UInt64 = 0
 
     var json: [String: Any] {
-        ["t": "surface", "v": 1, "seq": seq, "visible": visible,
+        var value: [String: Any] = ["t": "surface", "v": 1, "seq": seq, "visible": visible,
          "rect": SpatialSharedPolicy.rectJSON(rect), "anchor": anchor,
          "anchorRect": SpatialSharedPolicy.rectJSON(anchorRect), "menusWidth": menusWidth, "hot": hot]
+        if let selectedRect { value["selectedRect"] = SpatialSharedPolicy.rectJSON(selectedRect) }
+        return value
     }
 }
 
@@ -178,7 +181,7 @@ final class MenuSurfaceWatcher {
     func stop() {
         generation += 1; timer?.cancel(); timer = nil; busy = false; alphaRects.removeAll()
         for key in Array(values.keys) {
-            var value = values[key] ?? SpatialSurface(); value.visible = false
+            var value = values[key] ?? SpatialSurface(); value.visible = false; value.selectedRect = nil
             publish(key, value)
         }
     }
@@ -201,6 +204,28 @@ final class MenuSurfaceWatcher {
         for (source, callback) in Array(listeners.values) where source.key == key { callback(value) }
     }
 
+    private func menuItems() -> [SpatialSharedPolicy.MenuItem] {
+        guard AXIsProcessTrusted(), let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else { return [] }
+        func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
+            var value: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success ? value : nil
+        }
+        let app = AXUIElementCreateApplication(pid)
+        guard let raw = attribute(app, kAXMenuBarAttribute), CFGetTypeID(raw) == AXUIElementGetTypeID() else { return [] }
+        let bar = unsafeBitCast(raw, to: AXUIElement.self)
+        guard let children = attribute(bar, kAXChildrenAttribute) as? [AXUIElement] else { return [] }
+        return children.compactMap { item in
+            guard attribute(item, kAXRoleAttribute) as? String == kAXMenuBarItemRole,
+                  let p = attribute(item, kAXPositionAttribute), let s = attribute(item, kAXSizeAttribute),
+                  CFGetTypeID(p) == AXValueGetTypeID(), CFGetTypeID(s) == AXValueGetTypeID() else { return nil }
+            var point = CGPoint.zero, size = CGSize.zero
+            guard AXValueGetValue(unsafeBitCast(p, to: AXValue.self), .cgPoint, &point),
+                  AXValueGetValue(unsafeBitCast(s, to: AXValue.self), .cgSize, &size) else { return nil }
+            return SpatialSharedPolicy.MenuItem(frame: CGRect(origin: point, size: size),
+                selected: attribute(item, kAXSelectedAttribute) as? Bool == true)
+        }
+    }
+
     private func refresh() {
         guard !busy, let coordinator, coordinator.isRunning, let displayID = coordinator.menuBarDisplayID else { return }
         let bar = coordinator.menuBarRect
@@ -210,8 +235,12 @@ final class MenuSurfaceWatcher {
         let menus = CGRect(x: bar.minX, y: bar.minY, width: max(1, split - bar.minX), height: bar.height)
         let status = CGRect(x: split, y: bar.minY, width: max(1, bar.maxX - split), height: bar.height)
         let hot = bar.contains(Input.cursorLocation)
+        let dropdowns = infos.filter { $0.layer == 101 && $0.bounds.minX < split - 8 &&
+            SpatialSharedPolicy.isMenuBarSurface(frame: $0.bounds, layer: $0.layer, owner: $0.app, menuBarRect: bar) }.map(\.bounds)
+        let selected = SpatialSharedPolicy.selectedMenuItem(items: dropdowns.isEmpty ? [] : menuItems(),
+            dropdowns: dropdowns, menuBar: menus)
         publish("menubar", SpatialSurface(rect: menus, anchor: "menubar", anchorRect: menus,
-            menusWidth: menus.width, hot: hot, visible: true, displayID: displayID))
+            menusWidth: menus.width, selectedRect: selected, hot: hot, visible: true, displayID: displayID))
         publish("status", SpatialSurface(rect: status, anchor: "status", anchorRect: status,
             menusWidth: menus.width, hot: hot, visible: true, displayID: displayID))
         let candidates = infos.filter {

@@ -7,6 +7,7 @@
 // presses in (its bevel flips) and glows from inside, brightest along the
 // walls of its recess. Output is premultiplied alpha, top row first.
 #include "handles.hpp"
+#include "depth.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
@@ -15,7 +16,7 @@
 
 namespace fw {
 
-inline constexpr float frameDepth = 0.015f, controlsDepth = 0.03f;
+
 
 // Shared by the live overlay and the offscreen compositor.
 inline GLuint createCursorTexture() {
@@ -85,6 +86,13 @@ struct FocusFeedback {
 
 class ChromeRenderer {
 public:
+  // The exact material and pressed-control functions are shared by the menu
+  // recess and the physical frame walls.
+  static std::string materialSource() {
+    std::string s=fragmentSource();
+    auto a=s.find("// Palladium silver-lavender"), b=s.find("vec4 bezel(");
+    return s.substr(a,b-a);
+  }
   static constexpr float pixelsPerMeter = 1100;
   static constexpr int maxPixels = 3072;
 
@@ -287,7 +295,7 @@ vec4 bezel(vec2 p) {
   float dO = sdBox(p, uHalf + b, .7 * b, gO);  // < 0 inside the frame's outline
   float dI = sdBox(p, uHalf, .006, gI);        // > 0 outside the window
   if (dI < 0.) {
-    // the bezel's soft shadow on the window's edge (it floats 1.5 cm in front)
+    // the bezel's soft shadow on the window's edge (it meets the picture at the front face)
     if (dI < -.04) return vec4(0.);
     float a = .40 * exp(dI / .010) * (.55 + .45 * dot(gI, SHADOW));
     return vec4(0., 0., 0., a);

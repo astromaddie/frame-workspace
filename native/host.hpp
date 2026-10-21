@@ -1,5 +1,6 @@
 #pragma once
 #include "bend.hpp"
+#include "depth.hpp"
 #include "gaze_bridge.hpp"
 #include <filesystem>
 #include <set>
@@ -31,7 +32,8 @@ struct SurfaceRect {
 struct SurfaceMessage {
   uint32_t seq = 0;
   bool visible = false, hot = false;
-  SurfaceRect rect, anchorRect;
+  SurfaceRect rect, anchorRect, selectedRect;
+  bool hasSelectedRect = false;
   std::string anchor = "none";
   float menusWidth = 0;
   double received = 0;
@@ -69,6 +71,7 @@ struct SurfaceMessage {
       out = {values[0], values[1], values[2], values[3]};
     };
     rect("rect", m.rect); rect("anchorRect", m.anchorRect);
+    if (field(j, "selectedRect")) { rect("selectedRect", m.selectedRect); m.hasSelectedRect = true; }
     if (field(j, "menusWidth")) {
       auto v = field(j, "menusWidth");
       if ((!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double)) ||
@@ -169,6 +172,7 @@ struct PanelSurface {
   float fullHeight = 0, inset = 0, pictureWidth = 0, pictureHeight = 0;
   float covered = 0, menuRise = 0;
   BendRegion region{};
+  SurfaceRect pressedRect{};
 };
 inline HmdMatrix34_t surfacePoint(const PanelSurface &s, float x, float y, float z = 0) {
   return multiply(s.placement.matrix, s.region.attached ? s.region.point(x,y,z) :
@@ -182,7 +186,9 @@ inline void surfaceUV(const PanelSurface &s, float &u, float &v) {
 }
 inline bool sameSurfaceGeometry(const PanelSurface &a, const PanelSurface &b) {
   return a.placement.width == b.placement.width && a.height == b.height &&
-      a.region == b.region && a.placement.bendA == b.placement.bendA &&
+      a.region == b.region &&
+      a.pressedRect.x == b.pressedRect.x && a.pressedRect.y == b.pressedRect.y &&
+      a.pressedRect.w == b.pressedRect.w && a.pressedRect.h == b.pressedRect.h && a.placement.bendA == b.placement.bendA &&
       a.placement.bendB == b.placement.bendB && a.placement.bendVertical == b.placement.bendVertical &&
       a.fullHeight == b.fullHeight && a.inset == b.inset && a.pictureWidth == b.pictureWidth &&
       a.pictureHeight == b.pictureHeight && a.covered == b.covered && a.menuRise == b.menuRise &&
@@ -237,11 +243,18 @@ inline PanelPick surfacePick(const EyeRay &ray, const PanelSurface &s, float mar
   }
   float x = 0, y = 0, distance = 0;
   const auto shape = s.region.attached ? s.region.shape : bendShape(s.placement, s.height);
-  const float depth = s.region.attached ? s.region.depth : 0;
+  const float depth = s.region.attached ? s.region.depth : s.role == PanelRole::Window ? pictureDepth : 0;
   const float edgeMargin = s.region.attached ? std::max(.2f,
       (shape.vertical ? std::fabs(s.region.y)+s.height/2 : std::fabs(s.region.x)+s.placement.width/2)
           -shape.span/2+std::max(0.f,margin)) : .2f;
-  if (!bendHit(shape, o, d, depth, x, y, &distance, edgeMargin)) return hit;
+  bool onPicture = bendHit(shape, o, d, depth, x, y, &distance, edgeMargin);
+  if (s.role == PanelRole::Window && (!onPicture || std::fabs(x)>s.placement.width/2+margin || std::fabs(y)>s.height/2+margin)) {
+    HandleLayout layout;layout.width=s.placement.width;layout.height=s.height;
+    if(frameWallHit(shape,layout,o,d,x,y,distance)) {
+      hit.key=s.key;hit.distance=distance;hit.u=std::clamp(x/layout.width+.5f,0.f,1.f);hit.v=std::clamp(.5f-y/layout.height,0.f,1.f);return hit;
+    }
+  }
+  if (!onPicture) return hit;
   const auto point = bendPointXY(shape, x, y, depth);
   if (s.region.attached) { x -= s.region.x; y -= s.region.y; }
   if (std::fabs(x) > s.placement.width / 2 + margin || std::fabs(y) > s.height / 2 + margin || y < -s.height / 2 + s.covered) return hit;

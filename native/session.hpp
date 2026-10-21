@@ -4,6 +4,7 @@
 #include "vendor/openvr/openvr_capi.h"
 #pragma GCC diagnostic pop
 #include "gaze_bridge.hpp"
+#include "chrome.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
@@ -23,6 +24,8 @@ class OverlaySession {
   bool initialized = false;
   std::string manifestPath;
   void release() {
+    if (cursorHandle && overlay) overlay->DestroyOverlay(cursorHandle);
+    if (cursorTexture) glDeleteTextures(1,&cursorTexture);
     if (initialized && shutdown) shutdown();
     if (context) SDL_GL_DeleteContext(context);
     if (window) SDL_DestroyWindow(window);
@@ -32,6 +35,33 @@ class OverlaySession {
 public:
   using GetInterface = intptr_t (*)(const char *, EVRInitError *);
   const bool noVR;
+  bool sharedHost = false;
+  VROverlayHandle_t cursorHandle = 0;
+  GLuint cursorTexture = 0;
+  CursorOwnership cursor;
+  void hideCursor(const void *owner) {
+    if(!cursor.release(owner))return;
+    if(cursorHandle)overlay->HideOverlay(cursorHandle);
+
+  }
+  void showCursor(const void *owner,HmdMatrix34_t pose,uint32_t order,bool focused) {
+    if(!cursor.claim(owner,!sharedHost || focused)){hideCursor(owner);return;}
+    if(!cursorHandle) {
+      std::string key="com.frame-workspace.cursor."+std::to_string(getpid());
+      if(overlay->CreateOverlay(key.data(),(char *)"Frame Workspace Pointer",&cursorHandle))
+        throw std::runtime_error("shared cursor overlay unavailable");
+      VRTextureBounds_t bounds{0,1,1,0};overlay->SetOverlayTextureBounds(cursorHandle,&bounds);
+      overlay->SetOverlayFlag(cursorHandle,VROverlayFlags_IsPremultiplied,true);
+      overlay->SetOverlayInputMethod(cursorHandle,VROverlayInputMethod_None);
+      overlay->SetOverlayWidthInMeters(cursorHandle,.014f);
+      cursorTexture=createCursorTexture();glFinish();
+      Texture_t t{reinterpret_cast<void *>(uintptr_t(cursorTexture)),ETextureType_TextureType_OpenGL,EColorSpace_ColorSpace_Gamma};
+      overlay->SetOverlayTexture(cursorHandle,&t);
+    }
+    overlay->SetOverlaySortOrder(cursorHandle,order);
+    overlay->SetOverlayTransformAbsolute(cursorHandle,ETrackingUniverseOrigin_TrackingUniverseStanding,&pose);
+    overlay->ShowOverlay(cursorHandle);
+  }
   void *library = nullptr;
   GetInterface get = nullptr;
   VR_IVROverlay_FnTable *overlay = nullptr;

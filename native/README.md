@@ -285,11 +285,17 @@ received a continuous aim pose and exact trigger presses.
 
 Each window wears Palladium chrome in silver-lavender
 (`docs/frame-workspace/evidence/palladium-vr-handles-mockup.png`, approved
-2026-10-20), on two layers in front of it so each eye sees real depth:
+2026-10-20), with a solid 15 mm frame and a separate controls layer:
 
-- **Bezel** (`<key>.frame`, 1.5 cm in front): the F2 machined bezel, about
+- **Bezel** (`<key>.frame`, at the picture front plane): the F2 machined bezel, about
   1% of the window's width (2–3.5 cm), with an inward chamfer, a chiseled line
-  round its face and a soft shadow on the window's edge.
+  round its face and a soft shadow on the window's edge. The picture and front
+  face meet 15 mm forward of the saved placement plane. Four physical side-wall
+  overlays extend back to that plane as a closed rectangular rear shell recessed
+  beneath the bezel's rounded lip. Curved edges use 1–4 coplanar facets packed
+  into one overlay per edge, with the same construction transposed for vertical
+  bends. Bevel normals round the edge lighting; the rear shell has exact planar
+  joins, not extruded quarter-cylinder corners.
 - **Controls** (`<key>.handles`, 3 cm in front): a move pill and a separate
   close disc with an engraved X, 3 cm below the bezel, revealed only by a laser
   in their shared row plus a 4 cm margin; and
@@ -301,7 +307,7 @@ Each window wears Palladium chrome in silver-lavender
 `chrome.hpp` draws both with one GLSL shader into textures (premultiplied
 alpha), lit from the upper left, and redraws a layer only when something on it
 changes. The laser works as in Stargate: no dot, a small white-hot core where
-it lands (`<key>.cursor`, on whichever layer it meets), and the metal within
+it lands (one host-owned cursor, on the focused window's hit layer), and the metal within
 about 5 cm brightening in the laser's blue, most on faces turned towards it.
 The layers follow the window's curvature on concentric cylinders, and the
 laser is intersected with each layer's own cylinder. The pill carries the
@@ -312,7 +318,7 @@ zones and the shader. `--render-chrome SCENE OUT.ppm` draws the chrome flat
 for checking it without the headset. `--action-manifest PATH|none` overrides
 or disables input.
 
-Verified 2026-10-20 on the Frame (not worn): the shader compiles and renders
+Historical pre-depth validation, 2026-10-20 on the Frame (not worn): the shader compiles and renders
 the same on its GPU (zink on Turnip) as on the Mac, and with the Workspace
 running all three layers are visible, sorted in front of the window, 1.5 and
 3 cm out, with matching curvature. Curved, the old handles layer stayed flat
@@ -336,7 +342,9 @@ bends both evenly. Top and bottom grips bend top to bottom the same way;
 changing direction starts from flat. SteamVR only curves an overlay side to
 side about its middle, so halves that differ are two overlays (the window's
 `<key>.half`, and `.half` copies of the bezel and controls), arcs tangent at the
-centre line and overlapping by 2 mm; a top-to-bottom bend turns each overlay a
+centre line and overlapping by 2 mm. These three extra overlays are created only
+while halves differ and destroyed when they match again; an even curved window
+uses the same count as a flat one. A top-to-bottom bend turns each overlay a
 quarter turn on its face and draws its texture transposed (the last picture is
 redrawn at once, so a still desktop turns too). The pose file keeps the bend as
 `"bend":{"vertical":..,"a":..,"b":..}` (a: left or bottom half, b: right or
@@ -760,6 +768,11 @@ an ongoing pill move hold them fully shown. Hidden controls and transparent padd
 pass host laser ownership through to surfaces behind. The existing tip light and
 pressed inner glow remain. Both hands contribute reveal zones.
 
+An open dropdown's selected title uses the pressed handle's concave bevel,
+Palladium palette and inward blue reflection. The source title's ink is retained
+across transparent, light and opaque accent/dark captures; its global
+`selectedRect` maps through the picture inset and the strip's existing curve.
+
 A validated version-1 `surface` text message carries `seq`, `visible`, `rect`,
 `anchor`, `anchorRect`, optional `menusWidth`, and `hot`. Auxiliary streams start
 hidden. A show/re-show waits for a successfully uploaded picture whose sequence
@@ -829,6 +842,17 @@ native/build/frame-workspace-native --render-chrome focus-glow /tmp/glow.ppm
 native/build/frame-workspace-native --render-chrome focus-snap /tmp/snap.ppm
 ```
 
+With four shelf apps, the shelf backing, status, four reserved dropdown slots,
+menu strip, shared cursor and SteamVR bar panel plus thumbnail, six ordinary
+windows use 56 overlays and nine use 77. Each window uses 7 flat/even-curved or
+10 with split bends; a split menubar adds one. All-nine-split is 104–105, still
+below the system ceiling of 128. Before the wall change each window reserved 7
+including its cursor and three idle halves; six/nine totals were also 56/77.
+The retained UI high-water adds up to seven switcher tiles and three app-menu
+rows: nine ordinary windows then use 87, or 115 with every window and the menu
+strip split. Hidden retained UI overlays are included. Other applications consume
+additional system overlays.
+
 The optional state override supplies fixture icons/labels; thumbnails in this
 standalone diagnostic are deliberately asymmetric color fixtures. Alternating
 cards use normal and physically quarter-turned textures. These are renderer
@@ -877,7 +901,7 @@ host's submitted surfaces, not SteamVR compositor, optical, or worn evidence.
 The scene lists `panels` (`id`, `role: "window"`, `placement` in the existing
 version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `height`, `focused`, `focusGlow`,
 `focusSnap`, `pillLaser`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
-`status`, `dropdown` entries (`texture` and the existing `surface` message).
+`status`, `dropdown` entries (`texture` and the existing `surface` message, including optional menubar `selectedRect` in global points).
 An optional menubar `reveal` from 0 to 1 forces a transition frame for diagnostics.
 `pillLaser` aims the scene ray at that window's pill and reveals its below-edge controls.
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.
@@ -890,7 +914,7 @@ No real window content is included in those fixtures.
 The compositor consumes `bendSegment` transforms/widths/UV bounds, including
 the 2 mm split seam, curvature radius `width / (2*pi*curvature)`, concentric
 layer offsets, and vertical texture orientation. It uses `ChromeRenderer`
-with the same 15 mm bezel and 30 mm controls offsets, shared cursor texture,
+with the same picture/bezel front at 15 mm, four rearward walls, 30 mm controls and shared cursor,
 `SpatialRenderer`'s rendered D1 shelf/dock textures, `SurfaceRenderer`'s
 auxiliary material, and `menuStripPlacement`, `statusStripPlacement`, and
 `surfacePlacement`. Overlay sort bands preserve the selected window in front

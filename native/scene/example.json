@@ -138,7 +138,13 @@
         30
       ],
       "hot": true,
-      "menusWidth": 600
+      "menusWidth": 600,
+      "selectedRect": [
+        66,
+        0,
+        34,
+        30
+      ]
     }
   },
   "status": {

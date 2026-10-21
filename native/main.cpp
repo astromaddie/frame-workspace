@@ -7,6 +7,7 @@
 #include "scene_render.hpp"
 #include "tests_spatial.hpp"
 #include "tests_wall.hpp"
+#include "tests_depth.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -444,6 +445,7 @@ static int selfTest() {
   selfTestHost();
   selfTestSpatial();
   selfTestWall();
+  selfTestDepth();
   std::cout
       << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout and trigger gestures\n";
   return 0;
@@ -1110,6 +1112,7 @@ public:
 };
 static int runHost(const std::string &folder, const std::string &stateFile, const PanelOptions &defaults) {
   auto session = std::make_shared<OverlaySession>(defaults.noVR);
+  session->sharedHost = true;
   if (!defaults.actionManifest.empty()) session->initInput(defaults.actionManifest);
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;

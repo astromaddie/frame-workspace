@@ -39,7 +39,7 @@ inline void selfTestHost() {
   flat.placement.width = 2; flat.placement.matrix = {{{1,0,0,0}, {0,1,0,0}, {0,0,1,-2}}};
   EyeRay ray{{0,0,0}, {0,0,-1}};
   auto hit = surfacePick(ray, flat);
-  check(hit && std::fabs(hit.u-.5f)<1e-6 && std::fabs(hit.v-.5f)<1e-6 && std::fabs(hit.distance-2)<1e-6,
+  check(hit && std::fabs(hit.u-.5f)<1e-6 && std::fabs(hit.v-.5f)<1e-6 && std::fabs(hit.distance-(2-pictureDepth))<1e-6,
         "host flat gaze centre and distance");
   ray.origin[0] = -.8f; ray.origin[1] = .45f;
   hit = surfacePick(ray, flat);
@@ -58,7 +58,7 @@ inline void selfTestHost() {
     const float c = std::cos(.4f), s = std::sin(.4f);
     bent.placement.matrix = {{{c,0,s,1.3f}, {0,1,0,1.6f}, {-s,0,c,-3}}};
     for (float u : {.1f,.49f,.51f,.9f}) for (float v : {.15f,.7f}) {
-      auto local = bendPointXY(bendShape(bent.placement, bent.height), (u-.5f)*2, (.5f-v)*bent.height, 0);
+      auto local = bendPointXY(bendShape(bent.placement, bent.height), (u-.5f)*2, (.5f-v)*bent.height, pictureDepth);
       auto world = multiply(bent.placement.matrix, local);
       EyeRay eye;
       for (int i=0; i<3; ++i) { eye.origin[i]=world.m[i][3]+world.m[i][2]; eye.direction[i]=-world.m[i][2]; }
@@ -70,7 +70,7 @@ inline void selfTestHost() {
   PanelSurface near = flat; near.key = "near"; near.placement.matrix.m[2][3] = -1;
   ray = {{0,0,0}, {0,0,-3}};
   hit = pickPanel(ray, {flat,near});
-  check(hit.key == "near" && std::fabs(hit.distance-1)<1e-6, "nearest overlapping window wins with normalized ray");
+  check(hit.key == "near" && std::fabs(hit.distance-(1-pictureDepth))<1e-6, "nearest overlapping window wins with normalized ray");
   // Adjacent panels: small jitter across a seam keeps the active panel.
   PanelSurface right = flat; right.key = "right"; right.placement.matrix.m[0][3] = 2;
   ray = {{1.005f,0,0},{0,0,-1}};
