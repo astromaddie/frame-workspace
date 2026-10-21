@@ -47,7 +47,7 @@ class FakeMacView:
         self._spatial_focused = None
         self.calls, self.remote = [], []
         self.native_panels = {
-            "separate:1": {"slot": 1, "key": KEY1, "title": "zsh"},
+            "spatial:1": {"slot": 1, "key": KEY1, "title": "zsh"},
             "window:2": {"slot": 0, "key": KEY2, "title": "Note"},
         }
         self.apps = [{"bundleID": b, "name": n, "running": r, "pinned": p, "hidden": h, "active": a}
@@ -105,19 +105,33 @@ class Companion(unittest.TestCase):
         self.apps.refresh()
         self.assertFalse(self.apps.wake.is_set())
 
+    def test_auxiliary_panels_never_enter_dock_switcher_or_switch_requests(self):
+        for source in frame_macview.SPATIAL_AUX_ROLES:
+            self.mv.native_panels[source] = {"slot": 0, "key": KEY1.replace("w1", source.replace(":", "")),
+                                             "title": "Auxiliary", "bundleID": TERMINAL}
+        self.apps.refresh()
+        self.apps.sync()
+        state = json.loads(self.mv.remote[0][1])
+        self.assertEqual([w["key"] for a in state["apps"] for w in a["windows"]], [KEY1, KEY2])
+        self.assertEqual(state["switcher"]["windows"], [KEY1, KEY2])
+        count = len(self.mv.calls)
+        for source in frame_macview.SPATIAL_AUX_ROLES:
+            self.apps.handle_request({"action": "switch", "key": self.mv.native_panels[source]["key"]})
+        self.assertEqual(len(self.mv.calls), count)
+
     def test_hidden_windows_retain_mapping_but_removed_panels_do_not(self):
         self.apps.refresh()
         self.mv.windows.clear()
         self.apps.refresh()
         self.assertEqual(self.apps.state["apps"][1]["windows"][0]["key"], KEY1)
-        del self.mv.native_panels["separate:1"]
+        del self.mv.native_panels["spatial:1"]
         self.apps.refresh()
         self.assertEqual(self.apps.state["apps"][1]["windows"], [])
         self.assertNotIn("1", self.apps._window_apps)
 
     def test_panel_metadata_maps_already_hidden_window(self):
         self.mv.windows.clear()
-        self.mv.native_panels["separate:1"]["bundleID"] = TERMINAL
+        self.mv.native_panels["spatial:1"]["bundleID"] = TERMINAL
         self.apps.refresh()
         self.assertEqual(self.apps.state["apps"][1]["windows"][0]["key"], KEY1)
 
@@ -214,8 +228,8 @@ class Companion(unittest.TestCase):
         mv.spatial_apps.refresh()
         mv._handle_frame_requests(json.dumps({"action": "switch", "key": KEY1}))
         mv.dash_jobs.join()
-        self.assertEqual(mv._spatial_focused, "separate:1")
-        self.assertIn(("/focus", "POST", {"src": "separate:1", "u": .5, "v": .5}), self.mv.calls)
+        self.assertEqual(mv._spatial_focused, "spatial:1")
+        self.assertIn(("/focus", "POST", {"src": "spatial:1", "u": .5, "v": .5}), self.mv.calls)
 
     def test_companion_transport_executes_writer_on_stdin_and_recovers_icons(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -313,7 +327,7 @@ class SwiftContract(unittest.TestCase):
         apps = SpatialApps(mv)
         apps.refresh()
         entries = mv.calls[-1][2]["entries"]
-        with tempfile.TemporaryDirectory(prefix=".spatial-contract-", dir=ROOT) as tmp:
+        with tempfile.TemporaryDirectory(prefix="spatial-contract-") as tmp:
             source = Path(tmp) / "Contract.swift"
             binary = Path(tmp) / "contract"
             source.write_text('''import Foundation

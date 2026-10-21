@@ -11,7 +11,7 @@ import time
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "workspace-spatial-on-frame.py"
 BUNDLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 KEY = re.compile(r"com\.frame-workspace\.native\.\d{1,15}\.panel-w\d{1,15}\Z")
-SOURCE = re.compile(r"(?:window|separate):(\d{1,15})\Z")
+SOURCE = re.compile(r"(?:window|separate|spatial):(\d{1,15})\Z")
 VERBS = {"open", "hide", "unhide", "quit", "show_windows"}
 
 

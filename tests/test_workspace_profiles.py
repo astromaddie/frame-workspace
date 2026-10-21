@@ -221,11 +221,11 @@ class ProfileCaptureTests(unittest.TestCase):
             mv.state = mock.Mock(return_value={"available": True, "screen": True, "windows": [
                 {"id": 42, "src": "window:42", "bundleID": "com.apple.Terminal", "title": "Shell"}]})
             pose = sample_pose(1)
-            mv.read_panel_poses = mock.Mock(return_value={"window:42": pose})
+            mv.read_panel_poses = mock.Mock(return_value={"spatial:42": pose})
             value = sample_profile([{"bundleID": "com.apple.Terminal"}])
             value["workspace"]["pose"] = sample_pose(-1)
             saved = profiles.save(store, mv, value)
-            mv.read_panel_poses.assert_called_once_with(["window:42"])
+            mv.read_panel_poses.assert_called_once_with(["spatial:42"])
             self.assertNotIn("pose", saved["workspace"])
             self.assertEqual(saved["windows"][0]["pose"], pose)
             # A previously saved Desktop Workspace pose remains in the store,
@@ -379,6 +379,15 @@ class FreshWindowMatchingTests(unittest.TestCase):
         rule = sample_profile([{"bundleID": "com.example.Editor"}])
         windows = [{"id": 31, "src": "display:31", "bundleID": "com.example.Editor", "title": "Editor"}]
         self.assertEqual(profiles.match_windows(rule, windows)[0]["status"], "unavailable")
+
+    def test_spatial_sources_match_only_the_current_window_id(self):
+        rule = sample_profile([{"bundleID": "com.example.Editor"}])
+        for source, expected in (("spatial:31", "matched"), ("spatial:32", "unavailable"),
+                                 ("menubar", "unavailable"), ("status", "unavailable"),
+                                 ("menu:0", "unavailable")):
+            with self.subTest(source=source):
+                result = profiles.match_windows(rule, [{"id": 31, "src": source, "bundleID": "com.example.Editor"}])[0]
+                self.assertEqual(result["status"], expected)
 
 
 class ProfileCliTests(unittest.TestCase):
@@ -718,11 +727,11 @@ class SessionKeeperTests(unittest.TestCase):
     def spatial(mv, ready=True):
         mv.mode = "spatial"
         mv.workspace_panel_key = None
-        mv.native_panels = {s.replace("window:", "separate:"): p for s, p in mv.native_panels.items()}
+        mv.native_panels = {s.replace("window:", "spatial:"): p for s, p in mv.native_panels.items()}
         mv.workspace_state = lambda: {"state": "running", "mode": "spatial", "preset": "2880x2560",
                                       "scale": 1, "quality": "sharp", "panelsReady": ready}
 
-    def test_modes_keep_independent_last_sessions_and_separate_panel_poses(self):
+    def test_modes_keep_independent_last_sessions_and_spatial_panel_poses(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
             mv, store, keeper = self.keeper(tmp)
             self.assertTrue(keeper.snapshot())
@@ -736,6 +745,28 @@ class SessionKeeperTests(unittest.TestCase):
             self.assertNotEqual(saved["windows"], keeper.store.get(profiles.LAST_SESSION)["windows"])
             self.assertEqual(keeper.stores["spatial"].path.stat().st_mode & 0o777, 0o600)
 
+    def test_auxiliary_panels_are_excluded_from_last_session_and_pose_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mv, store, keeper = self.keeper(tmp)
+            self.spatial(mv)
+            for source in frame_macview.SPATIAL_AUX_ROLES:
+                mv.native_panels[source] = {"key": "auxiliary"}
+                mv.windows.append({"id": 99, "src": source, "bundleID": "com.example.Auxiliary"})
+            mv.read_panel_poses = mock.Mock(wraps=mv.read_panel_poses)
+            self.assertTrue(keeper.snapshot())
+            mv.read_panel_poses.assert_called_once_with(["spatial:5", "spatial:9"])
+            saved = keeper.stores["spatial"].get(profiles.LAST_SESSION)
+            self.assertEqual(len(saved["windows"]), 2)
+            self.assertEqual({w["bundleID"] for w in saved["windows"]}, {"com.apple.Terminal", "com.apple.finder"})
+
+    def test_spatial_resume_does_not_duplicate_existing_shared_display_panels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mv, store, keeper = self.keeper(tmp)
+            self.spatial(mv)
+            self.assertTrue(keeper.snapshot())
+            self.assertEqual(keeper.resume(), [])
+            self.assertEqual(mv.shown, [])
+
     def test_spatial_resume_matches_fresh_ids_before_first_automatic_launch(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
             mv, store, keeper = self.keeper(tmp)
@@ -743,11 +774,11 @@ class SessionKeeperTests(unittest.TestCase):
             keeper.snapshot()
             saved = keeper.stores["spatial"].get(profiles.LAST_SESSION)
             mv.windows[0].update(id=105, src="window:105", title="New Terminal Title")
-            mv.call = mock.Mock(return_value={"windows": mv.windows})
+            mv.call = mock.Mock(return_value={"windows": [{k: v for k, v in w.items() if k != "src"} for w in mv.windows]})
             mv.native_panels.clear()
             keeper.paused = True
             keeper.resume_async(True)
-            self.assertEqual(mv._spatial_resume_poses["separate:105"], saved["windows"][0]["pose"])
+            self.assertEqual(mv._spatial_resume_poses["spatial:105"], saved["windows"][0]["pose"])
             self.assertEqual(mv.shown, [])  # reconciler starts each window once with its saved pose
             self.assertFalse(keeper.paused)
 
@@ -768,7 +799,7 @@ class SessionKeeperTests(unittest.TestCase):
             self.spatial(mv)
             mv.windows = [{"id": i + 1, "src": f"window:{i + 1}", "bundleID": f"com.example.app{i}"}
                           for i in range(35)]
-            mv.native_panels = {f"separate:{i + 1}": {"key": f"key{i}"} for i in range(35)}
+            mv.native_panels = {f"spatial:{i + 1}": {"key": f"key{i}"} for i in range(35)}
             self.assertTrue(keeper.snapshot())
             saved = keeper.stores["spatial"].get(profiles.LAST_SESSION)
             self.assertEqual(len(saved["windows"]), 35)
