@@ -88,10 +88,12 @@ def main():
         apps=[dict(id=name,name=name.title(),icon=name+'-icon.png') for name in ['notes','workbench','metrics','files']],
         menubar=auxiliary('menubar.png',[0,0,600,30],hot=True,menusWidth=600),
         status=auxiliary('status.png',[0,0,186,30]),
-        dropdown=auxiliary('dropdown.png',[66,30,220,190],'menubar',[0,0,600,30]))
+        dropdown=auxiliary('dropdown.png',[59,30,220,190],'menubar',[0,0,600,30]))
+    scene['menubar']['surface']['selectedRect']=[59,0,34,30]
     (ROOT/'example.json').write_text(json.dumps(scene,indent=2)+'\n')
     # A slim strip is the resting state: production MenuStripReveal expands while
     # a dropdown is open, so the resting evidence correctly hides the dropdown.
+    scene['menubar']['surface'].pop('selectedRect', None)
     scene['menubar']['surface']['hot']=False
     scene['dropdown']['surface']['visible']=False
     (ROOT/'example-slim.json').write_text(json.dumps(scene,indent=2)+'\n')

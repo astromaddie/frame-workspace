@@ -138,7 +138,13 @@
         30
       ],
       "hot": true,
-      "menusWidth": 600
+      "menusWidth": 600,
+      "selectedRect": [
+        59,
+        0,
+        34,
+        30
+      ]
     }
   },
   "status": {
@@ -171,7 +177,7 @@
       "seq": 1,
       "visible": true,
       "rect": [
-        66,
+        59,
         30,
         220,
         190

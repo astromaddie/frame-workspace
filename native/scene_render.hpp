@@ -133,6 +133,7 @@ public:
         json_object_array_length(panels) < 1 || json_object_array_length(panels) > 32)
       throw std::runtime_error("scene needs 1..32 panels");
     ChromeRenderer chrome;
+    FrameWallRenderer walls;
     PanelSurface focused;
     int focusedPixels = 0;
     HmdMatrix34_t tip{};
@@ -157,7 +158,7 @@ public:
       bool selected = flag(p, "focused");
       if (selected && focusedPixels) throw std::runtime_error("only one focused scene panel allowed");
       int order = selected ? 50 : 0;
-      add(s, pic.texture, order + 1);
+      add(s, pic.texture, order + 1, pictureDepth);
       HandleLayout layout; layout.width = s.placement.width; layout.height = s.height;
       ChromeState frame, controls;
       frame.focused = selected;
@@ -175,8 +176,14 @@ public:
         if (!flag(p, "pillLaser")) {
         frame.tip = true; frame.tipX = layout.width * .30f; frame.tipY = -layout.height * .23f;
         tip = multiply(s.placement.matrix, bendPointXY(bendShape(s.placement, s.height),
-                        frame.tipX, frame.tipY, .002f));
+                        frame.tipX, frame.tipY, pictureDepth + .002f));
         }
+      }
+      for(const auto &wall:frameWalls(bendShape(s.placement,s.height),layout)) {
+        GLuint t=texture();walls.render(wall,layout,frame,t);
+        PanelSurface side;side.role=PanelRole::Menu;side.placement.matrix=multiply(s.placement.matrix,wall.local);
+        side.placement.width=wall.width;side.height=wall.height;
+        add(side,t,order+1);
       }
       for (int layer = 0; layer < 2; ++layer) {
         float w = layer ? layout.chromeWidth() : layout.frameWidth();

@@ -4,11 +4,12 @@
 // casts a ray at that point along the surface normal with
 // ComputeOverlayIntersection, and reports how far SteamVR's overlay is from
 // it. A pass is every point found within a few millimetres, on the window
-// (z = 0), the bezel (1.5 cm) and the controls (3 cm). Run on the Frame with
+// and bezel (30 mm) and the controls (32 mm), using the production depth
+// constants. Run on the Frame with
 // the Workspace up, after setting a bend (control file {"bend":{...}}):
 //   c++ -std=c++17 -O1 -Inative native/probe_bends.cpp -o /tmp/probe_bends \
 //     $(pkg-config --cflags --libs json-c) -ldl && /tmp/probe_bends
-#include "bend.hpp"
+#include "depth.hpp"
 #include <cstdio>
 #include <dlfcn.h>
 #include <string>
@@ -51,9 +52,9 @@ int main() {
   if (!ov) return 2;
   const std::string base = "com.frame-workspace.native.1000.workspace";
   struct Layer { const char *name; std::string key; float z, width, height; } layers[3] = {
-      {"window", base, 0, l.width, l.height},
-      {"bezel", base + ".frame", 0.015f, l.frameWidth(), l.frameHeight()},
-      {"controls", base + ".handles", 0.03f, l.chromeWidth(), l.chromeHeight()}};
+      {"window", base, pictureDepth, l.width, l.height},
+      {"bezel", base + ".frame", frameDepth, l.frameWidth(), l.frameHeight()},
+      {"controls", base + ".handles", controlsDepth, l.chromeWidth(), l.chromeHeight()}};
   int failures = 0;
   for (auto &layer : layers) {
     VROverlayHandle_t h[2] = {0, 0};
@@ -66,7 +67,7 @@ int main() {
       for (float fy : {-0.45f, 0.f, 0.45f}) {
         const float x = fx * layer.width, y = fy * layer.height;
         // the window has no surface past its own edge
-        if (layer.z == 0 && (std::fabs(x) > l.width / 2 || std::fabs(y) > l.height / 2)) continue;
+        if (layer.key == base && (std::fabs(x) > l.width / 2 || std::fabs(y) > l.height / 2)) continue;
         const HmdMatrix34_t m = multiply(p.matrix, bendPointXY(b, x, y, layer.z));
         VROverlayIntersectionParams_t q{};
         q.eOrigin = ETrackingUniverseOrigin_TrackingUniverseStanding;

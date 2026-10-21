@@ -7,6 +7,7 @@
 #include "scene_render.hpp"
 #include "tests_spatial.hpp"
 #include "tests_wall.hpp"
+#include "tests_depth.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -18,6 +19,22 @@ static void signalHandler(int number) { interrupted = number; }
 static void require(bool ok, const char *message) {
   if (!ok)
     throw std::runtime_error(message);
+}
+static float angularGazeDistance(const EyeRay &ray, const HmdMatrix34_t &placement) {
+  float directionLength = std::sqrt(ray.direction[0] * ray.direction[0] +
+                                    ray.direction[1] * ray.direction[1] +
+                                    ray.direction[2] * ray.direction[2]);
+  float target[3]{placement.m[0][3] - ray.origin[0],
+                  placement.m[1][3] - ray.origin[1],
+                  placement.m[2][3] - ray.origin[2]};
+  float targetLength = std::sqrt(target[0] * target[0] + target[1] * target[1] +
+                                 target[2] * target[2]);
+  if (!(directionLength > 1e-5f) || !(targetLength > 1e-5f))
+    return 3.14159265f;
+  float dot = 0;
+  for (int i = 0; i < 3; ++i)
+    dot += (ray.direction[i] / directionLength) * (target[i] / targetLength);
+  return std::acos(std::clamp(dot, -1.f, 1.f));
 }
 static int selfTest() {
   auto e = parseURL(
@@ -444,8 +461,9 @@ static int selfTest() {
   selfTestHost();
   selfTestSpatial();
   selfTestWall();
+  selfTestDepth();
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout and trigger gestures\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout, overlay budget ordering/hysteresis/nine-window fit and trigger gestures\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -1110,6 +1128,7 @@ public:
 };
 static int runHost(const std::string &folder, const std::string &stateFile, const PanelOptions &defaults) {
   auto session = std::make_shared<OverlaySession>(defaults.noVR);
+  session->sharedHost = true;
   if (!defaults.actionManifest.empty()) session->initInput(defaults.actionManifest);
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;
@@ -1117,6 +1136,30 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   auto wall = std::make_shared<WallAnchor>();
   std::string wallSession;
   HostFocus focus;
+  std::map<std::string, uint64_t> focusRecency;
+  uint64_t focusClock = 0;
+  EyeRay wallPriorityRay{};
+  bool hasWallPriorityRay = false, wallPriorityIsEye = false;
+  auto refreshWallBudget = [&] {
+    std::vector<WallPriority> priorities;
+    for (auto &[path, entry] : entries) if (entry.panel && entry.spec.role == PanelRole::Window) {
+      const auto &placement = entry.panel->overlay.placement.matrix;
+      float distance = hasWallPriorityRay
+                           ? angularGazeDistance(wallPriorityRay, placement)
+                           : 3.14159265f;
+      priorities.push_back({&entry.panel->overlay, entry.spec.key, distance,
+                            focusRecency[entry.spec.key]});
+    }
+    session->updateOptionalWallPriorities(priorities, focus.active);
+  };
+  auto headRay = [](const TrackedDevicePose_t &head, EyeRay &ray) {
+    if (!head.bPoseIsValid) return false;
+    for (int i = 0; i < 3; ++i) {
+      ray.origin[i] = head.mDeviceToAbsoluteTracking.m[i][3];
+      ray.direction[i] = -head.mDeviceToAbsoluteTracking.m[i][2];
+    }
+    return true;
+  };
   MenuStripReveal menuReveal;
   SpatialState spatial;
   SpatialRenderer spatialRenderer(session);
@@ -1158,11 +1201,13 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         if (!o.recenter())
           return false;
         e.panel->leaveWall();
+        focus.activate(key);
+        focusRecency[key] = ++focusClock;
+        refreshWallBudget();
         o.apply();
         atomicWrite(e.spec.poseFile, placementJSON(o.placement));
         emit("{\"action\":\"switch\",\"key\":" + jsonString(key) + "}");
         e.panel->pipe.sendFocus(.5f, .5f);
-        focus.activate(key);
         for (auto &[otherPath, other] : entries) if (other.panel && other.spec.role == PanelRole::Window)
           other.panel->overlay.setSpatialForeground(other.spec.key == key);
         spatial.open = false;
@@ -1188,6 +1233,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         ",\"spatialMode\":" + (spatial.spatial ? std::string("true") : "false") +
         ",\"switcherOpen\":" + (spatial.open ? std::string("true") : "false") +
         ",\"spatialTiles\":" + std::to_string(tiles.size()) +
+        ",\"overlayCount\":" + std::to_string(session->overlayCount()) +
+        ",\"overlayBudget\":" + std::to_string(session->overlayBudgetLimit()) +
+        ",\"hostOverlayCount\":" + std::to_string(session->hostOverlayCount()) +
+        ",\"dashboardOverlayReserve\":" + std::to_string(session->reservedOverlayCount()) +
         ",\"gazeState\":" + jsonString(gazeStatus) + ",\"exitReason\":" + jsonString(reason) + "}");
   };
   auto remove = [&](const std::string &path) {
@@ -1195,6 +1244,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     if (it != entries.end()) {
       if (it->second.panel) {
         focus.remove(it->second.spec.key);
+        focusRecency.erase(it->second.spec.key);
         it->second.panel->finish("host-remove");
       }
       // Release only this panel's GL/VR resources, keeping the session alive.
@@ -1211,6 +1261,25 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   while (!interrupted && (defaults.seconds == 0 || nowMs() - start < defaults.seconds * 1000)) {
     const double now = nowMs();
     if (!session->events()) { reason = session->exitReason; break; }
+    // Refresh gaze and focus protection before panel, menu, cursor or bend
+    // allocations can ask the shared session to make room.
+    EyeRay eyes[2];
+    gazeStatus = session->eyes ? session->eyes->sample(eyes) : "unavailable";
+    wallPriorityIsEye = gazeStatus == "valid" && binocularRay(eyes, wallPriorityRay);
+    if (gazeStatus == "valid" && !wallPriorityIsEye) gazeStatus = "eye-invalid";
+    hasWallPriorityRay = wallPriorityIsEye;
+    if (!hasWallPriorityRay) {
+      TrackedDevicePose_t head{};
+      if (session->noVR) {
+        head.bPoseIsValid = true;
+        head.mDeviceToAbsoluteTracking = spatialIdentity();
+      } else {
+        session->system->GetDeviceToAbsoluteTrackingPose(
+            ETrackingUniverseOrigin_TrackingUniverseStanding, 0, &head, 1);
+      }
+      hasWallPriorityRay = headRay(head, wallPriorityRay);
+    }
+    refreshWallBudget();
     if (now - lastScan >= 100) {
       lastScan = now;
       std::map<std::string, PanelSpec> desired;
@@ -1270,6 +1339,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             // The host duration limits the process, rather than each later panel.
             options.seconds = 0;
             entry.panel = std::make_unique<PanelRunner>(options, session);
+            if (spec.role == PanelRole::Window) focusRecency.try_emplace(spec.key, 0);
           } catch (...) {
             // A malformed stream or exhausted decoder must leave other panels alive.
             // Never copy exception text here: parser errors may contain credentials.
@@ -1278,6 +1348,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             if (!duplicateState) panelError(spec, duplicate ? "host-panel-conflict" : "host-panel-start-failed");
           }
           entries.emplace(path, std::move(entry));
+          refreshWallBudget();
           book.added(path, spec);
         }
       }
@@ -1484,13 +1555,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         unsigned revealHands = (revealOwner[0] == path ? 1u : 0u) | (revealOwner[1] == path ? 2u : 0u);
         if (!panel.tick(false, false, hands, spatial.spatial && spatial.open, revealHands)) {
           panel.finish();
-          focus.remove(entry.spec.key); entry.panel.reset(); continue;
+          focus.remove(entry.spec.key); focusRecency.erase(entry.spec.key); entry.panel.reset(); continue;
         }
         if (entry.spec.role == PanelRole::Window && panel.ready && panel.overlay.interactive())
           surfaces.push_back({entry.spec.key, panel.overlay.placement, panel.overlay.panelHeight()});
       } catch (...) {
         fprintf(stderr, "[native-host] panel failed (endpoint redacted)\n");
         focus.remove(entry.spec.key);
+        focusRecency.erase(entry.spec.key);
         // Join stream workers before destroying the panel's GL resources.
         entry.panel.reset();
         panelError(entry.spec, "host-panel-error");
@@ -1502,10 +1574,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         auto s = e.panel->overlay.surfaceGeometry; s.key = e.spec.key;
         auxiliaries.push_back(s);
       }
-    EyeRay ray, eyes[2];
-    gazeStatus = session->eyes ? session->eyes->sample(eyes) : "unavailable";
-    bool eye = gazeStatus == "valid" && binocularRay(eyes, ray);
-    if (gazeStatus == "valid" && !eye) gazeStatus = "eye-invalid";
+    EyeRay ray = wallPriorityRay;
+    bool eye = wallPriorityIsEye;
     PanelPick hit;
     std::string source;
     if (eye) {
@@ -1539,12 +1609,17 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
                       std::to_string(hit.u) + ",\"v\":" + std::to_string(hit.v) + "}");
             if (spatial.spatial) e.panel->pipe.sendFocus(hit.u, hit.v);
             focus.activate(hit.key);
+            focusRecency[hit.key] = ++focusClock;
+            refreshWallBudget();
             for (auto &[otherPath, other] : entries) if (other.panel && other.spec.role == PanelRole::Window)
               other.panel->overlay.setSpatialForeground(other.spec.key == hit.key);
           } catch (...) {
             focus.feedback[hit.key].lose();
           }
     }
+    refreshWallBudget();
+    session->reconcileOptionalWalls();
+    session->flushWallTransitionLogs();
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window)
         e.panel->overlay.focusFeedback = focus.feedback[e.spec.key];

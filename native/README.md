@@ -285,12 +285,19 @@ received a continuous aim pose and exact trigger presses.
 
 Each window wears Palladium chrome in silver-lavender
 (`docs/frame-workspace/evidence/palladium-vr-handles-mockup.png`, approved
-2026-10-20), on two layers in front of it so each eye sees real depth:
+2026-10-20), with a solid 30 mm frame and a separate controls layer:
 
-- **Bezel** (`<key>.frame`, 1.5 cm in front): the F2 machined bezel, about
+- **Bezel** (`<key>.frame`, at the picture front plane): the F2 machined bezel, about
   1% of the window's width (2–3.5 cm), with an inward chamfer, a chiseled line
-  round its face and a soft shadow on the window's edge.
-- **Controls** (`<key>.handles`, 3 cm in front): a move pill and a separate
+  round its face and a soft shadow on the window's edge. The picture and front
+  face meet 30 mm forward of the saved placement plane. Four physical side-wall
+  overlays extend back to that plane as a closed rectangular rear shell recessed
+  beneath the bezel's rounded lip. Curved edges use radius-based coplanar sampling
+  (1 mm chord-error target, capped at 32 facets) packed into one overlay per edge,
+  with the same construction transposed for vertical bends. Full-depth pillowed
+  normals and shared corner normals soften the lighting; the rear shell has
+  exact planar joins, not extruded quarter-cylinder corners.
+- **Controls** (`<key>.handles`, 32 mm in front): a move pill and a separate
   close disc with an engraved X, 3 cm below the bezel, revealed only by a laser
   in their shared row plus a 4 cm margin; and
   four corner Ls and two side grips, 6 mm Palladium rods that slide out when
@@ -301,7 +308,7 @@ Each window wears Palladium chrome in silver-lavender
 `chrome.hpp` draws both with one GLSL shader into textures (premultiplied
 alpha), lit from the upper left, and redraws a layer only when something on it
 changes. The laser works as in Stargate: no dot, a small white-hot core where
-it lands (`<key>.cursor`, on whichever layer it meets), and the metal within
+it lands (one host-owned cursor, on the focused window's hit layer), and the metal within
 about 5 cm brightening in the laser's blue, most on faces turned towards it.
 The layers follow the window's curvature on concentric cylinders, and the
 laser is intersected with each layer's own cylinder. The pill carries the
@@ -312,7 +319,7 @@ zones and the shader. `--render-chrome SCENE OUT.ppm` draws the chrome flat
 for checking it without the headset. `--action-manifest PATH|none` overrides
 or disables input.
 
-Verified 2026-10-20 on the Frame (not worn): the shader compiles and renders
+Historical pre-depth validation, 2026-10-20 on the Frame (not worn): the shader compiles and renders
 the same on its GPU (zink on Turnip) as on the Mac, and with the Workspace
 running all three layers are visible, sorted in front of the window, 1.5 and
 3 cm out, with matching curvature. Curved, the old handles layer stayed flat
@@ -336,7 +343,9 @@ bends both evenly. Top and bottom grips bend top to bottom the same way;
 changing direction starts from flat. SteamVR only curves an overlay side to
 side about its middle, so halves that differ are two overlays (the window's
 `<key>.half`, and `.half` copies of the bezel and controls), arcs tangent at the
-centre line and overlapping by 2 mm; a top-to-bottom bend turns each overlay a
+centre line and overlapping by 2 mm. These three extra overlays are created only
+while halves differ and destroyed when they match again; an even curved window
+uses the same count as a flat one. A top-to-bottom bend turns each overlay a
 quarter turn on its face and draws its texture transposed (the last picture is
 redrawn at once, so a still desktop turns too). The pose file keeps the bend as
 `"bend":{"vertical":..,"a":..,"b":..}` (a: left or bottom half, b: right or
@@ -734,7 +743,7 @@ production video; there are no separate asset files.
 The menubar follows `HostFocus.active` along the top-left bezel's bend tangent.
 Its own rounded, chamfered panel uses the bezel's Palladium palette and lighting,
 with a 6 mm picture inset. The panel is 8 mm in front of the window, behind the
-15 mm bezel, and in sort band 51 below the focused bezel's 52. At rest only a
+30 mm bezel, and in sort band 51 below the focused bezel's 52. At rest only a
 4 mm lip shows above the bezel at 0.35 of the window width. The picture keeps its
 point scale as the visible crop slides upward and widens to `menusWidth` plus
 the inset. Controller hits on the lip, companion `hot`, or an uploaded visible
@@ -759,6 +768,11 @@ wait 350 ms after leaving before fading out on that same cadence. Hover, press a
 an ongoing pill move hold them fully shown. Hidden controls and transparent padding
 pass host laser ownership through to surfaces behind. The existing tip light and
 pressed inner glow remain. Both hands contribute reveal zones.
+
+An open dropdown's selected title uses the pressed handle's concave bevel,
+Palladium palette and inward blue reflection. The source title's ink is retained
+across transparent, light and opaque accent/dark captures; its global
+`selectedRect` maps through the picture inset and the strip's existing curve.
 
 A validated version-1 `surface` text message carries `seq`, `visible`, `rect`,
 `anchor`, `anchorRect`, optional `menusWidth`, and `hot`. Auxiliary streams start
@@ -829,6 +843,39 @@ native/build/frame-workspace-native --render-chrome focus-glow /tmp/glow.ppm
 native/build/frame-workspace-native --render-chrome focus-snap /tmp/snap.ppm
 ```
 
+With four shelf apps, the shelf backing, status, four reserved dropdown slots,
+menu strip, shared cursor and SteamVR bar panel plus thumbnail, six ordinary
+windows use 56 overlays and nine use 77. Each window uses 7 flat/even-curved or
+10 with split bends; a split menubar adds one. All-nine-split is 104–105, still
+below the system ceiling of 128. Before the wall change each window reserved 7
+including its cursor and three idle halves; six/nine totals were also 56/77.
+The retained UI high-water adds up to seven switcher tiles and three app-menu
+rows: nine ordinary windows then use 87, or 115 with every window and the menu
+strip split. Hidden retained UI overlays are included. Other applications consume
+additional system overlays.
+
+The shared host now applies a total overlay budget of 96 by default;
+`FRAME_NATIVE_OVERLAY_BUDGET` can set a value from 1 through SteamVR's 128-overlay
+limit. The dashboard overlay and its thumbnail are owned by the separate
+dashboard process, so the host reserves those two slots and reports both
+`hostOverlayCount` and `dashboardOverlayReserve`; `overlayCount` includes the
+reservation and `overlayBudget` is the configured total. Required pictures,
+frames, controls, bends, menus, shelf/status surfaces, spatial tiles and cursor
+handles are admitted first. When required overlays need room, the host drops
+whole four-overlay wall groups from the windows furthest from gaze, then the
+least recently focused among ties; the focused window's walls are protected.
+The joined picture and bezel remain, and wall picking falls back to the flat
+frame surface while its walls are unavailable. Walls return as whole groups,
+focused and nearest first, only when the reported total including the group is
+at least four below budget. Required overlays still allow a window to open when
+the configured budget is exhausted; the host logs the first such overrun once.
+Wall drop/restore transitions are coalesced per window at most once per second,
+with the final pending state flushed on shutdown. Focus protection and gaze
+priorities refresh before allocations and immediately when focus changes.
+The nine-window split/retained-UI stress case drops five wall groups and uses
+95 overlays, including the two-slot dashboard reservation, while preserving all
+77 required host overlays. Nine flat/even windows retain their walls at 87.
+
 The optional state override supplies fixture icons/labels; thumbnails in this
 standalone diagnostic are deliberately asymmetric color fixtures. Alternating
 cards use normal and physically quarter-turned textures. These are renderer
@@ -837,7 +884,9 @@ checks, not captures of Mac windows or a lens image. See
 commands, source identity and verification boundaries.
 
 `--self-test` covers layout, hit tests, focus timing, trigger gestures, menu
-identity and strip navigation. On a development machine with a GL display,
+identity and strip navigation, plus the production overlay-budget allocator's
+drop/restore ordering, focused protection, hysteresis, and nine fully split
+windows within the 96-overlay default. On a development machine with a GL display,
 `tests_host.py` exercises the production host with loopback streams and isolated
 state, including an inventory larger than 16 KiB. The renderer regression test
 checks late icons and in-place live-texture updates through actual GL readback:
@@ -877,7 +926,7 @@ host's submitted surfaces, not SteamVR compositor, optical, or worn evidence.
 The scene lists `panels` (`id`, `role: "window"`, `placement` in the existing
 version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `height`, `focused`, `focusGlow`,
 `focusSnap`, `pillLaser`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
-`status`, `dropdown` entries (`texture` and the existing `surface` message).
+`status`, `dropdown` entries (`texture` and the existing `surface` message, including optional menubar `selectedRect` in global points).
 An optional menubar `reveal` from 0 to 1 forces a transition frame for diagnostics.
 `pillLaser` aims the scene ray at that window's pill and reveals its below-edge controls.
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.
@@ -890,7 +939,7 @@ No real window content is included in those fixtures.
 The compositor consumes `bendSegment` transforms/widths/UV bounds, including
 the 2 mm split seam, curvature radius `width / (2*pi*curvature)`, concentric
 layer offsets, and vertical texture orientation. It uses `ChromeRenderer`
-with the same 15 mm bezel and 30 mm controls offsets, shared cursor texture,
+with the same picture/bezel front at 30 mm, four rearward walls, 32 mm controls and shared cursor,
 `SpatialRenderer`'s rendered D1 shelf/dock textures, `SurfaceRenderer`'s
 auxiliary material, and `menuStripPlacement`, `statusStripPlacement`, and
 `surfacePlacement`. Overlay sort bands preserve the selected window in front

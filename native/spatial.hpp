@@ -224,7 +224,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     t.m[1][3] = -.48f - band / 2;
     t.m[2][3] = -.002f;
     p.matrix = multiply(anchor, t);
-    tiles.push_back({SpatialTile::Shelf, 0, {"shelf", p, .115f + band}, ""});
+    tiles.push_back({SpatialTile::Shelf, 0, {"shelf", p, .115f + band, PanelRole::Menu}, ""});
   }
   for (size_t i = 0; i < s.apps.size(); ++i) {
     Placement p;
@@ -236,7 +236,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     p.matrix = multiply(anchor, t);
     tiles.push_back({SpatialTile::Dock,
                      int(i),
-                     {"dock:" + s.apps[i].id, p, .115f},
+                     {"dock:" + s.apps[i].id, p, .115f, PanelRole::Menu},
                      s.apps[i].name});
   }
   if (s.open)
@@ -263,7 +263,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
       p.matrix = multiply(anchor, t);
       tiles.push_back({SpatialTile::Window,
                        int(i),
-                       {"window:" + s.windows[i].key, p, .215f},
+                       {"window:" + s.windows[i].key, p, .215f, PanelRole::Menu},
                        s.windows[i].app});
     }
   if (menu >= 0 && menu < int(s.apps.size()))
@@ -277,7 +277,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
       p.matrix = multiply(anchor, t);
       tiles.push_back({SpatialTile::Menu,
                        i,
-                       {"menu:" + menuID + ":" + std::to_string(i), p, .045f},
+                       {"menu:" + menuID + ":" + std::to_string(i), p, .045f, PanelRole::Menu},
                        i == 0   ? "Show All Windows"
                        : i == 1 ? (s.apps[menu].hidden ? "Unhide" : "Hide")
                                 : "Quit"});
@@ -291,8 +291,16 @@ inline PanelSurface menuStripPlacement(const PanelSurface &window, const Surface
   wide = std::clamp(wide, 0.f, 1.f);
   HandleLayout frame; frame.width = window.placement.width; frame.height = window.height;
   s.inset = .006f; s.covered = .006f;
+  s.recessOffset = .8f * metresPerPoint;
   s.pictureWidth = m.rect.w * metresPerPoint;
   s.pictureHeight = m.rect.h * metresPerPoint;
+  if (m.hasSelectedRect) {
+    const float x=std::max(m.rect.x,m.selectedRect.x), y=std::max(m.rect.y,m.selectedRect.y);
+    const float right=std::min(m.rect.x+m.rect.w,m.selectedRect.x+m.selectedRect.w);
+    const float bottom=std::min(m.rect.y+m.rect.h,m.selectedRect.y+m.selectedRect.h);
+    if(right>x && bottom>y) s.pressedRect={s.inset+(x-m.rect.x)*metresPerPoint,
+        s.inset+(y-m.rect.y)*metresPerPoint,(right-x)*metresPerPoint,(bottom-y)*metresPerPoint};
+  }
   s.fullHeight = s.pictureHeight + 2 * s.inset + s.covered;
   const float fullWidth = (m.menusWidth > 0 ? m.menusWidth : m.rect.w) * metresPerPoint + 2 * s.inset;
   s.placement.width = window.placement.width * .35f * (1 - wide) + fullWidth * wide;

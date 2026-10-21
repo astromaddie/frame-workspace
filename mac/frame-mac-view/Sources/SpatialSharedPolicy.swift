@@ -9,6 +9,25 @@ enum SpatialSharedPolicy {
                       height: min(max(1, size.height), max(1, display.maxY - top)))
     }
 
+    struct MenuItem {
+        var frame: CGRect
+        var selected: Bool
+    }
+    /// AX selection wins; dropdown geometry is a fallback for apps that omit it.
+    /// An open app dropdown is required, so stale AX flags cannot press a title.
+    static func selectedMenuItem(items: [MenuItem], dropdowns: [CGRect], menuBar: CGRect) -> CGRect? {
+        let menus = dropdowns.filter { !$0.isEmpty && abs($0.minY - menuBar.maxY) <= 8 &&
+            $0.minX >= menuBar.minX - 8 && $0.minX < menuBar.maxX }
+        guard !menus.isEmpty else { return nil }
+        let valid = items.filter { !$0.frame.isEmpty && $0.frame.intersects(menuBar) }
+        if let selected = valid.first(where: { $0.selected }) { return selected.frame }
+        return valid.min { a, b in
+            menus.map { abs($0.minX - a.frame.minX) }.min()! < menus.map { abs($0.minX - b.frame.minX) }.min()!
+        }.flatMap { item in
+            menus.contains { abs($0.minX - item.frame.minX) <= max(8, item.frame.width * 0.5) } ? item.frame : nil
+        }
+    }
+
     static func menuBarSplit(statusItemFrames: [CGRect]) -> CGFloat? {
         statusItemFrames.filter { !$0.isEmpty }.map(\.minX).min()
     }
