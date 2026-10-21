@@ -3,15 +3,20 @@
 #include <array>
 
 namespace fw {
-inline constexpr float frameDepth = .015f, pictureDepth = frameDepth, controlsDepth = .03f;
+inline constexpr float frameDepth = .03f, pictureDepth = frameDepth, controlsDepth = frameDepth + .002f;
 // Four planar overlays enclose the frame. Arc facets on either long edge are
 // coplanar, so their silhouette shares one texture instead of one overlay each.
 struct FrameWall {
   HmdMatrix34_t local{};
   float width = 0, height = 0;
   std::vector<std::array<float,2>> polygon;
+  static constexpr int maxFacets = 32, maxPoints = 2 * (maxFacets + 1);
+  static constexpr float chordError = .001f;
   int facets = 1;
-  float bevelRadius = .004f;
+  float bevelRadius = frameDepth / 2;
+  float depthDirection = 1;
+  // Subpixel coverage overlap hides the junction of planar overlay textures.
+  static constexpr float joinOverlap = .0003f;
   bool contains(float x, float y) const {
     bool in = false;
     for (size_t i=0,j=polygon.size()-1;i<polygon.size();j=i++) {
@@ -35,10 +40,16 @@ inline std::array<FrameWall,4> frameWalls(const BendShape &shape, const HandleLa
   const float lip=l.bezel()*.3f;
   const float along=(shape.vertical?l.height:l.width)/2+lip;
   const float across=(shape.vertical?l.width:l.height)/2+lip;
-  float angle=0;
-  for (int h=0;h<2;++h) if(shape.radius(h)>0) angle+=along/shape.radius(h);
-  int facets=std::clamp(int(std::ceil(angle/.35f)),1,4);
-  if(shape.split()) facets=facets>2?4:2; // Preserve the exact bend seam.
+  // Bound chord sagitta to 1 mm on either radius, keeping all samples in the
+  // same plane/overlay. A fixed angular step produced visible 17 mm tabs.
+  int facets=1;
+  for(int h=0;h<2;++h)if(shape.radius(h)>0) {
+    const double R=shape.radius(h);
+    double step=2*R*std::acos(std::clamp(1-FrameWall::chordError/R,-1.,1.));
+    facets=std::max(facets,int(std::ceil(2*along/step)));
+  }
+  if(shape.split())facets=2*((facets+1)/2); // Preserve the exact bend seam.
+  facets=std::min(facets,FrameWall::maxFacets);
   std::array<FrameWall,4> out;
   for(int edge=0;edge<2;++edge) {
     auto &w=out[edge]; w.facets=facets;
@@ -46,6 +57,7 @@ inline std::array<FrameWall,4> frameWalls(const BendShape &shape, const HandleLa
     // Local x follows the bend; local y is depth. Normal points out of the frame.
     if(!shape.vertical) w.local={{{1,0,0,0},{0,0,sign,sign*across},{0,-sign,0,0}}};
     else w.local={{{0,0,sign,sign*across},{1,0,0,0},{0,sign,0,0}}};
+    w.depthDirection = shape.vertical ? sign : -sign;
     auto inv=inverseRigid(w.local);
     for(int face=0;face<2;++face) for(int i=0;i<=facets;++i) {
       float s=-along+2*along*(face?facets-i:i)/facets;
@@ -60,6 +72,7 @@ inline std::array<FrameWall,4> frameWalls(const BendShape &shape, const HandleLa
     HmdMatrix34_t turn=!shape.vertical?HmdMatrix34_t{{{0,0,sign,0},{1,0,0,0},{0,sign,0,0}}}:
         HmdMatrix34_t{{{1,0,0,0},{0,0,sign,0},{0,-sign,0,0}}};
     w.local=multiply(tangent,turn);
+    w.depthDirection = shape.vertical ? -sign : sign;
     auto inv=inverseRigid(w.local);
     for(auto yz: {std::array<float,2>{-across,0},{across,0},{across,frameDepth},{-across,frameDepth}}) {
       auto q=multiply(inv,bendPoint(shape,sign*along,yz[0],yz[1]));
@@ -69,7 +82,7 @@ inline std::array<FrameWall,4> frameWalls(const BendShape &shape, const HandleLa
   for(auto &w:out) {
     float lo[2]={1e6f,1e6f},hi[2]={-1e6f,-1e6f};
     for(auto p:w.polygon) for(int k=0;k<2;++k){lo[k]=std::min(lo[k],p[k]);hi[k]=std::max(hi[k],p[k]);}
-    w.width=hi[0]-lo[0];w.height=hi[1]-lo[1];
+    w.width=hi[0]-lo[0]+2*FrameWall::joinOverlap;w.height=hi[1]-lo[1]+2*FrameWall::joinOverlap;
     for(int r=0;r<3;++r) w.local.m[r][3]+=w.local.m[r][0]*(lo[0]+hi[0])/2+w.local.m[r][1]*(lo[1]+hi[1])/2;
     for(auto &p:w.polygon) for(int k=0;k<2;++k)p[k]-=(lo[k]+hi[k])/2;
   }

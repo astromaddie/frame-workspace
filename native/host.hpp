@@ -173,6 +173,7 @@ struct PanelSurface {
   float covered = 0, menuRise = 0;
   BendRegion region{};
   SurfaceRect pressedRect{};
+  float recessOffset = 0;
 };
 inline HmdMatrix34_t surfacePoint(const PanelSurface &s, float x, float y, float z = 0) {
   return multiply(s.placement.matrix, s.region.attached ? s.region.point(x,y,z) :
@@ -187,7 +188,7 @@ inline void surfaceUV(const PanelSurface &s, float &u, float &v) {
 inline bool sameSurfaceGeometry(const PanelSurface &a, const PanelSurface &b) {
   return a.placement.width == b.placement.width && a.height == b.height &&
       a.region == b.region &&
-      a.pressedRect.x == b.pressedRect.x && a.pressedRect.y == b.pressedRect.y &&
+      a.recessOffset == b.recessOffset && a.pressedRect.x == b.pressedRect.x && a.pressedRect.y == b.pressedRect.y &&
       a.pressedRect.w == b.pressedRect.w && a.pressedRect.h == b.pressedRect.h && a.placement.bendA == b.placement.bendA &&
       a.placement.bendB == b.placement.bendB && a.placement.bendVertical == b.placement.bendVertical &&
       a.fullHeight == b.fullHeight && a.inset == b.inset && a.pictureWidth == b.pictureWidth &&

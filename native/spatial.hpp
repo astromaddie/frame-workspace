@@ -291,6 +291,7 @@ inline PanelSurface menuStripPlacement(const PanelSurface &window, const Surface
   wide = std::clamp(wide, 0.f, 1.f);
   HandleLayout frame; frame.width = window.placement.width; frame.height = window.height;
   s.inset = .006f; s.covered = .006f;
+  s.recessOffset = .8f * metresPerPoint;
   s.pictureWidth = m.rect.w * metresPerPoint;
   s.pictureHeight = m.rect.h * metresPerPoint;
   if (m.hasSelectedRect) {

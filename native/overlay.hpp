@@ -55,7 +55,7 @@ public:
 uniform sampler2D picture; uniform vec2 size; uniform vec4 pressedRect; uniform vec3 uTip; uniform float uPx;
 )GLSL" + ChromeRenderer::materialSource() + R"GLSL(
 
-uniform int role, transposed, sourceTransposed; uniform vec2 metres, pictureSize; uniform float fullHeight, inset;
+uniform int role, transposed, sourceTransposed; uniform vec2 metres, pictureSize; uniform float fullHeight, inset; uniform vec2 recessOffset;
 vec4 samplePicture(vec2 uv) { return texture2D(picture,sourceTransposed!=0?vec2(1.-uv.y,uv.x):uv); }
 vec3 panelMetal(vec2 p, vec3 normal) {
   float t=clamp(dot(p/(vec2(metres.x,fullHeight)*.5),vec2(.9063,-.4226))*.5+.5,0.,1.);
@@ -88,12 +88,18 @@ void main(){
     if(pressedRect.z>0. && pressedRect.w>0.) {
       vec2 halfRect=pressedRect.zw*.5, g;
       float d=sdBox(p-pressedRect.xy-halfRect,halfRect,min(.004,halfRect.y*.3),g);
-      float inside=max(-d,0.), R=halfRect.y, band=.22*R;
-      // Same concave bevel, pressed palette and inner reflection as the pill.
-      vec3 normal=normalize(vec3(inside<band?-vec2(g.x,-g.y)*.85*(1.-inside/band):vec2(0.),1.));
+      float inside=max(-d,0.), R=halfRect.y, band=.38*R;
+      // Deep concave walls: upper-left shadow and a lit lower-right lip.
+      vec3 normal=normalize(vec3(inside<band?-vec2(g.x,-g.y)*1.8*(1.-smoothstep(0.,band,inside)):vec2(0.),1.));
       vec3 c=lit(metal(dot(vec2(p.x-pressedRect.x-halfRect.x,halfRect.y-p.y+pressedRect.y),SHEEN)/(2.*halfRect.x)+.5,true),normal);
       if(inside<px*1.2)c=mix(c,vec3(.36,.56,.77),.55);
-      c=innerGlow(c,inside,.9*R);
+      c=innerGlow(c,inside,.75*R);
+      vec2 fromTopLeft=p-pressedRect.xy;
+      float lipShadow=max(exp(-fromTopLeft.x/(.22*R)),exp(-fromTopLeft.y/(.22*R)));
+      c*=.94-.28*lipShadow;
+      // Sample the captured legend at the bottom of the recess, down/right
+      // by 0.8 capture points. Replace the original glyph, never double it.
+      vec4 legend=samplePicture(clamp(uv-recessOffset/pictureSize,0.,1.));
       // Infer the captured selection fill from its quiet top/bottom corners.
       // This keeps antialiased ink from transparent fixtures, light menus and
       // white-on-accent/dark menus; all use readable dark ink in the recess.
@@ -101,11 +107,11 @@ void main(){
       vec2 b=(pressedRect.xy+pressedRect.zw*vec2(.92,.90)-vec2(inset))/pictureSize;
       vec4 bg=(samplePicture(vec2(a.x,a.y))+samplePicture(vec2(b.x,a.y))+
                samplePicture(vec2(a.x,b.y))+samplePicture(vec2(b.x,b.y)))*.25;
-      vec3 foreground=image.rgb/max(image.a,.001), background=bg.rgb/max(bg.a,.001);
+      vec3 foreground=legend.rgb/max(legend.a,.001), background=bg.rgb/max(bg.a,.001);
       float contrast=length(foreground-background);
       vec3 inkSource=dot(background,vec3(.2126,.7152,.0722))<.55?vec3(1.):vec3(0.);
-      float ink=image.a*(bg.a<.5?1.:clamp((contrast-.03)/max(length(inkSource-background)-.03,.1),0.,1.));
-      c=mix(c,vec3(.12,.14,.18),ink);
+      float ink=legend.a*(bg.a<.5?1.:clamp((contrast-.03)/max(length(inkSource-background)-.03,.1),0.,1.));
+      c=mix(c,vec3(.085,.105,.14)*(1.-.28*lipShadow),ink);
       color=mix(color,c,clamp(.5-d/px,0.,1.));
     }
     float alpha=clamp(.5-edge/px,0.,1.);
@@ -156,6 +162,7 @@ void main(){
     glUniform2f(glGetUniformLocation(program, "pictureSize"), surface.pictureWidth, surface.pictureHeight);
     glUniform1f(glGetUniformLocation(program, "fullHeight"), surface.fullHeight);
     glUniform1f(glGetUniformLocation(program, "inset"), surface.inset);
+    glUniform2f(glGetUniformLocation(program, "recessOffset"),surface.recessOffset,surface.recessOffset);
     const auto &r=surface.pressedRect;
     glUniform4f(glGetUniformLocation(program,"pressedRect"),r.x,r.y,r.w,r.h);
     glBegin(GL_QUADS);
@@ -206,8 +213,8 @@ class Overlay {
   int width = 0, height = 0;   // dimensions of the last submitted texture
   // VR-first placement (FW-14): the viewer reads the controllers itself through
   // SteamVR Input (SteamVR's own laser only serves its dashboard). Each window
-  // has a Palladium bezel meeting its picture at 1.5 cm, four rearward walls,
-  // controls 3 cm out and a host-shared white-hot laser tip.
+  // has a Palladium bezel meeting its picture at 3 cm, four rearward walls,
+  // controls just ahead and a host-shared white-hot laser tip.
   VR_IVRInput_FnTable *input = nullptr;
   VRActionSetHandle_t actionSet = 0;
   VRActionHandle_t aimAction = 0, grabAction = 0, squeezeAction = 0, hapticAction = 0;

@@ -1,7 +1,7 @@
 #pragma once
 // VR-first window controls (FW-14) in Palladium silver-lavender. Each window
-// has a machined bezel meeting its picture 1.5 cm ahead of its saved plane,
-// walls extending back to that plane, and controls 3 cm ahead: a move pill and a separate close disc revealed below
+// has a machined bezel meeting its picture 30 mm ahead of its saved plane,
+// walls extending back to that plane, and controls 32 mm ahead: a move pill and a separate close disc revealed below
 // the window, and resize corners and curve grips that slide out (thin) when the
 // laser leaves the window towards them, widen under the laser, and glow from
 // inside while dragged. The pill carries the window rigidly with the

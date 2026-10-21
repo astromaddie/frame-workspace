@@ -285,18 +285,19 @@ received a continuous aim pose and exact trigger presses.
 
 Each window wears Palladium chrome in silver-lavender
 (`docs/frame-workspace/evidence/palladium-vr-handles-mockup.png`, approved
-2026-10-20), with a solid 15 mm frame and a separate controls layer:
+2026-10-20), with a solid 30 mm frame and a separate controls layer:
 
 - **Bezel** (`<key>.frame`, at the picture front plane): the F2 machined bezel, about
   1% of the window's width (2–3.5 cm), with an inward chamfer, a chiseled line
   round its face and a soft shadow on the window's edge. The picture and front
-  face meet 15 mm forward of the saved placement plane. Four physical side-wall
+  face meet 30 mm forward of the saved placement plane. Four physical side-wall
   overlays extend back to that plane as a closed rectangular rear shell recessed
-  beneath the bezel's rounded lip. Curved edges use 1–4 coplanar facets packed
-  into one overlay per edge, with the same construction transposed for vertical
-  bends. Bevel normals round the edge lighting; the rear shell has exact planar
-  joins, not extruded quarter-cylinder corners.
-- **Controls** (`<key>.handles`, 3 cm in front): a move pill and a separate
+  beneath the bezel's rounded lip. Curved edges use radius-based coplanar sampling
+  (1 mm chord-error target, capped at 32 facets) packed into one overlay per edge,
+  with the same construction transposed for vertical bends. Full-depth pillowed
+  normals and shared corner normals soften the lighting; the rear shell has
+  exact planar joins, not extruded quarter-cylinder corners.
+- **Controls** (`<key>.handles`, 32 mm in front): a move pill and a separate
   close disc with an engraved X, 3 cm below the bezel, revealed only by a laser
   in their shared row plus a 4 cm margin; and
   four corner Ls and two side grips, 6 mm Palladium rods that slide out when
@@ -742,7 +743,7 @@ production video; there are no separate asset files.
 The menubar follows `HostFocus.active` along the top-left bezel's bend tangent.
 Its own rounded, chamfered panel uses the bezel's Palladium palette and lighting,
 with a 6 mm picture inset. The panel is 8 mm in front of the window, behind the
-15 mm bezel, and in sort band 51 below the focused bezel's 52. At rest only a
+30 mm bezel, and in sort band 51 below the focused bezel's 52. At rest only a
 4 mm lip shows above the bezel at 0.35 of the window width. The picture keeps its
 point scale as the visible crop slides upward and widens to `menusWidth` plus
 the inset. Controller hits on the lip, companion `hot`, or an uploaded visible
@@ -938,7 +939,7 @@ No real window content is included in those fixtures.
 The compositor consumes `bendSegment` transforms/widths/UV bounds, including
 the 2 mm split seam, curvature radius `width / (2*pi*curvature)`, concentric
 layer offsets, and vertical texture orientation. It uses `ChromeRenderer`
-with the same picture/bezel front at 15 mm, four rearward walls, 30 mm controls and shared cursor,
+with the same picture/bezel front at 30 mm, four rearward walls, 32 mm controls and shared cursor,
 `SpatialRenderer`'s rendered D1 shelf/dock textures, `SurfaceRenderer`'s
 auxiliary material, and `menuStripPlacement`, `statusStripPlacement`, and
 `surfacePlacement`. Overlay sort bands preserve the selected window in front

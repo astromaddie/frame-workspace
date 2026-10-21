@@ -19,8 +19,9 @@ scene['panels'][0]['pillLaser'] = False
 scene['apps'] = []
 scene.pop('status')
 scene['menubar']['reveal'] = 1
-# The synthetic strip's File item starts at x=66 points and ends at 100.
-scene['menubar']['surface']['selectedRect'] = [66, 0, 34, 30]
+# Cairo's File ink spans x=132.35..172.37 pixels in this 2x capture.
+# Centre the 34-point title slot at 76 points, including its quiet side padding.
+scene['menubar']['surface']['selectedRect'] = [59, 0, 34, 30]
 (out / 'menubar-pressed.json').write_text(json.dumps(scene, indent=2) + '\n')
 scene.pop('menubar')
 scene.pop('dropdown')
