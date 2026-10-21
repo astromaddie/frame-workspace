@@ -507,6 +507,24 @@ The integrator should perform these steps in an authorized device session:
    steady-state behavior. Dock, app-switcher and Cmd-Tab acceptance follows
    integration of the other worker's modules.
 
+## Option B spike: every window from one shared display (verified 2026-10-21, M4, macOS 26.3.1)
+
+The user chose option B (`evidence/spatial-options-mockup.png`): every window its own panel, all of
+them on one hidden display on the Mac, the looked-at window raised there for input.
+
+- **Menus, popovers and sheets come along.** `SCContentFilter(desktopIndependentWindow:)` with
+  `SCStreamConfiguration.includeChildWindows = true` captured a window's popover (including where it
+  sticks out past the window), its sheet and its context menu; with it off, none of them
+  (`ChildWindowCaptureProbe.swift` with `ChildWindowFixture.swift`). The app's menu bar is not part
+  of any window, so it needs its own small panel (design to come).
+- **Covered windows capture in full**: a window entirely under another window captured with none of
+  the covering window in it.
+- **Many captures are cheap**: 20 window streams at once (child windows included, 2x, up to 30 fps)
+  took the capturing process about 7.5% CPU and 23 MB (`ManyWindowCaptureProbe.swift`).
+  WindowServer went from about 60-68% (its load from other work on the Mac then) to about 78-88%.
+- Not yet tested: one large hidden display hosting every window (the Workspace display already
+  works as one), raising the looked-at window and its input, windows larger than the laptop screen.
+
 ## First device run of Spatial Mode (2026-10-21, user's M4, not worn)
 
 Full run with the user's 66 windows (34 on screen), after recording every window's frame and the
