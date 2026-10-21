@@ -94,6 +94,11 @@ def main():
         render('--fov','180',ok=False)
         render('--unknown','1',ok=False)
         panel['height']=-1; render(ok=False)
+        panel.pop('height'); panel.pop('placement'); panel['slot']=0
+        png(root/'corners.png'); first=render()
+        panel['slot']=8; assert render()!=first, 'scene uses extended wall slot geometry'
+        for invalid in (-1, 1.5, True, 1024, None):
+            panel['slot']=invalid; render(ok=False)
     print('Scene render passed: flat/even/split/vertical corner orientation, camera, foreground ordering, premultiplied alpha, invalid input')
 
 

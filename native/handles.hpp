@@ -204,7 +204,7 @@ struct HandleDrag {
     case Handle::CornerTL: case Handle::CornerTR: case Handle::CornerBL: case Handle::CornerBR: {
       float x = 0, y = 0;
       if (startDistance > 0.01f && rayHit(placementStart, controller, x, y))
-        p.width = std::clamp(placementStart.width * std::hypot(x, y) / startDistance, 0.4f, 8.f);
+        p.width = std::clamp(placementStart.width * std::hypot(x, y) / startDistance, std::min(.4f, placementStart.width), 8.f);
       break;
     }
     case Handle::BarLeft: case Handle::BarRight: case Handle::BarTop: case Handle::BarBottom: {

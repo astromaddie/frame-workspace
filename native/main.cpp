@@ -6,6 +6,7 @@
 #include "spatial_render.hpp"
 #include "scene_render.hpp"
 #include "tests_spatial.hpp"
+#include "tests_wall.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -421,6 +422,7 @@ static int selfTest() {
   }
   selfTestHost();
   selfTestSpatial();
+  selfTestWall();
   std::cout
       << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout and trigger gestures\n";
   return 0;
@@ -547,6 +549,8 @@ struct PanelOptions {
       presentMode = "paced", handoffMode = "fence", testYuvFormat, testYuvRange = "limited",
       testYuvColorSpace = "bt601", testYuvPattern = "sharp", exitReason = "running";
   PanelRole role = PanelRole::Window;
+  int slot = -1;
+  std::shared_ptr<WallAnchor> wall;
   bool test = false, noVR = false, testYuvOracle = false, foveation = false, gaze = false,
       diagnosticGaze = false, diagnosticScan = false, pocRewrite = true;
   double diagnosticU = 0, diagnosticV = 0, seconds = 0;
@@ -560,6 +564,16 @@ public:
   Pipeline pipe;
   GazeProducer gazeProducer;
   bool pendingRecenter = false, stopped = false;
+  bool inWall = false, wallPlaced = false;
+  void leaveWall() {
+    if (slot < 0) return;
+    inWall = false;
+    if (!requestDir.empty())
+      atomicWrite(requestDir + "/wall-" + hostGeneration + "-" + std::to_string(slot) + ".json",
+          "{\"action\":\"wall_release\",\"key\":" + jsonString(key) +
+          ",\"generation\":" + jsonString(hostGeneration) + "}");
+    slot = -1;
+  }
   int result = 1;
   double start = 0, lastState = 0, lastLog = 0, lastControl = 0, lastPattern = 0, previousState = 0;
   uint64_t uploads = 0, lastUploads = 0, lastDecoded = 0, submitErrors = 0;
@@ -599,7 +613,9 @@ public:
           throw std::runtime_error("invalid initial pose");
         persisted = true;
       }
-      pendingRecenter = !persisted;
+      inWall = !persisted && slot >= 0 && wall;
+      if (persisted && slot >= 0) leaveWall();
+      pendingRecenter = !persisted && !inWall;
       if (pendingRecenter)
         pendingRecenter = !overlay.recenter();
       overlay.apply();
@@ -610,7 +626,7 @@ public:
         if (!overlay.setCurvature(saved).applied)
           overlay.placement.curvature = saved; // keep the user's choice for a later runtime
       }
-      if (!pendingRecenter)
+      if (!pendingRecenter && !inWall)
         atomicWrite(poseFile, placementJSON(overlay.placement));
     }
     pipe.pocRewrite = pocRewrite;
@@ -646,6 +662,7 @@ public:
            ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
            "\",\"hostGeneration\":" + jsonString(hostGeneration) +
            ",\"hostPid\":" + std::to_string(hostGeneration.empty() ? 0 : getpid()) +
+           ",\"wallSlot\":" + std::to_string(inWall ? slot : -1) +
            ",\"role\":" + jsonString(roleName(role)) +
            ",\"surfaceVisible\":" + (overlay.surfaceVisible ? "true" : "false") +
            ",\"surfaceSeq\":" + std::to_string(surface.seq) +
@@ -792,8 +809,10 @@ public:
       exitReason = overlay.exitReason;
       return false;
     }
-    if (overlay.updatePlacementInput(allowedHands, consumeSqueeze))
+    if (overlay.updatePlacementInput(allowedHands, consumeSqueeze)) {
+      leaveWall();
       atomicWrite(poseFile, placementJSON(overlay.placement));
+    }
     if (overlay.closeRequested) {
       overlay.closeRequested = false;
       // A fixed, named request for the companion, which polls this folder;
@@ -889,10 +908,13 @@ public:
               }
               if (triple("move", 2, delta))
                 spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
-              if (spatial || bent || (requestedCurvature && curvatureResult.applied))
+              if (spatial || bent || placementChanged || (requestedCurvature && curvatureResult.applied)) {
+                leaveWall();
                 atomicWrite(poseFile, placementJSON(overlay.placement));
-              if (flag(j, "recenter"))
-                pendingRecenter = true;
+              }
+              if (flag(j, "recenter")) {
+                leaveWall(); pendingRecenter = true;
+              }
               if (auto requested = field(j, "present"))
                 if (json_object_is_type(requested, json_type_string)) {
                   std::string mode = json_object_get_string(requested);
@@ -973,6 +995,17 @@ public:
       }
       done.clear();
     };
+    if (inWall) {
+      // Wait for valid tracking; all later windows use the same session anchor.
+      if (!wall->ready) return true;
+      const float aspect = picture ? float(picture->outputWidth()) / picture->outputHeight() :
+          (w > 0 && h > 0 ? float(w) / h : 16.f / 9.f);
+      auto placed = wallPlacement(slot, aspect, wall->matrix);
+      if (!wallPlaced || std::abs(placed.width - overlay.placement.width) > 1e-6f) {
+        overlay.placement = placed;
+        overlay.apply(); wallPlaced = true;
+      }
+    }
     if (picture) {
       double before = nowMs();
       overlay.stage(std::move(picture), done);
@@ -1060,6 +1093,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;
   PanelBook book;
+  auto wall = std::make_shared<WallAnchor>();
+  std::string wallSession;
   HostFocus focus;
   MenuStripReveal menuReveal;
   SpatialState spatial;
@@ -1101,6 +1136,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         auto &o = e.panel->overlay;
         if (!o.recenter())
           return false;
+        e.panel->leaveWall();
         o.apply();
         atomicWrite(e.spec.poseFile, placementJSON(o.placement));
         emit("{\"action\":\"switch\",\"key\":" + jsonString(key) + "}");
@@ -1126,6 +1162,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         ",\"ready\":" + (std::string(status) == "hosting" ? "true" : "false") +
         ",\"hostPid\":" + std::to_string(getpid()) + ",\"panels\":" + std::to_string(entries.size()) +
         ",\"runningPanels\":" + std::to_string(running) + ",\"activeKey\":" + jsonString(focus.active) +
+        ",\"wallSession\":" + jsonString(wallSession) +
+        ",\"wallAnchored\":" + (wall->ready ? std::string("true") : "false") +
         ",\"spatialMode\":" + (spatial.spatial ? std::string("true") : "false") +
         ",\"switcherOpen\":" + (spatial.open ? std::string("true") : "false") +
         ",\"spatialTiles\":" + std::to_string(tiles.size()) +
@@ -1179,6 +1217,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         for (auto it = invalid.begin(); it != invalid.end();) {
           if (!std::filesystem::exists(*it, error)) it = invalid.erase(it); else ++it;
         }
+        // Menu Bar belongs to the Spatial session, even when it has no windows.
+        // Its next generation also resets a host retained by Desktop panels.
+        std::string nextSession;
+        for (const auto &[path, spec] : desired)
+          if (spec.role == PanelRole::Menubar) nextSession = spec.generation;
+        if (nextSession != wallSession || desired.empty()) {
+          wall = std::make_shared<WallAnchor>(); wallSession = nextSession;
+        }
         auto changes = book.plan(desired);
         for (const auto &path : changes.remove) remove(path);
         for (const auto &path : changes.add) {
@@ -1199,6 +1245,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             options.initialPose = spec.initialPose; options.requestDir = spec.requestDir; options.hostGeneration = spec.generation;
             options.decoderMode = spec.decoder; options.conversionMode = spec.conversion;
             options.foveation = spec.foveation; options.gaze = spec.gaze; options.role = spec.role;
+            options.slot = spec.slot; options.wall = wall;
             // The host duration limits the process, rather than each later panel.
             options.seconds = 0;
             entry.panel = std::make_unique<PanelRunner>(options, session);
@@ -1235,7 +1282,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       } catch (...) {
       } // Atomic replacement may be temporarily unavailable.
     }
-    if (spatial.spatial) {
+    if (spatial.spatial || std::any_of(entries.begin(), entries.end(), [](const auto &entry) {
+          return entry.second.spec.slot >= 0;
+        })) {
       TrackedDevicePose_t head{};
       if (!session->noVR)
         session->system->GetDeviceToAbsoluteTrackingPose(
@@ -1245,6 +1294,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         head.mDeviceToAbsoluteTracking = spatialIdentity();
       }
       if (head.bPoseIsValid) {
+        wall->capture(head.mDeviceToAbsoluteTracking);
         auto next = spatialAnchor(head.mDeviceToAbsoluteTracking, 1.3f, 0);
         float dot =
             next.m[0][2] * anchor.m[0][2] + next.m[2][2] * anchor.m[2][2];

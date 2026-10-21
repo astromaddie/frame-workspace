@@ -428,6 +428,32 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
         finally:
             context.cleanup()
 
+    def test_host_wall_slot_roundtrip_and_portrait_pose(self):
+        context, _, env, _, runtime, _, _, _ = self.host_fixture()
+        try:
+            pose = {**VALID_POSE, "width": .2}
+            run = self.run_launcher(env, self.host_start_args("p1", "fc10101010", "--slot", "8",
+                                                             "--pose", json.dumps(pose)))
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            spec = json.loads((runtime / "frame-workspace/host/panels/p1.json").read_text())
+            self.assertEqual(spec["slot"], 8)
+            self.assertEqual(json.loads(Path(spec["poseFile"]).read_text())["width"], .2)
+        finally:
+            context.cleanup()
+
+    def test_invalid_wall_slots_rejected_before_service_mutation(self):
+        for slot in ("", "-1", "1.5", "true", "1024", "999999999999"):
+            with self.subTest(slot=slot):
+                context, _, env, _, runtime, calls, _, count = self.host_fixture()
+                try:
+                    run = self.run_launcher(env, self.host_start_args("p1", "fc10101010", "--slot", slot))
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertFalse(calls.exists())
+                    self.assertFalse(count.exists())
+                    self.assertFalse((runtime / "frame-workspace").exists())
+                finally:
+                    context.cleanup()
+
     def test_first_host_start_handles_loadstate_not_found_with_nonzero_systemctl_result(self):
         context, _, env, status, runtime, calls, _, run_count = self.host_fixture()
         try:
@@ -638,7 +664,7 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
     def test_invalid_host_pose_is_rejected_before_host_or_runtime_mutation(self):
         context, root, env, _, runtime, calls, _, run_count = self.host_fixture()
         try:
-            invalid = json.dumps({**VALID_POSE, "width": 0.1}, separators=(",", ":"))
+            invalid = json.dumps({**VALID_POSE, "width": 0.009}, separators=(",", ":"))
             run = self.run_launcher(env, self.host_start_args("p1", "fc66666666", "--pose", invalid))
             self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
             self.assertFalse(calls.exists(), "invalid pose must not query the shared host service")
@@ -662,7 +688,7 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
             ("version boolean", changed(version=True)),
             ("version float", changed(version=1.0)),
             ("width boolean", changed(width=True)),
-            ("width low", changed(width=0.399)),
+            ("width low", changed(width=0.009)),
             ("distance high", changed(distance=10.001)),
             ("curvature high", changed(curvature=1.001)),
             ("non-finite constant", changed(width=float("nan"))),

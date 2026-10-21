@@ -279,7 +279,7 @@ def validate_pose(value):
             raise MacViewError("Pose numbers must be finite and within native placement limits.")
         return v
 
-    width = number(value["width"], .4, 8)
+    width = number(value["width"], .01, 8)
     distance = number(value["distance"], .4, 10)
     curvature = number(value["curvature"], 0, 1)
     matrix = value["matrix"]
@@ -1167,7 +1167,8 @@ class MacView:
         if self.mode == "spatial":
             label = "Spatial Mode"
         windows = [{"title": p.get("title") or "Mac Window", "key": p["key"]}
-                   for p in sorted(self.native_panels.values(), key=lambda p: p["slot"])]
+                   for p in sorted(self.native_panels.values(), key=lambda p: p.get("slot") if p.get("slot") is not None else 1024)
+                   if p.get("role", "window") == "window"]
         return {"connected": True, "workspace": {"running": running, "busy": busy, "label": label, "mode": self.mode},
                 "windows": windows[:32]}
 
@@ -1192,7 +1193,12 @@ class MacView:
             if self.spatial_apps.handle_request(request):
                 continue
             action, key = request.get("action"), str(request.get("key") or "")
-            if action == "close":
+            if action == "wall_release":
+                with self.workspace_lock:
+                    for panel in self.native_panels.values():
+                        if panel.get("key") == key and panel.get("generation") == request.get("generation"):
+                            panel["slot"] = None
+            elif action == "close":
                 if re.fullmatch(r"com\.frame-workspace\.native\.\d+\.(workspace|panel-w\d{1,15})", key):
                     self._dash_run(None, self._close_from_frame, key)
             elif action == "focus" and self._window_displays():
@@ -1537,8 +1543,12 @@ print(json.dumps(poses))
         else:
             raise MacViewError("Invalid Spatial Panel Role.")
         title = re.sub(r"[\r\n\t]", " ", str(info.get("title") or info.get("app") or "Mac Window"))[:64]
-        used = {p["slot"] for s, p in self.native_panels.items() if s != src and p.get("role", "window") == "window"}
-        slot = next(i for i in range(len(used) + 1) if i not in used)
+        used = {p["slot"] for s, p in self.native_panels.items()
+                if s != src and p.get("role", "window") == "window" and p.get("slot") is not None}
+        previous = self.native_panels.get(src, {}).get("slot")
+        slot = previous if previous is not None else next(i for i in range(len(used) + 1) if i not in used)
+        if self.mode == "spatial" and (role != "window" or pose is not None):
+            slot = None
         initial_pose = ""
         placement = self._workspace_frame_placement() if pose is None and self.mode == "desktop" and role == "window" else None
         if placement:
@@ -1550,7 +1560,8 @@ print(json.dumps(poses))
                      ["--initial-pose", initial_pose] if initial_pose else [])
         host = self.mode == "spatial" or os.environ.get("FRAME_NATIVE_HOST") == "1"
         role_args = ["--role", role] if role != "window" or self.mode == "spatial" else []
-        args = ["--panel", panel, "--name", title] + role_args + pose_args + \
+        slot_args = ["--slot", slot] if self.mode == "spatial" and slot is not None else []
+        args = ["--panel", panel, "--name", title] + role_args + pose_args + slot_args + \
                ["start", url, w, h, tag, workspace_decoder(), workspace_conversion()]
         remote_env = "FRAME_NATIVE_HOST=1 " if host else ""
         out = self.run(remote_env + "bash -s -- " + " ".join(_quote(str(a)) for a in args),
@@ -1914,7 +1925,13 @@ print(json.dumps(poses))
                     self._spatial_owned.discard(source)
                     self._spatial_retry.pop(source, None)
                     self._spatial_resume_poses.pop(source, None)
-                pending = sorted(windows.keys() - self.native_panels.keys() - self._spatial_suppressed)
+                # The helper supplies front-to-back order; focused window gets first refusal.
+                available = windows.keys() - self.native_panels.keys() - self._spatial_suppressed
+                pending = [s for s in windows if s in available]
+                focused = state.get("focusedSrc")
+                if focused in pending:
+                    pending.remove(focused)
+                    pending.insert(0, focused)
                 now = time.monotonic()
                 candidate = next((s for s in pending if self._spatial_retry.get(s, {}).get("after", 0) <= now), None)
                 if candidate:

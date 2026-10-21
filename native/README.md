@@ -856,7 +856,7 @@ references, not passthrough. This is a monoscopic software composition of the
 host's submitted surfaces, not SteamVR compositor, optical, or worn evidence.
 
 The scene lists `panels` (`id`, `role: "window"`, `placement` in the existing
-version-1 pose format, `texture`, optional metre `height`, `focused`, `focusGlow`,
+version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `height`, `focused`, `focusGlow`,
 `focusSnap`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
 `status`, `dropdown` entries (`texture` and the existing `surface` message).
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.
@@ -901,13 +901,71 @@ script turns the camera toward the midpoint of the surfaces' horizontal angular
 bounds, using the same yaw for both
 images. It retains the 100-degree FOV and all production sizes and positions.
 
-**Actual Spatial defaults overlap.** `ui/frame_macview.py::_show_native_window`
-calls `beside_workspace_pose` only in Desktop Mode. Spatial Mode launches window
-panels without an initial pose unless restoring a saved one; `PanelRunner`
-then uses `Placement` and `Overlay::recenter`: flat, 2.4 m wide, 2 m ahead of
-the HMD, with height from stream aspect. The capture script reproduces those
-unsaved defaults at an identity HMD pose, so the frontmost captured window is
-focused and occludes much of the others. It does not invent an arc or read saved
-headset poses. The separate `spatialLayout` arc is for switcher thumbnails,
+**The private capture script reproduces the earlier overlapping defaults.**
+It uses flat panels, 2.4 m wide and 2 m ahead of an identity HMD pose, with height
+from stream aspect, so the frontmost captured window is focused and occludes much
+of the others. It does not read saved headset poses. Current Spatial Mode assigns
+the L2 wall slots described below; use the wall fixtures to reproduce that layout.
+Desktop Mode still uses `beside_workspace_pose`. The separate `spatialLayout` arc is for switcher thumbnails,
 not streamed windows. Menubar scale follows the current host's `2 * panelWidth /
 uploadedWidthPixels` estimate; the status strip follows its fixed .001 m/point.
+
+### Spatial Wall (L2)
+
+The companion assigns stable lowest-free `--slot` numbers: focused/frontmost,
+left, right, then the same order below; slots 6–9 extend to ±50 degrees and
+10–13 to ±75 degrees. Restored poses bypass allocation. The native host computes
+placement in `wall.hpp`, shared with `--render-scene`'s panel `slot` field. Content
+fits a 0.64 × 0.40 m cell at 1.75 m, preserving aspect, at +11.5/-6.5 degree rows
+and 25 degree columns. The smaller content rectangle reserves space for the
+production bezel halo, expanded handles, move pill and close disc; nominal
+0.70 × 0.50 m content would overlap those controls. Pure tests project the visible
+chrome at its actual depth and check adjacent cells through slot 13, plus the D1
+shelf and status strip. Transparent raster padding is not visible chrome.
+
+A valid head pose supplies yaw and position once per Spatial session, ignoring
+pitch/roll. The Menu Bar panel generation identifies that session even when all
+windows close; a new generation resets an otherwise surviving shared host.
+Hand moves, resizing, bends, nudges and recentering detach the panel and save its
+pose. Generation-scoped release requests free its companion slot. Automatic wall
+placement is not written as a manually remembered pose. Pose readers accept
+widths down to 0.01 m so narrow portrait cells round-trip; manual resizing retains
+its normal 0.4 m minimum except for an already narrower panel.
+
+Reproduce mixed landscape/portrait evidence without captures or headset access:
+
+```sh
+# Use the approved task scratch directory for wall_scratch.
+PYTHONDONTWRITEBYTECODE=1 python3 native/scene/generate-wall-scenes.py "$wall_scratch"
+native/build/frame-workspace-native --render-scene "$wall_scratch/wall-6.json" native/evidence/spatial-wall-6.png
+native/build/frame-workspace-native --render-scene "$wall_scratch/wall-9.json" native/evidence/spatial-wall-9.png --fov 125
+```
+
+`--self-test` includes wall radius/order/facing, aspect/portrait pose round-trip,
+level session anchoring and projected chrome/shelf/status clearance. Host tests
+exercise slotted streamed panels, malformed slot isolation, release on recenter,
+saved-pose precedence and session generations; scene tests exercise the same
+slot geometry through the GL renderer. Companion tests cover focused ordering,
+freed-slot reuse, restored poses, release generations and launcher validation.
+These are synthetic/local checks; they do not establish worn readability or
+headset acceptance. Remove generated scene inputs and local build output after
+verification; retain only the six- and nine-window evidence PNGs.
+
+Validation snapshot (2026-10-21, local macOS build): the native build completed
+without warnings and both its built-in and explicit `--self-test` passed. Binary
+SHA-256 was `b67bf262a277778ec408d597b3a715e52d81c7db873532cc8bddc57ecf9266f7`.
+The required companion command ran 177 tests: 164 passed and 13 real-helper HTTP
+checks timed out; an earlier run instead encountered the shared helper's
+per-user Spatial lease. The native host test timed out waiting for its first
+panel, and the scene test stalled on its first render. A standalone SDL-only
+program reproduced the startup stall at `SDL_Init` → `NSApplication init` →
+SkyLight `SLSMainConnection`, before workspace geometry runs. Process-local
+background mode and a temporary LaunchServices app reproduced it; SDL's
+offscreen driver could not initialize OpenGL. No system settings or dependencies
+were changed. Host/scene integration and both wall PNGs remain pending a working
+GUI runtime; no renders or visual acceptance are claimed by this snapshot.
+Re-run the commands above and the required host/scene/companion suites after
+that blocker clears. Generated build output, fixtures and diagnostic logs are
+removed after retaining this compact reproduction record.
+Cleanup removed 7,151,477 bytes (6.82 MiB), including the local build, temporary
+scene inputs, adapter, standalone diagnostic programs and logs.

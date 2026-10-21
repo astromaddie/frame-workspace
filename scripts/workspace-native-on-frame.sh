@@ -14,11 +14,13 @@ pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.j
 # panel (for example beside the Workspace) until it has a saved pose. `--pose`
 # replaces the saved pose for the next start, after the previous viewer stops.
 role="window"
+wall_slot="" wall_slot_set=0
 panel="" panel_name="" initial_pose="" pose_override="" expected_generation=""
 initial_pose_set=0 pose_override_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --panel) [ "$#" -ge 2 ] || exit 2; panel=$2; shift 2 ;;
+    --slot) [ "$#" -ge 2 ] || exit 2; wall_slot=$2; wall_slot_set=1; shift 2 ;;
     --role) [ "$#" -ge 2 ] || exit 2; role=$2; shift 2 ;;
     --name) [ "$#" -ge 2 ] || exit 2; panel_name=$2; shift 2 ;;
     --generation) [ "$#" -ge 2 ] || exit 2; expected_generation=$2; shift 2 ;;
@@ -27,6 +29,12 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
+if [ "$wall_slot_set" -eq 1 ]; then
+  case "$wall_slot" in ""|*[!0-9]*|?????*) echo '--slot must be an integer from 0 to 1023.' >&2; exit 2 ;; esac
+  [ "$((10#$wall_slot))" -le 1023 ] && [ "$role" = window ] && [ -n "$panel" ] &&
+    [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ "${1:-}" = start ] || {
+      echo '--slot requires a shared host window start and a slot from 0 to 1023.' >&2; exit 2; }
+fi
 case "$role" in
   window|menubar|status|menu) ;;
   *) echo '--role must be window, menubar, status or menu.' >&2; exit 2 ;;
@@ -77,7 +85,7 @@ def number(value, label, minimum, maximum):
     if not math.isfinite(value) or not minimum <= value <= maximum:
         raise SystemExit(f'--pose {label} must be between {minimum:g} and {maximum:g}.')
     return value
-number(pose['width'], 'width', 0.4, 8.0)
+number(pose['width'], 'width', 0.01, 8.0)
 number(pose['distance'], 'distance', 0.4, 10.0)
 number(pose['curvature'], 'curvature', 0.0, 1.0)
 if 'bend' in pose:
@@ -342,7 +350,7 @@ def ensure_host(binary, runtime_dir):
 
 def start_panel():
     (url, width, height, generation, decoder, conversion, title, initial_pose,
-     pose_override, foveation, diagnostic_gaze, binary, runtime_dir) = start_args
+     pose_override, foveation, diagnostic_gaze, binary, runtime_dir, wall_slot) = start_args
     old = current_spec()
     if old is None and spec_path.exists():
         raise RuntimeError('Could not read the existing native panel spec; leaving it in place.')
@@ -401,6 +409,8 @@ def start_panel():
         'decoder': decoder,
         'conversion': conversion,
     }
+    if wall_slot:
+        spec['slot'] = int(wall_slot)
     if role == 'window' and foveation in ('1', 'gaze'):
         spec['foveation'] = foveation == '1'
         spec['gaze'] = foveation == 'gaze'
@@ -855,7 +865,7 @@ if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
   fi
   host_panel start "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "" "$role" \
     "$url" "$w" "$h" "$tag" "$decoder" "$conversion" "$panel_name" "$initial_pose" \
-    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}"
+    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}" "$wall_slot"
   exit $?
 fi
 

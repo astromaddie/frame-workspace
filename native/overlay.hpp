@@ -954,7 +954,7 @@ public:
     return true;
   }
   void resize(float w, float d) {
-    w = std::clamp(w, .4f, 8.f);
+    w = std::clamp(w, std::min(.4f, placement.width), 8.f);
     d = std::clamp(d, .4f, 10.f);
     float delta = d - placement.distance;
     for (int r = 0; r < 3; r++)

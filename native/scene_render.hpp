@@ -3,6 +3,7 @@
 // and room are diagnostic stand-ins; panel geometry/materials are production.
 #include "overlay.hpp"
 #include "spatial_render.hpp"
+#include "wall.hpp"
 #include <sstream>
 
 namespace fw {
@@ -138,10 +139,16 @@ public:
       s.key = str(p, "id");
       if (str(p, "role") != "window") throw std::runtime_error("panel role must be window");
       auto pose = field(p, "placement");
-      if (!pose || !parsePlacement(json_object_to_json_string(pose), s.placement))
-        throw std::runtime_error("invalid scene placement");
       Image pic = load(str(p, "texture"));
-      s.height = float(num(p, "height", s.placement.width * pic.height / pic.width));
+      const int slot = wallSlot(p);
+      if (pose) {
+        if (!parsePlacement(json_object_to_json_string(pose), s.placement))
+          throw std::runtime_error("invalid scene placement");
+      } else if (slot >= 0)
+        s.placement = wallPlacement(slot, float(pic.width) / pic.height, spatialIdentity());
+      else throw std::runtime_error("scene needs placement or slot");
+      s.height = slot >= 0 && !pose ? s.placement.width * pic.height / pic.width :
+          float(num(p, "height", s.placement.width * pic.height / pic.width));
       if (!std::isfinite(s.height) || s.height <= 0 || s.height > 8)
         throw std::runtime_error("invalid scene panel height");
       bool selected = flag(p, "focused");

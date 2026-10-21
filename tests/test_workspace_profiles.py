@@ -183,7 +183,7 @@ class ProfileStoreTests(unittest.TestCase):
 
     def test_pose_validation_is_strict_for_workspace_and_window_rules(self):
         bad = [None, [], {}, dict(sample_pose(), version=True), dict(sample_pose(), version=1.0),
-               dict(sample_pose(), extra=1), dict(sample_pose(), width=.399), dict(sample_pose(), width=8.001),
+               dict(sample_pose(), extra=1), dict(sample_pose(), width=.009), dict(sample_pose(), width=8.001),
                dict(sample_pose(), distance=.399), dict(sample_pose(), distance=10.001),
                dict(sample_pose(), curvature=-.01), dict(sample_pose(), curvature=1.01),
                dict(sample_pose(), width=True), dict(sample_pose(), distance="2"),
@@ -201,7 +201,7 @@ class ProfileStoreTests(unittest.TestCase):
                     (profile["workspace"] if target == "workspace" else profile["windows"][0])["pose"] = pose
                     with self.assertRaises(profiles.ProfileError):
                         profiles.validate_profile(profile)
-        for width, distance, curvature in ((.4, .4, 0), (8, 10, 1)):
+        for width, distance, curvature in ((.01, .4, 0), (.2, 1.75, 0), (.4, .4, 0), (8, 10, 1)):
             pose = dict(sample_pose(), width=width, distance=distance, curvature=curvature)
             pose["matrix"][0] = .999999  # native six-decimal serialization tolerance
             profile = sample_profile([{"bundleID": "com.apple.Terminal", "pose": pose}])

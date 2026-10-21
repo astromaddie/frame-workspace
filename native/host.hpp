@@ -90,6 +90,7 @@ struct PanelSpec {
   std::string generation, urlFile, key, name, controlFile, stateFile, poseFile, initialPose, requestDir;
   std::string decoder = "software", conversion = "cpu";
   PanelRole role = PanelRole::Window;
+  int slot = -1;
   bool foveation = false, gaze = false;
   static PanelSpec parse(const std::string &raw) {
     auto j = json(raw);
@@ -102,6 +103,13 @@ struct PanelSpec {
       if (!json_object_is_type(role, json_type_string))
         throw std::runtime_error("invalid panel role");
       s.role = panelRole(json_object_get_string(role));
+    }
+    json_object *slot = nullptr;
+    if (json_object_object_get_ex(j.get(), "slot", &slot)) {
+      if (s.role != PanelRole::Window || !json_object_is_type(slot, json_type_int) ||
+          num(j, "slot") < 0 || num(j, "slot") > 1023)
+        throw std::runtime_error("invalid wall slot");
+      s.slot = int(num(j, "slot"));
     }
     s.generation = str(j, "generation"); s.urlFile = str(j, "urlFile");
     s.key = str(j, "overlayKey"); s.name = str(j, "overlayName");
