@@ -158,7 +158,7 @@ public:
   ~SpatialRenderer() {
     for (auto &l : layers) {
       if (l.overlay)
-        session->overlay->DestroyOverlay(l.overlay);
+        session->destroyOverlay(l.overlay);
       glDeleteTextures(1, &l.texture);
       glDeleteTextures(1, &l.label);
     }
@@ -312,8 +312,8 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
         if (!l.overlay) {
           std::string key = "com.frame-workspace.spatial." +
                             std::to_string(getpid()) + "." + std::to_string(i);
-          if (session->overlay->CreateOverlay(
-                  key.data(), (char *)"Frame Workspace", &l.overlay))
+          if (session->createOverlay(
+                  key, "Frame Workspace", &l.overlay))
             throw std::runtime_error("spatial overlay unavailable");
           VRTextureBounds_t bounds{0, 1, 1, 0};
           session->overlay->SetOverlayTextureBounds(l.overlay, &bounds);

@@ -853,6 +853,28 @@ rows: nine ordinary windows then use 87, or 115 with every window and the menu
 strip split. Hidden retained UI overlays are included. Other applications consume
 additional system overlays.
 
+The shared host now applies a total overlay budget of 96 by default;
+`FRAME_NATIVE_OVERLAY_BUDGET` can set a value from 1 through SteamVR's 128-overlay
+limit. The dashboard overlay and its thumbnail are owned by the separate
+dashboard process, so the host reserves those two slots and reports both
+`hostOverlayCount` and `dashboardOverlayReserve`; `overlayCount` includes the
+reservation and `overlayBudget` is the configured total. Required pictures,
+frames, controls, bends, menus, shelf/status surfaces, spatial tiles and cursor
+handles are admitted first. When required overlays need room, the host drops
+whole four-overlay wall groups from the windows furthest from gaze, then the
+least recently focused among ties; the focused window's walls are protected.
+The joined picture and bezel remain, and wall picking falls back to the flat
+frame surface while its walls are unavailable. Walls return as whole groups,
+focused and nearest first, only when the reported total including the group is
+at least four below budget. Required overlays still allow a window to open when
+the configured budget is exhausted; the host logs the first such overrun once.
+Wall drop/restore transitions are coalesced per window at most once per second,
+with the final pending state flushed on shutdown. Focus protection and gaze
+priorities refresh before allocations and immediately when focus changes.
+The nine-window split/retained-UI stress case drops five wall groups and uses
+95 overlays, including the two-slot dashboard reservation, while preserving all
+77 required host overlays. Nine flat/even windows retain their walls at 87.
+
 The optional state override supplies fixture icons/labels; thumbnails in this
 standalone diagnostic are deliberately asymmetric color fixtures. Alternating
 cards use normal and physically quarter-turned textures. These are renderer
@@ -861,7 +883,9 @@ checks, not captures of Mac windows or a lens image. See
 commands, source identity and verification boundaries.
 
 `--self-test` covers layout, hit tests, focus timing, trigger gestures, menu
-identity and strip navigation. On a development machine with a GL display,
+identity and strip navigation, plus the production overlay-budget allocator's
+drop/restore ordering, focused protection, hysteresis, and nine fully split
+windows within the 96-overlay default. On a development machine with a GL display,
 `tests_host.py` exercises the production host with loopback streams and isolated
 state, including an inventory larger than 16 KiB. The renderer regression test
 checks late icons and in-place live-texture updates through actual GL readback:

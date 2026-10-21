@@ -1,7 +1,238 @@
 #pragma once
 #include "depth.hpp"
 #include "spatial.hpp"
+#include "overlay_budget.hpp"
 namespace fw {
+inline void selfTestOverlayBudget() {
+ struct Harness {
+  struct Group {
+   std::string key;
+   std::array<OverlayBudget::Handle,4> walls{};
+   bool failDrop=false;
+   int failedRestores=0, restoreCalls=0;
+  };
+  OverlayBudget budget;
+  OverlayBudget::Handle next=1;
+  std::map<OverlayBudget::Handle,std::string> live;
+  std::vector<OverlayBudget::Handle> required;
+  std::vector<std::string> restored;
+  explicit Harness(int total,int reserve=0):budget(total,reserve){}
+  EVROverlayError create(const std::string &key,const std::string &,OverlayBudget::Handle *handle) {
+   *handle=next++;live.emplace(*handle,key);return EVROverlayError_VROverlayError_None;
+  }
+  EVROverlayError destroy(OverlayBudget::Handle handle) {
+   return live.erase(handle)?EVROverlayError_VROverlayError_None:EVROverlayError_VROverlayError_InvalidHandle;
+  }
+  void allocateRequired(const std::string &prefix,int count) {
+   for(int i=0;i<count;++i) {
+    OverlayBudget::Handle handle=0;
+    auto error=budget.createRequired(prefix+"."+std::to_string(i),"required",&handle,
+        [this](const auto &key,const auto &name,auto *out){return create(key,name,out);});
+    if(error==EVROverlayError_VROverlayError_None)required.push_back(handle);
+   }
+  }
+  void addGroup(Group &group,float angle=3.14159265f,uint64_t recency=0,bool focused=false) {
+   budget.registerWalls(&group,group.key,
+    [this,&group] {
+     if(group.failDrop)return false;
+     bool ok=true;
+     for(auto &handle:group.walls)if(handle) {
+      if(budget.destroy(handle,[this](auto h){return destroy(h);}))handle=0;else ok=false;
+     }
+     return ok;
+    },
+    [this,&group] {
+     ++group.restoreCalls;
+     if(group.failedRestores>0){--group.failedRestores;return false;}
+     for(size_t i=0;i<group.walls.size();++i) {
+      auto key=group.key+".wall"+std::to_string(i);
+      auto error=budget.createOptional(&group,key,"wall",&group.walls[i],
+          [this](const auto &k,const auto &name,auto *out){return create(k,name,out);});
+      if(error!=EVROverlayError_VROverlayError_None) {
+       for(auto &handle:group.walls)if(handle) {
+        if(budget.destroy(handle,[this](auto h){return destroy(h);}))handle=0;
+       }
+       return false;
+      }
+     }
+     restored.push_back(group.key);return true;
+    });
+   budget.updateWalls(&group,angle,recency,focused);
+  }
+  bool allocated(const Group &group) const { return budget.wallsAllocated(&group); }
+  void freeRequired(size_t count) {
+   count=std::min(count,required.size());
+   for(size_t i=0;i<count;++i) {
+    if(budget.destroy(required.back(),[this](auto h){return destroy(h);}))required.pop_back();
+   }
+  }
+ };
+ auto check=[](bool ok,const char *why){if(!ok)throw std::runtime_error(why);};
+ VROverlayHandle_t wallHandles[4]{};
+ check(!frameWallGroupActive(wallHandles),"dropped walls disable wall picking");
+ for(int i=0;i<4;++i)wallHandles[i]=i+1;
+ check(frameWallGroupActive(wallHandles),"restored whole wall group enables wall picking");
+
+ // Failed allocation and destruction must leave the production ledger
+ // accurate, including cleanup during constructor failure paths.
+ OverlayBudget ledger(16,0);
+ OverlayBudget::Handle failedHandle=0, liveHandle=0;
+ auto createFailure=ledger.createRequired("failed","required",&failedHandle,
+     [](const auto &,const auto &,auto *){return EVROverlayError_VROverlayError_RequestFailed;});
+ check(createFailure==EVROverlayError_VROverlayError_RequestFailed && ledger.count()==0,
+       "failed OpenVR creation does not consume a budget slot");
+ auto createSuccess=ledger.createRequired("live","required",&liveHandle,
+     [](const auto &,const auto &,auto *out){*out=91;return EVROverlayError_VROverlayError_None;});
+ check(createSuccess==EVROverlayError_VROverlayError_None && ledger.count()==1,
+       "successful OpenVR creation is tracked once");
+ check(!ledger.destroy(liveHandle,[](auto){return EVROverlayError_VROverlayError_RequestFailed;}) &&
+           ledger.count()==1,
+       "failed OpenVR destruction keeps the live handle counted");
+ check(ledger.destroy(liveHandle,[](auto){return EVROverlayError_VROverlayError_None;}) &&
+           ledger.count()==0 &&
+           !ledger.destroy(liveHandle,[](auto){return EVROverlayError_VROverlayError_None;}),
+       "successful cleanup removes a handle once, including failed-constructor cleanup");
+
+ // A failed optional restore is rate-limited until a real allocation-ledger
+ // change, then receives a fresh attempt.
+ Harness restoreRetry(12);
+ Harness::Group retrying{"retrying"};
+ retrying.failedRestores=1;
+ restoreRetry.addGroup(retrying,.5f,0);
+ restoreRetry.budget.reconcileWalls();
+ check(retrying.restoreCalls==1 && !restoreRetry.allocated(retrying),
+       "failed wall restore is not retried every reconcile at the same count");
+ restoreRetry.allocateRequired("restore-ledger-change",1);
+ restoreRetry.budget.reconcileWalls();
+ check(retrying.restoreCalls==2 && restoreRetry.allocated(retrying),
+       "wall restore retries after the allocation ledger changes");
+
+ // The host's shared reporter emits one initial state, then coalesces rapid
+ // transitions into the final state after the one-second window.
+ WallTransitionLog log;
+ WallTransitionSummary summary;
+ const auto logStart=WallTransitionLog::Clock::time_point{}+std::chrono::seconds(5);
+ check(log.record(true,10,20,logStart,summary) && summary.restored && summary.count==10,
+       "first wall transition is reported immediately");
+ check(!log.record(false,6,20,logStart+std::chrono::milliseconds(100),summary) &&
+           !log.record(true,10,20,logStart+std::chrono::milliseconds(500),summary),
+       "rapid wall changes are coalesced per window");
+ check(log.flush(logStart+std::chrono::seconds(1),false,summary) &&
+           summary.restored && summary.count==10 && summary.budget==20,
+       "coalesced logging eventually exposes the final wall state and counts");
+
+ Harness dropFailure(14);
+ Harness::Group failedDrop{"failed-drop"},fallbackDrop{"fallback-drop"};
+ dropFailure.addGroup(failedDrop,3.f,0);
+ dropFailure.addGroup(fallbackDrop,2.f,0);
+ failedDrop.failDrop=true;
+ dropFailure.allocateRequired("drop-fallback",7);
+ check(dropFailure.allocated(failedDrop)&&!dropFailure.allocated(fallbackDrop)&&
+           dropFailure.budget.count()==11,
+       "a failed wall destruction does not prevent dropping the next eligible group");
+
+ Harness focusSelection(12);
+ Harness::Group oldFocus{"old-focus"},newFocus{"new-focus"};
+ focusSelection.addGroup(oldFocus,3.f,1);
+ focusSelection.addGroup(newFocus,.1f,0);
+ std::vector<WallPriority> priorities{{&oldFocus,"old-focus",3.f,1},
+                                      {&newFocus,"new-focus",.1f,0}};
+ HostFocus selected;
+ selected.activate("old-focus");
+ focusSelection.budget.updateWallPriorities(priorities,selected.active);
+ selected.activate("new-focus");
+ focusSelection.budget.updateWallPriorities(priorities,selected.active);
+ focusSelection.allocateRequired("after-host-selection",5);
+ check(!focusSelection.allocated(oldFocus)&&focusSelection.allocated(newFocus),
+       "host focus activation refreshes protection before a required allocation");
+
+ // Required allocations first drop the angularly furthest eligible wall;
+ // equal angles use least-recent focus, and the focused group's walls survive.
+ Harness order(20);
+ Harness::Group recent{"recent"},stale{"stale"},near{"near"};
+ order.addGroup(recent,2.4f,9);order.addGroup(stale,2.4f,1);order.addGroup(near,.4f,0);
+ order.allocateRequired("required",8);
+ order.allocateRequired("pressure-a",1);
+ check(!order.allocated(stale)&&order.allocated(recent)&&order.allocated(near),
+       "budget drops furthest wall group, then least recent focus");
+ order.allocateRequired("pressure-b",4);
+ check(!order.allocated(recent)&&order.allocated(near),"budget drops angularly furthest before nearer wall");
+ order.budget.updateWalls(&near,.4f,0,true);
+ order.allocateRequired("protected",4);
+ check(order.allocated(near)&&order.budget.count()>20,
+       "focused optional walls survive and required overlays may exceed budget");
+ for(auto h:order.required)check(order.live.count(h)==1,"required overlay remains live under budget pressure");
+
+ // Re-add only whole groups under total budget minus four, in focused/nearest
+ // order. Focus changes alone never evict an allocated group.
+ Harness hysteresis(20);
+ Harness::Group waiting{"waiting"};
+ hysteresis.addGroup(waiting,.3f,0);
+ hysteresis.allocateRequired("fill",20);
+ check(!hysteresis.allocated(waiting)&&hysteresis.budget.count()==20,
+       "required allocations evict optional walls at the configured limit");
+ hysteresis.freeRequired(7);
+ hysteresis.budget.updateWalls(&waiting,.3f,0,true);
+ hysteresis.budget.reconcileWalls();
+ check(!hysteresis.allocated(waiting)&&hysteresis.budget.count()==13,
+       "wall restoration keeps four slots of hysteresis");
+ size_t restoreEvents=hysteresis.restored.size();
+ for(int i=0;i<20;++i) {
+  hysteresis.budget.updateWalls(&waiting,.3f,uint64_t(i),i%2==0);
+  hysteresis.budget.reconcileWalls();
+ }
+ check(!hysteresis.allocated(waiting)&&hysteresis.restored.size()==restoreEvents,
+       "repeated focus changes do not flicker walls under pressure");
+ hysteresis.freeRequired(1);
+ hysteresis.budget.reconcileWalls();
+ check(hysteresis.allocated(waiting)&&hysteresis.budget.count()==16,
+       "walls restore as a whole group at budget minus four");
+
+ Harness restore(20);
+ Harness::Group farther{"farther"},closer{"closer"},focused{"focused"};
+ restore.addGroup(farther,2.5f,8);restore.addGroup(closer,.2f,5);restore.addGroup(focused,1.f,1);
+ restore.allocateRequired("restore-pressure",20);
+ check(!restore.allocated(farther)&&!restore.allocated(closer)&&!restore.allocated(focused),
+       "all optional groups can yield to required overlays");
+ restore.freeRequired(16);
+ restore.restored.clear();
+ restore.budget.updateWalls(&farther,2.5f,8,false);
+ restore.budget.updateWalls(&closer,.2f,5,false);
+ restore.budget.updateWalls(&focused,1.f,1,true);
+ restore.budget.reconcileWalls();
+ check(restore.restored==std::vector<std::string>({"focused","closer","farther"}),
+       "wall restoration prioritizes focus, then gaze proximity");
+
+ // Tie the policy check to the existing workspace high-water helpers. The
+ // fully split workspace is 115; 77 required overlays plus four complete wall
+ // groups and the dashboard pair must finish at an exact total of 95.
+ Harness nine(96,2);
+ std::array<Harness::Group,9> windows;
+ Placement splitPlacement;splitPlacement.width=1.6f;splitPlacement.bendA=.1f;splitPlacement.bendB=.2f;
+ const int splitWindowHighWater=windowOverlayCount(bendShape(splitPlacement,1.f));
+ const int fullWorkspaceHighWater=workspaceOverlayCount(9,true,4,true,9,true);
+ const int requiredPerWindow=splitWindowHighWater-4;
+ const int requiredRetainedUI=fullWorkspaceHighWater-9*splitWindowHighWater-nine.budget.reserved();
+ check(splitWindowHighWater==10&&requiredPerWindow==6&&fullWorkspaceHighWater==115&&
+           requiredRetainedUI==23,
+       "nine-window budget case follows production workspace and window counts");
+ for(int i=0;i<9;++i) {
+  windows[i].key="window"+std::to_string(i);
+  nine.allocateRequired(windows[i].key+".required",requiredPerWindow);
+  nine.addGroup(windows[i],float(i)*.1f,uint64_t(i),i==0);
+ }
+ nine.allocateRequired("retained-host-ui",requiredRetainedUI);
+ int allocatedGroups=0;
+ for(const auto &window:windows)if(nine.allocated(window))++allocatedGroups;
+ check(nine.budget.diagnosticCount()==95 && nine.budget.count()==93 &&
+           allocatedGroups==4 && nine.allocated(windows[0]),
+       "nine split windows reach exact 95 high-water after five whole groups drop, focused group protected");
+ check(nine.budget.totalBudget()==96&&nine.budget.reserved()==2,
+       "host diagnostic counts the separate dashboard reservation");
+ check(nine.required.size()==77,"all nine-window and retained UI overlays remain required");
+ for(auto h:nine.required)check(nine.live.count(h)==1,"nine-window required overlays survive wall eviction");
+}
+
 inline void selfTestDepth() {
  auto check=[](bool ok,const char *why){if(!ok)throw std::runtime_error(why);};
  HandleLayout l;l.width=2;l.height=1.2f;
@@ -62,6 +293,7 @@ inline void selfTestDepth() {
  check(workspaceOverlayCount(9,true,4,true,9,true)==115,"maximum split plus retained UI fits128");
  check(workspaceOverlayCount(9)==77 && workspaceOverlayCount(9)<100,"nine-window wall stays under 100 including fixed UI");
  check(workspaceOverlayCount(9,true,4,true)==105&&workspaceOverlayCount(9,true,4,true)<128,"nine split windows and split strip fit system ceiling");
+ selfTestOverlayBudget();
  int half=0,creates=0,destroys=0;
  auto create=[&](){++creates;return creates;};auto destroy=[&](int){++destroys;};
  for(bool needed:{false,true,true,false,false,true,false})reconcileHalf(half,needed,create,destroy);

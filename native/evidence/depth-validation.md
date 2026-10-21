@@ -30,6 +30,9 @@ light, accent-blue and dark captures, rendered as dark ink on the pressed metal.
 
 ## Overlay Accounting
 
+These are unconstrained counts from the depth implementation, before the
+overlay limiter described below.
+
 Counts include allocated hidden menu slots, four shelf apps, shelf backing,
 status, and the SteamVR bar panel plus its thumbnail. Other applications consume additional system overlays.
 
@@ -172,3 +175,153 @@ it: 67 generated files, 29,881,394 logical bytes and 30,167,040 allocated bytes
 GL adapters, scene inputs, test copies, logs and aborted-test directories.
 The scratch directory and `native/build` are absent. Source, feedback images,
 existing evidence and the seven requested final renders were preserved.
+
+## Overlay Budget Limiter — 2026-10-21
+
+Source base `3b80aa1`, branch `fw15b/depth`. Changes remain within `native/`.
+The shared session tracks every successful host overlay allocation and releases
+its count only after successful destruction. This includes hidden retained
+spatial tiles, window pictures/frames/controls, live bend halves, auxiliary
+surfaces and the shared cursor. The separate dashboard process's main overlay
+and thumbnail reserve two slots in the total.
+
+`FRAME_NATIVE_OVERLAY_BUDGET` overrides the default 96 (valid range 1–128;
+invalid values fall back to 96). Required allocations first discard whole
+four-wall groups, furthest angular gaze distance first and least-recent focus
+among ties. Eye gaze falls back to head-forward tracking. The focused window's
+existing walls remain protected. Pictures, joined bezels, controls, shelf,
+menus, bar and thumbnails are never budget eviction candidates. Missing walls
+also stop intercepting controller rays; the picture/bezel geometry stays intact.
+
+Wall groups restore focused and nearest first, only if the complete group fits
+at or below budget minus four. Focus changes alone do not exchange wall groups.
+Gaze and focus priorities refresh before allocations, after each new window is
+registered, and immediately on focus activation before applying placement.
+Required overlays may exceed a configured budget after optional groups are
+exhausted or protected; the host logs the first such overrun once per session.
+Wall transition logs coalesce per window to one summary per second, with pending
+final states flushed on shutdown. Host status exposes `overlayCount`,
+`overlayBudget`, `hostOverlayCount` and `dashboardOverlayReserve`; the total
+includes the two-slot reservation even when the dashboard is absent.
+
+| Nine-window configuration | Unconstrained total | Default-budget result |
+| --- | ---: | ---: |
+| Flat/even, ordinary UI | 77 | 77; all nine wall groups fit |
+| Flat/even, retained UI high-water | 87 | 87; all nine wall groups fit |
+| All unequal bends, split menubar, retained UI high-water | 115 | 95; five wall groups dropped |
+
+The split stress case uses the production window/workspace count helpers:
+54 required window overlays + 23 required host UI overlays + 16 surviving wall
+overlays + 2 reserved dashboard overlays = **95**. Four complete wall groups
+remain, including the focused window. All 77 required host overlays remain live.
+Allocation history and restoration hysteresis can keep additional walls absent
+until enough headroom returns; the budget is a ceiling for optional allocation,
+not a promise to occupy every slot. Other applications consume additional
+system-wide overlays, and runtime allocation failures still follow the existing
+OpenVR error path.
+
+Self-tests exercise the production allocator with an injected handle backend:
+gaze/recency removal order, focus protection refreshed before allocation,
+focused/nearest restoration, exact four-slot hysteresis, repeated focus changes
+without wall flicker, required-overlay preservation, failed create/destroy
+accounting and restore retry suppression, wall-pick enablement, coalesced log
+final-state delivery, and the exact 95-overlay split stress case. These establish
+policy and accounting without a SteamVR runtime.
+
+### Limiter Build And Host Verification
+
+The macOS GL adapter build completed without warnings in 10.04 seconds, using
+`scripts/build-workspace-native.sh` and the documented `gl.pc`/compiler wrapper.
+The last recorded free-memory value before this build sequence was 48%.
+Embedded and explicit `--self-test` both passed. The required-overrun self-test deliberately prints one warning at
+21/20 overlays; that is the tested fallback, not a build warning.
+
+Integration-tested native binary SHA-256:
+`062d1e750bb2e36f85c8cd708d5995195ed1394bb4a53a565e3348422a10480c`.
+All 41 C/C++ source/header hashes in `BUILD-METADATA.json` matched the final
+source. Subsequent report/README edits do not change those inputs.
+
+The unmodified `native/tests_host.py` did not pass: its first-panel readiness
+limit expired at 8 seconds, then its 5-second termination wait timed out
+(13.32 seconds total). The exact launched process was confirmed gone.
+A scratch-only copy passed both the main host and four-role surface scenarios
+in 112.89 seconds. Its inspected diff changes exactly two readiness limits from
+8 to 90 seconds and two host lifetimes from 60 to 240 seconds. Assertions,
+fixtures, stream sequences and repository tests are unchanged. This is
+supplementary local integration evidence; it does not turn the original
+short-deadline result into a pass.
+
+The complete unmodified `native/tests_scene.py` passed on the final binary in
+515.89 seconds. It covers flat/even/split/vertical picture and menu orientation,
+camera changes, foreground ordering, premultiplied alpha, wall slots and invalid
+inputs through the production compositor and shaders. No scene assertions or
+inputs were relaxed. `git diff --check` passed.
+
+An empty production host with `FRAME_NATIVE_OVERLAY_BUDGET=17` also passed
+(exit 0, 19.60 seconds): its status reported `overlayBudget:17`,
+`hostOverlayCount:0`, `dashboardOverlayReserve:2` and `overlayCount:2`.
+This was a `--no-vr` run with no panel specs; the zero host handle count is
+expected and does not simulate allocated SteamVR handles.
+
+A final rebuild followed a fresh **47% free** memory check and passed both
+embedded and explicit self-tests without warnings. Its binary SHA-256 was
+`d767a0137c941fb7adab9e6dfbc93f358b0e9b81602a632ae7a4148bdc349f68`.
+All 41 C/C++ inputs remained identical to the integration-tested source;
+`nm -ap` shows temporary object paths/timestamps embedded in the macOS debug
+map, so rebuild byte identity is not expected. The full loopback and scene
+results above belong to the earlier binary. No C/C++ inputs changed after those
+checks. The final sorted C/C++ source-hash manifest digest (SHA-256 of Python
+`json.dumps(inputs, sort_keys=True).encode()`) was
+`23cd6c023087894e5a41e827009727d0a199ca886564364ac22da16c70f6b831`.
+
+### Limiter Reproduction
+
+Recreate the temporary adapters from `shelf-menubar-validation.md` and
+`spatial-scene-validation.md` in the capsule's `scratchpad/limiter` directory.
+The CGL interpose creates an accelerated offscreen context, with no window or
+virtual display. With `scratch` set to that directory:
+
+```sh
+memory_pressure | tail -1 # Wait and retry below 15% free.
+PKG_CONFIG_PATH="$scratch" CXX="$scratch/cxx" scripts/build-workspace-native.sh "$scratch/build"
+bin="$scratch/build/frame-workspace-native"
+"$bin" --self-test
+export DYLD_INSERT_LIBRARIES="$scratch/cgl-bootstrap.dylib"
+export FRAME_NATIVE_TEST_TMP="$scratch" TMPDIR="$scratch" PYTHONDONTWRITEBYTECODE=1
+python3 native/tests_host.py "$bin"
+python3 native/tests_scene.py "$bin"
+```
+
+If the unmodified host run encounters the documented macOS startup timeout,
+the supplementary test copy is reproducible with only these substitutions:
+
+```sh
+python3 - "$scratch" <<'PYTEST'
+from pathlib import Path
+import sys
+text = Path('native/tests_host.py').read_text()
+assert text.count('time.monotonic() + 8') == 2
+assert text.count('"--seconds", "60"') == 2
+text = text.replace('time.monotonic() + 8', 'time.monotonic() + 90')
+text = text.replace('"--seconds", "60"', '"--seconds", "240"')
+(Path(sys.argv[1]) / 'tests_host_supplemental.py').write_text(text)
+PYTEST
+python3 "$scratch/tests_host_supplemental.py" "$bin"
+```
+
+No headset, companion, virtual display, user window or system setting was
+changed. Allocator-backed self-tests and local GL/loopback checks do not
+establish SteamVR presentation or worn interaction. Existing renders are
+preserved; this task changes allocation policy rather than frame materials.
+
+
+### Limiter Cleanup
+
+After confirming no native host/test process or open file was using the exact
+`limiter` scratch directory, cleanup removed 23 generated files:
+8,256,654 logical bytes and 8,376,320 allocated file bytes
+(7.99 MiB). This removed build binaries/debug symbols,
+metadata, GL adapters, temporary test inputs, timeout-adjusted test copies and
+logs. Results and reproduction details are retained above. Source, user-owned
+data and existing evidence renders remain. The task scratch directory and
+`native/build` are absent; no test processes remain.

@@ -217,6 +217,7 @@ class Overlay {
   GLuint frameTexture = 0, chromeTexture = 0;
   VROverlayHandle_t wallHandles[4]{};
   GLuint wallTextures[4]{};
+  bool wallGroupRegistered = false, wallTextureReady = false;
   FrameWallRenderer wallRenderer;
   ChromeRenderer chromeRenderer;
   ChromeState chromeState, chromeDrawn, frameDrawn, wallDrawn;
@@ -268,6 +269,55 @@ private:
       if(!gazeIntersection(ray,us[i],vs[i])) return false;
     }
     return uvOrientation(us[0],us[1],vs[2],vs[3],gazeFlipX,gazeFlipY);
+  }
+  bool createWalls() {
+    if (noVR) return false;
+    // A failed prior restore can leave a handle whose destruction also
+    // failed. Release that tracked residue before retrying, rather than
+    // overwriting the only reference to it.
+    for (auto &handle : wallHandles) if (handle) {
+      overlay->HideOverlay(handle);
+      if (!session->destroyOverlay(handle)) return false;
+      handle = 0;
+    }
+    auto discardCreated = [&](int last) {
+      for (int j = 0; j <= last; ++j) if (wallHandles[j]) {
+        overlay->HideOverlay(wallHandles[j]);
+        if (session->destroyOverlay(wallHandles[j])) wallHandles[j] = 0;
+      }
+    };
+    for (int i = 0; i < 4; ++i) {
+      std::string wallKey = key + ".wall" + std::to_string(i);
+      if (session->createOptionalWallOverlay(this, wallKey, name, &wallHandles[i])) {
+        discardCreated(i - 1);
+        return false;
+      }
+      const auto h = wallHandles[i];
+      VRTextureBounds_t bounds{0, 1, 1, 0};
+      if (overlay->SetOverlayTextureBounds(h, &bounds) ||
+          overlay->SetOverlayInputMethod(h, VROverlayInputMethod_None) ||
+          overlay->SetOverlayFlag(h, VROverlayFlags_IsPremultiplied, true) ||
+          overlay->SetOverlaySortOrder(h, spatialForeground ? 51 : 1)) {
+        discardCreated(i);
+        return false;
+      }
+    }
+    wallTextureReady = false;
+    session->recordWallTransition(key, true);
+    return true;
+  }
+  bool destroyWalls() {
+    bool released = true;
+    for (auto &h : wallHandles) if (h) {
+      overlay->HideOverlay(h);
+      if (session->destroyOverlay(h)) h = 0;
+      else released = false;
+    }
+    if (released) {
+      wallTextureReady = false;
+      session->recordWallTransition(key, false);
+    }
+    return released;
   }
   void check(EVROverlayError error, const char *operation) {
     if (error)
@@ -607,7 +657,7 @@ public:
     if (noVR) return;
     if (foveation) gazeBridge = std::make_unique<GazeBridge>(session->library);
     try {
-      check(overlay->CreateOverlay(key.data(), name.data(), &handle), "CreateOverlay");
+      check(session->createOverlay(key, name, &handle), "CreateOverlay");
       check(overlay->SetOverlayTextureColorSpace(handle,
                                                  EColorSpace_ColorSpace_Gamma),
             "color space");
@@ -641,17 +691,19 @@ public:
     squeezeAction = session->squeeze; hapticAction = session->haptic;
     for (int i = 0; i < 2; ++i) hands[i] = session->hands[i];
     std::string frameKey=key+".frame", chromeKey=key+".handles";
-    check(overlay->CreateOverlay(frameKey.data(),name.data(),&frameHandle),"frame overlay");
-    check(overlay->CreateOverlay(chromeKey.data(),name.data(),&chromeHandle),"control overlay");
-    for(int i=0;i<4;++i){std::string k=key+".wall"+std::to_string(i);check(overlay->CreateOverlay(k.data(),name.data(),&wallHandles[i]),"wall overlay");}
+    check(session->createOverlay(frameKey,name,&frameHandle),"frame overlay");
+    check(session->createOverlay(chromeKey,name,&chromeHandle),"control overlay");
     VRTextureBounds_t bounds{0,1,1,0};
-    for(auto h:{frameHandle,chromeHandle,wallHandles[0],wallHandles[1],wallHandles[2],wallHandles[3]}) {
+    for(auto h:{frameHandle,chromeHandle}) {
       overlay->SetOverlayTextureBounds(h,&bounds);overlay->SetOverlayInputMethod(h,VROverlayInputMethod_None);
       overlay->SetOverlayFlag(h,VROverlayFlags_IsPremultiplied,true);
-      overlay->SetOverlaySortOrder(h,h==frameHandle?2:h==chromeHandle?3:1);
+      overlay->SetOverlaySortOrder(h,h==frameHandle?2:3);
     }
     overlay->SetOverlaySortOrder(handle,1);
     glGenTextures(1,&frameTexture);glGenTextures(1,&chromeTexture);glGenTextures(4,wallTextures);
+    wallGroupRegistered = true;
+    session->registerOptionalWalls(this, key, [this] { return destroyWalls(); },
+                                   [this] { return createWalls(); });
     input = table;
     fprintf(stderr, "[native] placement input ready\n");
   }
@@ -675,6 +727,7 @@ public:
     return bendHit(shape(), o, d, z, x, y, distance);
   }
   bool wallHit(const HmdMatrix34_t &pose,float &x,float &y,float &distance,HmdMatrix34_t *point=nullptr) const {
+    if (!frameWallGroupActive(wallHandles)) return false;
     auto local=multiply(inverseRigid(placement.matrix),pose);
     float o[3]={local.m[0][3],local.m[1][3],local.m[2][3]},d[3]={-local.m[0][2],-local.m[1][2],-local.m[2][2]};
     HandleLayout l;l.width=placement.width;l.height=panelHeight();
@@ -722,22 +775,23 @@ public:
   void syncHalf(VROverlayHandle_t &h,bool needed,const char *suffix,uint32_t order,GLuint tex) {
     reconcileHalf(h,needed,[&]() {
       VROverlayHandle_t created=0;std::string k=key+suffix;
-      check(overlay->CreateOverlay(k.data(),name.data(),&created),"bend half overlay");
+      check(session->createOverlay(k,name,&created),"bend half overlay");
       overlay->SetOverlayInputMethod(created,VROverlayInputMethod_None);
       overlay->SetOverlayFlag(created,VROverlayFlags_IsPremultiplied,true);
       overlay->SetOverlayTextureColorSpace(created,EColorSpace_ColorSpace_Gamma);
       overlay->SetOverlaySortOrder(created,order);
       if(tex){GLint w=0;glBindTexture(GL_TEXTURE_2D,tex);glGetTexLevelParameteriv(GL_TEXTURE_2D,0,GL_TEXTURE_WIDTH,&w);
         if(w){Texture_t t{reinterpret_cast<void *>(uintptr_t(tex)),ETextureType_TextureType_OpenGL,EColorSpace_ColorSpace_Gamma};
-          auto error=overlay->SetOverlayTexture(created,&t);if(error){overlay->DestroyOverlay(created);check(error,"bend half texture");}}}
+          auto error=overlay->SetOverlayTexture(created,&t);if(error){session->destroyOverlay(created);check(error,"bend half texture");}}}
       return created;
-    },[&](VROverlayHandle_t old){overlay->DestroyOverlay(old);});
+    },[&](VROverlayHandle_t old){session->destroyOverlay(old);});
   }
   void placeLayers(const HandleLayout &l) {
     syncHalf(frameHandle2,shape().split(),".frame.half",spatialForeground?52:2,frameTexture);
     syncHalf(chromeHandle2,shape().split(),".handles.half",spatialForeground?53:3,chromeTexture);
     const auto walls=frameWalls(shape(),l);
     for(int i=0;i<4;++i) {
+      if (!wallHandles[i]) continue;
       auto m=multiply(placement.matrix,walls[i].local);
       overlay->SetOverlayTransformAbsolute(wallHandles[i],ETrackingUniverseOrigin_TrackingUniverseStanding,&m);
       overlay->SetOverlayWidthInMeters(wallHandles[i],walls[i].width);
@@ -811,14 +865,17 @@ public:
         }
       layer.drawn = layer.state;
     }
-    if(geometry || !sameChrome(frameState,wallDrawn)) {
+    const bool wallsAllocated = frameWallGroupActive(wallHandles);
+    if(geometry || (wallsAllocated && !wallTextureReady) || !sameChrome(frameState,wallDrawn)) {
       const auto walls=frameWalls(shape(),l);
       for(int i=0;i<4;++i) {
+        if (!wallHandles[i]) continue;
         wallRenderer.render(walls[i],l,frameState,wallTextures[i]);glFlush();
         Texture_t t{reinterpret_cast<void *>(uintptr_t(wallTextures[i])),ETextureType_TextureType_OpenGL,EColorSpace_ColorSpace_Gamma};
         overlay->SetOverlayTexture(wallHandles[i],&t);
       }
       wallDrawn=frameState;
+      wallTextureReady = wallsAllocated;
       placeLayers(l);
     }
     drawnLayerGeometry = now;
@@ -1032,14 +1089,18 @@ public:
     wallRenderer.release();
     chromeRenderer.release();
     surfaceRenderer.release();
+    if (wallGroupRegistered) {
+      session->unregisterOptionalWalls(this);
+      wallGroupRegistered = false;
+    }
     for (auto h : {frameHandle, chromeHandle, frameHandle2, chromeHandle2, handle2, wallHandles[0], wallHandles[1], wallHandles[2], wallHandles[3]})
-      if (h) overlay->DestroyOverlay(h);
+      if (h) session->destroyOverlay(h);
     for (auto t : {frameTexture, chromeTexture, wallTextures[0], wallTextures[1], wallTextures[2], wallTextures[3]})
       if (t) glDeleteTextures(1, &t);
     if (handle) {
       overlay->HideOverlay(handle);
       overlay->ClearOverlayTexture(handle);
-      overlay->DestroyOverlay(handle);
+      session->destroyOverlay(handle);
     }
     if (yuvFramebuffer)
       glDeleteFramebuffers(1, &yuvFramebuffer);

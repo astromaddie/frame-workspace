@@ -5,11 +5,13 @@
 #pragma GCC diagnostic pop
 #include "gaze_bridge.hpp"
 #include "chrome.hpp"
+#include "overlay_budget.hpp"
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
 #include <dlfcn.h>
 #include <memory>
+#include <map>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -23,8 +25,16 @@ class OverlaySession {
   void (*shutdown)() = nullptr;
   bool initialized = false;
   std::string manifestPath;
+  OverlayBudget budget{nativeOverlayBudgetFromEnvironment(), dashboardOverlayReserve};
+  std::map<std::string, WallTransitionLog> wallTransitionLogs;
+  void printWallTransition(const std::string &key, const WallTransitionSummary &summary) {
+    fprintf(stderr, "[native-host] frame walls %s key=%s overlays=%d/%d\n",
+            summary.restored ? "restored" : "dropped", key.c_str(),
+            summary.count, summary.budget);
+  }
   void release() {
-    if (cursorHandle && overlay) overlay->DestroyOverlay(cursorHandle);
+    flushWallTransitionLogs(true);
+    if (cursorHandle && overlay) destroyOverlay(cursorHandle);
     if (cursorTexture) glDeleteTextures(1,&cursorTexture);
     if (initialized && shutdown) shutdown();
     if (context) SDL_GL_DeleteContext(context);
@@ -36,6 +46,53 @@ public:
   using GetInterface = intptr_t (*)(const char *, EVRInitError *);
   const bool noVR;
   bool sharedHost = false;
+  EVROverlayError createOverlay(const std::string &key, const std::string &name,
+                                VROverlayHandle_t *handle) {
+    return budget.createRequired(key, name, handle, [&](const auto &k, const auto &n, auto *h) {
+      return overlay->CreateOverlay(const_cast<char *>(k.c_str()), const_cast<char *>(n.c_str()), h);
+    });
+  }
+  EVROverlayError createOptionalWallOverlay(const void *owner, const std::string &key,
+                                            const std::string &name,
+                                            VROverlayHandle_t *handle) {
+    return budget.createOptional(owner, key, name, handle, [&](const auto &k, const auto &n, auto *h) {
+      return overlay->CreateOverlay(const_cast<char *>(k.c_str()), const_cast<char *>(n.c_str()), h);
+    });
+  }
+  bool destroyOverlay(VROverlayHandle_t handle) {
+    return budget.destroy(handle, [&](auto h) { return overlay->DestroyOverlay(h); });
+  }
+  void updateOptionalWallPriorities(const std::vector<WallPriority> &priorities,
+                                    const std::string &focusedKey) {
+    budget.updateWallPriorities(priorities, focusedKey);
+  }
+  void recordWallTransition(const std::string &key, bool restored) {
+    auto &log = wallTransitionLogs[key];
+    WallTransitionSummary summary;
+    if (log.record(restored, overlayCount(), overlayBudgetLimit(),
+                   WallTransitionLog::Clock::now(), summary))
+      printWallTransition(key, summary);
+  }
+  void flushWallTransitionLogs(bool force = false) {
+    auto now = WallTransitionLog::Clock::now();
+    for (auto &[key, log] : wallTransitionLogs) {
+      WallTransitionSummary summary;
+      if (log.flush(now, force, summary)) printWallTransition(key, summary);
+    }
+  }
+  void registerOptionalWalls(const void *owner, std::string key,
+                             std::function<bool()> drop, std::function<bool()> restore) {
+    budget.registerWalls(owner, std::move(key), std::move(drop), std::move(restore));
+  }
+  void unregisterOptionalWalls(const void *owner) { budget.unregisterWalls(owner); }
+  void updateOptionalWalls(const void *owner, float gazeAngle, uint64_t focusOrder, bool focused) {
+    budget.updateWalls(owner, gazeAngle, focusOrder, focused);
+  }
+  void reconcileOptionalWalls() { budget.reconcileWalls(); }
+  int overlayCount() const { return budget.diagnosticCount(); }
+  int overlayBudgetLimit() const { return budget.totalBudget(); }
+  int hostOverlayCount() const { return int(budget.count()); }
+  int reservedOverlayCount() const { return budget.reserved(); }
   VROverlayHandle_t cursorHandle = 0;
   GLuint cursorTexture = 0;
   CursorOwnership cursor;
@@ -48,7 +105,7 @@ public:
     if(!cursor.claim(owner,!sharedHost || focused)){hideCursor(owner);return;}
     if(!cursorHandle) {
       std::string key="com.frame-workspace.cursor."+std::to_string(getpid());
-      if(overlay->CreateOverlay(key.data(),(char *)"Frame Workspace Pointer",&cursorHandle))
+      if(createOverlay(key,"Frame Workspace Pointer",&cursorHandle))
         throw std::runtime_error("shared cursor overlay unavailable");
       VRTextureBounds_t bounds{0,1,1,0};overlay->SetOverlayTextureBounds(cursorHandle,&bounds);
       overlay->SetOverlayFlag(cursorHandle,VROverlayFlags_IsPremultiplied,true);
