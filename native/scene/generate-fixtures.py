@@ -72,7 +72,7 @@ def main():
     for i,(name,letter,color) in enumerate([('notes','N',(.29,.48,.78,1)),('workbench','W',(.19,.24,.34,1)),('metrics','M',(.25,.58,.59,1)),('files','F',(.43,.64,.85,1))]):
         image(name+'-icon.png',128,128,lambda b,t,l=letter,c=color:(b(10,10,108,108,c),t(37,91,l,73,(1,1,1,1))))
     image('menubar.png',1200,60,lambda b,t:t(22,41,'Notes     File     Edit     View     Format     Window     Help',27))
-    image('status.png',660,60,lambda b,t:t(18,40,'Wi-Fi     84%     Wed 10:21',28))
+    image('status.png',372,60,lambda b,t:t(18,40,'Wi-Fi     84%     Wed 10:21',28))
     image('dropdown.png',440,380,lambda b,t:[t(28,52+i*66,v,28) for i,v in enumerate(['New Note','Open…','Recent Notes','Save','Export…'])])
 
     def placement(x,z,yaw,width,bend):
@@ -87,7 +87,7 @@ def main():
         dict(id='metrics',role='window',placement=placement(1.10,-1.85,-28,1.10,dict(vertical=False,a=.04,b=.18)),texture='metrics.png',focusGlow=.20)],
         apps=[dict(id=name,name=name.title(),icon=name+'-icon.png') for name in ['notes','workbench','metrics','files']],
         menubar=auxiliary('menubar.png',[0,0,600,30],hot=True,menusWidth=600),
-        status=auxiliary('status.png',[0,0,330,30]),
+        status=auxiliary('status.png',[0,0,186,30]),
         dropdown=auxiliary('dropdown.png',[66,30,220,190],'menubar',[0,0,600,30]))
     (ROOT/'example.json').write_text(json.dumps(scene,indent=2)+'\n')
     # A slim strip is the resting state: production MenuStripReveal expands while
