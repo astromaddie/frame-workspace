@@ -4,6 +4,7 @@
 #include "tests_host.hpp"
 #include "chrome_preview.hpp"
 #include "spatial_render.hpp"
+#include "scene_render.hpp"
 #include "tests_spatial.hpp"
 #include <array>
 #include <cassert>
@@ -1578,6 +1579,8 @@ int main(int argc, char **argv) {
         auto v = value();
         if (v != "on" && v != "off") throw std::runtime_error("--v4l2-poc-rewrite must be on or off");
         pocRewrite = v == "on";
+      } else if (a == "--render-scene") {
+        return renderSceneCommand(argc, argv, i);
       } else if (a == "--render-chrome") {
         // Diagnostic: --render-chrome rest|all|hover|held|close|close-held OUT.ppm
         // draws the window chrome (bezel and controls) for a 1.2 m window, flat.
@@ -1765,7 +1768,7 @@ int main(int argc, char **argv) {
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | --render-scene SCENE.json OUT.png [--eye x,y,z] [--look yaw,pitch] [--fov deg] [--size WxH] | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "

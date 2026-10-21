@@ -143,7 +143,6 @@ class Overlay {
   VRActionSetHandle_t actionSet = 0;
   VRActionHandle_t aimAction = 0, grabAction = 0, squeezeAction = 0, hapticAction = 0;
   VRInputValueHandle_t hands[2] = {};
-  static constexpr float frameDepth = 0.015f, controlsDepth = 0.03f;
   VROverlayHandle_t frameHandle = 0, chromeHandle = 0, cursorHandle = 0;
   VROverlayHandle_t frameHandle2 = 0, chromeHandle2 = 0;  // their second halves, for uneven bends
   GLuint frameTexture = 0, chromeTexture = 0, cursorTexture = 0;
@@ -589,30 +588,7 @@ public:
     if (chromeHandle2) overlay->SetOverlaySortOrder(chromeHandle2, 3);
     overlay->SetOverlaySortOrder(cursorHandle, 4);
     overlay->SetOverlayWidthInMeters(cursorHandle, 0.014f);
-    // The tip, as in Stargate: a small white-hot core that shows on anything,
-    // in a thin ring of the laser's blue (premultiplied).
-    const int n = 64;
-    std::vector<uint8_t> dot(size_t(n) * n * 4, 0);
-    for (int y = 0; y < n; y++)
-      for (int x = 0; x < n; x++) {
-        const float d = std::hypot(x + 0.5f - n / 2.f, y + 0.5f - n / 2.f) / (n / 2.f);
-        const float core = std::clamp((0.3f - d) * 20.f + 0.5f, 0.f, 1.f);
-        const float ring = std::clamp((0.5f - d) * 20.f + 0.5f, 0.f, 1.f) * 0.55f;
-        const float halo = std::exp(-d * d * 9.f) * 0.18f;
-        const float blue = std::max(ring, halo) * (1 - core);
-        uint8_t *o = &dot[(size_t(y) * n + x) * 4];
-        const float a = core + blue;
-        o[0] = uint8_t(std::lround(255 * (core + blue * 0.29f)));
-        o[1] = uint8_t(std::lround(255 * (core + blue * 0.66f)));
-        o[2] = uint8_t(std::lround(255 * (core + blue * 1.0f)));
-        o[3] = uint8_t(std::lround(255 * std::min(a, 1.f)));
-      }
-    glGenTextures(1, &cursorTexture);
-    glBindTexture(GL_TEXTURE_2D, cursorTexture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, n, n, 0, GL_RGBA, GL_UNSIGNED_BYTE, dot.data());
+    cursorTexture = createCursorTexture();
     glGenTextures(1, &frameTexture);
     glGenTextures(1, &chromeTexture);
     glFinish();
