@@ -11,6 +11,9 @@ enum Source: Equatable {
     case window(CGWindowID)
     case display(CGDirectDisplayID)
     case separate(CGWindowID)  // the window on a display of its own
+    case spatial(CGWindowID)
+    case menubar, status
+    case menu(Int)
     case test
 
     init?(_ s: String) {
@@ -19,9 +22,17 @@ enum Source: Equatable {
         case ("window", let id?): self = .window(id)
         case ("display", let id?): self = .display(id)
         case ("separate", let id?): self = .separate(id)
+        case ("spatial", let id?): self = .spatial(id)
+        case ("menubar", _) where s == "menubar": self = .menubar
+        case ("status", _) where s == "status": self = .status
+        case ("menu", let slot?) where slot < 4: self = .menu(Int(slot))
         case ("test", _): self = .test
         default: return nil
         }
+    }
+
+    var isSpatial: Bool {
+        switch self { case .spatial, .menubar, .status, .menu: return true; default: return false }
     }
 
     var key: String {
@@ -29,6 +40,10 @@ enum Source: Equatable {
         case .window(let id): return "window:\(id)"
         case .display(let id): return "display:\(id)"
         case .separate(let id): return "separate:\(id)"
+        case .spatial(let id): return "spatial:\(id)"
+        case .menubar: return "menubar"
+        case .status: return "status"
+        case .menu(let slot): return "menu:\(slot)"
         case .test: return "test"
         }
     }
@@ -176,6 +191,26 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
     /// For a display: capture only this part of it (display points, top-left
     /// origin). Set before start().
     var crop: CGRect?
+    var includeChildWindows = false
+    var excludedWindowIDs = Set<CGWindowID>()
+
+    func updateCrop(_ rect: CGRect) {
+        queue.async {
+            self.crop = rect
+            let global: CGRect
+            if case .display(let id) = self.source { global = self.displayRect(id) }
+            else if case .window(let id) = self.source, let frame = WindowInfo.find(id)?.bounds {
+                global = rect.offsetBy(dx: frame.minX, dy: frame.minY)
+            } else { return }
+            self.publishFrameRect(global)
+            self.config.sourceRect = rect
+            let size = fitSize(width: global.width * self.scale, height: global.height * self.scale, maxLong: self.maxLong)
+            self.config.width = size.0; self.config.height = size.1
+            self.publishPixelSize()
+            self.stream?.updateConfiguration(self.config) { _ in }
+            self.onChange?()
+        }
+    }
 
     init(_ source: Source) { self.source = source }
 
@@ -230,18 +265,22 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
             title = w.title ?? ""
             app = w.owningApplication?.applicationName ?? ""
             pid = w.owningApplication?.processID
-            publishFrameRect(w.frame)
+            if let crop {
+                config.sourceRect = crop
+                publishFrameRect(crop.offsetBy(dx: w.frame.minX, dy: w.frame.minY))
+            } else { publishFrameRect(w.frame) }
+            if #available(macOS 14.2, *) { config.includeChildWindows = includeChildWindows }
         case .display(let id):
             guard let d = content.displays.first(where: { $0.displayID == id }) else {
                 gone = true
                 return completion("that display isn't connected")
             }
-            filter = SCContentFilter(display: d, excludingWindows: [])
+            filter = SCContentFilter(display: d, excludingWindows: content.windows.filter { excludedWindowIDs.contains($0.windowID) })
             title = displayName(id)
             app = "Mac"
             publishFrameRect(displayRect(id))
             if crop != nil { config.sourceRect = frameRect.offsetBy(dx: -CGDisplayBounds(id).minX, dy: -CGDisplayBounds(id).minY) }
-        case .test, .separate:
+        case .test, .separate, .spatial, .menubar, .status, .menu:
             return completion("not a ScreenCaptureKit source")
         }
         scale = Double(filter.pointPixelScale)
@@ -415,9 +454,10 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
         var changed = false
         if !newTitle.isEmpty, newTitle != title { title = newTitle; changed = true }
         let old = frameRect
-        publishFrameRect(bounds)
-        if abs(old.width - bounds.width) > 1 || abs(old.height - bounds.height) > 1 {
-            let (w, h) = fitSize(width: bounds.width * scale, height: bounds.height * scale, maxLong: maxLong)
+        let captured = crop.map { $0.offsetBy(dx: bounds.minX, dy: bounds.minY) } ?? bounds
+        publishFrameRect(captured)
+        if abs(old.width - captured.width) > 1 || abs(old.height - captured.height) > 1 {
+            let (w, h) = fitSize(width: captured.width * scale, height: captured.height * scale, maxLong: maxLong)
             config.width = w
             config.height = h
             publishPixelSize()

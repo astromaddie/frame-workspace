@@ -69,7 +69,7 @@ func displaysJSON() -> [[String: Any]] {
     guard let ids = onlineDisplayIDs() else { return [] }
     return ids.filter {
         CGDisplayMirrorsDisplay($0) == kCGNullDirectDisplay && !VirtualDisplay.isOurs($0) &&
-            !VirtualDisplay.isSpatial($0)  // not a separated window's or spatial pool display
+            !VirtualDisplay.isSpatial($0)  // not a separated window's or shared spatial display
     }.map { id in
         let b = CGDisplayBounds(id)
         let mode = CGDisplayCopyDisplayMode(id)
@@ -177,6 +177,8 @@ final class Session {
     var onFinished: ((String) -> Void)?
     var onPointerPosition: ((String, CGPoint) -> Void)?
     var onFocused: ((String) -> Void)?
+    var onSpatialFocus: ((CGWindowID, Double, Double) -> Void)?
+    var onSpatialInput: ((CGWindowID) -> Void)?
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
@@ -353,7 +355,7 @@ final class Session {
     }
 
     private var isWindowSource: Bool {
-        switch source { case .window, .separate: return true; default: return false }
+        switch source { case .window, .separate, .spatial: return true; default: return false }
     }
 
     var isLive: Bool {
@@ -372,8 +374,19 @@ final class Session {
     /// Applies the live/still policy to window captures. A still request can
     /// wait for the first encoded picture, while a resume activates only after
     /// ScreenCaptureKit has restored the live cursor and cadence.
-    func setLive(_ shouldBeLive: Bool) {
-        guard isWindowSource else { return }
+    private func applySurface(_ message: [String: Any]) {
+        lock.lock()
+        liveGate.stop()
+        last = nil; stillPicture = nil; skipped = false
+        ws.sendJSON(message)
+        let visible = message["visible"] as? Bool == true
+        if !visible { ws.sendJSON(["t": "still"]) }
+        lock.unlock()
+        if visible { setLive(true, auxiliary: true) }
+    }
+
+    func setLive(_ shouldBeLive: Bool, auxiliary: Bool = false) {
+        guard isWindowSource || auxiliary else { return }
         lock.lock()
         let request = liveGate.request(shouldBeLive)
         if case .still = request {
@@ -475,6 +488,9 @@ final class Session {
     }
 
     func start(maxLong: Int, fps: Int) {
+        if let surface = capture as? SpatialSurfaceSource {
+            surface.onSurface = { [weak self] in self?.applySurface($0) }
+        }
         lock.lock()
         requestedMaxLong = maxLong
         lock.unlock()
@@ -722,6 +738,7 @@ final class Session {
     /// A point in the picture (0...1 each way) -> Mac global coordinates.
     private func point(_ x: Double, _ y: Double) -> CGPoint {
         let r = capture.frameRect
+        if source.isSpatial { return SpatialSharedPolicy.panelToGlobal(u: x, v: y, captureRect: r) }
         return CGPoint(x: r.minX + min(max(x, 0), 1) * r.width, y: r.minY + min(max(y, 0), 1) * r.height)
     }
 
@@ -830,6 +847,7 @@ final class Session {
             case "m":
                 let kind = m["e"] as? String ?? "move", b = m["b"] as? Int ?? 0
                 let p = point(x, y)
+                if kind == "down", case .spatial(let wid) = source { onSpatialInput?(wid) }
                 if kind == "down" {
                     onFocused?(source.key)
                     if case .window(let wid) = source, let pid = capture.pid {
@@ -848,14 +866,20 @@ final class Session {
                 injected(m, kind: "wheel")
             case "k":
                 let down = (m["e"] as? String) == "down"
+                if down, case .spatial(let wid) = source { onSpatialInput?(wid) }
                 Input.key(code: m["code"] as? String ?? "", key: m["key"] as? String ?? "",
                           down: down, mods: m["mods"] as? [String] ?? [], owner: id)
                 if down { injected(m, kind: "key") }
             case "text":
+                if case .spatial(let wid) = source { onSpatialInput?(wid) }
                 if let s = m["s"] as? String, s.count <= 4096 { Input.text(s); injected(m, kind: "text") }
             case "release":
                 Input.releaseAll(owner: id)
             case "focus":
+                if case .spatial(let wid) = source {
+                    onSpatialFocus?(wid, num(m["u"]) ?? 0.5, num(m["v"]) ?? 0.5)
+                    return
+                }
                 onFocused?(source.key)
                 if case .window(let wid) = source, let pid = capture.pid {
                     Input.focus(window: wid, pid: pid)
@@ -908,7 +932,6 @@ final class Agent {
     private var spatialAdmissionBlocked = false
     private var spatialTransition: UInt64 = 0
     private var separateSources: [ObjectIdentifier: SeparateSource] = [:]
-    private var spatialSeparateSources = Set<String>()
 
     /// Ends every stream, then exits once separated windows are back on the
     /// Mac's own screens (they're moved back, then their displays go 0.3 s later).
@@ -962,20 +985,21 @@ final class Agent {
         self.token = token
         self.page = page
         Input.setPointerShared(pointerSharedMode)
+        spatialMode.restorePersistedAtStartup()
     }
 
     private func isWindowSource(_ source: Source) -> Bool {
-        switch source { case .window, .separate: return true; default: return false }
+        switch source { case .window, .separate, .spatial: return true; default: return false }
     }
 
     private func windowID(_ key: String) -> CGWindowID? {
         guard let source = Source(key) else { return nil }
-        switch source { case .window(let id), .separate(let id): return id; default: return nil }
+        switch source { case .window(let id), .separate(let id), .spatial(let id): return id; default: return nil }
     }
 
     private func counterpartSourceKeys(_ key: String) -> [String] {
         guard let id = windowID(key) else { return [key] }
-        return ["window:\(id)", "separate:\(id)"]
+        return ["window:\(id)", "separate:\(id)", "spatial:\(id)"]
     }
 
     private func normalized(_ point: CGPoint, in bounds: CGRect) -> NormalizedPoint? {
@@ -1066,6 +1090,15 @@ final class Agent {
               let gaze = NormalizedPoint(u: u, v: v) else {
             return c.respond(400, text: "Invalid Normalized Coordinates")
         }
+        if case .spatial(let id) = source {
+            guard spatialMode.isRunning, spatialMode.contains(windowID: id) else { return c.respond(409, text: "Unknown Spatial Source") }
+            guard Input.allowed else { return c.respond(403, text: "Accessibility Permission Is Required") }
+            DispatchQueue.main.async {
+                let focused = self.spatialMode.focus.focus(windowID: id, u: u, v: v)
+                c.respond(focused ? 200 : 409, json: ["focusedSrc": key])
+            }
+            return
+        }
         guard Input.allowed else { return c.respond(403, text: "Accessibility Permission Is Required") }
         lock.lock(); let session = sessions.values.first { $0.source.key == key && !$0.isStopped }; lock.unlock()
         guard let session, let pid = session.capture.pid, let id = windowID(key),
@@ -1109,7 +1142,10 @@ final class Agent {
     private func mayStream(_ req: Request, src: String) -> String? {
         lock.lock()
         defer { lock.unlock() }
-        if spatialAdmissionBlocked && src.hasPrefix("separate:") { return nil }
+        if let source = Source(src) {
+            if source.isSpatial && (spatialAdmissionBlocked || !spatialMode.isRunning) { return nil }
+            if case .separate = source, spatialAdmissionBlocked || spatialMode.isRunning { return nil }
+        }
         let now = Date()
         tickets = tickets.filter { $0.value.expiry > now }
         if sameSecret(req.query["k"] ?? "", token) { return randomKey() }
@@ -1130,54 +1166,30 @@ final class Agent {
         lock.lock(); tickets = tickets.filter { $0.value.key != key }; lock.unlock()
     }
 
-    private func revokeAndStopSeparateStreams(spatialOnly: Bool = false, completion: @escaping (Bool) -> Void) {
-        lock.lock()
-        var keysToRevoke = spatialOnly ? spatialSeparateSources : Set<String>()
-        if spatialOnly {
-            keysToRevoke.formUnion(separateSources.values.filter(\.isSpatialStream).map { "separate:\($0.windowID)" })
-        } else {
-            keysToRevoke.formUnion(tickets.values.map(\.src).filter { $0.hasPrefix("separate:") })
-            keysToRevoke.formUnion(reconnectKeys.values.filter { $0.hasPrefix("separate:") })
-            keysToRevoke.formUnion(finished.filter { $0.hasPrefix("separate:") })
-        }
-        let matching = sessions.values.filter {
-            guard case .separate = $0.source else { return false }
-            if spatialOnly {
-                return keysToRevoke.contains($0.source.key) || ($0.capture as? SeparateSource)?.isSpatialStream == true
-            }
-            return true
-        }
-        keysToRevoke.formUnion(matching.map { $0.source.key })
-        var sourceMap = [ObjectIdentifier: SeparateSource]()
-        for source in separateSources.values where !spatialOnly || source.isSpatialStream {
-            sourceMap[ObjectIdentifier(source)] = source
-        }
-        for source in matching.compactMap({ $0.capture as? SeparateSource }) where !spatialOnly || source.isSpatialStream {
-            sourceMap[ObjectIdentifier(source)] = source
-        }
-        let sources = Array(sourceMap.values)
-        keysToRevoke.formUnion(sources.map { "separate:\($0.windowID)" })
-        tickets = tickets.filter { !keysToRevoke.contains($0.value.src) }
-        reconnectKeys = reconnectKeys.filter { !keysToRevoke.contains($0.value) }
-        finished.subtract(keysToRevoke)
-        spatialSeparateSources.subtract(keysToRevoke)
-        lock.unlock()
+    private func revokeAndStopSpatialStreams(completion: @escaping (Bool) -> Void) {
+        revokeAndStopStreams(spatial: true, completion: completion)
+    }
 
+    private func revokeAndStopStreams(spatial: Bool, completion: @escaping (Bool) -> Void) {
+        let matches: (String) -> Bool = { key in
+            guard let source = Source(key) else { return false }
+            if spatial { return source.isSpatial }
+            if case .separate = source { return true }
+            return false
+        }
+        lock.lock()
+        let matching = sessions.values.filter { matches($0.source.key) }
+        let sources = spatial ? [] : Array(separateSources.values)
+        tickets = tickets.filter { !matches($0.value.src) }
+        reconnectKeys = reconnectKeys.filter { !matches($0.value) }
+        finished = finished.filter { !matches($0) }
+        lock.unlock()
         let group = DispatchGroup()
         for session in matching {
-            group.enter()
-            session.ws.sendJSON(["t": "close"])
-            session.end { group.leave() }
+            group.enter(); session.ws.sendJSON(["t": "close"]); session.end { group.leave() }
         }
-        // This includes sources whose Session already left the dictionary but
-        // whose Accessibility restore or display-lease release is still pending.
-        for source in sources {
-            group.enter()
-            source.stopAndWait { group.leave() }
-        }
-        group.notify(queue: .main) {
-            completion(sources.allSatisfy(\.hasCompletedStop))
-        }
+        for source in sources { group.enter(); source.stopAndWait { group.leave() } }
+        group.notify(queue: .main) { completion(sources.allSatisfy(\.hasCompletedStop)) }
     }
 
     private func startSpatial(_ c: HTTPConnection) {
@@ -1200,7 +1212,7 @@ final class Agent {
         spatialAdmissionBlocked = true
         lock.unlock()
 
-        revokeAndStopSeparateStreams { restored in
+        revokeAndStopStreams(spatial: false) { restored in
             self.lock.lock()
             let stillCurrent = self.spatialTransition == transition && !self.quitting
             if !restored && stillCurrent { self.spatialAdmissionBlocked = false }
@@ -1228,7 +1240,7 @@ final class Agent {
         let transition = spatialTransition
         spatialAdmissionBlocked = true
         lock.unlock()
-        revokeAndStopSeparateStreams(spatialOnly: true) { restored in
+        revokeAndStopSpatialStreams { restored in
             self.lock.lock()
             let stillCurrent = self.spatialTransition == transition
             self.lock.unlock()
@@ -1237,7 +1249,7 @@ final class Agent {
             }
             guard restored else {
                 return c.respond(500, json: ["state": "error", "removed": false,
-                                             "error": "spatial windows could not be parked on the home display; retry stop after macOS accepts the move"])
+                                             "error": "Spatial Captures Could Not Stop"])
             }
             self.spatialMode.stop(afterStreams: { $0() }) { success, error, removed in
                 self.lock.lock()
@@ -1304,13 +1316,14 @@ final class Agent {
             c.respond(json: ["displays": displaysJSON()])
         case ("POST", "/ticket"):
             guard let src = Source(req.query["src"] ?? "") else { return c.respond(400, text: "bad src") }
-            lock.lock(); let spatialBusy = spatialAdmissionBlocked && src.key.hasPrefix("separate:"); lock.unlock()
+            lock.lock()
+            let spatialBusy = src.isSpatial ? spatialAdmissionBlocked || !spatialMode.isRunning :
+                (src.key.hasPrefix("separate:") && (spatialAdmissionBlocked || spatialMode.isRunning))
+            lock.unlock()
             guard !spatialBusy else { return c.respond(409, json: ["error": "spatial mode is changing state"]) }
             let t = randomKey()
-            let spatialTicket = src.key.hasPrefix("separate:") && spatialMode.isRunning
             lock.lock()
             tickets[t] = (src.key, Date().addingTimeInterval(60), nil)
-            if spatialTicket { spatialSeparateSources.insert(src.key) }
             finished.remove(src.key)
             lock.unlock()
             c.respond(json: ["ticket": t])
@@ -1414,16 +1427,16 @@ final class Agent {
         switch src {
         case .display(let id) where wantsDirect: capture = DirectSCKSource(displayID:id)
         case .test: capture = TestSource()
-        case .separate(let id): capture = SeparateSource(windowID: id, spatial: spatialMode)
+        case .separate(let id): capture = SeparateSource(windowID: id)
+        case .spatial(let id): capture = SharedWindowSource(windowID: id, coordinator: spatialMode)
+        case .menubar, .status, .menu: capture = SpatialSurfaceSource(src, coordinator: spatialMode)
         default: capture = SCKSource(src)
         }
-        let spatialSeparate = src.key.hasPrefix("separate:") && spatialMode.isRunning
         lock.lock()
         // One live viewer per key: a reconnection (or a second use of an
         // unacknowledged ticket) replaces the one before.
         let replaced = sessions.values.filter { $0.reconnectKey == key }
         let separate = capture as? SeparateSource
-        if spatialSeparate { spatialSeparateSources.insert(src.key) }
         let separateID = separate.map { ObjectIdentifier($0) }
         if let separate, let separateID {
             separate.onStopComplete = { [weak self] in
@@ -1457,6 +1470,14 @@ final class Agent {
         }
         session.onAck = { [weak self] in self?.acknowledged(key: key) }
         session.onFocused = { [weak self] src in self?.noteFocus(src) }
+        session.onSpatialFocus = { [weak self] id, u, v in
+            guard let self, self.spatialMode.isRunning, self.spatialMode.contains(windowID: id) else { return }
+            _ = self.spatialMode.focus.focus(windowID: id, u: u, v: v)
+        }
+        session.onSpatialInput = { [weak self] id in
+            guard let self, self.spatialMode.isRunning, self.spatialMode.contains(windowID: id) else { return }
+            self.spatialMode.focus.ensureFrontmost(windowID: id)
+        }
         session.onPointerPosition = { [weak self] src, point in self?.rememberPointer(point, sourceKey: src) }
         if isWindowSource(src), let selectedLiveSources, !selectedLiveSources.contains(src.key) {
             session.setLive(false)
