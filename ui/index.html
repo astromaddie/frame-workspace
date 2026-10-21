@@ -4373,13 +4373,13 @@ function renderMvWorkspace(s) {
     start.setAttribute("aria-label", "Start Spatial Mode");
     stop.disabled = mvWorkspaceBusy || mvPlacementBusy;
     stop.hidden = !needsStop;
-    status.textContent = ws.state === "error" ? (ws.error || "Spatial Mode Stopped Unexpectedly.")
-      : ws.state === "stopping" ? "Restoring Windows And The Laptop Display…"
+    status.textContent = ws.state === "error" ? (ws.error || "Spatial Mode stopped unexpectedly.")
+      : ws.state === "stopping" ? "Putting your windows back…"
       : ws.state === "starting" ? "Starting Spatial Mode…"
-      : running ? "Spatial Mode · " + (s.streams || []).filter(x => /^(window|separate):/.test(x.src)).length + " Window Panels · "
+      : running ? "Spatial Mode · " + (s.streams || []).filter(x => /^(window|separate|spatial):/.test(x.src)).length + " Window Panels · "
           + (ws.panelsReady ? "Running" : "Opening Windows…")
           + (Object.keys(ws.panelErrors || {}).length ? " · Some Windows Are Retrying" : "")
-      : "Every Window Opens In Its Own Panel. The Laptop Mirrors A Hidden Home Display. Stop Restores Your Windows And Display.";
+      : "Every window opens in its own panel and the laptop screen goes dark. Stop puts your windows back.";
     status.dataset.state = ws.state || "stopped";
     return;
   }
@@ -4453,7 +4453,8 @@ async function loadMacView(restart) {
   $("mvPerm").innerHTML = perm.join(" ") + `<div class="row"><button class="small action" data-mv="perm">Allow…</button>
     <span class="sub">Then press Refresh. macOS may ask you to reopen Frame Control.</span></div>`;
   renderMvWorkspace(s);
-  const liveAs = src => live.has(src) ? src : src.startsWith("window:") && live.has("separate:" + src.slice(7)) ? "separate:" + src.slice(7) : "";
+  const liveAs = src => live.has(src) ? src : !src.startsWith("window:") ? ""
+    : ["separate:", "spatial:"].map(kind => kind + src.slice(7)).find(as => live.has(as)) || "";
   $("mvDisplays").innerHTML = (s.displays || []).filter(d => d.name !== "Frame Workspace").map(d =>
     mvRow(d.src, `Whole screen: ${d.name}`, `${d.w}×${d.h}${d.main ? " · main display" : ""}`, d.w, d.h, liveAs(d.src), byStream(liveAs(d.src)))).join("");
   const wins = s.windows || [];
@@ -4495,7 +4496,9 @@ $("macview").onclick = async e => {
     }
     return;
   } else if (b.dataset.mv === "show") {
-    const as = $("mvSeparate").checked && src.startsWith("window:") ? "separate:" + src.slice(7) : src;
+    // In Spatial Mode the companion picks the window's source itself (spatial:<id>).
+    const spatialMode = mvState && mvState.workspace && mvState.workspace.mode === "spatial";
+    const as = !spatialMode && $("mvSeparate").checked && src.startsWith("window:") ? "separate:" + src.slice(7) : src;
     await act(`Show ${b.dataset.title} in the headset`, async () => {
       const r = await api("/api/macview", { action: "show", src: as, quality: $("mvQuality").value,
                                             w: +b.dataset.w || undefined, h: +b.dataset.h || undefined });
