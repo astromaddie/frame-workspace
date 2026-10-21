@@ -525,6 +525,89 @@ them on one hidden display on the Mac, the looked-at window raised there for inp
 - Not yet tested: one large hidden display hosting every window (the Workspace display already
   works as one), raising the looked-at window and its input, windows larger than the laptop screen.
 
+## Option B spike 2: the shared display (2026-10-21)
+
+Fixture-only Mac runs with `SharedDisplayProbe.swift` and `SharedDisplayFixture.swift` in
+`mac/frame-mac-view/Diagnostics/`; build/run commands are in the probe's header. No mirroring,
+system-setting changes or headset use. **Verified:** macOS 26.3.1; the built-in's live mode was
+1800×1169 points / 3600×2338 backing pixels at 120 Hz, rather than the capsule's 1512×982 snapshot.
+The separate-Spaces preference key was absent; **inferred:** the default was still in effect.
+Screen Recording, Accessibility and event-posting preflights passed; no permission was requested.
+
+- **Verified — display:** 3840×2400, 3840×2304, 3840×2250 and 3840×2160 points at 2× accepted
+  settings but never appeared online or exposed modes within each 4.2-second readiness check.
+  3600×2250 points / 7200×4500 pixels at 60 Hz worked repeatedly: creation/apply 0.47–0.76 s,
+  HiDPI ready 0.56–0.79 s in the successful runs. This is the largest tested working mode, not a
+  measured absolute limit. Its origin was (1672,1169), below the built-in with a 128-point shared
+  edge. A one-point edge snapped to a corner; 128 points held. Main-display mode and mirroring
+  stayed unchanged.
+- **Verified — overlapping windows:** AX moved 20 owned windows to the same (1752,1259,640,422)
+  point frame. Every stream used `desktopIndependentWindow`, child windows included, 2× BGRA,
+  requested 30 fps, no cursor or shadow. Full 1280×844 frames arrived even for entirely covered
+  windows: 104/104 distant identity-color samples matched across the 1/5/20 runs; the bottom
+  window's saved frame was also visually checked. Short-run complete-frame rates and process
+  measurements follow (CPU is percent of one core; memory is resident MiB, excluding GPU/surface
+  allocations; CPU sampled over about 4.25 s after stream startup):
+
+  | Windows | Complete frames/s per window | Probe CPU / MiB | Fixture CPU / MiB | WindowServer CPU / MiB |
+  | --- | --- | --- | --- | --- |
+  | 1 | 22.8 | 0.9% / 27.3 | 4.0% / 92.1 | 48.6% / 130.3 |
+  | 5 | 21.8–22.5 | 3.1% / 27.7 | 6.4% / 86.7 | 53.9% / 114.4 |
+  | 20 | 17.5–18.3 | 11.3% / 29.3 | 25.6% / 88.4 | 73.1% / 117.9 |
+
+  **Verified limitation:** this was a loaded Mac (swap about 7.6–8.2 GiB during the load run),
+  not an idle baseline or a sustained 30-fps result. These are capture rates, not encoded video,
+  headset decode/render or worn performance. Swap was checked before each heavy phase; highest
+  pre-step reading across the successful runs was 9864.94 MiB, below the 10240 MiB stop threshold.
+- **Verified — large windows:** AX allowed an outer frame of 2400×1500 points; capture was
+  4800×3000, 23.3 complete frames/s, four matching corner samples. A 3600×2200 request succeeded
+  at the AX API but macOS clamped the actual frame to 3600×2119; capture followed that actual
+  frame at 7200×4238, 20.6 frames/s, four matching samples. Exact 3600×2200 and the reason for
+  the height cap remain unverified; accepting the requested AX size is insufficient.
+- **Verified — raise/input:** with five windows fully overlapping, AXRaise returned success and
+  activating the fixture reached frontmost-app plus focused-window readiness in 5.23 ms (one
+  sample). The first logged click arrived 122.94 ms after raise, including an intentional 80 ms
+  cursor-settle wait. Two mouse-down/up pairs, four delivered drag events (five posted; one
+  coalesced), and `a`, `b` were logged only by window 0; the other 19 logged none. The real cursor
+  moved to (2002,1484) on the virtual display, outside the built-in; **inferred:** it is absent
+  from the user's real screen while there. The probe warped it back on teardown; physical-screen
+  observation and repeated focus-latency statistics were not tested.
+- **Verified — menus:** the hidden display showed the active fixture's menus and system status
+  items. Display filtering with local `sourceRect=(0,0,3600,36)` captured a 7200×72 strip. Clicking
+  `Probe` there opened fixture-owned SCWindow 16295, layer 101, frame (1879,1200,159,34); its own
+  stream delivered 318×68. One earlier start failed with CoreGraphics 1003; two later starts
+  worked, and a display crop also captured the dropdown. The fixture's `FW15` status menu was
+  SCWindow 16302, same owner/layer, (4652,1200,153,34), streamed at 306×68. Clicking the actual
+  Control Center item there opened SCWindow 16311, owner Control Center, layer 22,
+  (4058,1169,1958,1556), independently streamed at 3916×3112. Visual inspection confirmed its
+  controls with substantial surrounding transparent padding. Menu surfaces can reuse IDs;
+  discovery must check current visibility/frame as well as new IDs. No status setting was changed.
+- **Verified — teardown:** the final targeted run put all 20 fixture frames exactly back (20/20
+  AX size/position calls succeeded), quit its fixture and removed the display. Rediscovering AX
+  elements after ordering windows back in was necessary: references from before `orderOut` became
+  invalid. Display layout/mode/mirroring matched exactly. All 228 pre-existing surfaces remained;
+  227 frames matched exactly and only WindowServer's cursor surface (ID 4) differed. Earlier runs
+  did show unrelated-window drift: a Finder frame changed during setup, and the load run saw a
+  WhatsApp frame change from 500×500 to 64×64. **Unresolved:** the cause on this concurrently used
+  Mac; none of the probe's AX mutations targeted those apps. Thus the final comparison passed for
+  app windows, but these runs do not establish a general no-drift guarantee.
+
+The load/input run took 47.3 s; the final menu/restoration run 16.1 s. Both completed, and the final
+source rebuilds passed without warnings. Swap was 9904.94 MiB before that build and 11489.94 MiB
+afterward; further runtime probing stopped at the 10 GiB limit. Temporary binaries, module cache,
+snapshots, captures, logs, fixture preferences and crash reports were removed; cleanup recovered
+103.07 MiB (155 scratch files and three fixture-generated files outside scratch). The diagnostic's
+optional text drawing initially crashed in CoreText and was removed; color/animation and input
+checks were retained. Long sessions, absolute display-size limits and production integration
+remain untested.
+
+**Inferred — building option B:** one shared display can host covered window captures, routed
+input and separate menu/status surfaces. Use the verified 3600×2250 mode as a fallback, reserve a
+real shared edge, size panels from confirmed AX frames, reacquire AX objects after hiding windows,
+and retry transient menu streams with a display-crop fallback. Crop Control Center's padded canvas
+before assigning a pixel budget. The 3600×2200 height cap and earlier non-fixture frame drift still
+need controlled follow-up; preserve before/after inventories rather than promising exact restoration.
+
 ## First device run of Spatial Mode (2026-10-21, user's M4, not worn)
 
 Full run with the user's 66 windows (34 on screen), after recording every window's frame and the
