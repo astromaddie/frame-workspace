@@ -213,13 +213,13 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
                   ? std::min(2048, int(t.surface.placement.width * 1200))
               : t.kind == SpatialTile::Dock ? 128
                                             : 384,
-          h = t.kind == SpatialTile::Shelf  ? 138
+          h = t.kind == SpatialTile::Shelf  ? int(t.surface.height * 1200)
               : t.kind == SpatialTile::Dock ? 140
               : t.kind == SpatialTile::Menu ? 64
                                             : 280;
       std::string icon =
           t.kind == SpatialTile::Dock && !state.apps[t.index].icon.empty()
-              ? icons + "/" + state.apps[t.index].icon
+              ? (std::filesystem::path(icons) / state.apps[t.index].icon).string()
               : "";
       bool running = t.kind == SpatialTile::Dock && state.apps[t.index].running;
       auto signature = t.surface.key + t.label + icon + std::to_string(running);

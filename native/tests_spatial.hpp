@@ -46,11 +46,59 @@ inline void selfTestSpatial() {
   window.placement.width = 1.2f; window.placement.matrix = spatialIdentity();
   auto slim = menuStripPlacement(window, metadata, .001f, 0);
   auto wide = menuStripPlacement(window, metadata, .001f, 1);
-  check(std::abs(slim.placement.width - .42f) < 1e-6 && std::abs(slim.height - .0216f) < 1e-6 &&
-        std::abs(wide.placement.width - .6f) < 1e-6 && std::abs(wide.height - .036f) < 1e-6,
-        "menu strip slim and full point scale");
+  check(std::abs(slim.placement.width - .42f) < 1e-6 && std::abs(slim.height - slim.covered - .004f) < 1e-6 &&
+        std::abs(wide.placement.width - .612f) < 1e-6 && std::abs(wide.height - .054f) < 1e-6,
+        "menu strip has slim lip and full inset picture at point scale");
+  auto halfway = menuStripPlacement(window, metadata, .001f, .5f);
+  check(halfway.height > slim.height && halfway.height < wide.height &&
+        halfway.placement.width > slim.placement.width && halfway.placement.width < wide.placement.width,
+        "menu panel slides and widens together");
   check(std::abs(wide.placement.matrix.m[0][3] - wide.placement.width/2 + .6f) < 1e-6 &&
-        wide.placement.matrix.m[1][3] > .4f, "menu strip follows top left bezel");
+        wide.placement.matrix.m[2][3] < frameDepth && wide.placement.matrix.m[2][3] > 0,
+        "menu panel follows top left behind bezel depth");
+  for (const auto &strip : {slim, halfway, wide}) {
+    float u = .5f, v = .5f;
+    surfaceUV(strip, u, v);
+    check(std::abs(u - (strip.placement.width/2 - strip.inset)/strip.pictureWidth) < 1e-6 &&
+          std::abs(v - std::max(0.f,(strip.height/2-strip.inset)/strip.pictureHeight)) < 1e-6,
+          "visible menu UV maps to cropped source without squeezing titles");
+    auto placed = strip; placed.placement.matrix.m[2][3] = -1;
+    EyeRay ray{{placed.placement.matrix.m[0][3], placed.placement.matrix.m[1][3]-strip.height/2+.001f,0},{0,0,-1}};
+    check(!surfacePick(ray, placed), "covered menu edge cannot take hits");
+    ray.origin[1] = placed.placement.matrix.m[1][3] + strip.height/2 - .001f;
+    check(bool(surfacePick(ray, placed)), "visible menu lip takes hits");
+  }
+  for (bool vertical : {false, true}) {
+    auto bent = window; bent.placement.bendVertical = vertical;
+    bent.placement.bendA = .08f; bent.placement.bendB = .17f;
+    auto strip = menuStripPlacement(bent, metadata, .001f, 1);
+    auto tangent = multiply(bent.placement.matrix, bendPointXY(bendShape(bent.placement,bent.height),
+        -bent.placement.width/2+strip.placement.width/2,bent.height/2,.008f));
+    for (int r=0;r<3;++r) for (int c=0;c<3;++c)
+      check(std::abs(strip.placement.matrix.m[r][c]-tangent.m[r][c])<1e-6, "menu follows bent top tangent");
+  }
+  for (int changed = 0; changed < 6; ++changed) {
+    auto next = slim;
+    float *properties[] = {&next.fullHeight,&next.inset,&next.pictureWidth,&next.pictureHeight,&next.covered,&next.menuRise};
+    *properties[changed] += .001f;
+    check(!sameSurfaceGeometry(slim,next), "held slim surface updates when mapping changes without pose changes");
+  }
+  check(sameSurfaceGeometry(slim,slim), "unchanged surface can keep held texture");
+  HandRoute hiddenPill;
+  hiddenPill.consider("pill",-1,1,true); hiddenPill.consider("behind",2,2,false);
+  check(hiddenPill.hit.key=="behind" && hiddenPill.reveal.key=="pill", "hidden pill reveals without consuming background hit");
+  HandRoute occluded;
+  occluded.consider("pill",-1,1,false); occluded.consider("focused",2,2,true);
+  check(occluded.hit.key=="focused" && occluded.reveal.key=="focused", "foreground window occludes another pill reveal");
+  HandRoute nearest;
+  nearest.consider("far",-1,2,false); nearest.consider("near",1,1,false);
+  check(nearest.reveal.key=="near", "nearest ordinary surface occludes reveal");
+  HandRoute uiBlocked(true);
+  uiBlocked.consider("pill",1,1,true);
+  check(uiBlocked.hit.key.empty() && uiBlocked.reveal.key.empty(), "auxiliary and shelf hits block reveal");
+  HandRoute moving;
+  moving.consider("drag",-1,-1,false,true); moving.consider("front",1,1,true);
+  check(moving.hit.key=="drag" && moving.reveal.key=="drag", "active move retains hand ownership");
   MenuStripReveal reveal;
   reveal.update(true, false, 0, .12f);
   check(reveal.wide > .8f, "menu strip uses quick chrome reveal");
@@ -64,20 +112,42 @@ inline void selfTestSpatial() {
   shelfState.apps.push_back({"app", "App", "", true, false});
   auto shelfTiles = spatialLayout(shelfState, spatialIdentity());
   auto status = statusStripPlacement(shelfTiles, metadata, .001f);
-  check(status.height > 0 && status.placement.matrix.m[0][3] > .3f &&
-        std::abs(status.placement.matrix.m[1][3] + .48f) < 1e-6,
-        "status strip uses actual shelf right end");
+  const auto &shelf = shelfTiles.front().surface;
+  check(std::abs(shelf.height - (.115f + shelfStatusBand)) < 1e-6 &&
+        std::abs(shelf.placement.matrix.m[1][3] + shelf.height/2 - (-.48f+.115f/2)) < 1e-6,
+        "shelf extension preserves icon row and top edge");
+  check(status.height > 0 && status.placement.width < shelf.placement.width &&
+        std::abs(status.placement.matrix.m[0][3] + status.placement.width/2 -
+                 (shelf.placement.width/2-shelfInset)) < 1e-6 &&
+        status.placement.matrix.m[1][3] + status.height/2 < -.48f-.115f/2,
+        "wide status fits inside the lower band and aligns right");
+  auto smallMetadata = metadata; smallMetadata.rect.w = 60; smallMetadata.rect.h = 30;
+  auto natural = statusStripPlacement(shelfTiles, smallMetadata, .001f);
+  check(std::abs(natural.placement.width-.06f)<1e-6 && std::abs(natural.height-.03f)<1e-6,
+        "short status retains natural scale without widening shelf");
+  auto tallMetadata = smallMetadata; tallMetadata.rect.h = 90;
+  auto tallTiles = spatialLayout(shelfState, spatialIdentity(), "", &tallMetadata);
+  auto tall = statusStripPlacement(tallTiles, tallMetadata, .001f);
+  check(std::abs(tall.height-.09f)<1e-6 && std::abs(tall.placement.width-.06f)<1e-6 &&
+        std::abs(tallTiles.front().surface.height-(.115f+.09f+2*shelfInset))<1e-6 &&
+        std::abs(tallTiles.front().surface.placement.matrix.m[1][3]+tallTiles.front().surface.height/2-
+                 (-.48f+.115f/2))<1e-6,
+        "tall narrow status keeps natural scale and extends shelf downward");
   check(statusStripPlacement({}, metadata, .001f).height == 0, "no detached status without shelf");
   metadata.rect = {40, 62, 200, 120}; metadata.anchorRect = {10,20,600,36};
   auto dropdown = surfacePlacement(wide, metadata, .001f);
-  check(std::abs(dropdown.placement.matrix.m[0][3] - (wide.placement.matrix.m[0][3] - .3f + .03f + .1f)) < 1e-6 &&
-        std::abs(dropdown.placement.matrix.m[1][3] - (wide.placement.matrix.m[1][3] - .018f - .006f - .06f)) < 1e-6 &&
+  check(std::abs(dropdown.placement.matrix.m[0][3] - (wide.placement.matrix.m[0][3] - wide.placement.width/2 + wide.inset + .03f + .1f)) < 1e-6 &&
+        std::abs(dropdown.placement.matrix.m[1][3] - (wide.placement.matrix.m[1][3] + wide.height/2 - wide.inset - wide.pictureHeight - .006f - .06f)) < 1e-6 &&
         std::abs(dropdown.placement.matrix.m[2][3] - wide.placement.matrix.m[2][3] - .01f) < 1e-6,
         "surface offset uses global anchor bottom and one centimetre front");
   metadata.anchor = "status";
   auto above = surfacePlacement(status, metadata, .001f);
-  check(above.placement.matrix.m[1][3] - above.height/2 > status.placement.matrix.m[1][3] + status.height/2,
+  check(above.placement.matrix.m[1][3] - above.height/2 > shelf.placement.matrix.m[1][3] + shelf.height/2,
         "status anchored menu opens above shelf");
+  check(std::abs(above.placement.width - 200 * status.placement.width/600) < 1e-6 &&
+        std::abs(above.placement.matrix.m[0][3] - (status.placement.matrix.m[0][3] - status.placement.width/2 +
+                 (30+100)*status.placement.width/600)) < 1e-6,
+        "status menu follows fitted item scale and position");
   metadata.rect.y = 20;
   above = surfacePlacement(status, metadata, .001f);
   check(above.placement.matrix.m[1][3] - above.height/2 >= status.placement.matrix.m[1][3] + status.height/2 - 1e-6,

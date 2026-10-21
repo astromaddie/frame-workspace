@@ -163,7 +163,43 @@ struct PanelBook {
   void added(const std::string &path, const PanelSpec &s) { generations[path] = s.generation; }
   void removed(const std::string &path) { generations.erase(path); }
 };
-struct PanelSurface { std::string key; Placement placement; float height = 0; PanelRole role = PanelRole::Window; };
+struct PanelSurface {
+  std::string key; Placement placement; float height = 0; PanelRole role = PanelRole::Window;
+  // Menu panel's unoccluded crop, picture inset/scale and anchor clearance.
+  float fullHeight = 0, inset = 0, pictureWidth = 0, pictureHeight = 0;
+  float covered = 0, menuRise = 0;
+};
+inline void surfaceUV(const PanelSurface &s, float &u, float &v) {
+  if (s.pictureWidth > 0 && s.pictureHeight > 0) {
+    u = std::clamp((u * s.placement.width - s.inset) / s.pictureWidth, 0.f, 1.f);
+    v = std::clamp((v * s.height - s.inset) / s.pictureHeight, 0.f, 1.f);
+  }
+}
+inline bool sameSurfaceGeometry(const PanelSurface &a, const PanelSurface &b) {
+  return a.placement.width == b.placement.width && a.height == b.height &&
+      a.fullHeight == b.fullHeight && a.inset == b.inset && a.pictureWidth == b.pictureWidth &&
+      a.pictureHeight == b.pictureHeight && a.covered == b.covered && a.menuRise == b.menuRise &&
+      memcmp(&a.placement.matrix, &b.placement.matrix, sizeof(a.placement.matrix)) == 0;
+}
+// Reveal routing is separate from consuming a hit: a hidden pill may wake up
+// without blocking the window behind, but cannot wake through foreground UI.
+struct HandRoute {
+  struct Pick {
+    std::string key; float distance = 0; bool foreground = false;
+    void consider(const std::string &next, float d, bool front) {
+      if (d > 0 && (key.empty() || (front && !foreground) || (front == foreground && d < distance)))
+        { key = next; distance = d; foreground = front; }
+    }
+  } hit, reveal;
+  bool blocked = false, dragging = false;
+  explicit HandRoute(bool uiBlocked = false) : blocked(uiBlocked) {}
+  void consider(const std::string &key, float hitDistance, float revealDistance, bool foreground, bool drag = false) {
+    if (blocked || dragging) return;
+    if (drag) { hit.key = reveal.key = key; dragging = true; return; }
+    hit.consider(key, hitDistance, foreground);
+    reveal.consider(key, revealDistance, foreground);
+  }
+};
 inline bool focusSurface(const PanelSurface &s) { return s.role == PanelRole::Window; }
 struct PanelPick {
   std::string key;
@@ -194,7 +230,7 @@ inline PanelPick surfacePick(const EyeRay &ray, const PanelSurface &s, float mar
   float x = 0, y = 0, distance = 0;
   const auto shape = bendShape(s.placement, s.height);
   if (!bendHit(shape, o, d, 0, x, y, &distance) ||
-      std::fabs(x) > s.placement.width / 2 + margin || std::fabs(y) > s.height / 2 + margin) return hit;
+      std::fabs(x) > s.placement.width / 2 + margin || std::fabs(y) > s.height / 2 + margin || y < -s.height / 2 + s.covered) return hit;
   const auto point = bendPointXY(shape, x, y, 0);
   float facing = 0;
   for (int i = 0; i < 3; ++i) facing += point.m[i][2] * d[i];
@@ -202,6 +238,7 @@ inline PanelPick surfacePick(const EyeRay &ray, const PanelSurface &s, float mar
   hit.key = s.key; hit.distance = distance;
   hit.u = std::clamp(x / s.placement.width + .5f, 0.f, 1.f);
   hit.v = std::clamp(.5f - y / s.height, 0.f, 1.f);
+  surfaceUV(s, hit.u, hit.v);
   return hit;
 }
 inline PanelPick pickPanel(const EyeRay &ray, const std::vector<PanelSurface> &surfaces,

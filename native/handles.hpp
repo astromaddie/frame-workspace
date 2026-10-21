@@ -1,8 +1,8 @@
 #pragma once
 // VR-first window controls (FW-14) in Palladium silver-lavender. Each window
 // has a machined bezel floating 1.5 cm in front of it, and its controls on a
-// layer 3 cm in front: a move pill and a separate close disc below, always
-// there, and resize corners and curve grips that slide out (thin) when the
+// layer 3 cm in front: a move pill and a separate close disc revealed below
+// the window, and resize corners and curve grips that slide out (thin) when the
 // laser leaves the window towards them, widen under the laser, and glow from
 // inside while dragged. The pill carries the window rigidly with the
 // controller, corners resize it about its centre, and the side grips curve it
@@ -102,12 +102,20 @@ struct HandleLayout {
     }
   }
   // Which sides' handles the laser at (x, y) reveals, as a bit per handle
-  // index (the pill and close disc are always shown, so not included).
+  // index, including the pill/disc only in their shared zone below the bezel).
+  bool pillZone(float x, float y) const {
+    const float margin = .04f;
+    return y < -height / 2 - bezel() &&
+        y >= rowY() - discDiameter() / 2 - margin &&
+        x >= closeX() - discDiameter() / 2 - margin &&
+        x <= pillX() + pillWidth() / 2 + margin;
+  }
   unsigned revealed(float x, float y) const {
     const float hx = width / 2, hy = height / 2, r = reach();
-    if (std::fabs(x) > hx + r || std::fabs(y) > hy + r) return 0;
+    unsigned pills = pillZone(x, y) ? 3u : 0u;
+    if (std::fabs(x) > hx + r || std::fabs(y) > hy + r) return pills;
     const bool right = x > hx, left = x < -hx, top = y > hy, bottom = y < -hy;
-    unsigned m = 0;
+    unsigned m = pills;
     auto set = [&](Handle h, bool on) { if (on) m |= 1u << handleIndex(h); };
     set(Handle::CornerTL, left || top);
     set(Handle::CornerTR, right || top);
@@ -121,9 +129,9 @@ struct HandleLayout {
   }
   // The handle the laser at (x, y) would take: the nearest shown one within
   // `tolerance`, or None. Nothing inside the window.
-  Handle zone(float x, float y) const {
+  Handle zone(float x, float y, unsigned visible = (1u << handleCount) - 1) const {
     if (std::fabs(x) <= width / 2 && std::fabs(y) <= height / 2) return Handle::None;
-    const unsigned shown = revealed(x, y) | (1u << handleIndex(Handle::Pill)) | (1u << handleIndex(Handle::Close));
+    const unsigned shown = revealed(x, y) & visible;
     Handle best = Handle::None;
     float bestD = tolerance;
     for (int i = 0; i < handleCount; i++) {
@@ -133,6 +141,20 @@ struct HandleLayout {
       if (d <= bestD) { bestD = d; best = h; }
     }
     return best;
+  }
+};
+
+// The same linear slide/fade cadence for window controls and the menu strip.
+inline constexpr float handleRevealSeconds = .12f;
+struct HandleReveal {
+  float amount = 0;
+  double lastShown = -1000;
+  void update(bool near, bool hot, bool held, double now, float dt) {
+    if (near || hot || held) lastShown = now;
+    const bool out = near || hot || held || now - lastShown < 350;
+    const float step = std::clamp(dt, 0.f, .1f) / handleRevealSeconds;
+    amount += std::clamp((out ? 1.f : 0.f) - amount, -step, step);
+    if (hot || held) amount = 1;
   }
 };
 

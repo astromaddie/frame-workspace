@@ -291,7 +291,8 @@ Each window wears Palladium chrome in silver-lavender
   1% of the window's width (2–3.5 cm), with an inward chamfer, a chiseled line
   round its face and a soft shadow on the window's edge.
 - **Controls** (`<key>.handles`, 3 cm in front): a move pill and a separate
-  close disc with an engraved X, 3 cm below the bezel and always there; and
+  close disc with an engraved X, 3 cm below the bezel, revealed only by a laser
+  in their shared row plus a 4 cm margin; and
   four corner Ls and two side grips, 6 mm Palladium rods that slide out when
   the laser leaves the window towards them, widen to 15 mm with grip texture
   under the laser (at 45° across a corner's bend), and press in and glow from
@@ -656,7 +657,7 @@ text rasterization through its runtime API; GL draws the Palladium material and
 composites the labels, icons and live panel textures. There is no new native link
 dependency. `mode != "spatial"` hides every spatial UI layer.
 
-The D1 shelf sits 0.48 m below the head's horizontal sightline, 1.3 m forward,
+The D1 icon row sits 0.48 m below the head's horizontal sightline, 1.3 m forward,
 and reanchors after a yaw change greater than 0.8 radians. Its icons keep the
 companion's order and show running dots. Trigger release opens an app; a
 500 ms uninterrupted hold opens Show All Windows, Hide (Unhide for hidden apps),
@@ -725,21 +726,39 @@ foveation/gaze negotiation, which applies to window streams.
 Auxiliary overlays have no placement input, chrome/handle overlays, initial or
 saved pose. Pose controls cannot move them. They are excluded from focus and
 switcher selection, but consume gaze and controller rays before underlying
-windows or shelf tiles. Desktop Mode hides them. The streamed texture itself has
-a thin, rounded silver-lavender Palladium rim, using `SurfaceRenderer` on the
-same upload path as production video; there are no separate asset files.
+windows or shelf tiles. Desktop Mode hides them. Dropdown textures have a thin,
+rounded silver-lavender Palladium rim. The menubar panel and shelf status use
+the materials described below. `SurfaceRenderer` uses the same upload path as
+production video; there are no separate asset files.
 
-The menubar follows `HostFocus.active` along the top-left bezel, including its
-bend tangent. It is 0.35 of the focused window's width and 60% of the strip height
-at rest. `hot` or an uploaded visible menubar-anchored menu expands it to
-`menusWidth`; a 1-second grace period after both clear precedes collapse. The
-0.12-second reveal matches the existing handle slide. Texture aspect is set
-explicitly so changing geometry also resizes a held still picture. Status sits
-6 mm past the actual D1 shelf's right end at 1 mm per point. Menu offsets use
+The menubar follows `HostFocus.active` along the top-left bezel's bend tangent.
+Its own rounded, chamfered panel uses the bezel's Palladium palette and lighting,
+with a 6 mm picture inset. The panel is 8 mm in front of the window, behind the
+15 mm bezel, and in sort band 51 below the focused bezel's 52. At rest only a
+4 mm lip shows above the bezel at 0.35 of the window width. The picture keeps its
+point scale as the visible crop slides upward and widens to `menusWidth` plus
+the inset. Controller hits on the lip, companion `hot`, or an uploaded visible
+menubar-anchored menu expand it; a 1-second grace period precedes collapse.
+The linear 0.12-second slide matches the handles. Covered pixels do not take
+host gaze/laser hits; visible hits map to the inset source picture. Held still
+pictures redraw with the changing crop as well as streamed pictures.
+
+The shelf extends at least 52 mm below the icon row as one piece. Its width still follows
+the icons. Status is right-aligned inside that band, with 6 mm padding, at 1 mm
+per point; it shrinks uniformly when too wide. A taller picture extends the band downward
+to preserve its natural scale.
+It has no separate rim. Status-menu placement uses the fitted scale and the item's
+horizontal position, with clearance above the whole shelf. Other menu offsets use
 `rect.minX - anchorRect.minX` and `rect.minY - anchorRect.maxY`, at the anchor's
-point scale, 1 cm forward. Status menus open upward; negative offsets from padded
-status surfaces are clamped to the shelf edge. With `anchor: "none"`, the focused
-window is the fallback anchor; absent anchors keep the surface hidden.
+point scale, 1 cm forward. With `anchor: "none"`, the focused window is the fallback
+anchor; absent anchors keep the surface hidden.
+
+Move pills and close discs start hidden, including on focused windows. A controller
+laser below the bezel in their row plus margin reveals them in 0.12 seconds; they
+wait 350 ms after leaving before fading out on that same cadence. Hover, press and
+an ongoing pill move hold them fully shown. Hidden controls and transparent padding
+pass host laser ownership through to surfaces behind. The existing tip light and
+pressed inner glow remain. Both hands contribute reveal zones.
 
 A validated version-1 `surface` text message carries `seq`, `visible`, `rect`,
 `anchor`, `anchorRect`, optional `menusWidth`, and `hot`. Auxiliary streams start
@@ -857,8 +876,10 @@ host's submitted surfaces, not SteamVR compositor, optical, or worn evidence.
 
 The scene lists `panels` (`id`, `role: "window"`, `placement` in the existing
 version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `height`, `focused`, `focusGlow`,
-`focusSnap`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
+`focusSnap`, `pillLaser`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
 `status`, `dropdown` entries (`texture` and the existing `surface` message).
+An optional menubar `reveal` from 0 to 1 forces a transition frame for diagnostics.
+`pillLaser` aims the scene ray at that window's pill and reveals its below-edge controls.
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.
 Only one window may be focused. The fixture poses are explicitly arranged to
 show an even bend, unequal side bends, and unequal vertical bends; they are not

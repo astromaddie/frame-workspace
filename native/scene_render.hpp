@@ -160,12 +160,20 @@ public:
       frame.focused = selected;
       frame.focusGlow = float(num(p, "focusGlow", 0));
       frame.focusSnap = float(num(p, "focusSnap", 1));
-      controls.reveal[handleIndex(Handle::Pill)] = controls.reveal[handleIndex(Handle::Close)] = 1;
+      if (flag(p, "pillLaser")) {
+        controls.tip = true; controls.tipX = layout.pillX(); controls.tipY = layout.rowY();
+        const unsigned shown = layout.revealed(controls.tipX, controls.tipY);
+        for (int h = 0; h < handleCount; ++h) if (shown & (1u << h)) controls.reveal[h] = 1;
+        tip = multiply(s.placement.matrix, bendPointXY(bendShape(s.placement, s.height),
+                        controls.tipX, controls.tipY, controlsDepth + .002f));
+      }
       if (selected) {
         focused = s; focusedPixels = pic.width;
+        if (!flag(p, "pillLaser")) {
         frame.tip = true; frame.tipX = layout.width * .30f; frame.tipY = -layout.height * .23f;
         tip = multiply(s.placement.matrix, bendPointXY(bendShape(s.placement, s.height),
                         frame.tipX, frame.tipY, .002f));
+        }
       }
       for (int layer = 0; layer < 2; ++layer) {
         float w = layer ? layout.chromeWidth() : layout.frameWidth();
@@ -188,7 +196,12 @@ public:
     }
     // HMD pose is the scene's room origin. Moving the diagnostic eye does not
     // recenter existing panels or the head-anchored shelf.
-    auto tiles = spatialLayout(state, spatialAnchor(spatialIdentity(), 1.3f, 0));
+    SurfaceMessage statusMessage;
+    if (auto statusItem = field(scene, "status")) {
+      auto metadata = field(object(statusItem), "surface");
+      if (metadata) statusMessage = SurfaceMessage::parse(json_object_to_json_string(metadata));
+    }
+    auto tiles = spatialLayout(state, spatialAnchor(spatialIdentity(), 1.3f, 0), "", &statusMessage);
     SpatialRenderer shelf(session);
     shelf.draw(state, tiles, -1, 0, 0, false, root.string(),
                [](const std::string &) { return SpatialPicture{}; });
@@ -208,7 +221,7 @@ public:
       const float mpp = focusedPixels ? focused.placement.width * 2 / focusedPixels : .001f;
       if (std::string(name) == "menubar") {
         if (!focusedPixels) throw std::runtime_error("menubar needs a focused window");
-        menubar = s = menuStripPlacement(focused, m, mpp, m.hot ? 1.f : 0.f);
+        menubar = s = menuStripPlacement(focused, m, mpp, float(num(item, "reveal", m.hot ? 1.f : 0.f)));
       } else if (std::string(name) == "status") {
         status = s = statusStripPlacement(tiles, m, .001f);
       } else {
@@ -217,8 +230,8 @@ public:
       }
       if (s.height <= 0 || s.placement.width <= 0) throw std::runtime_error("missing auxiliary anchor");
       auto pic = load(str(item, "texture")); GLuint t = texture();
-      material.render(pic.texture, t, pic.width, pic.height);
-      add(s, t, std::string(name) == "dropdown" ? 104 : 102);
+      material.render(pic.texture, t, pic.width, pic.height, s);
+      add(s, t, std::string(name) == "dropdown" ? 104 : std::string(name) == "menubar" ? 51 : 102);
     }
     if (focusedPixels) {
       GLuint cursor = createCursorTexture(); textures.push_back(cursor);

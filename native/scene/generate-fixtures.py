@@ -82,7 +82,7 @@ def main():
     def auxiliary(texture,rect,anchor='none',anchor_rect=None,**extra):
         return dict(texture=texture,surface=dict(t='surface',v=1,seq=1,visible=True,rect=rect,anchor=anchor,anchorRect=anchor_rect or rect,**extra))
     scene=dict(panels=[
-        dict(id='notes',role='window',placement=placement(0,-1.65,0,1.30,dict(vertical=False,a=.10,b=.10)),texture='document.png',focused=True,focusSnap=.65),
+        dict(id='notes',role='window',placement=placement(0,-1.65,0,1.30,dict(vertical=False,a=.10,b=.10)),texture='document.png',focused=True,focusSnap=.65,pillLaser=True),
         dict(id='workbench',role='window',placement=placement(-1.10,-1.85,28,1.10,dict(vertical=True,a=.06,b=.14)),texture='code.png'),
         dict(id='metrics',role='window',placement=placement(1.10,-1.85,-28,1.10,dict(vertical=False,a=.04,b=.18)),texture='metrics.png',focusGlow=.20)],
         apps=[dict(id=name,name=name.title(),icon=name+'-icon.png') for name in ['notes','workbench','metrics','files']],

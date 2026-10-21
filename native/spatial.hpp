@@ -204,9 +204,11 @@ inline HmdMatrix34_t spatialAnchor(const HmdMatrix34_t &head, float distance,
            {0, 1, 0, head.m[1][3] - down},
            {-x, 0, z, head.m[2][3] - z * distance}}};
 }
+inline constexpr float shelfStatusBand = .052f, shelfInset = .006f;
 inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
                                               const HmdMatrix34_t &anchor,
-                                              const std::string &menuID = "") {
+                                              const std::string &menuID = "",
+                                              const SurfaceMessage *status = nullptr) {
   const int menu = spatialAppIndex(s, menuID);
   std::vector<SpatialTile> tiles;
   if (!s.spatial)
@@ -216,11 +218,13 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
   if (!s.apps.empty()) {
     Placement p;
     p.width = step * s.apps.size() + .022f;
+    const float scale = status && status->rect.w > 0 ? std::min(.001f, (p.width - 2*shelfInset) / status->rect.w) : .001f;
+    const float band = status ? std::max(shelfStatusBand, status->rect.h * scale + 2*shelfInset) : shelfStatusBand;
     auto t = spatialIdentity();
-    t.m[1][3] = -.48f;
+    t.m[1][3] = -.48f - band / 2;
     t.m[2][3] = -.002f;
     p.matrix = multiply(anchor, t);
-    tiles.push_back({SpatialTile::Shelf, 0, {"shelf", p, .115f}, ""});
+    tiles.push_back({SpatialTile::Shelf, 0, {"shelf", p, .115f + band}, ""});
   }
   for (size_t i = 0; i < s.apps.size(); ++i) {
     Placement p;
@@ -285,15 +289,21 @@ inline PanelSurface menuStripPlacement(const PanelSurface &window, const Surface
                                         float metresPerPoint, float wide) {
   PanelSurface s{"menubar", {}, 0, PanelRole::Menubar};
   wide = std::clamp(wide, 0.f, 1.f);
-  s.placement.width = window.placement.width * .35f * (1 - wide) +
-                      (m.menusWidth > 0 ? m.menusWidth : m.rect.w) * metresPerPoint * wide;
-  s.height = m.rect.h * metresPerPoint * (.6f + .4f * wide);
-  // Keep the left edge on the window; expanded menus retain their point scale.
+  HandleLayout frame; frame.width = window.placement.width; frame.height = window.height;
+  s.inset = .006f; s.covered = .006f;
+  s.pictureWidth = m.rect.w * metresPerPoint;
+  s.pictureHeight = m.rect.h * metresPerPoint;
+  s.fullHeight = s.pictureHeight + 2 * s.inset + s.covered;
+  const float fullWidth = (m.menusWidth > 0 ? m.menusWidth : m.rect.w) * metresPerPoint + 2 * s.inset;
+  s.placement.width = window.placement.width * .35f * (1 - wide) + fullWidth * wide;
+  // Only the top 4 mm lip shows at rest; the picture keeps its point scale
+  // as the panel slides, rather than squeezing its titles into the lip.
+  s.height = .004f + s.covered + (s.fullHeight - .004f - s.covered) * wide;
   const float x = -window.placement.width / 2 + s.placement.width / 2;
   s.placement.matrix = multiply(window.placement.matrix,
-      bendPointXY(bendShape(window.placement, window.height), x, window.height / 2, .016f));
-  // Follow the bezel's bend tangent, including vertical and asymmetric panels.
-  auto lift = spatialIdentity(); lift.m[1][3] = s.height / 2 + .003f;
+      bendPointXY(bendShape(window.placement, window.height), x, window.height / 2, .008f));
+  auto lift = spatialIdentity();
+  lift.m[1][3] = frame.bezel() + s.height / 2 - s.covered;
   s.placement.matrix = multiply(s.placement.matrix, lift);
   return s;
 }
@@ -301,11 +311,16 @@ inline PanelSurface statusStripPlacement(const std::vector<SpatialTile> &tiles,
                                           const SurfaceMessage &m, float metresPerPoint) {
   PanelSurface s{"status", {}, 0, PanelRole::Status};
   for (const auto &tile : tiles) if (tile.kind == SpatialTile::Shelf) {
-    s.placement.width = m.rect.w * metresPerPoint;
-    s.height = m.rect.h * metresPerPoint;
+    const float scale = std::min(metresPerPoint,
+        (tile.surface.placement.width - 2 * shelfInset) / std::max(1.f, m.rect.w));
+    const float band = tile.surface.height - .115f;
+    s.placement.width = m.rect.w * scale;
+    s.height = m.rect.h * scale;
     auto t = spatialIdentity();
-    t.m[0][3] = tile.surface.placement.width / 2 + .006f + s.placement.width / 2;
-    t.m[2][3] = .016f;
+    t.m[0][3] = (tile.surface.placement.width - s.placement.width) / 2 - shelfInset;
+    t.m[1][3] = -tile.surface.height / 2 + band / 2;
+    t.m[2][3] = .003f;
+    s.menuRise = tile.surface.height / 2 - t.m[1][3] - s.height / 2 + .006f;
     s.placement.matrix = multiply(tile.surface.placement.matrix, t);
     return s;
   }
@@ -313,14 +328,17 @@ inline PanelSurface statusStripPlacement(const std::vector<SpatialTile> &tiles,
 }
 inline PanelSurface surfacePlacement(const PanelSurface &anchor, const SurfaceMessage &m,
                                       float metresPerPoint) {
+  if (m.anchor == "status" && m.anchorRect.w > 0)
+    metresPerPoint = anchor.placement.width / m.anchorRect.w;
   PanelSurface s{"menu", {}, m.rect.h * metresPerPoint, PanelRole::Menu};
   s.placement.width = m.rect.w * metresPerPoint;
   auto t = spatialIdentity();
-  t.m[0][3] = -anchor.placement.width / 2 +
+  t.m[0][3] = -anchor.placement.width / 2 + anchor.inset +
       (m.rect.x - m.anchorRect.x) * metresPerPoint + s.placement.width / 2;
   const float dy = (m.rect.y - (m.anchorRect.y + m.anchorRect.h)) * metresPerPoint;
-  t.m[1][3] = m.anchor == "status" ? anchor.height / 2 + std::max(0.f, dy) + s.height / 2 :
-                                                    -anchor.height / 2 - dy - s.height / 2;
+  t.m[1][3] = m.anchor == "status" ? anchor.height / 2 + anchor.menuRise + std::max(0.f, dy) + s.height / 2 :
+      (anchor.pictureHeight > 0 ? anchor.height / 2 - anchor.inset - anchor.pictureHeight :
+                                  -anchor.height / 2) - dy - s.height / 2;
   t.m[2][3] = .01f;
   s.placement.matrix = multiply(anchor.placement.matrix, t);
   return s;
@@ -331,7 +349,7 @@ struct MenuStripReveal {
   void update(bool hot, bool menuVisible, double now, float dt) {
     if (hot || menuVisible) lastOpen = now;
     const float target = hot || menuVisible || now - lastOpen < 1000 ? 1.f : 0.f;
-    const float step = std::clamp(dt, 0.f, .1f) / .12f;
+    const float step = std::clamp(dt, 0.f, .1f) / handleRevealSeconds;
     wide += std::clamp(target - wide, -step, step);
   }
 };

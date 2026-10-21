@@ -30,7 +30,8 @@
       },
       "texture": "document.png",
       "focused": true,
-      "focusSnap": 0.65
+      "focusSnap": 0.65,
+      "pillLaser": true
     },
     {
       "id": "workbench",
