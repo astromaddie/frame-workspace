@@ -26,6 +26,19 @@ for label, reveal in (("slim", 0), ("halfway", .5), ("hot", 1)):
     frame["menubar"]["reveal"] = reveal
     (out / f"menubar-{label}.json").write_text(json.dumps(frame, indent=2) + "\n")
 
+# A stronger curve and an off-centre dropdown make the concentric strip and
+# the menu's local tangent visible from an elevated diagnostic camera.
+curved = copy.deepcopy(scene)
+curved["panels"] = [curved["panels"][0]]
+curved["panels"][0]["pillLaser"] = False
+curved["panels"][0]["placement"]["bend"] = {"vertical": False, "a": .15, "b": .15}
+curved["panels"][0]["focusSnap"] = 1
+curved["apps"] = []
+curved.pop("status")
+curved["menubar"]["reveal"] = 1
+curved["dropdown"]["surface"]["visible"] = True
+(out / "menubar-curved.json").write_text(json.dumps(curved, indent=2) + "\n")
+
 # Optional: combine already-rendered 900 x 380 transition frames with Cairo.
 # generate-chrome-scenes.py SCRATCH FINAL.png
 if len(sys.argv) > 2:

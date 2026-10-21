@@ -68,14 +68,92 @@ inline void selfTestSpatial() {
     ray.origin[1] = placed.placement.matrix.m[1][3] + strip.height/2 - .001f;
     check(bool(surfacePick(ray, placed)), "visible menu lip takes hits");
   }
-  for (bool vertical : {false, true}) {
+  // Check the actual overlay arcs, not just their tangent centres. An offset
+  // strip can be entirely on one half or cross the window's original seam.
+  for (bool vertical : {false, true}) for (bool split : {false,true}) {
     auto bent = window; bent.placement.bendVertical = vertical;
-    bent.placement.bendA = .08f; bent.placement.bendB = .17f;
-    auto strip = menuStripPlacement(bent, metadata, .001f, 1);
-    auto tangent = multiply(bent.placement.matrix, bendPointXY(bendShape(bent.placement,bent.height),
-        -bent.placement.width/2+strip.placement.width/2,bent.height/2,.008f));
-    for (int r=0;r<3;++r) for (int c=0;c<3;++c)
-      check(std::abs(strip.placement.matrix.m[r][c]-tangent.m[r][c])<1e-6, "menu follows bent top tangent");
+    bent.placement.bendA = .15f; bent.placement.bendB = split ? .23f : .15f;
+    bent.placement.matrix.m[2][3] = -2;
+    auto message = metadata; message.menusWidth = 1000; message.rect.w = 1000;
+    for (float phase : {0.f,.25f,.5f,.75f,1.f}) {
+      auto strip = menuStripPlacement(bent, message, .001f, phase);
+      auto shape = bendShape(bent.placement,bent.height);
+      const auto &region = strip.region;
+      const auto expected = multiply(bent.placement.matrix,bendPointXY(shape,region.x,region.y,region.depth));
+      for (int r=0;r<3;++r) for (int c=0;c<4;++c)
+        check(std::abs(strip.placement.matrix.m[r][c]-expected.m[r][c])<1e-6, "menu centre follows extended top curve");
+      const int count = region.segments(strip.placement.width,strip.height);
+      check(count == (!vertical && split && phase >= .5f ? 2 : 1), "menu splits only at original window seam");
+      for (int i=0;i<count;++i) {
+        auto seg = region.segment(i,strip.placement.width,strip.height);
+        const float mid = region.shape.vertical ? region.y : region.x;
+        const int half = count == 2 ? i : mid < 0 ? 0 : 1;
+        const float radius = shape.radius(half)-region.depth;
+        check(std::abs(seg.width/(2*float(M_PI)*seg.curvature)-radius)<1e-5,
+            "slim wide and animated strip keep concentric layer radius");
+        auto world = multiply(strip.placement.matrix,seg.local);
+        const float across = vertical ? strip.placement.width : strip.height;
+        for (float u : {.01f,.99f}) {
+          const float angle = (u-.5f)*seg.width/radius;
+          auto sample = spatialIdentity();
+          sample.m[0][3] = radius*std::sin(angle);
+          sample.m[2][3] = radius*(1-std::cos(angle));
+          // Compare the rendered segment to the corresponding window point.
+          const float source = seg.bounds.uMin+u*(seg.bounds.uMax-seg.bounds.uMin);
+          const auto point = surfacePoint(strip,vertical ? 0 : (source-.5f)*strip.placement.width,
+              vertical ? (source-.5f)*strip.height : 0);
+          auto rendered = multiply(world,sample);
+          for (int r=0;r<3;++r) check(std::abs(rendered.m[r][3]-point.m[r][3])<2e-5,
+              "overlay segment samples follow window layer through animation");
+        }
+        check(across > 0, "strip segment has cross-axis size");
+      }
+      for (float u : {.02f,.98f}) {
+        const float v = .15f;
+        const auto point = surfacePoint(strip,(u-.5f)*strip.placement.width,(.5f-v)*strip.height);
+        EyeRay ray;
+        for (int r=0;r<3;++r) { ray.origin[r]=point.m[r][3]+point.m[r][2]; ray.direction[r]=-point.m[r][2]; }
+        const auto hit = surfacePick(ray,strip);
+        float mappedU=u,mappedV=v; surfaceUV(strip,mappedU,mappedV);
+        check(hit && std::abs(hit.u-mappedU)<2e-4 && std::abs(hit.v-mappedV)<2e-4,
+            "curved menu end hits map to original Mac picture coordinates");
+      }
+      auto drop = message; drop.rect = {40,62,200,120}; drop.anchorRect = message.rect;
+      auto menu = surfacePlacement(strip,drop,.001f);
+      const float anchorX = -strip.placement.width/2+strip.inset+.03f+.1f;
+      const float anchorY = strip.height/2-strip.inset-strip.pictureHeight;
+      const auto tangent = surfacePoint(strip,anchorX,anchorY);
+      auto top = menu.placement.matrix;
+      const float down = .006f+menu.height/2;
+      for (int r=0;r<3;++r) {
+        for (int c=0;c<3;++c) check(std::abs(top.m[r][c]-tangent.m[r][c])<1e-6,
+            "flat dropdown tangent belongs to its strip anchor");
+        check(std::abs(top.m[r][3]+down*top.m[r][1]-tangent.m[r][3]-.01f*tangent.m[r][2])<2e-6,
+            "dropdown anchor is one centimetre forward along local normal");
+      }
+      check(menu.placement.bendA==0 && menu.placement.bendB==0 && !menu.region.attached,
+          "dropdown remains flat");
+    }
+  }
+  for (float left : {0.f,.15f}) {
+    auto bent = window; bent.placement.bendA=left; bent.placement.bendB=left==0 ? .15f : 0;
+    auto message=metadata; message.rect.w=message.menusWidth=1700;
+    auto strip=menuStripPlacement(bent,message,.001f,1);
+    check(strip.region.segments(strip.placement.width,strip.height)==2,"wide menu retains flat and curved halves");
+    for (int half=0;half<2;++half) {
+      auto segment=strip.region.segment(half,strip.placement.width,strip.height);
+      check((segment.curvature==0)==(strip.region.shape.amount[half]==0),"flat half explicitly clears overlay curvature");
+    }
+    const auto end=surfacePoint(strip,strip.placement.width/2-.01f,0);
+    EyeRay ray;
+    for (int r=0;r<3;++r) {ray.origin[r]=end.m[r][3]+end.m[r][2];ray.direction[r]=-end.m[r][2];}
+    check(bool(surfacePick(ray,strip)),"menu hits beyond window handle margin remain reachable");
+    auto flat=menuStripPlacement(window,message,.001f,1);
+    check(flat.region.segments(flat.placement.width,flat.height)==1 &&
+        flat.region.segment(0,flat.placement.width,flat.height).curvature==0 && !sameSurfaceGeometry(flat,strip),
+        "focus change to flat window clears split geometry and curvature");
+    auto changed=strip; changed.region.shape.amount[0]+=.01f;
+    check(!sameSurfaceGeometry(changed,strip),"held texture tracks bend changes even with unchanged tangent pose");
   }
   for (int changed = 0; changed < 6; ++changed) {
     auto next = slim;

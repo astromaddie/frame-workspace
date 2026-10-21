@@ -89,6 +89,28 @@ def main():
         png(root/'corners.png',128); render(); _,_,pixel=read_png(out)
         red=pixel(148,108)
         assert 128<=red[0]<170 and red[1]<40 and red[2]<40,('premultiplied alpha',red)
+        # Exercise the auxiliary shader and region overlays with an upright,
+        # asymmetric four-colour menu, including vertical texture transposition.
+        png(root/'corners.png',solid=(30,30,30)); png(root/'menu.png')
+        panel['focused']=True
+        scene['menubar']=dict(texture='menu.png',reveal=1,surface=dict(
+            t='surface',v=1,seq=1,visible=True,rect=[0,0,6,1],
+            anchor='none',anchorRect=[0,0,6,1],hot=True,menusWidth=6))
+        for vertical,a,b in [(False,.15,.15),(False,.04,.23),(True,.04,.23),(False,0,0)]:
+            panel['placement']['bend']=dict(vertical=vertical,a=a,b=b)
+            render('--eye','0,.45,0','--fov','50','--size','640x320')
+            w,h,pixel=read_png(out); groups=[[] for _ in range(4)]
+            for y in range(h):
+                for x in range(w):
+                    color=pixel(x,y)
+                    for i,wanted in enumerate([(255,0,0),(0,255,0),(0,0,255),(255,255,0)]):
+                        if all(abs(c-d)<30 for c,d in zip(color,wanted)): groups[i].append((x,y))
+            assert all(len(g)>8 for g in groups),('menu corners visible',vertical,a,b,[len(g) for g in groups])
+            centres=[tuple(sum(p[k] for p in g)/len(g) for k in (0,1)) for g in groups]
+            red,green,blue,yellow=centres
+            assert red[0]<green[0] and blue[0]<yellow[0] and red[1]<blue[1] and green[1]<yellow[1],(
+                'menu orientation after bend and flat transitions',vertical,a,b,centres)
+        scene.pop('menubar'); panel['focused']=False
         render('--size','0x240',ok=False)
         render('--eye','nan,0,0',ok=False)
         render('--fov','180',ok=False)
@@ -99,7 +121,7 @@ def main():
         panel['slot']=8; assert render()!=first, 'scene uses extended wall slot geometry'
         for invalid in (-1, 1.5, True, 1024, None):
             panel['slot']=invalid; render(ok=False)
-    print('Scene render passed: flat/even/split/vertical corner orientation, camera, foreground ordering, premultiplied alpha, invalid input')
+    print('Scene render passed: flat/even/split/vertical corner orientation, camera, foreground ordering, premultiplied alpha, curved/vertical menu orientation, invalid input')
 
 
 if __name__=='__main__':

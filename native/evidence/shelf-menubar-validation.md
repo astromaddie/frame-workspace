@@ -178,3 +178,94 @@ test copies and logs. An earlier cleanup removed 199278 logical bytes of obsolet
 process samples after preserving the diagnostic stacks and reproduction above.
 Source, the six current evidence PNGs and their reproducible inputs/generators
 remain. No active work or user-owned data was removed.
+
+## Curved Menu Follow-up — 2026-10-21
+
+Source base `12b11ba`, same branch. The menu strip now occupies an offset
+region of the focused window's layer, 8 mm forward of the content and behind
+the bezel. Each submitted arc preserves the window's circle centre and original
+bend seam: at layer radius `r = R - depth`, its arc width is scaled by `r/R`
+and its OpenVR curvature is `arcWidth / (2*pi*r)`. Slim, intermediate and wide
+states therefore stay concentric. Unequal bends split only where the strip
+crosses the window's seam; vertical bends extend the top curve and transpose
+the submitted texture. Flat transitions reset curvature, bounds and half
+visibility. Held pictures follow geometry updates without a new stream frame.
+
+Dropdowns remain flat, tangent at their own anchor along the strip, with 1 cm
+clearance along that anchor's normal. Laser/gaze picking uses the same parent
+region before mapping the picture inset and UV, including strip ends beyond
+the window's ordinary handle margin.
+
+The adapter build, its automatic self-test and explicit `--self-test` passed
+without warnings. Build free-memory checks were 49–53%. Final binary SHA-256:
+`ac8a5ae1db0f371250363a1a8ca0aa0d8de1b8ab0505977d9ccece967a1dd036`.
+Geometry tests sample actual submitted arcs across five widening phases,
+even/unequal/vertical bends, dropdown normals and forward clearance, end-hit
+picture UV, flat halves and focus-to-flat transitions. Four additional actual
+GL menu-orientation cases passed independently; the full scene suite includes
+those same assertions. Python AST checks and `git diff --check` passed.
+
+The full `native/tests_scene.py` suite passed on that binary in about 12 minutes;
+offscreen CGL startup took roughly 45 seconds per process. It includes existing
+texture orientation, camera, ordering, transparency and invalid-input checks,
+plus the four new even/unequal/vertical/flat menu-orientation cases.
+
+Unmodified `native/tests_host.py` hit its 8-second first-panel readiness deadline;
+its subsequent 5-second termination wait also timed out, with no host remaining
+afterward. A scratch-only copy passed both the main host and four-role surface
+scenarios in about 90 seconds. Its exact changes were the two readiness deadlines
+from 8 to 90 seconds and both `--seconds` host lifetimes from 60 to 240. All
+assertions, fixtures, stream sequences and repository tests stayed unchanged.
+The passing run covers multi-stream/still/lifecycle/failure behavior and auxiliary
+visibility/sequence/focus/control/desktop isolation. This is supplementary local
+integration evidence; the original short-deadline run did not pass.
+
+Recreate the adapters above in task scratch. The build command is unchanged
+apart from its task-local output directory:
+
+```sh
+scratch=/private/tmp/claude-501/-Users-mads-code-frame-workspace/d6cfb87f-3bf9-45b7-bf70-3ae621c211ed/scratchpad/curve
+memory_pressure | tail -1 # Wait/retry below 15%.
+PKG_CONFIG_PATH="$scratch" CXX="$scratch/cxx" scripts/build-workspace-native.sh "$scratch/build"
+bin="$scratch/build/frame-workspace-native"
+export DYLD_INSERT_LIBRARIES="$scratch/cgl-bootstrap.dylib"
+export FRAME_NATIVE_TEST_TMP="$scratch" TMPDIR="$scratch" PYTHONDONTWRITEBYTECODE=1
+"$bin" --self-test
+python3 native/tests_host.py "$bin"
+python3 native/tests_scene.py "$bin"
+python3 native/scene/generate-chrome-scenes.py "$scratch/chrome"
+"$bin" --render-scene native/scene/example.json native/evidence/spatial-scene.png
+"$bin" --render-scene native/scene/example-slim.json native/evidence/spatial-scene-slim.png
+for phase in slim halfway hot; do
+  "$bin" --render-scene "$scratch/chrome/menubar-$phase.json" "$scratch/chrome/menubar-$phase.png" --eye -.12,.44,0 --fov 50 --size 900x380
+done
+python3 native/scene/generate-chrome-scenes.py "$scratch/chrome" native/evidence/menubar-emerging.png
+"$bin" --render-scene "$scratch/chrome/menubar-curved.json" native/evidence/menubar-curved.png --eye 0,.65,0 --look 0,-10 --fov 48 --size 1400x700
+```
+
+The close-up uses curvature 0.15, a fully widened strip and an off-centre open
+dropdown, viewed from above. Local GL rendering and geometry tests do not
+establish SteamVR compositor behavior or tracked/worn interaction. No headset,
+virtual display or system settings were changed.
+
+All 37 C/C++ inputs in the build metadata matched the reviewed source. The
+four final PNGs were opened after rendering through the production compositor
+and shaders on Apple M4. The wide strip and slim lip follow the curved bezel;
+the transition retains its covered lower edge; the strong-curve close-up shows
+the flat dropdown turned at its own anchor. Existing scene layout and texture
+orientation remain intact.
+
+| Current render | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `spatial-scene.png` | 249355 | `7edd7a0c7c56c78ad6a01e484954f4a7ac31ff72bfc5a8eaf5b79f5219b9403c` |
+| `spatial-scene-slim.png` | 240128 | `ed202a39d55fc043cdbf63bd6b395144f19f9115a1be3cffdd8647ddbab86d6c` |
+| `menubar-emerging.png` | 78129 | `f94bd8e5e7d694af6993617fc901f427521f7c4accd74de28b28082ff84ae078` |
+| `menubar-curved.png` | 209279 | `0d66ebbf479533614a578c02f48b4a2b21882d771ea128e69fbd0384733cfdc7` |
+
+After preserving these results and reproduction details, cleanup removed the
+task's `scratchpad/curve` directory: 28 generated files, 7331013 logical bytes
+and 7520256 allocated file bytes (7.17 MiB). This included binaries/debug symbols,
+build metadata, GL adapters, temporary scenes/renders, timeout-only test copies
+and logs. No native test/render process remained; `native/build` was absent.
+Only source, the updated report and the four current committed renders remain
+from this follow-up. No user-owned data or active work was removed.

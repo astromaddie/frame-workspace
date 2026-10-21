@@ -284,7 +284,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     }
   return tiles;
 }
-// Auxiliary surfaces use rigid, host-owned poses; streamed UV stays top-left.
+// Auxiliary poses and their window-layer regions are host-owned; UV stays top-left.
 inline PanelSurface menuStripPlacement(const PanelSurface &window, const SurfaceMessage &m,
                                         float metresPerPoint, float wide) {
   PanelSurface s{"menubar", {}, 0, PanelRole::Menubar};
@@ -299,12 +299,11 @@ inline PanelSurface menuStripPlacement(const PanelSurface &window, const Surface
   // Only the top 4 mm lip shows at rest; the picture keeps its point scale
   // as the panel slides, rather than squeezing its titles into the lip.
   s.height = .004f + s.covered + (s.fullHeight - .004f - s.covered) * wide;
-  const float x = -window.placement.width / 2 + s.placement.width / 2;
-  s.placement.matrix = multiply(window.placement.matrix,
-      bendPointXY(bendShape(window.placement, window.height), x, window.height / 2, .008f));
-  auto lift = spatialIdentity();
-  lift.m[1][3] = frame.bezel() + s.height / 2 - s.covered;
-  s.placement.matrix = multiply(s.placement.matrix, lift);
+  s.region = {bendShape(window.placement, window.height),
+      -window.placement.width/2 + s.placement.width/2,
+      window.height/2 + frame.bezel() + s.height/2 - s.covered, .008f, true};
+  s.placement.matrix = multiply(window.placement.matrix, s.region.centre());
+  s.placement.bendVertical = s.region.shape.vertical;
   return s;
 }
 inline PanelSurface statusStripPlacement(const std::vector<SpatialTile> &tiles,
@@ -340,7 +339,13 @@ inline PanelSurface surfacePlacement(const PanelSurface &anchor, const SurfaceMe
       (anchor.pictureHeight > 0 ? anchor.height / 2 - anchor.inset - anchor.pictureHeight :
                                   -anchor.height / 2) - dy - s.height / 2;
   t.m[2][3] = .01f;
-  s.placement.matrix = multiply(anchor.placement.matrix, t);
+  if (anchor.region.attached) {
+    // The flat menu hangs from its own point on the strip, with the strip's
+    // tangent there even when the window bends vertically.
+    const float edge = anchor.height/2 - anchor.inset - anchor.pictureHeight;
+    auto down = spatialIdentity(); down.m[1][3] = -dy-s.height/2;
+    s.placement.matrix = multiply(surfacePoint(anchor,t.m[0][3],edge,.01f),down);
+  } else s.placement.matrix = surfacePoint(anchor,t.m[0][3],t.m[1][3],t.m[2][3]);
   return s;
 }
 struct MenuStripReveal {

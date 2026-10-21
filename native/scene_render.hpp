@@ -84,10 +84,12 @@ class SceneRenderer {
   // Reconstruct each actual SteamVR overlay, including its split seam and UV
   // bounds. Vertical source sampling is the inverse of the host's transpose.
   static void draw(const Layer &l) {
-    const auto &b = l.bend;
+    const auto &b = l.surface.region.attached ? l.surface.region.shape : l.bend;
     glBindTexture(GL_TEXTURE_2D, l.texture);
-    for (int half = 0; half < b.segments(); ++half) {
-      const auto seg = bendSegment(b, half, b.vertical ? l.height : l.width, l.depth);
+    const int count = l.surface.region.attached ? l.surface.region.segments(l.width,l.height) : b.segments();
+    for (int half = 0; half < count; ++half) {
+      const auto seg = l.surface.region.attached ? l.surface.region.segment(half,l.width,l.height) :
+          bendSegment(b, half, b.vertical ? l.height : l.width, l.depth);
       const float across = b.vertical ? l.width : l.height;
       const float radius = seg.curvature > 1e-4f ? seg.width / (2 * float(M_PI) * seg.curvature) : 0;
       glPushMatrix(); matrix(multiply(l.surface.placement.matrix, seg.local));
@@ -100,7 +102,8 @@ class SceneRenderer {
         float tu = seg.bounds.uMin + u * (seg.bounds.uMax - seg.bounds.uMin);
         for (int top : {1, 0}) {
           float tv = top ? 1 - seg.bounds.vMin : 1 - seg.bounds.vMax;
-          glTexCoord2f(b.vertical ? tv : tu, b.vertical ? 1 - tu : tv);
+          const bool sourceTurned = b.vertical && !l.surface.region.attached;
+          glTexCoord2f(sourceTurned ? tv : tu, sourceTurned ? 1 - tu : tv);
           glVertex3f(px, (top ? .5f : -.5f) * across, pz);
         }
       }
@@ -230,7 +233,9 @@ public:
       }
       if (s.height <= 0 || s.placement.width <= 0) throw std::runtime_error("missing auxiliary anchor");
       auto pic = load(str(item, "texture")); GLuint t = texture();
-      material.render(pic.texture, t, pic.width, pic.height, s);
+      const bool transposed = s.region.attached && s.region.shape.vertical;
+      material.render(pic.texture, t, transposed ? pic.height : pic.width,
+          transposed ? pic.width : pic.height, s, transposed, false);
       add(s, t, std::string(name) == "dropdown" ? 104 : std::string(name) == "menubar" ? 51 : 102);
     }
     if (focusedPixels) {

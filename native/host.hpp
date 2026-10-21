@@ -168,7 +168,12 @@ struct PanelSurface {
   // Menu panel's unoccluded crop, picture inset/scale and anchor clearance.
   float fullHeight = 0, inset = 0, pictureWidth = 0, pictureHeight = 0;
   float covered = 0, menuRise = 0;
+  BendRegion region{};
 };
+inline HmdMatrix34_t surfacePoint(const PanelSurface &s, float x, float y, float z = 0) {
+  return multiply(s.placement.matrix, s.region.attached ? s.region.point(x,y,z) :
+      bendPointXY(bendShape(s.placement,s.height),x,y,z));
+}
 inline void surfaceUV(const PanelSurface &s, float &u, float &v) {
   if (s.pictureWidth > 0 && s.pictureHeight > 0) {
     u = std::clamp((u * s.placement.width - s.inset) / s.pictureWidth, 0.f, 1.f);
@@ -177,6 +182,8 @@ inline void surfaceUV(const PanelSurface &s, float &u, float &v) {
 }
 inline bool sameSurfaceGeometry(const PanelSurface &a, const PanelSurface &b) {
   return a.placement.width == b.placement.width && a.height == b.height &&
+      a.region == b.region && a.placement.bendA == b.placement.bendA &&
+      a.placement.bendB == b.placement.bendB && a.placement.bendVertical == b.placement.bendVertical &&
       a.fullHeight == b.fullHeight && a.inset == b.inset && a.pictureWidth == b.pictureWidth &&
       a.pictureHeight == b.pictureHeight && a.covered == b.covered && a.menuRise == b.menuRise &&
       memcmp(&a.placement.matrix, &b.placement.matrix, sizeof(a.placement.matrix)) == 0;
@@ -218,7 +225,8 @@ inline PanelPick surfacePick(const EyeRay &ray, const PanelSurface &s, float mar
     norm += ray.direction[i] * ray.direction[i];
   }
   if (!std::isfinite(norm) || norm < 1e-10f) return hit;
-  const auto inverse = inverseRigid(s.placement.matrix);
+  const auto base = s.region.attached ? multiply(s.placement.matrix, inverseRigid(s.region.centre())) : s.placement.matrix;
+  const auto inverse = inverseRigid(base);
   float o[3]{}, d[3]{};
   for (int r = 0; r < 3; ++r) {
     o[r] = inverse.m[r][3];
@@ -228,10 +236,15 @@ inline PanelPick surfacePick(const EyeRay &ray, const PanelSurface &s, float mar
     }
   }
   float x = 0, y = 0, distance = 0;
-  const auto shape = bendShape(s.placement, s.height);
-  if (!bendHit(shape, o, d, 0, x, y, &distance) ||
-      std::fabs(x) > s.placement.width / 2 + margin || std::fabs(y) > s.height / 2 + margin || y < -s.height / 2 + s.covered) return hit;
-  const auto point = bendPointXY(shape, x, y, 0);
+  const auto shape = s.region.attached ? s.region.shape : bendShape(s.placement, s.height);
+  const float depth = s.region.attached ? s.region.depth : 0;
+  const float edgeMargin = s.region.attached ? std::max(.2f,
+      (shape.vertical ? std::fabs(s.region.y)+s.height/2 : std::fabs(s.region.x)+s.placement.width/2)
+          -shape.span/2+std::max(0.f,margin)) : .2f;
+  if (!bendHit(shape, o, d, depth, x, y, &distance, edgeMargin)) return hit;
+  const auto point = bendPointXY(shape, x, y, depth);
+  if (s.region.attached) { x -= s.region.x; y -= s.region.y; }
+  if (std::fabs(x) > s.placement.width / 2 + margin || std::fabs(y) > s.height / 2 + margin || y < -s.height / 2 + s.covered) return hit;
   float facing = 0;
   for (int i = 0; i < 3; ++i) facing += point.m[i][2] * d[i];
   if (facing >= -1e-5f) return hit;
