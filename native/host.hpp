@@ -13,9 +13,83 @@ inline std::string jsonString(const std::string &s) {
   Json value(json_object_new_string_len(s.data(), int(s.size())), json_object_put);
   return json_object_to_json_string_ext(value.get(), JSON_C_TO_STRING_PLAIN);
 }
+enum class PanelRole { Window, Menubar, Status, Menu };
+inline PanelRole panelRole(const std::string &role) {
+  if (role == "window") return PanelRole::Window;
+  if (role == "menubar") return PanelRole::Menubar;
+  if (role == "status") return PanelRole::Status;
+  if (role == "menu") return PanelRole::Menu;
+  throw std::runtime_error("invalid panel role");
+}
+inline const char *roleName(PanelRole role) {
+  return role == PanelRole::Window ? "window" : role == PanelRole::Menubar ? "menubar" :
+         role == PanelRole::Status ? "status" : "menu";
+}
+struct SurfaceRect {
+  float x = 0, y = 0, w = 0, h = 0;
+};
+struct SurfaceMessage {
+  uint32_t seq = 0;
+  bool visible = false, hot = false;
+  SurfaceRect rect, anchorRect;
+  std::string anchor = "none";
+  float menusWidth = 0;
+  double received = 0;
+  static SurfaceMessage parse(const std::string &raw) {
+    auto j = json(raw);
+    if (!j || str(j, "t") != "surface" ||
+        !json_object_is_type(field(j, "v"), json_type_int) || num(j, "v") != 1 ||
+        !json_object_is_type(field(j, "seq"), json_type_int) ||
+        num(j, "seq", -1) < 0 || num(j, "seq") > UINT32_MAX ||
+        !json_object_is_type(field(j, "visible"), json_type_boolean))
+      throw std::runtime_error("invalid surface message");
+    SurfaceMessage m;
+    m.seq = uint32_t(num(j, "seq")); m.visible = flag(j, "visible");
+    if (field(j, "hot") && !json_object_is_type(field(j, "hot"), json_type_boolean))
+      throw std::runtime_error("invalid surface hot flag");
+    m.hot = flag(j, "hot");
+    if (field(j, "anchor")) m.anchor = str(j, "anchor");
+    if (m.anchor != "menubar" && m.anchor != "status" && m.anchor != "none")
+      throw std::runtime_error("invalid surface anchor");
+    auto rect = [&](const char *name, SurfaceRect &out) {
+      auto a = field(j, name);
+      if (!a && !m.visible) return;
+      if (!a || !json_object_is_type(a, json_type_array) || json_object_array_length(a) != 4)
+        throw std::runtime_error("invalid surface rect");
+      float values[4];
+      for (int i = 0; i < 4; ++i) {
+        auto v = json_object_array_get_idx(a, i);
+        if ((!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double)) ||
+            !std::isfinite(json_object_get_double(v)) || std::abs(json_object_get_double(v)) > 1000000)
+          throw std::runtime_error("invalid surface coordinate");
+        values[i] = float(json_object_get_double(v));
+      }
+      if (values[2] <= 0 || values[3] <= 0)
+        throw std::runtime_error("invalid surface size");
+      out = {values[0], values[1], values[2], values[3]};
+    };
+    rect("rect", m.rect); rect("anchorRect", m.anchorRect);
+    if (field(j, "menusWidth")) {
+      auto v = field(j, "menusWidth");
+      if ((!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double)) ||
+          !std::isfinite(num(j, "menusWidth")) || num(j, "menusWidth") <= 0 || num(j, "menusWidth") > 1000000)
+        throw std::runtime_error("invalid menus width");
+      m.menusWidth = float(num(j, "menusWidth"));
+    }
+    return m;
+  }
+};
+inline bool sequenceNewer(uint32_t picture, uint32_t fence) {
+  const uint32_t delta = picture - fence;
+  return delta != 0 && delta < 0x80000000u;
+}
+inline bool surfacePictureReady(const SurfaceMessage &m, uint32_t seq, double received) {
+  return m.visible && sequenceNewer(seq, m.seq) && received > m.received;
+}
 struct PanelSpec {
   std::string generation, urlFile, key, name, controlFile, stateFile, poseFile, initialPose, requestDir;
   std::string decoder = "software", conversion = "cpu";
+  PanelRole role = PanelRole::Window;
   bool foveation = false, gaze = false;
   static PanelSpec parse(const std::string &raw) {
     auto j = json(raw);
@@ -23,6 +97,12 @@ struct PanelSpec {
         !json_object_is_type(field(j, "version"), json_type_int) || num(j, "version") != 1)
       throw std::runtime_error("invalid host panel spec version");
     PanelSpec s;
+    json_object *role = nullptr;
+    if (json_object_object_get_ex(j.get(), "role", &role)) {
+      if (!json_object_is_type(role, json_type_string))
+        throw std::runtime_error("invalid panel role");
+      s.role = panelRole(json_object_get_string(role));
+    }
     s.generation = str(j, "generation"); s.urlFile = str(j, "urlFile");
     s.key = str(j, "overlayKey"); s.name = str(j, "overlayName");
     s.controlFile = str(j, "controlFile"); s.stateFile = str(j, "stateFile");
@@ -37,14 +117,16 @@ struct PanelSpec {
     if (s.generation.empty() || s.generation.size() > 64 ||
         s.generation.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos ||
         !validOverlayKey(s.key) || s.urlFile.empty() || s.stateFile.empty() ||
-        s.controlFile.empty() || s.poseFile.empty() || s.requestDir.empty() ||
+        s.controlFile.empty() || (s.role == PanelRole::Window && s.poseFile.empty()) || s.requestDir.empty() ||
         s.name.size() > 64 || s.name.find_first_of("\r\n\t") != std::string::npos ||
         (s.decoder != "software" && s.decoder != "v4l2") ||
         (s.conversion != "cpu" && s.conversion != "gpu") || (s.foveation && s.gaze))
       throw std::runtime_error("invalid host panel spec");
     for (const auto &path : {s.urlFile, s.stateFile, s.controlFile, s.poseFile, s.requestDir})
-      if (path.front() != '/' || path.size() > 4096 || path.find('\0') != std::string::npos)
+      if ((!path.empty() && path.front() != '/') || path.size() > 4096 || path.find('\0') != std::string::npos)
         throw std::runtime_error("invalid host panel path");
+    if (s.role != PanelRole::Window && !s.initialPose.empty())
+      throw std::runtime_error("auxiliary panels have no initial pose");
     if (!s.initialPose.empty()) {
       Placement p;
       if (!parsePlacement(s.initialPose, p)) throw std::runtime_error("invalid initial host pose");
@@ -73,7 +155,8 @@ struct PanelBook {
   void added(const std::string &path, const PanelSpec &s) { generations[path] = s.generation; }
   void removed(const std::string &path) { generations.erase(path); }
 };
-struct PanelSurface { std::string key; Placement placement; float height = 0; };
+struct PanelSurface { std::string key; Placement placement; float height = 0; PanelRole role = PanelRole::Window; };
+inline bool focusSurface(const PanelSurface &s) { return s.role == PanelRole::Window; }
 struct PanelPick {
   std::string key;
   float u = 0, v = 0, distance = 0;

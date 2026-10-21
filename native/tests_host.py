@@ -65,6 +65,8 @@ class Stream:
         self.commands = queue.Queue()
         self.stopped = threading.Event()
         self.connections = 0
+        self.messages = queue.Queue()
+        self.seq = 0
         self.failures = []
         self.thread = threading.Thread(target=self.run, daemon=True)
         self.thread.start()
@@ -99,15 +101,25 @@ class Stream:
                             command = self.commands.get_nowait()
                         except queue.Empty:
                             command = None
-                        if command:
+                        forced = None
+                        if isinstance(command, tuple):
+                            if command[0] == "pause":
+                                live = False
+                                command[1].set()
+                            else:
+                                forced = command[1]
+                        elif isinstance(command, dict):
+                            send(connection, json.dumps(command).encode())
+                        elif command:
                             send(connection, json.dumps({"t": command}).encode())
                             if command in ("still", "live"):
                                 live = command == "live"
                             if command == "close":
                                 break
                         now = time.monotonic()
-                        if live and now - last >= 1 / 20:
-                            seq += 1
+                        if forced is not None or (live and now - last >= 1 / 20):
+                            seq = forced if forced is not None else seq + 1
+                            self.seq = seq
                             packet = b"\x01" + b"\x00" * 8 + struct.pack("!I", seq) + b"\x00" * 4 + self.encoded
                             send(connection, packet, 2)
                             last = now
@@ -116,6 +128,7 @@ class Stream:
                             if opcode == 8:
                                 break
                             message = json.loads(payload)
+                            self.messages.put(message)
                             if message.get("t") == "ping":
                                 send(connection, json.dumps({"t": "pong", "c": message["c"],
                                                              "a": time.monotonic() * 1e6}).encode())
@@ -305,5 +318,114 @@ def run(binary):
             stream.finish()
 
 
+def run_surfaces(binary):
+    roles = {"window": "window", "menubar": "menubar", "status": "status", "menu0": "menu", "menu1": "menu"}
+    encoded = encode("gray", 400, 120)
+    streams = {name: Stream(encoded) for name in roles}
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-surfaces-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests = root / "specs", root / "requests"
+            specs.mkdir(); requests.mkdir()
+            for name, role in roles.items():
+                folder = root / name; folder.mkdir()
+                (folder / "url").write_text(f"http://127.0.0.1:{streams[name].port}/view?src={name}&t=local")
+                atomic_json(specs / (name + ".json"), {
+                    "version": 1, "role": role, "generation": "test", "urlFile": str(folder / "url"),
+                    "overlayKey": "test." + name, "overlayName": name,
+                    "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
+                    "poseFile": str(folder / "pose.json"), "requestDir": str(requests)})
+            spatial = {"mode": "spatial", "apps": [{"bundleID": "test", "name": "Fixture",
+                "windows": [{"key": "test.window", "title": "Window"}]}],
+                "switcher": {"seq": 1, "open": False}}
+            atomic_json(root / "spatial.json", spatial)
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--no-vr",
+                    "--action-manifest", "none", "--state-file", str(root / "host.json"),
+                    "--spatial-state", str(root / "spatial.json"), "--seconds", "60"], stdout=log, stderr=log)
+                def state(name):
+                    try: return json.loads((root / name / "state.json").read_text())
+                    except (OSError, ValueError): return {}
+                def wait(predicate, label):
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited: " + label
+                        result = predicate()
+                        if result: return result
+                        time.sleep(.025)
+                    raise AssertionError("timed out: " + label)
+                def metadata(name, seq, visible=True, anchor="menubar", hot=False, **extra):
+                    message = {"t": "surface", "v": 1, "seq": seq, "visible": visible,
+                        "rect": [20, 36, 200, 120] if name.startswith("menu") and name != "menubar" else [0, 0, 400, 36],
+                        "anchorRect": [0, 0, 400, 36], "anchor": anchor, "hot": hot, "menusWidth": 400}
+                    streams[name].commands.put({**message, **extra})
+                try:
+                    wait(lambda: all(state(name).get("ready") for name in roles), "five independent uploads")
+                    assert all(not state(name)["surfaceVisible"] for name in roles if name != "window")
+                    spatial["switcher"].update(seq=2, chosen="test.window")
+                    atomic_json(root / "spatial.json", spatial)
+                    def focused_message():
+                        messages = []
+                        while not streams["window"].messages.empty():
+                            messages.append(streams["window"].messages.get_nowait())
+                        return next((m for m in messages if m.get("t") == "focus"), None)
+                    focus = wait(focused_message, "focus snap sends stream message")
+                    assert focus == {"t": "focus", "u": .5, "v": .5}
+                    wait(lambda: list(requests.glob("spatial-*.json")), "focus selection keeps companion request")
+                    for name in roles:
+                        if name == "window": continue
+                        paused = threading.Event()
+                        streams[name].commands.put(("pause", paused))
+                        assert paused.wait(2)
+                        wait(lambda: state(name).get("uploadedSeq") == streams[name].seq, "upload before metadata")
+                        fence = streams[name].seq + 10
+                        metadata(name, fence, anchor="status" if name == "menu1" else "menubar")
+                        revision = wait(lambda: state(name).get("surfaceRevision", 0), "surface parsed")
+                        assert not state(name)["surfaceVisible"], "old held picture stays hidden"
+                        streams[name].commands.put(("frame", fence))
+                        wait(lambda: state(name).get("uploadedSeq") == fence, "equal sequence uploaded")
+                        assert not state(name)["surfaceVisible"], "equal sequence is stale"
+                        streams[name].commands.put(("frame", fence+1))
+                        wait(lambda: state(name).get("surfaceVisible"), "newer upload reveals surface")
+                        assert state(name)["role"] == roles[name]
+                        metadata(name, fence, anchor="status" if name == "menu1" else "menubar", hot=True)
+                        wait(lambda: state(name).get("surfaceRevision", 0) > revision, "same-sequence hot update")
+                        assert state(name)["surfaceVisible"], "hot-only update retains held picture"
+                        assert not (root / name / "pose.json").exists(), "no auxiliary saved pose"
+                        old_revision = state(name)["surfaceRevision"]
+                        streams[name].commands.put({"t": "surface", "v": 1, "seq": fence-1, "visible": False})
+                        time.sleep(1.1)
+                        assert state(name)["surfaceRevision"] == old_revision, "older metadata ignored"
+                        metadata(name, fence+1, visible=False)
+                        wait(lambda: not state(name).get("surfaceVisible"), "hide immediately masks picture")
+                        metadata(name, fence+1, anchor="status" if name == "menu1" else "menubar")
+                        time.sleep(1.1)
+                        assert not state(name)["surfaceVisible"], "re-show needs a fresh upload"
+                        streams[name].commands.put(("frame", fence+2))
+                        wait(lambda: state(name).get("surfaceVisible"), "fresh re-show")
+                    before = state("menubar")["placement"]
+                    atomic_json(root / "menubar/control.json", {"revision": 9, "move": [1,0,0], "focus": True, "recenter": True})
+                    wait(lambda: state("menubar").get("controlRevision") == 9, "auxiliary ignores pose controls")
+                    assert state("menubar")["placement"] == before
+                    spatial["switcher"].update(seq=3, chosen="test.menubar")
+                    atomic_json(root / "spatial.json", spatial)
+                    time.sleep(1.1)
+                    assert len(list(requests.glob("spatial-*.json"))) == 1, "auxiliary never a focus/switch target"
+                    spatial["mode"] = "desktop"
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: all(not state(n).get("surfaceVisible") for n in roles if n != "window"), "desktop hides auxiliaries")
+                    assert state("window")["ready"], "desktop window path continues"
+                    process.terminate(); assert process.wait(5) == 0
+                    print("surface integration passed: four roles across five streams; show/hide/equal/newer/older/re-show/hot gating; focus coordinates/request; no pose/control/focus target; desktop isolation")
+                except Exception:
+                    log.seek(0); print(log.read(), file=sys.stderr); raise
+                finally:
+                    if process.poll() is None: process.terminate(); process.wait(5)
+    finally:
+        for stream in streams.values(): stream.finish()
+
+
 if __name__ == "__main__":
-    run(pathlib.Path(sys.argv[1]).resolve())
+    binary = pathlib.Path(sys.argv[1]).resolve()
+    run(binary)
+    run_surfaces(binary)

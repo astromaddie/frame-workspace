@@ -545,6 +545,7 @@ struct PanelOptions {
       key = "com.frame-workspace.native.workspace", decoderMode = "software", conversionMode = "cpu",
       presentMode = "paced", handoffMode = "fence", testYuvFormat, testYuvRange = "limited",
       testYuvColorSpace = "bt601", testYuvPattern = "sharp", exitReason = "running";
+  PanelRole role = PanelRole::Window;
   bool test = false, noVR = false, testYuvOracle = false, foveation = false, gaze = false,
       diagnosticGaze = false, diagnosticScan = false, pocRewrite = true;
   double diagnosticU = 0, diagnosticV = 0, seconds = 0;
@@ -564,38 +565,53 @@ public:
   int w = 0, h = 0, encodedW = 0, encodedH = 0;
   bool foveationActive = false;
   double uploadMs = 0, ageMs = 0, decodeFps = 0, uploadFps = 0;
-  bool ready = false, dumped = false;
+  bool ready = false, dumped = false, surfaceConfigured = false;
+  SurfaceMessage surface;
+  uint64_t surfaceRevision = 0;
+  uint32_t uploadedSeq = 0;
+  double uploadedReceived = 0;
+  bool auxiliary() const { return role != PanelRole::Window; }
+  void refreshSurface() {
+    if (!auxiliary()) return;
+    auto next = pipe.surface();
+    surface = next.first; surfaceRevision = next.second;
+    overlay.showSurface(surfaceConfigured && ready &&
+                        surfacePictureReady(surface, uploadedSeq, uploadedReceived));
+  }
   double revision = -1, controlResultRevision = -1;
   Overlay::CurvatureResult curvatureResult;
   std::shared_ptr<Picture> retryPicture;
   explicit PanelRunner(const PanelOptions &options, std::shared_ptr<OverlaySession> session = {})
       : PanelOptions(options), endpoint(test ? Endpoint{} : parseURL(readFile(urlFile))),
-        overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName, actionManifest, std::move(session)),
+        overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName, actionManifest, std::move(session), role),
         pipe(decoderMode, conversionMode) {
     overlay.handoff = handoffMode;
     overlay.present = presentMode;
     endpoint.foveation = foveation; endpoint.gaze = gaze;
-    bool persisted = loadPlacement(poseFile, overlay.placement);
-    // A new panel's first position (for example beside the Workspace) when
-    // it has no saved pose of its own.
-    if (!persisted && !initialPose.empty()) {
-      if (!parsePlacement(initialPose, overlay.placement))
-        throw std::runtime_error("invalid initial pose");
-      persisted = true;
+    pipe.acceptsSurfaces = auxiliary();
+    if (!auxiliary()) {
+      bool persisted = loadPlacement(poseFile, overlay.placement);
+      // A new panel's first position (for example beside the Workspace) when
+      // it has no saved pose of its own.
+      if (!persisted && !initialPose.empty()) {
+        if (!parsePlacement(initialPose, overlay.placement))
+          throw std::runtime_error("invalid initial pose");
+        persisted = true;
+      }
+      pendingRecenter = !persisted;
+      if (pendingRecenter)
+        pendingRecenter = !overlay.recenter();
+      overlay.apply();
+      // Curvature is part of the saved placement; re-apply it (OpenVR readback
+      // confirms it, and an unsupported runtime just stays flat).
+      if (overlay.placement.curvature > 0) {
+        const float saved = overlay.placement.curvature;
+        if (!overlay.setCurvature(saved).applied)
+          overlay.placement.curvature = saved; // keep the user's choice for a later runtime
+      }
+      if (!pendingRecenter)
+        atomicWrite(poseFile, placementJSON(overlay.placement));
     }
-    pendingRecenter = !persisted;
-    if (pendingRecenter)
-      pendingRecenter = !overlay.recenter();
-    overlay.apply();
-    // Curvature is part of the saved placement; re-apply it (OpenVR readback
-    // confirms it, and an unsupported runtime just stays flat).
-    if (overlay.placement.curvature > 0) {
-      const float saved = overlay.placement.curvature;
-      if (!overlay.setCurvature(saved).applied)
-        overlay.placement.curvature = saved; // keep the user's choice for a later runtime
-    }
-    if (!pendingRecenter)
-      atomicWrite(poseFile, placementJSON(overlay.placement));
     pipe.pocRewrite = pocRewrite;
     if (!test)
       pipe.start(endpoint);
@@ -629,6 +645,12 @@ public:
            ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
            "\",\"hostGeneration\":" + jsonString(hostGeneration) +
            ",\"hostPid\":" + std::to_string(hostGeneration.empty() ? 0 : getpid()) +
+           ",\"role\":" + jsonString(roleName(role)) +
+           ",\"surfaceVisible\":" + (overlay.surfaceVisible ? "true" : "false") +
+           ",\"surfaceSeq\":" + std::to_string(surface.seq) +
+           ",\"surfaceRevision\":" + std::to_string(surfaceRevision) +
+           ",\"uploadedSeq\":" + std::to_string(uploadedSeq) +
+           ",\"surfaceHeight\":" + std::to_string(overlay.panelHeight()) +
            ",\"textureWidth\":" + std::to_string(w) +
            ",\"textureHeight\":" + std::to_string(h) +
            ",\"encodedWidth\":" + std::to_string(encodedW) +
@@ -764,6 +786,7 @@ public:
   bool tick(bool sharedEvents = true, bool wait = true, unsigned allowedHands = 3, bool consumeSqueeze = false) {
     if (interrupted || pipe.stop || (seconds > 0 && nowMs() - start >= seconds * 1000)) return false;
     double now = nowMs();
+    refreshSurface();
     if (!overlay.events(sharedEvents)) {
       exitReason = overlay.exitReason;
       return false;
@@ -791,7 +814,10 @@ public:
         try {
           auto j = json(readFile(controlFile));
           double r = num(j, "revision", -1);
-          if (r >= 0 && r != revision) {
+          if (r >= 0 && r != revision && auxiliary()) {
+            revision = controlResultRevision = r;
+            if (flag(j, "stop")) { exitReason = "control-stop"; return false; }
+          } else if (r >= 0 && r != revision) {
             auto requestedCurvature = field(j, "curvature");
             bool validCurvature = true;
             double curvature = 0;
@@ -923,6 +949,8 @@ public:
           continue;
         if (c.submitted) {
           ready = true;
+          uploadedSeq = picture->seq; uploadedReceived = picture->received;
+          refreshSurface();
           ++uploads;
           w = picture->outputWidth();
           h = picture->outputHeight();
@@ -1032,6 +1060,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   std::map<std::string, Entry> entries;
   PanelBook book;
   HostFocus focus;
+  MenuStripReveal menuReveal;
   SpatialState spatial;
   SpatialRenderer spatialRenderer(session);
   std::string spatialPath = defaults.spatialStateFile;
@@ -1067,15 +1096,16 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   };
   auto select = [&](const std::string &key) {
     for (auto &[path, e] : entries)
-      if (e.panel && e.spec.key == key && e.panel->overlay.interactive()) {
+      if (e.panel && e.spec.role == PanelRole::Window && e.spec.key == key && e.panel->overlay.interactive()) {
         auto &o = e.panel->overlay;
         if (!o.recenter())
           return false;
         o.apply();
         atomicWrite(e.spec.poseFile, placementJSON(o.placement));
         emit("{\"action\":\"switch\",\"key\":" + jsonString(key) + "}");
+        e.panel->pipe.sendFocus(.5f, .5f);
         focus.activate(key);
-        for (auto &[otherPath, other] : entries) if (other.panel)
+        for (auto &[otherPath, other] : entries) if (other.panel && other.spec.role == PanelRole::Window)
           other.panel->overlay.setSpatialForeground(other.spec.key == key);
         spatial.open = false;
         visibility.request(false, spatial.seq);
@@ -1157,7 +1187,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             const auto &s = entry.spec;
             duplicateState |= spec.stateFile == s.stateFile;
             duplicate |= spec.key == s.key || spec.stateFile == s.stateFile || spec.controlFile == s.controlFile ||
-                         spec.poseFile == s.poseFile || spec.urlFile == s.urlFile;
+                         (!spec.poseFile.empty() && spec.poseFile == s.poseFile) || spec.urlFile == s.urlFile;
           }
           Entry entry{spec, {}};
           try {
@@ -1167,7 +1197,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             options.controlFile = spec.controlFile; options.stateFile = spec.stateFile; options.poseFile = spec.poseFile;
             options.initialPose = spec.initialPose; options.requestDir = spec.requestDir; options.hostGeneration = spec.generation;
             options.decoderMode = spec.decoder; options.conversionMode = spec.conversion;
-            options.foveation = spec.foveation; options.gaze = spec.gaze;
+            options.foveation = spec.foveation; options.gaze = spec.gaze; options.role = spec.role;
             // The host duration limits the process, rather than each later panel.
             options.seconds = 0;
             entry.panel = std::make_unique<PanelRunner>(options, session);
@@ -1239,11 +1269,59 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     navigation.update(spatial,grip);
     if(spatialAppIndex(spatial,menuID)<0)menuID.clear();
     tiles = spatialLayout(spatial, anchor, menuID);
+    // Host-owned auxiliary poses follow the focused bezel and the actual D1 shelf.
+    PanelRunner *focused = nullptr, *menubar = nullptr, *status = nullptr;
+    for (auto &[path, e] : entries) if (e.panel) {
+      e.panel->refreshSurface();
+      if (e.spec.role == PanelRole::Window && e.spec.key == focus.active) focused = e.panel.get();
+      if (e.spec.role == PanelRole::Menubar) menubar = e.panel.get();
+      if (e.spec.role == PanelRole::Status) status = e.panel.get();
+    }
+    const float mpp = focused && focused->w > 0 ? focused->overlay.placement.width * 2 / focused->w : .001f;
+    bool openMenu = false;
+    for (auto &[path, e] : entries)
+      if (e.panel && e.spec.role == PanelRole::Menu && e.panel->surfaceConfigured &&
+          surfacePictureReady(e.panel->surface, e.panel->uploadedSeq, e.panel->uploadedReceived) &&
+          e.panel->surface.anchor == "menubar") openMenu = true;
+    menuReveal.update(menubar && menubar->surface.visible && menubar->surface.hot, openMenu, now, float((now-lastFrame)/1000));
+    auto place = [&](PanelRunner *panel, const PanelSurface &surface, bool valid) {
+      if (!panel) return;
+      panel->surfaceConfigured = spatial.spatial && valid && surface.height > 0 && surface.placement.width > 0;
+      if (panel->surfaceConfigured) panel->overlay.placeSurface(surface);
+      panel->refreshSurface();
+    };
+    PanelSurface menuAnchor, statusAnchor;
+    if (menubar) {
+      if (focused) menuAnchor = menuStripPlacement(
+          {focus.active, focused->overlay.placement, focused->overlay.panelHeight()},
+          menubar->surface, mpp, menuReveal.wide);
+      place(menubar, menuAnchor, focused != nullptr);
+    }
+    if (status) {
+      statusAnchor = statusStripPlacement(tiles, status->surface, .001f);
+      place(status, statusAnchor, statusAnchor.height > 0);
+    }
+    for (auto &[path, e] : entries) if (e.panel && e.spec.role == PanelRole::Menu) {
+      auto &p = *e.panel;
+      bool fromStatus = p.surface.anchor == "status";
+      PanelSurface origin = fromStatus ? statusAnchor : menuAnchor;
+      bool valid = fromStatus ? status && status->surfaceConfigured : menubar && menubar->surfaceConfigured;
+      if (p.surface.anchor == "none" && focused) {
+        origin = {focus.active, focused->overlay.placement, focused->overlay.panelHeight()};
+        valid = true;
+      }
+      place(&p, surfacePlacement(origin, p.surface, fromStatus ? .001f : mpp), valid);
+    }
+    std::vector<PanelSurface> auxiliaries;
+    for (auto &[path, e] : entries) if (e.panel && e.panel->auxiliary() && e.panel->overlay.interactive())
+      auxiliaries.push_back({e.spec.key, e.panel->overlay.placement, e.panel->overlay.panelHeight(), e.spec.role});
+    auto auxiliaryHit = [&](const EyeRay &ray) { return bool(pickPanel(ray, auxiliaries)); };
     int hot = -1;
     PanelPick uiHit;
     int pointer = -1;
     for (int hand : {1, 0})
       if (session->hand[hand].valid) {
+        if (auxiliaryHit(session->hand[hand].ray())) continue;
         int h = spatialPick(session->hand[hand].ray(), tiles, &uiHit);
         if (h >= 0) {
           hot = h;
@@ -1256,7 +1334,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     bool down[2]{};
     for (int hand = 0; hand < 2; ++hand) {
       down[hand] = session->hand[hand].valid && session->hand[hand].grab;
-      if (session->hand[hand].valid) {
+      if (session->hand[hand].valid && !auxiliaryHit(session->hand[hand].ray())) {
         int t = spatialPick(session->hand[hand].ray(), tiles);
         if (t >= 0)
           handHits[hand] = tiles[t].surface.key;
@@ -1306,6 +1384,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     }
     std::string handOwner[2];
     for (int hand = 0; hand < 2; ++hand) {
+      if (session->hand[hand].valid && auxiliaryHit(session->hand[hand].ray())) continue;
       if(dismissedMenu || (spatial.spatial&&spatial.open&&grip[hand]))continue;
       if (session->hand[hand].valid &&
           spatialPick(session->hand[hand].ray(), tiles) >= 0)
@@ -1313,7 +1392,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       float nearest = 0;
       bool nearestForeground = false;
       for (const auto &[path, entry] : entries) {
-        if (!entry.panel) continue;
+        if (!entry.panel || entry.spec.role != PanelRole::Window) continue;
         const auto &o = entry.panel->overlay;
         if (o.draggingHand() == hand) { handOwner[hand] = path; break; }
         if (!session->hand[hand].valid) continue;
@@ -1336,7 +1415,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
           panel.finish();
           focus.remove(entry.spec.key); entry.panel.reset(); continue;
         }
-        if (panel.ready && panel.overlay.interactive())
+        if (entry.spec.role == PanelRole::Window && panel.ready && panel.overlay.interactive())
           surfaces.push_back({entry.spec.key, panel.overlay.placement, panel.overlay.panelHeight()});
       } catch (...) {
         fprintf(stderr, "[native-host] panel failed (endpoint redacted)\n");
@@ -1346,6 +1425,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         panelError(entry.spec, "host-panel-error");
       }
     }
+    auxiliaries.clear();
+    for (auto &[path, e] : entries) if (e.panel && e.panel->auxiliary() && e.panel->overlay.interactive())
+      auxiliaries.push_back({e.spec.key, e.panel->overlay.placement, e.panel->overlay.panelHeight(), e.spec.role});
     EyeRay ray, eyes[2];
     gazeStatus = session->eyes ? session->eyes->sample(eyes) : "unavailable";
     bool eye = gazeStatus == "valid" && binocularRay(eyes, ray);
@@ -1358,7 +1440,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       source = "controller";
       // Right hand wins when both point at a window, matching placement input.
       for (int hand : {1, 0}) if (session->hand[hand].valid) {
-          if (spatialPick(session->hand[hand].ray(), tiles) >= 0) {
+          if (auxiliaryHit(session->hand[hand].ray()) || spatialPick(session->hand[hand].ray(), tiles) >= 0) {
             hit = {};
             break;
           }
@@ -1368,10 +1450,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         }
     }
     // Foreground UI consumes gaze before underlying windows can build focus.
-    if (eye && spatialPick(ray, tiles) >= 0)
+    if (eye && (auxiliaryHit(ray) || spatialPick(ray, tiles) >= 0))
       hit = {};
     for (auto &[path, e] : entries)
-      if (e.panel)
+      if (e.panel && e.spec.role == PanelRole::Window)
         focus.feedback.try_emplace(e.spec.key);
     if (focus.update(hit, float((now - lastFrame) / 1000), source) &&
         now - lastFocusAttempt >= 100) {
@@ -1381,18 +1463,19 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
           try {
             atomicWrite(e.spec.requestDir + "/focus-" + std::to_string(getpid()) + "-" + std::to_string(++requests) + ".json", "{\"action\":\"focus\",\"key\":" + jsonString(hit.key) + ",\"u\":" +
                       std::to_string(hit.u) + ",\"v\":" + std::to_string(hit.v) + "}");
+            if (spatial.spatial) e.panel->pipe.sendFocus(hit.u, hit.v);
             focus.activate(hit.key);
-            for (auto &[otherPath, other] : entries) if (other.panel)
+            for (auto &[otherPath, other] : entries) if (other.panel && other.spec.role == PanelRole::Window)
               other.panel->overlay.setSpatialForeground(other.spec.key == hit.key);
           } catch (...) {
             focus.feedback[hit.key].lose();
           }
     }
     for (auto &[path, e] : entries)
-      if (e.panel)
+      if (e.panel && e.spec.role == PanelRole::Window)
         e.panel->overlay.focusFeedback = focus.feedback[e.spec.key];
     lastFrame = now;
-    if (spatial.open && eye) {
+    if (spatial.open && eye && !auxiliaryHit(ray)) {
       PanelPick pick;
       int tile = spatialPick(ray, tiles, &pick);
       std::string next = tile >= 0 && tiles[tile].kind == SpatialTile::Window
@@ -1506,6 +1589,51 @@ int main(int argc, char **argv) {
       } else if (a == "--render-spatial-style") {
         auto scene = value(), out = value();
         auto session = std::make_shared<OverlaySession>(true);
+        if (scene == "menubar-slim" || scene == "menubar-wide" || scene == "status" || scene == "menu") {
+          const int w = scene == "menubar-slim" ? 420 : scene == "menubar-wide" ? 600 : 360;
+          const int h = scene == "menu" ? 240 : scene == "menubar-slim" ? 36 : 60;
+          SpatialRaster raster;
+          auto image = raster.surface(0, w, h), cr = raster.create(image);
+          raster.rgba(cr, .22, .18, .28, 1);
+          raster.fontSize(cr, scene == "menubar-slim" ? 14 : 20);
+          auto text = [&](double x, double y, const char *label) {
+            raster.move(cr, x, y); raster.text(cr, label);
+          };
+          if (scene == "menu") {
+            text(18, 38, "New Window"); text(18, 82, "Open…");
+            text(18, 126, "Recent Items"); text(18, 170, "Close Window");
+            text(18, 214, "Save…");
+          } else if (scene == "status") text(16, 37, "Wi-Fi   Battery   10:21");
+          else {
+            text(14, scene == "menubar-slim" ? 23 : 37,
+                 "Finder    File    Edit    View    Go    Window    Help");
+          }
+          raster.flush(image);
+          GLuint textures[2]; glGenTextures(2, textures);
+          glBindTexture(GL_TEXTURE_2D, textures[0]);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, raster.data(image));
+          SurfaceRenderer material; material.render(textures[0], textures[1], w, h);
+          glFinish();
+          std::vector<unsigned char> pixels(size_t(w)*h*4);
+          glBindTexture(GL_TEXTURE_2D, textures[1]);
+          glGetTexImage(GL_TEXTURE_2D, 0, GL_BGRA, GL_UNSIGNED_BYTE, pixels.data());
+          memcpy(raster.data(image), pixels.data(), pixels.size());
+          void *cairo = dlopen("libcairo.so.2", RTLD_NOW | RTLD_LOCAL);
+          if (!cairo) cairo = dlopen("/opt/homebrew/lib/libcairo.2.dylib", RTLD_NOW | RTLD_LOCAL);
+          if (!cairo) cairo = dlopen("libcairo.2.dylib", RTLD_NOW | RTLD_LOCAL);
+          using Write = int (*)(void *, const char *);
+          using Dirty = void (*)(void *);
+          auto write = cairo ? reinterpret_cast<Write>(dlsym(cairo, "cairo_surface_write_to_png")) : nullptr;
+          auto dirty = cairo ? reinterpret_cast<Dirty>(dlsym(cairo, "cairo_surface_mark_dirty")) : nullptr;
+          bool ok = write && dirty;
+          if (ok) { dirty(image); ok = write(image, out.c_str()) == 0; }
+          if (cairo) dlclose(cairo);
+          glDeleteTextures(2, textures); raster.destroy(cr); raster.surfaceDestroy(image);
+          if (!ok) throw std::runtime_error("surface PNG output failed");
+          return 0;
+        }
         SpatialRenderer renderer(session);
         SpatialState st;
         st.spatial = true;
@@ -1519,9 +1647,9 @@ int main(int argc, char **argv) {
           st = SpatialState::parse(readFile(spatialStateFile, 1024 * 1024));
         auto tiles =
             spatialLayout(st, spatialAnchor(spatialIdentity(), 1.3f, 0),
-                          scene == "menu" && st.apps.size()>1 ? st.apps[1].id : "");
+                          scene == "app-menu" && st.apps.size()>1 ? st.apps[1].id : "");
         if (scene != "rest" && scene != "hover" && scene != "held" &&
-            scene != "menu")
+            scene != "app-menu")
           throw std::runtime_error("unknown spatial scene");
         // Asymmetric fixture through the same texture sampling as live panels:
         // red upper left, blue lower right, with a white top bar. Alternate
@@ -1637,7 +1765,7 @@ int main(int argc, char **argv) {
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style rest|hover|held|menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "

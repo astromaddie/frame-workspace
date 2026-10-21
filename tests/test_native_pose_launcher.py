@@ -22,7 +22,7 @@ OLD_POSE = '{"version":1,"width":2.4,"distance":2,"curvature":0,"matrix":[1,0,0,
 
 class NativePoseLauncherTests(unittest.TestCase):
     def fixture(self, panel=False):
-        context = tempfile.TemporaryDirectory(prefix=".native-pose-", dir=ROOT / "tests")
+        context = tempfile.TemporaryDirectory(prefix=".native-pose-", dir=os.environ.get("FRAME_NATIVE_TEST_TMP", ROOT / "tests"))
         root = Path(context.name)
         home = root / "home"
         data = root / "xdg-data"
@@ -108,7 +108,7 @@ exit 0
         return context, root, common_env, pose_file, runtime, prefix, calls, events
 
     def host_fixture(self):
-        context = tempfile.TemporaryDirectory(prefix=".native-host-launcher-", dir=ROOT / "tests")
+        context = tempfile.TemporaryDirectory(prefix=".native-host-launcher-", dir=os.environ.get("FRAME_NATIVE_TEST_TMP", ROOT / "tests"))
         root = Path(context.name)
         home = root / "home"
         data = root / "xdg-data"
@@ -332,6 +332,50 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
                 finally:
                     context.cleanup()
 
+    def test_auxiliary_roles_and_reserved_ids(self):
+        for role, panel in (("menubar", "menubar"), ("status", "status"),
+                            ("menu", "menu0"), ("menu", "menu3")):
+            with self.subTest(role=role, panel=panel):
+                context, _, env, _, runtime, _, _, _ = self.host_fixture()
+                try:
+                    run = self.run_launcher(env, self.host_start_args(panel, "fc11111111", "--role", role))
+                    self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    spec = json.loads((runtime / "frame-workspace/host/panels" / (panel + ".json")).read_text())
+                    self.assertEqual(spec["role"], role)
+                    self.assertFalse(Path(spec["poseFile"]).exists())
+                finally:
+                    context.cleanup()
+
+    def test_invalid_roles_rejected_before_service_or_runtime_mutation(self):
+        for args in (("--role", "unknown"), ("--role", "Window"), ("--role", ""),
+                     ("--role", "menubar"), ("--role", "menu", "--panel", "menu4"),
+                     ("--role", "status", "--panel", "menubar"),
+                     ("--role", "menu", "--panel", "menu0", "--pose", VALID_RAW)):
+            with self.subTest(args=args):
+                context, _, env, _, runtime, calls, _, run_count = self.host_fixture()
+                try:
+                    run = self.run_launcher(env, self.host_start_args("p1", "fc11111111", *args))
+                    self.assertNotEqual(run.returncode, 0)
+                    self.assertFalse(calls.exists())
+                    self.assertFalse(run_count.exists())
+                    self.assertFalse((runtime / "frame-workspace").exists())
+                finally:
+                    context.cleanup()
+
+    def test_auxiliary_requires_host_and_window_role_keeps_standalone(self):
+        context, root, env, _, _, prefix, calls, _ = self.fixture(True)
+        try:
+            run = self.run_launcher(env, self.start_args(["--panel", "menubar"], "--role", "menubar"))
+            self.assertNotEqual(run.returncode, 0)
+            self.assertFalse(calls.exists())
+            run = self.run_launcher(env, self.start_args(prefix, "--role", "window"))
+            self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+            self.assertIn("exited during startup", run.stderr)
+            self.assertIn("--unit=frame-workspace-panel-%d-p1.service" % os.getuid(),
+                          (root / "systemd-run-args").read_text())
+        finally:
+            context.cleanup()
+
     def test_opt_in_host_specs_reuse_one_host_and_stop_only_requested_panel(self):
         context, root, env, status, runtime, calls, events, run_count = self.host_fixture()
         try:
@@ -342,7 +386,7 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
             specs = host / "panels"
             spec_path = specs / "p1.json"
             spec = json.loads(spec_path.read_text(encoding="utf-8"))
-            self.assertEqual(set(spec), {"version", "generation", "urlFile", "overlayKey", "overlayName",
+            self.assertEqual(set(spec), {"version", "role", "generation", "urlFile", "overlayKey", "overlayName",
                                         "controlFile", "stateFile", "poseFile", "initialPose", "requestDir",
                                         "decoder", "conversion", "foveation", "gaze"})
             self.assertEqual(spec["version"], 1)

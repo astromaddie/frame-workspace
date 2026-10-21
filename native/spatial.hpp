@@ -124,11 +124,13 @@ inline PanelPick spatialPanelPick(const EyeRay &ray,
                                   const std::vector<PanelSurface> &surfaces,
                                   const std::string &active) {
   for (const auto &s : surfaces)
-    if (s.key == active) {
+    if (focusSurface(s) && s.key == active) {
       auto hit = surfacePick(ray, s, .02f);
       if (hit) return hit;
     }
-  return pickPanel(ray, surfaces, active);
+  std::vector<PanelSurface> windows;
+  for (const auto &s : surfaces) if (focusSurface(s)) windows.push_back(s);
+  return pickPanel(ray, windows, active);
 }
 // Keep a visual fade independently of the uninterrupted confirmation timer.
 struct HostFocus {
@@ -278,6 +280,61 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     }
   return tiles;
 }
+// Auxiliary surfaces use rigid, host-owned poses; streamed UV stays top-left.
+inline PanelSurface menuStripPlacement(const PanelSurface &window, const SurfaceMessage &m,
+                                        float metresPerPoint, float wide) {
+  PanelSurface s{"menubar", {}, 0, PanelRole::Menubar};
+  wide = std::clamp(wide, 0.f, 1.f);
+  s.placement.width = window.placement.width * .35f * (1 - wide) +
+                      (m.menusWidth > 0 ? m.menusWidth : m.rect.w) * metresPerPoint * wide;
+  s.height = m.rect.h * metresPerPoint * (.6f + .4f * wide);
+  // Keep the left edge on the window; expanded menus retain their point scale.
+  const float x = -window.placement.width / 2 + s.placement.width / 2;
+  s.placement.matrix = multiply(window.placement.matrix,
+      bendPointXY(bendShape(window.placement, window.height), x, window.height / 2, .016f));
+  // Follow the bezel's bend tangent, including vertical and asymmetric panels.
+  auto lift = spatialIdentity(); lift.m[1][3] = s.height / 2 + .003f;
+  s.placement.matrix = multiply(s.placement.matrix, lift);
+  return s;
+}
+inline PanelSurface statusStripPlacement(const std::vector<SpatialTile> &tiles,
+                                          const SurfaceMessage &m, float metresPerPoint) {
+  PanelSurface s{"status", {}, 0, PanelRole::Status};
+  for (const auto &tile : tiles) if (tile.kind == SpatialTile::Shelf) {
+    s.placement.width = m.rect.w * metresPerPoint;
+    s.height = m.rect.h * metresPerPoint;
+    auto t = spatialIdentity();
+    t.m[0][3] = tile.surface.placement.width / 2 + .006f + s.placement.width / 2;
+    t.m[2][3] = .016f;
+    s.placement.matrix = multiply(tile.surface.placement.matrix, t);
+    return s;
+  }
+  return s;
+}
+inline PanelSurface surfacePlacement(const PanelSurface &anchor, const SurfaceMessage &m,
+                                      float metresPerPoint) {
+  PanelSurface s{"menu", {}, m.rect.h * metresPerPoint, PanelRole::Menu};
+  s.placement.width = m.rect.w * metresPerPoint;
+  auto t = spatialIdentity();
+  t.m[0][3] = -anchor.placement.width / 2 +
+      (m.rect.x - m.anchorRect.x) * metresPerPoint + s.placement.width / 2;
+  const float dy = (m.rect.y - (m.anchorRect.y + m.anchorRect.h)) * metresPerPoint;
+  t.m[1][3] = m.anchor == "status" ? anchor.height / 2 + std::max(0.f, dy) + s.height / 2 :
+                                                    -anchor.height / 2 - dy - s.height / 2;
+  t.m[2][3] = .01f;
+  s.placement.matrix = multiply(anchor.placement.matrix, t);
+  return s;
+}
+struct MenuStripReveal {
+  float wide = 0;
+  double lastOpen = -1000;
+  void update(bool hot, bool menuVisible, double now, float dt) {
+    if (hot || menuVisible) lastOpen = now;
+    const float target = hot || menuVisible || now - lastOpen < 1000 ? 1.f : 0.f;
+    const float step = std::clamp(dt, 0.f, .1f) / .12f;
+    wide += std::clamp(target - wide, -step, step);
+  }
+};
 // Trigger edges belong to a hand, not to whichever tile it enters mid-hold.
 struct SpatialPress {
   bool previous[2]{};

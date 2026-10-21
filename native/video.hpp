@@ -1,6 +1,7 @@
 #pragma once
 #include "websocket.hpp"
 #include "clock_sync.hpp"
+#include "host.hpp"
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
@@ -317,6 +318,7 @@ struct Pipeline {
     std::lock_guard<std::mutex> lock(mutex);
     droppedEncoded += packets.size();
     dropQueuedLocked();
+    if (acceptsSurfaces) { surfaceMessage = {}; surfaceRevision = 0; }
     // Keep the still request across reconnects; post-reconnect video stays
     // discarded until the server sends a live control.
     requireKeyLocked(resumed ? ResetReason::Reconnect : ResetReason::None);
@@ -420,6 +422,19 @@ struct Pipeline {
                          std::to_string((uploaded + o) * 1000) +
                          ",0]],\"drop\":0}");
   }
+  SurfaceMessage surfaceMessage;
+  uint64_t surfaceRevision = 0;
+  bool acceptsSurfaces = false;
+  std::string pendingFocus;
+  void sendFocus(float u, float v) {
+    std::lock_guard<std::mutex> lock(outMutex);
+    pendingFocus = "{\"t\":\"focus\",\"u\":" + std::to_string(u) +
+                   ",\"v\":" + std::to_string(v) + "}";
+  }
+  std::pair<SurfaceMessage, uint64_t> surface() {
+    std::lock_guard<std::mutex> lock(mutex);
+    return {surfaceMessage, surfaceRevision};
+  }
   void start(const Endpoint &e) {
     decoder = std::thread([this] { decodeLoop(); });
     net = std::thread([this, e] { networkLoop(e); });
@@ -487,6 +502,9 @@ struct Pipeline {
             std::lock_guard<std::mutex> l(outMutex);
             pending.swap(outbound);
           }
+          std::string focused;
+          { std::lock_guard<std::mutex> l(outMutex); focused.swap(pendingFocus); }
+          if (!focused.empty()) ws.sendText(focused);
           for (auto &s : pending)
             ws.sendText(s);
         };
@@ -513,7 +531,24 @@ struct Pipeline {
           } else {
             auto j = json(std::string(bytes.begin(), bytes.end()));
             auto t = str(j, "t");
-            if (t == "hello") {
+            if (t == "surface" && acceptsSurfaces) {
+              try {
+                auto message = SurfaceMessage::parse(std::string(bytes.begin(), bytes.end()));
+                message.received = receivedAt;
+                std::lock_guard<std::mutex> lock(mutex);
+                // Same-sequence hot/geometry updates are valid; older metadata is not.
+                if (!surfaceRevision || message.seq == surfaceMessage.seq ||
+                    sequenceNewer(message.seq, surfaceMessage.seq)) {
+                  if (surfaceRevision && message.visible && surfaceMessage.visible &&
+                      message.seq == surfaceMessage.seq && message.rect.x == surfaceMessage.rect.x &&
+                      message.rect.y == surfaceMessage.rect.y && message.rect.w == surfaceMessage.rect.w &&
+                      message.rect.h == surfaceMessage.rect.h)
+                    message.received = surfaceMessage.received;
+                  surfaceMessage = message;
+                  ++surfaceRevision;
+                }
+              } catch (...) { /* Malformed metadata cannot expose an old picture. */ }
+            } else if (t == "hello") {
               auto r = str(j, "r");
               if (r.empty() || r.size() > 256)
                 throw std::runtime_error("invalid reconnect key");

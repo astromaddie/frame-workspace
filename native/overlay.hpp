@@ -29,6 +29,74 @@ inline void atomicWrite(const std::string &path, const std::string &text) {
   if (rename(tmp.c_str(), path.c_str()))
     throw std::runtime_error("state replace failed");
 }
+// A small Palladium rim is part of an auxiliary stream's texture, not window
+// chrome: these panels never allocate handles, bezels or placement input.
+class SurfaceRenderer {
+  GLuint program = 0, framebuffer = 0;
+public:
+  ~SurfaceRenderer() { release(); }
+  void release() {
+    if (program) glDeleteProgram(program);
+    if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
+    program = framebuffer = 0;
+  }
+  void render(GLuint source, GLuint target, int width, int height) {
+    if (!program) {
+      auto shader = [](GLenum type, const char *src) {
+        GLuint sh = glCreateShader(type);
+        glShaderSource(sh, 1, &src, nullptr); glCompileShader(sh);
+        GLint ok = 0; glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+        if (!ok) { glDeleteShader(sh); throw std::runtime_error("surface shader compilation failed"); }
+        return sh;
+      };
+      auto vs = shader(GL_VERTEX_SHADER, "#version 120\nvoid main(){gl_Position=gl_Vertex;gl_TexCoord[0]=gl_MultiTexCoord0;}");
+      auto fs = shader(GL_FRAGMENT_SHADER, R"GLSL(#version 120
+uniform sampler2D picture; uniform vec2 size;
+void main(){
+  vec2 q=gl_TexCoord[0].xy,p=q*size,r=vec2(min(6.,size.y*.18));
+  vec2 d=abs(p-size*.5)-(size*.5-r);
+  float edge=length(max(d,0.))+min(max(d.x,d.y),0.)-r.x;
+  float a=1.-smoothstep(-1.,0.,edge),rim=smoothstep(-3.,-1.,edge);
+  vec3 metal=mix(vec3(.985,.98,.995),vec3(.79,.76,.84),q.y*.75+q.x*.25);
+  metal+=rim*(.12*(1.-q.y)-.12*q.y);
+  vec4 image=texture2D(picture,q);
+  vec3 content=image.rgb+metal*(1.-image.a);
+  gl_FragColor=vec4(mix(content,metal,rim)*a,a);
+})GLSL");
+      program = glCreateProgram(); glAttachShader(program, vs); glAttachShader(program, fs);
+      glLinkProgram(program); glDeleteShader(vs); glDeleteShader(fs);
+      GLint ok = 0; glGetProgramiv(program, GL_LINK_STATUS, &ok);
+      if (!ok) throw std::runtime_error("surface shader link failed");
+      glGenFramebuffers(1, &framebuffer);
+    }
+    GLint viewport[4]; glGetIntegerv(GL_VIEWPORT, viewport);
+    glBindTexture(GL_TEXTURE_2D, target);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLint w = 0, h = 0;
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+    if (w != width || h != height)
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, target, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+      throw std::runtime_error("surface framebuffer incomplete");
+    glViewport(0, 0, width, height); glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST);
+    glDisable(GL_SCISSOR_TEST); glUseProgram(program);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, source);
+    glUniform1i(glGetUniformLocation(program, "picture"), 0);
+    glUniform2f(glGetUniformLocation(program, "size"), width, height);
+    glBegin(GL_QUADS);
+    glTexCoord2f(0,0); glVertex2f(-1,-1); glTexCoord2f(1,0); glVertex2f(1,-1);
+    glTexCoord2f(1,1); glVertex2f(1,1); glTexCoord2f(0,1); glVertex2f(-1,1);
+    glEnd(); glUseProgram(0); glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+    if (glGetError() != GL_NO_ERROR) throw std::runtime_error("surface rendering failed");
+  }
+};
 class Overlay {
   std::shared_ptr<OverlaySession> session;
   VR_IVROverlay_FnTable *overlay = nullptr;
@@ -45,7 +113,7 @@ class Overlay {
   // slot is reused only after SteamVR has copied a newer submitted texture
   // (vrclient blits each SetOverlayTexture source inside this GL context).
   struct Slot {
-    GLuint texture = 0;
+    GLuint texture = 0, surfaceSource = 0;
     GLuint yuv[3] = {};
     int yuvWidth = 0, yuvHeight = 0;
     Picture::Format yuvFormat = Picture::Format::RGBA;
@@ -381,6 +449,24 @@ public:
     float value = 0;
     int errorCode = -1;
   };
+  PanelRole role = PanelRole::Window;
+  bool surfaceVisible = false;
+  float surfaceHeight = 0;
+  SurfaceRenderer surfaceRenderer;
+  bool auxiliary() const { return role != PanelRole::Window; }
+  void showSurface(bool visible) {
+    if (surfaceVisible == visible) return;
+    surfaceVisible = visible;
+    if (noVR || !handle) return;
+    if (visible && texture) overlay->ShowOverlay(handle);
+    else overlay->HideOverlay(handle);
+  }
+  void placeSurface(const PanelSurface &surface) {
+    if (placement.width == surface.placement.width && surfaceHeight == surface.height &&
+        memcmp(&placement.matrix, &surface.placement.matrix, sizeof(placement.matrix)) == 0) return;
+    placement = surface.placement; surfaceHeight = surface.height;
+    apply();
+  }
   bool spatialForeground = false;
   // Preserve each panel's content/bezel/controls ordering while placing the
   // selected panel ahead of other panels, below the spatial UI's 99/100 band.
@@ -426,9 +512,10 @@ public:
   std::string name = "Frame Workspace"; // shown by SteamVR
   Overlay(bool test, const std::string &overlayKey, bool foveation = false,
           const std::string &overlayName = "", const std::string &actionManifest = "",
-          std::shared_ptr<OverlaySession> shared = {})
+          std::shared_ptr<OverlaySession> shared = {}, PanelRole panelRole = PanelRole::Window)
       : session(shared ? std::move(shared) : std::make_shared<OverlaySession>(test)),
         noVR(test), key(overlayKey) {
+    role = panelRole;
     if (!overlayName.empty()) name = overlayName;
     overlay = session->overlay; system = session->system;
     if (noVR) return;
@@ -445,7 +532,7 @@ public:
       // desktop is upright in the headset; readback dumps are unaffected.
       VRTextureBounds_t bounds{0, 1, 1, 0};
       check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
-      {
+      if (!auxiliary()) {
         std::string halfKey = key + ".half", halfName = name;
         if (overlay->CreateOverlay(halfKey.data(), halfName.data(), &handle2) == EVROverlayError_VROverlayError_None) {
           overlay->SetOverlayTextureColorSpace(handle2, EColorSpace_ColorSpace_Gamma);
@@ -455,7 +542,11 @@ public:
           handle2 = 0; // halves stay even; a one-sided bend applies to both
         }
       }
-      if (!actionManifest.empty())
+      if (auxiliary()) {
+        overlay->SetOverlaySortOrder(handle, role == PanelRole::Menu ? 104 : 102);
+        overlay->SetOverlayFlag(handle, VROverlayFlags_IsPremultiplied, true);
+      }
+      if (!auxiliary() && !actionManifest.empty())
         initPlacementInput(actionManifest);
     } catch (...) { release(); throw; }
   }
@@ -534,6 +625,7 @@ public:
   // The window's height in meters from its texture aspect (9:8 until the
   // first picture).
   float panelHeight() const {
+    if (auxiliary() && surfaceHeight > 0) return surfaceHeight;
     return placement.width * (width > 0 && height > 0 ? float(height) / float(width) : 2560.f / 2880.f);
   }
   // A transform `z` in front of the window at window coordinates (x, y), on
@@ -552,7 +644,7 @@ public:
   // Used by the host to route each hand to the nearest window, while an
   // ongoing drag keeps ownership even after the ray leaves its panel.
   float interactionDistance(const HmdMatrix34_t &pose) const {
-    if (!interactive()) return -1;
+    if (!interactive() || auxiliary()) return -1;
     float x = 0, y = 0, distance = 0;
     HandleLayout l; l.width = placement.width; l.height = panelHeight();
     if (!layerHit(pose, controlsDepth, x, y, &distance) ||
@@ -657,9 +749,9 @@ public:
   // its tip, and drives a drag while the trigger is held. Returns true when a
   // drag ended, so the caller saves the pose.
   int draggingHand() const { return dragHand; }
-  bool interactive() const { return texture && !closing; }
+  bool interactive() const { return texture && !closing && (!auxiliary() || surfaceVisible); }
   bool updatePlacementInput(unsigned allowedHands = 3, bool consumeSqueeze = false) {
-    if (!input || noVR || chromeFailed || closing) return false;
+    if (auxiliary() || !input || noVR || chromeFailed || closing) return false;
     const double now = nowMs();
     const float dt = lastChromeUpdate > 0 ? float(std::clamp(now - lastChromeUpdate, 0.0, 100.0) / 1000.0) : 0.f;
     lastChromeUpdate = now;
@@ -840,6 +932,7 @@ public:
   void release() {
     // The main-scope GazeProducer has already joined before this object dies.
     chromeRenderer.release();
+    surfaceRenderer.release();
     for (auto h : {frameHandle, chromeHandle, cursorHandle, frameHandle2, chromeHandle2, handle2})
       if (h) overlay->DestroyOverlay(h);
     for (auto t : {frameTexture, chromeTexture, cursorTexture})
@@ -860,6 +953,7 @@ public:
         glDeleteTextures(3, s.yuv);
       if (s.texture)
         glDeleteTextures(1, &s.texture);
+      if (s.surfaceSource) glDeleteTextures(1, &s.surfaceSource);
     }
     if (!retired.empty())
       glDeleteTextures(GLsizei(retired.size()), retired.data());
@@ -909,6 +1003,8 @@ public:
     gazePlacement = placement;
     if (noVR)
       return;
+    if (auxiliary() && width > 0 && height > 0 && surfaceHeight > 0)
+      overlay->SetOverlayTexelAspect(handle, placement.width * height / (surfaceHeight * width));
     if (!handle2 && (placement.bendVertical || std::fabs(placement.bendA - placement.bendB) > 1e-4f)) {
       placement.bendA = placement.bendB = std::max(placement.bendA, placement.bendB);
       syncCurvature(placement);
@@ -928,7 +1024,7 @@ public:
     const bool half = b.segments() == 2;
     if (handle2 && half != showingHalf) {
       if (!half) overlay->HideOverlay(handle2);
-      else if (texture) overlay->ShowOverlay(handle2);
+      else if (texture && (!auxiliary() || surfaceVisible)) overlay->ShowOverlay(handle2);
       showingHalf = half;
     }
   }
@@ -941,7 +1037,7 @@ public:
                                                                                                       : nullptr;
   }
   void focus() {
-    if (!noVR && texture)
+    if (!noVR && texture && (!auxiliary() || surfaceVisible))
       check(overlay->ShowOverlay(handle), "focus overlay");
   }
   CurvatureReadback curvatureReadback() const {
@@ -1087,6 +1183,11 @@ public:
       convertYuv(s, p);
       gpuConvertMs = nowMs() - convertStart;
     }
+    if (auxiliary()) {
+      if (!s.surfaceSource) glGenTextures(1, &s.surfaceSource);
+      surfaceRenderer.render(s.texture, s.surfaceSource, texW, texH);
+      std::swap(s.texture, s.surfaceSource);
+    }
     s.picture = std::move(picture);
     if (fenced()) {
       if (s.fence)
@@ -1226,6 +1327,8 @@ public:
     width = s.transposed ? s.height : s.width;
     height = s.transposed ? s.width : s.height;
     double submitStart = nowMs();
+    if (auxiliary() && !noVR && surfaceHeight > 0)
+      overlay->SetOverlayTexelAspect(handle, placement.width * height / (surfaceHeight * width));
     if (!noVR) {
       // A resize changes the runtime's intersection aspect ratio. Invalidate
       // only around submission, so gaze keeps using the displayed geometry
@@ -1258,7 +1361,8 @@ public:
         gazeTextureChanging = !c.submitted;
       }
       if (c.submitted) {
-        check(overlay->ShowOverlay(handle), "ShowOverlay");
+        if (!auxiliary() || surfaceVisible)
+          check(overlay->ShowOverlay(handle), "ShowOverlay");
         if (handle2 && showingHalf) {
           overlay->SetOverlayTexture(handle2, &t);
           overlay->ShowOverlay(handle2);
