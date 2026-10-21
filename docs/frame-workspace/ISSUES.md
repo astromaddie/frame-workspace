@@ -628,6 +628,11 @@ toggle between the two, because Spatial Mode won't suit every task.
   shelf below the line of sight that follows the user when they turn far away; **S1**, the app
   switcher as a curved strip of live window thumbnails at eye level, Cmd-Tab moving along it;
   **V1**, still windows look exactly like live ones.
+- **One shared display** (chosen 2026-10-21, `evidence/spatial-options-mockup.png`, option B): after
+  the first device runs showed a display per window is too fragile at everyday scale (28 windows),
+  every window still gets its own panel, but on the Mac they all share one large hidden display;
+  the window the user looks at is raised there, so clicks and typing go to it. Menus and popovers
+  come through ScreenCaptureKit's child-window capture (to be verified by a spike first).
 - **Focus confirmation** (the user's addition): looking at a window builds a quick glow along its
   border, then it snaps into focus: fast, but enough that a passing glance doesn't select every
   window it crosses.

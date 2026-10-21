@@ -1,0 +1,140 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Spatial Mode Options</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#15131a;color:#e9e4ee;font:14px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,sans-serif;padding:40px 44px 48px;width:1720px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700}
+h2{font-size:21px;margin:36px 0 4px;font-weight:650}
+.sub{color:#a59cae;margin:0 0 18px;max-width:1280px}
+.row{display:flex;gap:22px}
+.card{background:linear-gradient(#1f1c26,#18161d);border:1px solid #2c2834;border-radius:16px;padding:0 0 16px;overflow:hidden;flex:1}
+.label{padding:0 20px;margin-top:12px;font-weight:650;font-size:16px}
+.note{padding:0 20px;color:#a59cae;font-size:13px;margin-top:2px}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;color:#6cc0ff;margin-left:8px;vertical-align:2px}
+.scene{height:470px;perspective:1100px;perspective-origin:50% 40%;position:relative;overflow:hidden;
+  background:radial-gradient(120% 90% at 50% 0%,#3a3646 0%,#24212c 45%,#141218 100%)}
+.world{position:absolute;left:50%;top:44%;transform-style:preserve-3d}
+.world *{transform-style:preserve-3d}
+.win{position:absolute;border-radius:6px;background:#1d1f27;box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 18px 30px #0008;overflow:hidden}
+.win.light{background:#f4f2f7}
+.win .bar{height:12px;background:#2a2d37;display:flex;gap:4px;align-items:center;padding-left:6px;font-size:8px;color:#9aa}
+.win.light .bar{background:#e4e0ea;color:#667}
+.win .bar i{width:5px;height:5px;border-radius:50%;background:#ff5f57}.win .bar i:nth-child(2){background:#febc2e}.win .bar i:nth-child(3){background:#28c840}
+.win .menubar{height:9px;background:#2f3240cc;font-size:7px;color:#cfd;padding-left:6px;line-height:9px}
+.win.light .menubar{background:#d9d5e0;color:#445}
+.body{padding:8px;display:grid;gap:4px}.body b{display:block;height:4px;border-radius:2px;background:#5d6a85}
+.win.light .body b{background:#c9c3d4}
+.focus{box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #4aa8f0,0 0 14px 4px #1a9fff88,0 18px 30px #0008}
+.desk{position:absolute;border-radius:8px;background:linear-gradient(#2b4c6f,#1b2d44);box-shadow:0 0 0 7px #e3dfea,0 0 0 8px #8d82a0,0 20px 40px #0009;overflow:hidden}
+.desk .mbar{height:10px;background:#0006;font-size:7px;color:#dde;padding-left:8px;line-height:10px}
+.desk .dockbar{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);height:16px;width:46%;border-radius:6px;background:#ffffff33}
+.ghost{position:absolute;border:2px dashed #6cc0ff;border-radius:5px;background:#1a9fff14}
+.dock{position:absolute;left:-150px;top:150px;width:300px;height:40px;border-radius:13px;display:flex;gap:8px;align-items:center;justify-content:center;
+  background:linear-gradient(115deg,#fbfafd,#e3dfea 48%,#cbc4d6);border:1px solid #8d82a0;box-shadow:inset 1px 1px 0 #fff,inset -1px -1px 0 #a296b3,0 8px 18px #0007;transform:translateZ(60px) rotateX(-26deg)}
+.icon{width:24px;height:24px;border-radius:7px;font-size:10px;font-weight:700;color:#fff;display:flex;align-items:center;justify-content:center;box-shadow:inset 0 1px 0 #ffffff55,0 2px 4px #0006}
+.arrow{position:absolute;height:3px;background:linear-gradient(90deg,#6cc0ff00,#6cc0ff);border-radius:2px;transform-origin:left center}
+.tip{position:absolute;font-size:11px;color:#d7e9ff;background:#1a2a3dcc;border:1px solid #3c6a99;padding:3px 8px;border-radius:7px;white-space:nowrap}
+.mac{height:250px;position:relative;background:#101015;border-top:1px solid #2c2834}
+.mac .cap{position:absolute;left:16px;top:10px;font-size:12px;color:#a59cae;font-weight:600;letter-spacing:.04em}
+.screen{position:absolute;border:1px solid #6b6677;border-radius:4px;background:#0b0b0e}
+.screen .lab{position:absolute;bottom:-17px;left:0;right:0;text-align:center;font-size:10px;color:#a59cae}
+.mw{position:absolute;border-radius:3px;background:#2d3140;border:1px solid #545b70}
+.mw.light{background:#e8e5ee;border-color:#b7b0c4}
+.mw.top{outline:2px solid #4aa8f0;outline-offset:1px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{padding:9px 12px;border-bottom:1px solid #2c2834;text-align:left;vertical-align:top}
+th{color:#a59cae;font-weight:600}
+.good{color:#7fd08a}.mid{color:#e8c46a}.bad{color:#ef8a8a}
+small{color:#8f8899}
+</style></head><body>
+<h1>Spatial Mode: Two Ways to Make It Work</h1>
+<p class="sub">Mockups only. Last night showed one display per window is too much for macOS at the scale of everyday work (28 windows qualified). Both options keep everything already built: the Palladium chrome and handles, gaze focus with the glow and snap, cursor memory, bends, saved layouts, the dock and the switcher. Below each room view, how the Mac arranges the same windows behind the scenes.</p>
+
+<h2>Option A · Hybrid: Pull Windows Into the Room</h2>
+<p class="sub">Your Desktop stays as one large panel. Any window you pull off it becomes its own panel in the room; push it back and it rejoins the Desktop. Up to about eight windows live in the room this way.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="a1"></div></div>
+    <div class="mac" id="a1m"><div class="cap">ON THE MAC</div></div>
+    <div class="label">In the Room</div>
+    <div class="note">The Desktop panel in front, with its own Dock and menu bar; Terminal and Notes pulled out beside it, each its own panel with its menus. The room dock below lists everything, including what's still on the Desktop.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="a2"></div></div>
+    <div class="mac" id="a2m"><div class="cap">ON THE MAC</div></div>
+    <div class="label">Pulling a Window Out</div>
+    <div class="note">Grab a window's title bar on the Desktop panel and pull it towards you: it lifts out (blue outline where it was) and becomes its own panel where you let go. Pushing a panel into the Desktop panel puts it back.</div></div>
+</div>
+
+<h2>Option B · Every Window, One Shared Display</h2>
+<p class="sub">No Desktop panel: every window is its own panel, as you wanted. On the Mac they all share one large hidden display instead of one display each, so the cost stays flat however many windows you have. The window you look at is raised to the front of that display, so your clicks and typing go to it.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="b1"></div></div>
+    <div class="mac" id="b1m"><div class="cap">ON THE MAC</div></div>
+    <div class="label">In the Room<span class="tag">CLOSER TO YOUR IDEA</span></div>
+    <div class="note">Every window floats on its own, Palladium chrome on each; the one you're looking at (Terminal) has focus. Its menus and popovers open on its panel.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="b2"></div></div>
+    <div class="mac" id="b2m"><div class="cap">ON THE MAC</div></div>
+    <div class="label">Looking at Another Window</div>
+    <div class="note">Look at Safari: its bezel glows and snaps, and on the Mac Safari comes to the front of the shared display, so the cursor and keyboard go to it. Panels in the room never move.</div></div>
+</div>
+
+<h2>What Each Costs</h2>
+<div class="card" style="padding:4px 8px 8px">
+<table>
+<tr><th></th><th>Last night's design<br><small>a display per window</small></th><th>A · Hybrid<br><small>Desktop panel plus pulled-out windows</small></th><th>B · One Shared Display<br><small>every window, one hidden display</small></th></tr>
+<tr><td>Virtual displays on the Mac</td><td class="bad">one per window (28 here)</td><td class="mid">one, plus one per pulled-out window (up to about 8)</td><td class="good">one</td></tr>
+<tr><td>macOS display changes</td><td class="bad">every window opening, closing or resizing; stalled or failed (1001) last night</td><td class="mid">only when pulling a window out or back</td><td class="good">none after start</td></tr>
+<tr><td>Frame decoder</td><td class="good" colspan="3">the same in all three: only the window you look at and changing windows are live (verified: eight panels, about 394 MB)</td></tr>
+<tr><td>Every window in the room</td><td class="good">yes</td><td class="bad">no: most stay on the Desktop panel</td><td class="good">yes</td></tr>
+<tr><td>Menus and popovers on the panel</td><td class="good">yes (verified)</td><td class="good">yes, on both kinds of panel</td><td class="mid">through ScreenCaptureKit's child-window option (reported on recent macOS, not yet verified here)</td></tr>
+<tr><td>Clicks and typing</td><td class="good">any window, any time</td><td class="good">any window</td><td class="mid">the window you look at (it's raised); looking away and back raises it again</td></tr>
+<tr><td>Biggest window</td><td>up to 2560 x 1600</td><td>the Desktop's size</td><td class="mid">the shared display's size (for example 5120 x 2880)</td></tr>
+<tr><td>Risk</td><td class="bad">high: macOS's private display API at scale</td><td class="good">low: both parts already work</td><td class="mid">medium: the child-window capture and overlapping windows need a spike</td></tr>
+</table></div>
+
+<script>
+const lines=(n)=>`<div class="body">${Array.from({length:n},(_,i)=>`<b style="width:${30+((i*37)%60)}%;${['background:#c792ea','background:#82aaff','background:#9ccc65',''][i%4]}"></b>`).join("")}</div>`;
+const llines=(n)=>`<div class="body">${Array.from({length:n},(_,i)=>`<b style="width:${30+((i*29)%60)}%"></b>`).join("")}</div>`;
+function win({x,y,z=0,ry=0,w=150,h=100,t="Window",light=false,focus=false,menu=""}){
+  return `<div class="win ${light?'light':''} ${focus?'focus':''}" style="width:${w}px;height:${h}px;transform:translate3d(${x-w/2}px,${y-h/2}px,${z}px) rotateY(${ry}deg)">
+  ${menu?`<div class="menubar">${menu}</div>`:''}<div class="bar"><i></i><i></i><i></i>&nbsp;${t}</div>${light?llines(Math.floor(h/12)):lines(Math.floor(h/12))}</div>`;
+}
+function desk({x=0,y=-50,z=-160,w=300,h=190,ghost=false}){
+  const inner=[[12,22,90,60,true],[110,30,110,70,false],[60,95,120,62,true]].map(([l,t,ww,hh,li],i)=>
+    i===1&&ghost?`<div class="ghost" style="left:${l}px;top:${t}px;width:${ww}px;height:${hh}px"></div>`:
+    `<div class="mw ${li?'light':''}" style="position:absolute;left:${l}px;top:${t}px;width:${ww}px;height:${hh}px;border-radius:3px"></div>`).join("");
+  return `<div class="desk" style="width:${w}px;height:${h}px;transform:translate3d(${x-w/2}px,${y-h/2}px,${z}px)"><div class="mbar">  Finder  File  Edit  View  Go</div>${inner}<div class="dockbar"></div></div>`;
+}
+const apps=[["Sa","#2f7bf5"],["Te","#222"],["Co","#1e88e5"],["Fi","#4aa3ff"],["No","#f5c400"],["Me","#34c759"],["Cl","#d97757"]];
+const dock=()=>`<div class="dock">${apps.map(([l,c])=>`<div class="icon" style="background:${c}">${l}</div>`).join("")}</div>`;
+document.getElementById("a1").innerHTML = desk({}) +
+  win({x:-270,y:-40,z:-60,ry:34,w:150,h:110,t:"Terminal",menu:"Terminal  Shell  Edit",focus:true}) +
+  win({x:270,y:-40,z:-60,ry:-34,w:130,h:100,t:"Notes",light:true,menu:"Notes  File  Edit"}) + dock();
+document.getElementById("a2").innerHTML = desk({ghost:true}) +
+  win({x:150,y:-10,z:40,ry:-12,w:120,h:76,t:"Code",menu:"Code  File  Edit",focus:true}) +
+  `<div class="arrow" style="left:40px;top:-60px;width:110px;transform:translateZ(-60px) rotate(22deg)"></div>` +
+  `<div class="tip" style="left:-80px;top:70px;transform:translateZ(80px)">Pull Towards You to Bring It Into the Room</div>` + dock();
+function many(focusName){
+  const W=[["Terminal",-250,-80,-40,30,150,100,false],["Safari",-70,-110,-160,8,170,115,true],["Code",120,-100,-150,-8,165,110,false],
+           ["Notes",290,-60,-40,-32,120,90,true],["Finder",-150,40,-60,18,130,80,true],["Messages",170,50,-70,-18,120,82,true]];
+  return W.map(([t,x,y,z,ry,w,h,l])=>win({x,y,z,ry,w,h,t,light:l,focus:t===focusName,menu:t+"  File  Edit"})).join("")+dock();
+}
+document.getElementById("b1").innerHTML = many("Terminal");
+document.getElementById("b2").innerHTML = many("Safari") +
+  `<div class="tip" style="left:-150px;top:-190px;transform:translateZ(-100px)">Looking Here: Glow, Then Snap Into Focus</div>`;
+// Mac-side diagrams
+function macScreens(el, parts){ document.getElementById(el).innerHTML += parts; }
+const laptop=(x,label="Laptop Screen (Blank Cover)")=>`<div class="screen" style="left:${x}px;top:46px;width:150px;height:98px;background:#000"><div class="lab">${label}</div></div>`;
+macScreens("a1m", laptop(30) +
+  `<div class="screen" style="left:210px;top:30px;width:230px;height:150px;background:#24405e"><div class="mw light" style="left:12px;top:14px;width:70px;height:46px"></div><div class="mw" style="left:90px;top:22px;width:90px;height:56px"></div><div class="mw light" style="left:50px;top:80px;width:96px;height:50px"></div><div class="lab">Desktop Display (one panel)</div></div>` +
+  `<div class="screen" style="left:470px;top:50px;width:100px;height:70px"><div class="mw" style="left:4px;top:8px;width:90px;height:56px"></div><div class="lab">Terminal's Display</div></div>` +
+  `<div class="screen" style="left:590px;top:50px;width:90px;height:70px"><div class="mw light" style="left:4px;top:8px;width:80px;height:56px"></div><div class="lab">Notes' Display</div></div>`);
+macScreens("a2m", laptop(30) +
+  `<div class="screen" style="left:210px;top:30px;width:230px;height:150px;background:#24405e"><div class="mw light" style="left:12px;top:14px;width:70px;height:46px"></div><div class="mw light" style="left:50px;top:80px;width:96px;height:50px"></div><div class="lab">Desktop Display</div></div>` +
+  `<div class="screen" style="left:470px;top:50px;width:120px;height:80px"><div class="mw top" style="left:6px;top:10px;width:106px;height:62px"></div><div class="lab" style="bottom:-30px">A New Display for Code</div></div>`);
+const shared=(topIdx)=>{const r=[[14,16,90,60,false],[60,40,110,74,true],[150,24,104,66,false],[200,70,70,52,true],[30,96,80,44,true],[140,100,76,50,true]];
+  return `<div class="screen" style="left:210px;top:24px;width:300px;height:170px"><div style="position:absolute;inset:0">`+
+  r.map(([l,t,w,h,li],i)=>`<div class="mw ${li?'light':''} ${i===topIdx?'top':''}" style="left:${l}px;top:${t}px;width:${w}px;height:${h}px;z-index:${i===topIdx?9:i}"></div>`).join("")+
+  `</div><div class="lab">One Shared Hidden Display: Windows Overlap; the Looked-At One Is on Top</div></div>`;};
+macScreens("b1m", laptop(30) + shared(0));
+macScreens("b2m", laptop(30) + shared(1));
+</script>
+</body></html>
