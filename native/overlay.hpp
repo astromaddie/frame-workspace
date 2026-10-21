@@ -40,7 +40,7 @@ public:
     if (framebuffer) glDeleteFramebuffers(1, &framebuffer);
     program = framebuffer = 0;
   }
-  void render(GLuint source, GLuint target, int width, int height) {
+  void render(GLuint source, GLuint target, int width, int height, const PanelSurface &surface = {}, bool transposed = false, bool sourceTransposed = true) {
     if (!program) {
       auto shader = [](GLenum type, const char *src) {
         GLuint sh = glCreateShader(type);
@@ -52,14 +52,47 @@ public:
       auto vs = shader(GL_VERTEX_SHADER, "#version 120\nvoid main(){gl_Position=gl_Vertex;gl_TexCoord[0]=gl_MultiTexCoord0;}");
       auto fs = shader(GL_FRAGMENT_SHADER, R"GLSL(#version 120
 uniform sampler2D picture; uniform vec2 size;
+uniform int role, transposed, sourceTransposed; uniform vec2 metres, pictureSize; uniform float fullHeight, inset;
+vec4 samplePicture(vec2 uv) { return texture2D(picture,sourceTransposed!=0?vec2(1.-uv.y,uv.x):uv); }
+vec3 panelMetal(vec2 p, vec3 normal) {
+  float t=clamp(dot(p/(vec2(metres.x,fullHeight)*.5),vec2(.9063,-.4226))*.5+.5,0.,1.);
+  vec3 top=vec3(.984,.980,.992), face=vec3(.890,.875,.918), bottom=vec3(.796,.769,.839);
+  vec3 base=t<.48?mix(top,face,t/.48):mix(face,bottom,(t-.48)/.52);
+  return base*(.68+.42*dot(normal,vec3(-.4511,.5514,.7018)))+
+      vec3(pow(max(dot(normal,vec3(-.2497,.3052,.9190)),0.),40.)*.32);
+}
 void main(){
-  vec2 q=gl_TexCoord[0].xy,p=q*size,r=vec2(min(6.,size.y*.18));
+  vec2 coord=transposed!=0?vec2(gl_TexCoord[0].y,1.-gl_TexCoord[0].x):gl_TexCoord[0].xy;
+  if(role==2){ // Status belongs to the shelf; no separate floating rim.
+    vec4 image=samplePicture(coord);
+    gl_FragColor=image; return;
+  }
+  if(role==1 && fullHeight>0.) {
+    vec2 p=coord*metres, halfSize=vec2(metres.x,fullHeight)*.5;
+    float radius=min(.008,halfSize.y*.45);
+    vec2 q=abs(p-halfSize)-halfSize+radius;
+    float edge=length(max(q,0.))+min(max(q.x,q.y),0.)-radius;
+    vec2 signP=sign(p-halfSize), grad=q.x>q.y?vec2(signP.x,0.):vec2(0.,signP.y);
+    if(q.x>0.&&q.y>0.) grad=normalize(q)*signP;
+    float px=max(metres.x/size.x,metres.y/size.y), inside=-edge;
+    vec3 n=normalize(vec3(grad.x,-grad.y,1.)*vec3(inside<.003?.75:0.,inside<.003?.75:0.,1.));
+    vec3 metal=panelMetal(vec2(p.x-metres.x*.5,fullHeight*.5-p.y),n);
+    if(inside<px*1.2) metal=mix(metal,vec3(.553,.510,.627),.6);
+    vec2 uv=(p-vec2(inset))/pictureSize;
+    bool content=uv.x>=0.&&uv.x<=1.&&uv.y>=0.&&uv.y<=1.&&p.x<metres.x-inset;
+    vec4 image=samplePicture(clamp(uv,0.,1.));
+    vec3 color=content?image.rgb+metal*(1.-image.a):metal;
+    float alpha=clamp(.5-edge/px,0.,1.);
+    gl_FragColor=vec4(color*alpha,alpha); return;
+  }
+
+  vec2 q=coord,p=q*size,r=vec2(min(6.,size.y*.18));
   vec2 d=abs(p-size*.5)-(size*.5-r);
   float edge=length(max(d,0.))+min(max(d.x,d.y),0.)-r.x;
   float a=1.-smoothstep(-1.,0.,edge),rim=smoothstep(-3.,-1.,edge);
   vec3 metal=mix(vec3(.985,.98,.995),vec3(.79,.76,.84),q.y*.75+q.x*.25);
   metal+=rim*(.12*(1.-q.y)-.12*q.y);
-  vec4 image=texture2D(picture,q);
+  vec4 image=samplePicture(q);
   vec3 content=image.rgb+metal*(1.-image.a);
   gl_FragColor=vec4(mix(content,metal,rim)*a,a);
 })GLSL");
@@ -88,7 +121,14 @@ void main(){
     glDisable(GL_SCISSOR_TEST); glUseProgram(program);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, source);
     glUniform1i(glGetUniformLocation(program, "picture"), 0);
-    glUniform2f(glGetUniformLocation(program, "size"), width, height);
+    glUniform2f(glGetUniformLocation(program, "size"), transposed ? height : width, transposed ? width : height);
+    glUniform1i(glGetUniformLocation(program, "transposed"), transposed);
+    glUniform1i(glGetUniformLocation(program, "sourceTransposed"), transposed && sourceTransposed);
+    glUniform1i(glGetUniformLocation(program, "role"), surface.role == PanelRole::Menubar ? 1 : surface.role == PanelRole::Status ? 2 : 0);
+    glUniform2f(glGetUniformLocation(program, "metres"), surface.placement.width, surface.height);
+    glUniform2f(glGetUniformLocation(program, "pictureSize"), surface.pictureWidth, surface.pictureHeight);
+    glUniform1f(glGetUniformLocation(program, "fullHeight"), surface.fullHeight);
+    glUniform1f(glGetUniformLocation(program, "inset"), surface.inset);
     glBegin(GL_QUADS);
     glTexCoord2f(0,0); glVertex2f(-1,-1); glTexCoord2f(1,0); glVertex2f(1,-1);
     glTexCoord2f(1,1); glVertex2f(1,1); glTexCoord2f(0,1); glVertex2f(-1,1);
@@ -155,7 +195,7 @@ class Overlay {
   bool dragBySqueeze = false;           // the drag was started with the grip button
   bool grabWas[2] = {}, squeezeWas[2] = {};
   Handle hotWas[2] = {Handle::None, Handle::None};
-  double shownAt[10] = {};     // when each handle was last asked to slide out
+  HandleReveal handleReveal[handleCount];
 public:
   bool closeRequested = false; // the Close button was selected in the headset
 private:
@@ -451,20 +491,34 @@ public:
   PanelRole role = PanelRole::Window;
   bool surfaceVisible = false;
   float surfaceHeight = 0;
+  PanelSurface surfaceGeometry;
   SurfaceRenderer surfaceRenderer;
   bool auxiliary() const { return role != PanelRole::Window; }
   void showSurface(bool visible) {
     if (surfaceVisible == visible) return;
     surfaceVisible = visible;
     if (noVR || !handle) return;
-    if (visible && texture) overlay->ShowOverlay(handle);
-    else overlay->HideOverlay(handle);
+    for (auto h : {handle, handle2}) if (h) {
+      if (visible && texture && (h == handle || showingHalf)) overlay->ShowOverlay(h);
+      else overlay->HideOverlay(h);
+    }
   }
   void placeSurface(const PanelSurface &surface) {
-    if (placement.width == surface.placement.width && surfaceHeight == surface.height &&
-        memcmp(&placement.matrix, &surface.placement.matrix, sizeof(placement.matrix)) == 0) return;
+    if (sameSurfaceGeometry(surfaceGeometry, surface)) return;
     placement = surface.placement; surfaceHeight = surface.height;
+    surfaceGeometry = surface;
     apply();
+    // A held still picture must follow every animation frame too.
+    if (role == PanelRole::Menubar && displayed >= 0) {
+      auto &slot = slots[displayed];
+      surfaceRenderer.render(slot.surfaceSource, slot.texture, slot.width, slot.height, surfaceGeometry, slot.transposed);
+      if (!noVR) {
+        glFinish();
+        Texture_t t{reinterpret_cast<void *>(uintptr_t(slot.texture)), ETextureType_TextureType_OpenGL, EColorSpace_ColorSpace_Auto};
+        for (auto h : {handle, handle2}) if (h)
+          check(overlay->SetOverlayTexture(h, &t), "menu reveal texture");
+      }
+    }
   }
   bool spatialForeground = false;
   // Preserve each panel's content/bezel/controls ordering while placing the
@@ -531,19 +585,22 @@ public:
       // desktop is upright in the headset; readback dumps are unaffected.
       VRTextureBounds_t bounds{0, 1, 1, 0};
       check(overlay->SetOverlayTextureBounds(handle, &bounds), "texture bounds");
-      if (!auxiliary()) {
+      if (!auxiliary() || role == PanelRole::Menubar) {
         std::string halfKey = key + ".half", halfName = name;
         if (overlay->CreateOverlay(halfKey.data(), halfName.data(), &handle2) == EVROverlayError_VROverlayError_None) {
           overlay->SetOverlayTextureColorSpace(handle2, EColorSpace_ColorSpace_Gamma);
           overlay->SetOverlayInputMethod(handle2, VROverlayInputMethod_None);
           overlay->SetOverlaySortOrder(handle2, 1);
         } else {
+          if (role == PanelRole::Menubar) throw std::runtime_error("menu half overlay unavailable");
           handle2 = 0; // halves stay even; a one-sided bend applies to both
         }
       }
       if (auxiliary()) {
-        overlay->SetOverlaySortOrder(handle, role == PanelRole::Menu ? 104 : 102);
-        overlay->SetOverlayFlag(handle, VROverlayFlags_IsPremultiplied, true);
+        for (auto h : {handle, handle2}) if (h) {
+          overlay->SetOverlaySortOrder(h, role == PanelRole::Menu ? 104 : role == PanelRole::Menubar ? 51 : 102);
+          overlay->SetOverlayFlag(h, VROverlayFlags_IsPremultiplied, true);
+        }
       }
       if (!auxiliary() && !actionManifest.empty())
         initPlacementInput(actionManifest);
@@ -625,7 +682,20 @@ public:
     HandleLayout l; l.width = placement.width; l.height = panelHeight();
     if (!layerHit(pose, controlsDepth, x, y, &distance) ||
         std::fabs(x) > l.chromeWidth() / 2 || std::fabs(y) > l.chromeHeight() / 2) return -1;
-    return distance;
+    unsigned visible = 0;
+    for (int i = 0; i < handleCount; ++i) if (chromeState.reveal[i] > .001f) visible |= 1u << i;
+    if ((std::fabs(x) <= l.width / 2 + l.bezel() && std::fabs(y) <= l.height / 2 + l.bezel()) ||
+        l.zone(x, y, visible) != Handle::None) return distance;
+    return -1; // Transparent padding and hidden controls pass the ray through.
+  }
+  float revealDistance(const HmdMatrix34_t &pose) const {
+    if (!interactive() || auxiliary()) return -1;
+    float x = 0, y = 0, distance = 0;
+    HandleLayout l; l.width = placement.width; l.height = panelHeight();
+    if (!layerHit(pose, controlsDepth, x, y, &distance)) return -1;
+    if ((std::fabs(x) <= l.width/2+l.bezel() && std::fabs(y) <= l.height/2+l.bezel()) || l.revealed(x,y))
+      return distance;
+    return -1;
   }
   // What the layers were last placed and drawn for.
   struct LayerGeometry {
@@ -726,7 +796,7 @@ public:
   // drag ended, so the caller saves the pose.
   int draggingHand() const { return dragHand; }
   bool interactive() const { return texture && !closing && (!auxiliary() || surfaceVisible); }
-  bool updatePlacementInput(unsigned allowedHands = 3, bool consumeSqueeze = false) {
+  bool updatePlacementInput(unsigned allowedHands = 3, bool consumeSqueeze = false, unsigned revealHands = 3) {
     if (auxiliary() || !input || noVR || chromeFailed || closing) return false;
     const double now = nowMs();
     const float dt = lastChromeUpdate > 0 ? float(std::clamp(now - lastChromeUpdate, 0.0, 100.0) / 1000.0) : 0.f;
@@ -737,8 +807,13 @@ public:
     struct HandRay { bool valid = false, grab = false, squeeze = false, hit = false, onControls = false, onFrame = false;
                      HmdMatrix34_t pose{}; float x = 0, y = 0, fx = 0, fy = 0; };
     HandRay rays[2];
+    unsigned revealZones = 0;
     for (int i = 0; i < 2; i++) {
       const auto &h = session->hand[i];
+      if (h.valid && (revealHands & (1u << i))) {
+        float x = 0, y = 0;
+        if (layerHit(h.pose, controlsDepth, x, y)) revealZones |= l.revealed(x, y);
+      }
       rays[i].valid = h.valid && ((allowedHands & (1u << i)) || dragHand == i);
       rays[i].grab = h.grab;
       rays[i].squeeze = h.squeeze && !consumeSqueeze;
@@ -778,17 +853,18 @@ public:
         ended = true;
       }
     }
+    unsigned visible = 0;
+    for (int i = 0; i < handleCount; ++i) if (chromeState.reveal[i] > .001f) visible |= 1u << i;
     if (dragHand < 0) {
       for (int i : {1, 0}) {
         if (!rays[i].onControls) continue;
         if (std::fabs(rays[i].x) > l.chromeWidth() / 2 || std::fabs(rays[i].y) > l.chromeHeight() / 2) continue;
         pointing = i;
-        hot = l.zone(rays[i].x, rays[i].y);
+        hot = l.zone(rays[i].x, rays[i].y, visible);
         // Keep the handle under the laser a little beyond its edge, so it
         // doesn't flicker between neighbours or off at the boundary.
         const Handle was = hotWas[i];
-        if (was != Handle::None && hot != was && (was == Handle::Pill || was == Handle::Close ||
-            chromeState.reveal[handleIndex(was)] > 0) &&
+        if (was != Handle::None && hot != was && (chromeState.reveal[handleIndex(was)] > .001f) &&
             l.distance(was, rays[i].x, rays[i].y) < HandleLayout::tolerance * 1.5f)
           hot = was;
         break;
@@ -820,21 +896,20 @@ public:
     }
     // Targets: a side's handles slide out while the laser is past that edge
     // (or one of them is held); a handle widens under the laser.
-    const unsigned shown = pointing >= 0 ? l.revealed(rays[pointing].x, rays[pointing].y) : 0;
+    const unsigned shown = revealZones;
     auto approach = [&](float &v, float target, float seconds) {
       const float step = seconds > 0 ? dt / seconds : 1.f;
       v = v < target ? std::min(target, v + step) : std::max(target, v - step);
     };
     for (int i = 0; i < handleCount; i++) {
       const Handle h = Handle(i + 1);
-      const bool always = h == Handle::Pill || h == Handle::Close;
+      const bool pill = h == Handle::Pill || h == Handle::Close;
       const bool isHot = h == hot && hot != Handle::None;
       const bool held = dragHand >= 0 && h == drag.handle;
-      if ((shown & (1u << i)) || held) shownAt[i] = now;
-      // Stay out a moment after the laser leaves, so a side doesn't flicker.
-      const bool out = always || now - shownAt[i] < 350;
-      approach(chromeState.reveal[i], out ? 1.f : 0.f, 0.12f);
-      approach(chromeState.wide[i], !always && (isHot || held) ? 1.f : 0.f, 0.09f);
+      const bool movingPill = pill && dragHand >= 0 && drag.handle == Handle::Pill;
+      handleReveal[i].update(shown & (1u << i), isHot, held || movingPill, now, dt);
+      chromeState.reveal[i] = handleReveal[i].amount;
+      approach(chromeState.wide[i], !pill && (isHot || held) ? 1.f : 0.f, 0.09f);
       chromeState.held[i] = held ? 1.f : 0.f;
     }
     // The laser's light: on the controls near any of them, and on the bezel.
@@ -954,7 +1029,7 @@ public:
     return true;
   }
   void resize(float w, float d) {
-    w = std::clamp(w, .4f, 8.f);
+    w = std::clamp(w, std::min(.4f, placement.width), 8.f);
     d = std::clamp(d, .4f, 10.f);
     float delta = d - placement.distance;
     for (int r = 0; r < 3; r++)
@@ -979,6 +1054,34 @@ public:
     gazePlacement = placement;
     if (noVR)
       return;
+    if (surfaceGeometry.region.attached) {
+      const auto &region = surfaceGeometry.region;
+      const int count = region.segments(placement.width,surfaceHeight);
+      for (int i=0;i<count;++i) {
+        auto h = i == 0 ? handle : handle2;
+        if (!h) continue;
+        auto seg = region.segment(i,placement.width,surfaceHeight);
+        auto m = multiply(placement.matrix,seg.local);
+        check(overlay->SetOverlayWidthInMeters(h,seg.width), "surface width");
+        check(overlay->SetOverlayTransformAbsolute(h,ETrackingUniverseOrigin_TrackingUniverseStanding,&m), "surface transform");
+        overlay->SetOverlayTextureBounds(h,&seg.bounds);
+        if (overlay->SetOverlayCurvature) overlay->SetOverlayCurvature(h,seg.curvature);
+        // Bounds crop the source; aspect supplies the layer's physical scale,
+        // including the concentric radius correction along the bend.
+        const float fraction = seg.bounds.uMax-seg.bounds.uMin;
+        const float across = region.shape.vertical ? placement.width : surfaceHeight;
+        const float texWidth = region.shape.vertical ? height : width;
+        const float texHeight = region.shape.vertical ? width : height;
+        if (texWidth > 0 && texHeight > 0)
+          overlay->SetOverlayTexelAspect(h,seg.width*texHeight/(across*texWidth*fraction));
+      }
+      showingHalf = count == 2;
+      if (handle2) {
+        if (showingHalf && texture && surfaceVisible) overlay->ShowOverlay(handle2);
+        else overlay->HideOverlay(handle2);
+      }
+      return;
+    }
     if (auxiliary() && width > 0 && height > 0 && surfaceHeight > 0)
       overlay->SetOverlayTexelAspect(handle, placement.width * height / (surfaceHeight * width));
     if (!handle2 && (placement.bendVertical || std::fabs(placement.bendA - placement.bendB) > 1e-4f)) {
@@ -1161,7 +1264,7 @@ public:
     }
     if (auxiliary()) {
       if (!s.surfaceSource) glGenTextures(1, &s.surfaceSource);
-      surfaceRenderer.render(s.texture, s.surfaceSource, texW, texH);
+      surfaceRenderer.render(s.texture, s.surfaceSource, texW, texH, surfaceGeometry, s.transposed);
       std::swap(s.texture, s.surfaceSource);
     }
     s.picture = std::move(picture);
@@ -1303,8 +1406,11 @@ public:
     width = s.transposed ? s.height : s.width;
     height = s.transposed ? s.width : s.height;
     double submitStart = nowMs();
-    if (auxiliary() && !noVR && surfaceHeight > 0)
-      overlay->SetOverlayTexelAspect(handle, placement.width * height / (surfaceHeight * width));
+    if (role == PanelRole::Menubar && s.surfaceSource) {
+      surfaceRenderer.render(s.surfaceSource, s.texture, s.width, s.height, surfaceGeometry, s.transposed);
+      glFinish();
+    }
+    if (auxiliary() && !noVR && surfaceHeight > 0) apply();
     if (!noVR) {
       // A resize changes the runtime's intersection aspect ratio. Invalidate
       // only around submission, so gaze keeps using the displayed geometry
@@ -1339,7 +1445,7 @@ public:
       if (c.submitted) {
         if (!auxiliary() || surfaceVisible)
           check(overlay->ShowOverlay(handle), "ShowOverlay");
-        if (handle2 && showingHalf) {
+        if (handle2 && showingHalf && (!auxiliary() || surfaceVisible)) {
           overlay->SetOverlayTexture(handle2, &t);
           overlay->ShowOverlay(handle2);
         }

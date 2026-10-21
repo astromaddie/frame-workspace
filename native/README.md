@@ -291,7 +291,8 @@ Each window wears Palladium chrome in silver-lavender
   1% of the window's width (2–3.5 cm), with an inward chamfer, a chiseled line
   round its face and a soft shadow on the window's edge.
 - **Controls** (`<key>.handles`, 3 cm in front): a move pill and a separate
-  close disc with an engraved X, 3 cm below the bezel and always there; and
+  close disc with an engraved X, 3 cm below the bezel, revealed only by a laser
+  in their shared row plus a 4 cm margin; and
   four corner Ls and two side grips, 6 mm Palladium rods that slide out when
   the laser leaves the window towards them, widen to 15 mm with grip texture
   under the laser (at 45° across a corner's bend), and press in and glow from
@@ -656,7 +657,7 @@ text rasterization through its runtime API; GL draws the Palladium material and
 composites the labels, icons and live panel textures. There is no new native link
 dependency. `mode != "spatial"` hides every spatial UI layer.
 
-The D1 shelf sits 0.48 m below the head's horizontal sightline, 1.3 m forward,
+The D1 icon row sits 0.48 m below the head's horizontal sightline, 1.3 m forward,
 and reanchors after a yaw change greater than 0.8 radians. Its icons keep the
 companion's order and show running dots. Trigger release opens an app; a
 500 ms uninterrupted hold opens Show All Windows, Hide (Unhide for hidden apps),
@@ -725,21 +726,39 @@ foveation/gaze negotiation, which applies to window streams.
 Auxiliary overlays have no placement input, chrome/handle overlays, initial or
 saved pose. Pose controls cannot move them. They are excluded from focus and
 switcher selection, but consume gaze and controller rays before underlying
-windows or shelf tiles. Desktop Mode hides them. The streamed texture itself has
-a thin, rounded silver-lavender Palladium rim, using `SurfaceRenderer` on the
-same upload path as production video; there are no separate asset files.
+windows or shelf tiles. Desktop Mode hides them. Dropdown textures have a thin,
+rounded silver-lavender Palladium rim. The menubar panel and shelf status use
+the materials described below. `SurfaceRenderer` uses the same upload path as
+production video; there are no separate asset files.
 
-The menubar follows `HostFocus.active` along the top-left bezel, including its
-bend tangent. It is 0.35 of the focused window's width and 60% of the strip height
-at rest. `hot` or an uploaded visible menubar-anchored menu expands it to
-`menusWidth`; a 1-second grace period after both clear precedes collapse. The
-0.12-second reveal matches the existing handle slide. Texture aspect is set
-explicitly so changing geometry also resizes a held still picture. Status sits
-6 mm past the actual D1 shelf's right end at 1 mm per point. Menu offsets use
+The menubar follows `HostFocus.active` along the top-left bezel's bend tangent.
+Its own rounded, chamfered panel uses the bezel's Palladium palette and lighting,
+with a 6 mm picture inset. The panel is 8 mm in front of the window, behind the
+15 mm bezel, and in sort band 51 below the focused bezel's 52. At rest only a
+4 mm lip shows above the bezel at 0.35 of the window width. The picture keeps its
+point scale as the visible crop slides upward and widens to `menusWidth` plus
+the inset. Controller hits on the lip, companion `hot`, or an uploaded visible
+menubar-anchored menu expand it; a 1-second grace period precedes collapse.
+The linear 0.12-second slide matches the handles. Covered pixels do not take
+host gaze/laser hits; visible hits map to the inset source picture. Held still
+pictures redraw with the changing crop as well as streamed pictures.
+
+The shelf extends at least 52 mm below the icon row as one piece. Its width still follows
+the icons. Status is right-aligned inside that band, with 6 mm padding, at 1 mm
+per point; it shrinks uniformly when too wide. A taller picture extends the band downward
+to preserve its natural scale.
+It has no separate rim. Status-menu placement uses the fitted scale and the item's
+horizontal position, with clearance above the whole shelf. Other menu offsets use
 `rect.minX - anchorRect.minX` and `rect.minY - anchorRect.maxY`, at the anchor's
-point scale, 1 cm forward. Status menus open upward; negative offsets from padded
-status surfaces are clamped to the shelf edge. With `anchor: "none"`, the focused
-window is the fallback anchor; absent anchors keep the surface hidden.
+point scale, 1 cm forward. With `anchor: "none"`, the focused window is the fallback
+anchor; absent anchors keep the surface hidden.
+
+Move pills and close discs start hidden, including on focused windows. A controller
+laser below the bezel in their row plus margin reveals them in 0.12 seconds; they
+wait 350 ms after leaving before fading out on that same cadence. Hover, press and
+an ongoing pill move hold them fully shown. Hidden controls and transparent padding
+pass host laser ownership through to surfaces behind. The existing tip light and
+pressed inner glow remain. Both hands contribute reveal zones.
 
 A validated version-1 `surface` text message carries `seq`, `visible`, `rect`,
 `anchor`, `anchorRect`, optional `menusWidth`, and `hot`. Auxiliary streams start
@@ -856,9 +875,11 @@ references, not passthrough. This is a monoscopic software composition of the
 host's submitted surfaces, not SteamVR compositor, optical, or worn evidence.
 
 The scene lists `panels` (`id`, `role: "window"`, `placement` in the existing
-version-1 pose format, `texture`, optional metre `height`, `focused`, `focusGlow`,
-`focusSnap`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
+version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `height`, `focused`, `focusGlow`,
+`focusSnap`, `pillLaser`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
 `status`, `dropdown` entries (`texture` and the existing `surface` message).
+An optional menubar `reveal` from 0 to 1 forces a transition frame for diagnostics.
+`pillLaser` aims the scene ray at that window's pill and reveals its below-edge controls.
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.
 Only one window may be focused. The fixture poses are explicitly arranged to
 show an even bend, unequal side bends, and unequal vertical bends; they are not
@@ -901,13 +922,71 @@ script turns the camera toward the midpoint of the surfaces' horizontal angular
 bounds, using the same yaw for both
 images. It retains the 100-degree FOV and all production sizes and positions.
 
-**Actual Spatial defaults overlap.** `ui/frame_macview.py::_show_native_window`
-calls `beside_workspace_pose` only in Desktop Mode. Spatial Mode launches window
-panels without an initial pose unless restoring a saved one; `PanelRunner`
-then uses `Placement` and `Overlay::recenter`: flat, 2.4 m wide, 2 m ahead of
-the HMD, with height from stream aspect. The capture script reproduces those
-unsaved defaults at an identity HMD pose, so the frontmost captured window is
-focused and occludes much of the others. It does not invent an arc or read saved
-headset poses. The separate `spatialLayout` arc is for switcher thumbnails,
+**The private capture script reproduces the earlier overlapping defaults.**
+It uses flat panels, 2.4 m wide and 2 m ahead of an identity HMD pose, with height
+from stream aspect, so the frontmost captured window is focused and occludes much
+of the others. It does not read saved headset poses. Current Spatial Mode assigns
+the L2 wall slots described below; use the wall fixtures to reproduce that layout.
+Desktop Mode still uses `beside_workspace_pose`. The separate `spatialLayout` arc is for switcher thumbnails,
 not streamed windows. Menubar scale follows the current host's `2 * panelWidth /
 uploadedWidthPixels` estimate; the status strip follows its fixed .001 m/point.
+
+### Spatial Wall (L2)
+
+The companion assigns stable lowest-free `--slot` numbers: focused/frontmost,
+left, right, then the same order below; slots 6–9 extend to ±50 degrees and
+10–13 to ±75 degrees. Restored poses bypass allocation. The native host computes
+placement in `wall.hpp`, shared with `--render-scene`'s panel `slot` field. Content
+fits a 0.64 × 0.40 m cell at 1.75 m, preserving aspect, at +11.5/-6.5 degree rows
+and 25 degree columns. The smaller content rectangle reserves space for the
+production bezel halo, expanded handles, move pill and close disc; nominal
+0.70 × 0.50 m content would overlap those controls. Pure tests project the visible
+chrome at its actual depth and check adjacent cells through slot 13, plus the D1
+shelf and status strip. Transparent raster padding is not visible chrome.
+
+A valid head pose supplies yaw and position once per Spatial session, ignoring
+pitch/roll. The Menu Bar panel generation identifies that session even when all
+windows close; a new generation resets an otherwise surviving shared host.
+Hand moves, resizing, bends, nudges and recentering detach the panel and save its
+pose. Generation-scoped release requests free its companion slot. Automatic wall
+placement is not written as a manually remembered pose. Pose readers accept
+widths down to 0.01 m so narrow portrait cells round-trip; manual resizing retains
+its normal 0.4 m minimum except for an already narrower panel.
+
+Reproduce mixed landscape/portrait evidence without captures or headset access:
+
+```sh
+# Use the approved task scratch directory for wall_scratch.
+PYTHONDONTWRITEBYTECODE=1 python3 native/scene/generate-wall-scenes.py "$wall_scratch"
+native/build/frame-workspace-native --render-scene "$wall_scratch/wall-6.json" native/evidence/spatial-wall-6.png
+native/build/frame-workspace-native --render-scene "$wall_scratch/wall-9.json" native/evidence/spatial-wall-9.png --fov 125
+```
+
+`--self-test` includes wall radius/order/facing, aspect/portrait pose round-trip,
+level session anchoring and projected chrome/shelf/status clearance. Host tests
+exercise slotted streamed panels, malformed slot isolation, release on recenter,
+saved-pose precedence and session generations; scene tests exercise the same
+slot geometry through the GL renderer. Companion tests cover focused ordering,
+freed-slot reuse, restored poses, release generations and launcher validation.
+These are synthetic/local checks; they do not establish worn readability or
+headset acceptance. Remove generated scene inputs and local build output after
+verification; retain only the six- and nine-window evidence PNGs.
+
+Validation snapshot (2026-10-21, local macOS build): the native build completed
+without warnings and both its built-in and explicit `--self-test` passed. Binary
+SHA-256 was `b67bf262a277778ec408d597b3a715e52d81c7db873532cc8bddc57ecf9266f7`.
+The required companion command ran 177 tests: 164 passed and 13 real-helper HTTP
+checks timed out; an earlier run instead encountered the shared helper's
+per-user Spatial lease. The native host test timed out waiting for its first
+panel, and the scene test stalled on its first render. A standalone SDL-only
+program reproduced the startup stall at `SDL_Init` → `NSApplication init` →
+SkyLight `SLSMainConnection`, before workspace geometry runs. Process-local
+background mode and a temporary LaunchServices app reproduced it; SDL's
+offscreen driver could not initialize OpenGL. No system settings or dependencies
+were changed. Host/scene integration and both wall PNGs remain pending a working
+GUI runtime; no renders or visual acceptance are claimed by this snapshot.
+Re-run the commands above and the required host/scene/companion suites after
+that blocker clears. Generated build output, fixtures and diagnostic logs are
+removed after retaining this compact reproduction record.
+Cleanup removed 7,151,477 bytes (6.82 MiB), including the local build, temporary
+scene inputs, adapter, standalone diagnostic programs and logs.

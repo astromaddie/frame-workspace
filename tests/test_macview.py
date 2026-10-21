@@ -1438,6 +1438,45 @@ class SpatialMode(unittest.TestCase):
         self.jobs_once()
         return result
 
+    def test_wall_slots_follow_focus_order_reuse_and_saved_pose_precedence(self):
+        self.windows = [self.window(90), self.window(42), self.window(3)]
+        self.start()
+        self.assertEqual(self.mv.native_panels["spatial:42"]["slot"], 0)
+        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.assertEqual(self.mv.native_panels["spatial:90"]["slot"], 1)
+        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.assertEqual(self.mv.native_panels["spatial:3"]["slot"], 2)
+        for launch in self.launches:
+            if launch[launch.index("--panel") + 1].startswith("w"):
+                self.assertIn("--slot", launch)
+            else:
+                self.assertNotIn("--slot", launch)
+        self.windows = [self.window(90), self.window(3), self.window(77)]
+        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.assertEqual(self.mv.native_panels["spatial:77"]["slot"], 0)
+        pose = {"version": 1, "width": .2, "distance": 1.75, "curvature": 0,
+                "matrix": [1,0,0,0,0,1,0,0,0,0,1,-1.75]}
+        self.mv.show("spatial:90", pose=pose)
+        self.assertIsNone(self.mv.native_panels["spatial:90"]["slot"])
+        self.assertIn("--pose", self.launches[-1])
+        self.assertNotIn("--slot", self.launches[-1])
+        self.windows.append(self.window(88))
+        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.assertEqual(self.mv.native_panels["spatial:88"]["slot"], 1)
+
+    def test_hand_movement_releases_only_current_generation_slot(self):
+        self.start()
+        panel = self.mv.native_panels["spatial:42"]
+        request = {"action": "wall_release", "key": panel["key"], "generation": "stale"}
+        self.mv._handle_frame_requests(json.dumps(request))
+        self.assertEqual(panel["slot"], 0)
+        request["generation"] = panel["generation"]
+        self.mv._handle_frame_requests(json.dumps(request))
+        self.assertIsNone(panel["slot"])
+        self.windows.append(self.window(43))
+        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.assertEqual(self.mv.native_panels["spatial:43"]["slot"], 0)
+
     def test_start_uses_shared_display_spatial_sources_and_shared_host(self):
         result = self.start()
         self.assertEqual(result["mode"], "spatial")

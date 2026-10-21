@@ -169,7 +169,8 @@ def run(binary):
                                 "urlFile": str(url), "overlayKey": "test.panel." + name, "overlayName": name,
                                 "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
                                 "poseFile": str(folder / "pose.json"), "requestDir": str(requests),
-                                "decoder": "software", "conversion": "gpu" if name == "b" else "cpu"}
+                                "decoder": "software", "conversion": "gpu" if name == "b" else "cpu",
+                                "slot": 0 if name == "a" else 8}
             with (root / "viewer.log").open("w+") as log:
                 process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--state-file", str(root / "host.json"),
                                             "--no-vr", "--action-manifest", "none", "--seconds", "60",
@@ -197,10 +198,20 @@ def run(binary):
                     atomic_json(specs / "a.json", panels["a"])
                     a = wait(lambda: ready("a"), "first panel ready")
                     assert a["hostPid"] == process.pid and a["textureWidth"] == 320
+                    assert a["wallSlot"] == 0 and abs(a["placement"]["width"] - .64) < 1e-5
+                    assert not (root / "a/pose.json").exists(), "automatic wall pose is not a remembered hand pose"
                     atomic_json(specs / "b.json", panels["b"])
                     b = wait(lambda: ready("b"), "second panel ready")
                     assert b["hostPid"] == process.pid and b["textureWidth"] == 400
                     assert b["conversionActive"] == "gpu"
+                    assert b["wallSlot"] == 8 and b["placement"]["matrix"][3] < -1
+                    assert b["placement"]["matrix"][7] < 0, "later slot joins lower left wall"
+                    assert not (root / "b/pose.json").exists()
+                    # Invalid slot types never replace the active generation.
+                    atomic_json(specs / "b.json", {**panels["b"], "generation": "bad-slot", "slot": True})
+                    time.sleep(.2)
+                    assert ready("b") and streams[1].connections == 1
+                    atomic_json(specs / "b.json", panels["b"])
                     spatial = {"mode": "spatial", "apps": [
                         {"bundleID": "test.app", "name": "Terminal", "icon": "", "running": True,
                          "windows": [{"key": "test.panel.a", "title": "One"},
@@ -231,6 +242,9 @@ def run(binary):
                     atomic_json(root / "spatial-ui.json", spatial)
                     wait(lambda: len(switches()) == 2, "next exact key selection")
                     assert switches()[-1]["key"] == "test.panel.a"
+                    wait(lambda: state("a").get("wallSlot") == -1, "recenter leaves wall")
+                    release = [json.loads(p.read_text()) for p in requests.glob("wall-*.json")]
+                    assert any(r.get("key") == "test.panel.a" and r.get("generation") == "first-a" for r in release)
                     spatial["switcher"].update(seq=10, chosen="missing.panel", open=False)
                     atomic_json(root / "spatial-ui.json", spatial)
                     time.sleep(.2)
@@ -287,6 +301,7 @@ def run(binary):
                     a = wait(lambda: ready("a", "replacement"), "panel replacement")
                     assert abs(a["placement"]["matrix"][3] - .1) < 1e-5
                     assert a["placement"]["bend"]["vertical"] and a["hostPid"] == process.pid
+                    assert a["wallSlot"] == -1, "saved pose takes precedence over spec slot"
                     streams[1].commands.put("close")
                     wait(lambda: state("b").get("exitReason") == "server-close", "server closes one panel")
                     assert ready("a", "replacement"), "server close must keep other panel alive"
@@ -411,6 +426,20 @@ def run_surfaces(binary):
                     atomic_json(root / "spatial.json", spatial)
                     time.sleep(1.1)
                     assert len(list(requests.glob("spatial-*.json"))) == 1, "auxiliary never a focus/switch target"
+                    # Closing every window does not end the auxiliary-owned wall session.
+                    def host(): return json.loads((root / "host.json").read_text())
+                    wait(lambda: host().get("wallSession") == "test" and host().get("wallAnchored"), "session anchor")
+                    window_spec = json.loads((specs / "window.json").read_text())
+                    (specs / "window.json").unlink()
+                    wait(lambda: state("window").get("state") == "stopped", "empty window wall")
+                    assert host()["wallSession"] == "test" and host()["wallAnchored"]
+                    atomic_json(specs / "window.json", {**window_spec, "generation": "later"})
+                    wait(lambda: state("window").get("hostGeneration") == "later" and state("window").get("ready"), "later window")
+                    assert host()["wallSession"] == "test"
+                    # A new Spatial session resets even with a retained Desktop window.
+                    menu_spec = json.loads((specs / "menubar.json").read_text())
+                    atomic_json(specs / "menubar.json", {**menu_spec, "generation": "next-session"})
+                    wait(lambda: host().get("wallSession") == "next-session", "new session anchor")
                     spatial["mode"] = "desktop"
                     atomic_json(root / "spatial.json", spatial)
                     wait(lambda: all(not state(n).get("surfaceVisible") for n in roles if n != "window"), "desktop hides auxiliaries")

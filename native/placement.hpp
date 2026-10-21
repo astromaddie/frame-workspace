@@ -115,7 +115,7 @@ inline bool parsePlacement(const std::string &text, Placement &p) {
     if (num(j, "version") != 1 || !a || json_object_array_length(a) != 12)
       return false;
     Placement candidate;
-    candidate.width = std::clamp(num(j, "width", 2.4), .4, 8.0);
+    candidate.width = std::clamp(num(j, "width", 2.4), .01, 8.0);
     candidate.distance = std::clamp(num(j, "distance", 2), .4, 10.0);
     // Optional: pose files written before curvature persistence omit it.
     const double curvature = num(j, "curvature", 0);

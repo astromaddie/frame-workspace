@@ -47,7 +47,7 @@ inline GLuint createCursorTexture() {
 
 // What the controls show; animated by the caller.
 struct ChromeState {
-  float reveal[handleCount] = {}; // 0 hidden .. 1 slid out (the pill and disc are always out)
+  float reveal[handleCount] = {}; // 0 hidden .. 1 revealed (pill/disc fade, rods slide)
   float wide[handleCount] = {};   // 0 thin .. 1 wide (corners and side grips)
   float held[handleCount] = {};   // 1 while dragged (or pressed, for the disc)
   bool tip = false;               // the laser's tip is on this layer
@@ -394,13 +394,13 @@ vec4 controls(vec2 p) {
   vec2 g = vec2(0.), M = vec2(0.), T = vec2(1., 0.), cen = vec2(0.);
   int best = -1;
   for (int i = 0; i < 10; i++) {
-    if (i >= 2 && uReveal[i] <= .001) continue;
+    if (uReveal[i] <= .001) continue;
     float d, r, e; vec2 gi, m, t, c;
     piece(i, p, d, gi, r, m, t, c, e);
     if (d < bestD) { bestD = d; best = i; g = gi; R = r; M = m; T = t; cen = c; ext = e; }
   }
   if (best < 0 || bestD > .02) return vec4(0.);
-  float reveal = best < 2 ? 1. : uReveal[best];
+  float reveal = uReveal[best];
   float held = uHeld[best];
   bool pressed = held > .5;
   float d = bestD;

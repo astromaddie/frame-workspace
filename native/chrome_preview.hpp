@@ -13,7 +13,6 @@ inline bool renderChromePreview(const std::string &scene, float windowWidth, con
   l.width = windowWidth;
   l.height = windowWidth * 0.75f;
   ChromeState s, frame;
-  s.reveal[handleIndex(Handle::Pill)] = s.reveal[handleIndex(Handle::Close)] = 1;
   auto out = [&](Handle h) { s.reveal[handleIndex(h)] = 1; };
   if (scene == "all") {
     for (int i = 0; i < handleCount; i++) s.reveal[i] = 1;
@@ -30,6 +29,7 @@ inline bool renderChromePreview(const std::string &scene, float windowWidth, con
       s.tipY = -(l.height / 2 + l.handleOffset()) + 0.01f;
     }
   } else if (scene == "close" || scene == "close-held") {
+    out(Handle::Pill); out(Handle::Close);
     s.tip = true;
     s.tipX = l.closeX() + 0.004f;
     s.tipY = l.rowY() + 0.006f;

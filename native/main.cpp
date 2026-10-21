@@ -6,6 +6,7 @@
 #include "spatial_render.hpp"
 #include "scene_render.hpp"
 #include "tests_spatial.hpp"
+#include "tests_wall.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -331,6 +332,27 @@ static int selfTest() {
     require(l.chromeWidth() > l.frameWidth() && l.chromeHeight() / 2 > -l.rowY(), "the controls layer covers them all");
     require(l.zone(0, hy + o) == Handle::BarTop && l.zone(0.03f, -hy - o) == Handle::BarBottom, "top and bottom grips");
     require(l.zone(l.pillX(), l.rowY()) == Handle::Pill, "the pill still wins below the bottom grip");
+    require(l.pillZone(l.pillX(),l.rowY()) && l.pillZone(l.closeX(),l.rowY()) &&
+            !l.pillZone(0,0) && !l.pillZone(hx,l.rowY()) && !l.pillZone(0,l.rowY()-.2f),
+            "pill reveal is confined to the row below the bezel");
+    require(l.zone(l.pillX(),l.rowY(),0) == Handle::None &&
+            l.zone(l.pillX(),l.rowY(),3) == Handle::Pill, "hidden pill passes hits through");
+    HandleReveal fade;
+    fade.update(false,false,false,0,.1f);
+    require(fade.amount==0, "controls hidden on first frame including focused windows");
+    fade.update(true,false,false,10,.06f);
+    require(std::abs(fade.amount-.5f)<1e-6, "pill fades in on handle reveal timing");
+    fade.update(true,false,false,70,.06f);
+    fade.update(false,false,false,419,.1f);
+    require(fade.amount==1, "pill grace holds briefly after leaving zone");
+    fade.update(false,false,false,421,.06f);
+    require(std::abs(fade.amount-.5f)<1e-6, "pill fades out after grace");
+    fade.update(false,true,false,500,.01f);
+    require(fade.amount==1, "hover keeps pill fully shown");
+    fade.update(false,false,true,2000,.01f);
+    require(fade.amount==1, "moving pill remains visible beyond zone");
+    fade.update(false,false,false,2400,.1f); fade.update(false,false,false,2500,.1f);
+    require(fade.amount==0, "pill returns to hidden after move");
     Placement start;  // 2 m ahead of the origin, facing it
     start.matrix = {{{1, 0, 0, 0}, {0, 1, 0, 1.5f}, {0, 0, 1, -2}}};
     // Controller at the origin pointing ahead (-z) at the pill.
@@ -421,6 +443,7 @@ static int selfTest() {
   }
   selfTestHost();
   selfTestSpatial();
+  selfTestWall();
   std::cout
       << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout and trigger gestures\n";
   return 0;
@@ -547,6 +570,8 @@ struct PanelOptions {
       presentMode = "paced", handoffMode = "fence", testYuvFormat, testYuvRange = "limited",
       testYuvColorSpace = "bt601", testYuvPattern = "sharp", exitReason = "running";
   PanelRole role = PanelRole::Window;
+  int slot = -1;
+  std::shared_ptr<WallAnchor> wall;
   bool test = false, noVR = false, testYuvOracle = false, foveation = false, gaze = false,
       diagnosticGaze = false, diagnosticScan = false, pocRewrite = true;
   double diagnosticU = 0, diagnosticV = 0, seconds = 0;
@@ -560,6 +585,16 @@ public:
   Pipeline pipe;
   GazeProducer gazeProducer;
   bool pendingRecenter = false, stopped = false;
+  bool inWall = false, wallPlaced = false;
+  void leaveWall() {
+    if (slot < 0) return;
+    inWall = false;
+    if (!requestDir.empty())
+      atomicWrite(requestDir + "/wall-" + hostGeneration + "-" + std::to_string(slot) + ".json",
+          "{\"action\":\"wall_release\",\"key\":" + jsonString(key) +
+          ",\"generation\":" + jsonString(hostGeneration) + "}");
+    slot = -1;
+  }
   int result = 1;
   double start = 0, lastState = 0, lastLog = 0, lastControl = 0, lastPattern = 0, previousState = 0;
   uint64_t uploads = 0, lastUploads = 0, lastDecoded = 0, submitErrors = 0;
@@ -599,7 +634,9 @@ public:
           throw std::runtime_error("invalid initial pose");
         persisted = true;
       }
-      pendingRecenter = !persisted;
+      inWall = !persisted && slot >= 0 && wall;
+      if (persisted && slot >= 0) leaveWall();
+      pendingRecenter = !persisted && !inWall;
       if (pendingRecenter)
         pendingRecenter = !overlay.recenter();
       overlay.apply();
@@ -610,7 +647,7 @@ public:
         if (!overlay.setCurvature(saved).applied)
           overlay.placement.curvature = saved; // keep the user's choice for a later runtime
       }
-      if (!pendingRecenter)
+      if (!pendingRecenter && !inWall)
         atomicWrite(poseFile, placementJSON(overlay.placement));
     }
     pipe.pocRewrite = pocRewrite;
@@ -646,6 +683,7 @@ public:
            ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
            "\",\"hostGeneration\":" + jsonString(hostGeneration) +
            ",\"hostPid\":" + std::to_string(hostGeneration.empty() ? 0 : getpid()) +
+           ",\"wallSlot\":" + std::to_string(inWall ? slot : -1) +
            ",\"role\":" + jsonString(roleName(role)) +
            ",\"surfaceVisible\":" + (overlay.surfaceVisible ? "true" : "false") +
            ",\"surfaceSeq\":" + std::to_string(surface.seq) +
@@ -784,7 +822,7 @@ public:
            ",\"controlRevision\":" + std::to_string(revision) +
            ",\"placement\":" + placementJSON(overlay.placement) + "}";
   }
-  bool tick(bool sharedEvents = true, bool wait = true, unsigned allowedHands = 3, bool consumeSqueeze = false) {
+  bool tick(bool sharedEvents = true, bool wait = true, unsigned allowedHands = 3, bool consumeSqueeze = false, unsigned revealHands = 3) {
     if (interrupted || pipe.stop || (seconds > 0 && nowMs() - start >= seconds * 1000)) return false;
     double now = nowMs();
     refreshSurface();
@@ -792,8 +830,10 @@ public:
       exitReason = overlay.exitReason;
       return false;
     }
-    if (overlay.updatePlacementInput(allowedHands, consumeSqueeze))
+    if (overlay.updatePlacementInput(allowedHands, consumeSqueeze, revealHands)) {
+      leaveWall();
       atomicWrite(poseFile, placementJSON(overlay.placement));
+    }
     if (overlay.closeRequested) {
       overlay.closeRequested = false;
       // A fixed, named request for the companion, which polls this folder;
@@ -889,10 +929,13 @@ public:
               }
               if (triple("move", 2, delta))
                 spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
-              if (spatial || bent || (requestedCurvature && curvatureResult.applied))
+              if (spatial || bent || placementChanged || (requestedCurvature && curvatureResult.applied)) {
+                leaveWall();
                 atomicWrite(poseFile, placementJSON(overlay.placement));
-              if (flag(j, "recenter"))
-                pendingRecenter = true;
+              }
+              if (flag(j, "recenter")) {
+                leaveWall(); pendingRecenter = true;
+              }
               if (auto requested = field(j, "present"))
                 if (json_object_is_type(requested, json_type_string)) {
                   std::string mode = json_object_get_string(requested);
@@ -973,6 +1016,17 @@ public:
       }
       done.clear();
     };
+    if (inWall) {
+      // Wait for valid tracking; all later windows use the same session anchor.
+      if (!wall->ready) return true;
+      const float aspect = picture ? float(picture->outputWidth()) / picture->outputHeight() :
+          (w > 0 && h > 0 ? float(w) / h : 16.f / 9.f);
+      auto placed = wallPlacement(slot, aspect, wall->matrix);
+      if (!wallPlaced || std::abs(placed.width - overlay.placement.width) > 1e-6f) {
+        overlay.placement = placed;
+        overlay.apply(); wallPlaced = true;
+      }
+    }
     if (picture) {
       double before = nowMs();
       overlay.stage(std::move(picture), done);
@@ -1060,6 +1114,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;
   PanelBook book;
+  auto wall = std::make_shared<WallAnchor>();
+  std::string wallSession;
   HostFocus focus;
   MenuStripReveal menuReveal;
   SpatialState spatial;
@@ -1101,6 +1157,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         auto &o = e.panel->overlay;
         if (!o.recenter())
           return false;
+        e.panel->leaveWall();
         o.apply();
         atomicWrite(e.spec.poseFile, placementJSON(o.placement));
         emit("{\"action\":\"switch\",\"key\":" + jsonString(key) + "}");
@@ -1126,6 +1183,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         ",\"ready\":" + (std::string(status) == "hosting" ? "true" : "false") +
         ",\"hostPid\":" + std::to_string(getpid()) + ",\"panels\":" + std::to_string(entries.size()) +
         ",\"runningPanels\":" + std::to_string(running) + ",\"activeKey\":" + jsonString(focus.active) +
+        ",\"wallSession\":" + jsonString(wallSession) +
+        ",\"wallAnchored\":" + (wall->ready ? std::string("true") : "false") +
         ",\"spatialMode\":" + (spatial.spatial ? std::string("true") : "false") +
         ",\"switcherOpen\":" + (spatial.open ? std::string("true") : "false") +
         ",\"spatialTiles\":" + std::to_string(tiles.size()) +
@@ -1179,6 +1238,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         for (auto it = invalid.begin(); it != invalid.end();) {
           if (!std::filesystem::exists(*it, error)) it = invalid.erase(it); else ++it;
         }
+        // Menu Bar belongs to the Spatial session, even when it has no windows.
+        // Its next generation also resets a host retained by Desktop panels.
+        std::string nextSession;
+        for (const auto &[path, spec] : desired)
+          if (spec.role == PanelRole::Menubar) nextSession = spec.generation;
+        if (nextSession != wallSession || desired.empty()) {
+          wall = std::make_shared<WallAnchor>(); wallSession = nextSession;
+        }
         auto changes = book.plan(desired);
         for (const auto &path : changes.remove) remove(path);
         for (const auto &path : changes.add) {
@@ -1199,6 +1266,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             options.initialPose = spec.initialPose; options.requestDir = spec.requestDir; options.hostGeneration = spec.generation;
             options.decoderMode = spec.decoder; options.conversionMode = spec.conversion;
             options.foveation = spec.foveation; options.gaze = spec.gaze; options.role = spec.role;
+            options.slot = spec.slot; options.wall = wall;
             // The host duration limits the process, rather than each later panel.
             options.seconds = 0;
             entry.panel = std::make_unique<PanelRunner>(options, session);
@@ -1235,7 +1303,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       } catch (...) {
       } // Atomic replacement may be temporarily unavailable.
     }
-    if (spatial.spatial) {
+    if (spatial.spatial || std::any_of(entries.begin(), entries.end(), [](const auto &entry) {
+          return entry.second.spec.slot >= 0;
+        })) {
       TrackedDevicePose_t head{};
       if (!session->noVR)
         session->system->GetDeviceToAbsoluteTrackingPose(
@@ -1245,6 +1315,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         head.mDeviceToAbsoluteTracking = spatialIdentity();
       }
       if (head.bPoseIsValid) {
+        wall->capture(head.mDeviceToAbsoluteTracking);
         auto next = spatialAnchor(head.mDeviceToAbsoluteTracking, 1.3f, 0);
         float dot =
             next.m[0][2] * anchor.m[0][2] + next.m[2][2] * anchor.m[2][2];
@@ -1269,7 +1340,6 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     bool grip[2]{session->hand[0].valid&&session->hand[0].squeeze,session->hand[1].valid&&session->hand[1].squeeze};
     navigation.update(spatial,grip);
     if(spatialAppIndex(spatial,menuID)<0)menuID.clear();
-    tiles = spatialLayout(spatial, anchor, menuID);
     // Host-owned auxiliary poses follow the focused bezel and the actual D1 shelf.
     PanelRunner *focused = nullptr, *menubar = nullptr, *status = nullptr;
     for (auto &[path, e] : entries) if (e.panel) {
@@ -1278,13 +1348,19 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       if (e.spec.role == PanelRole::Menubar) menubar = e.panel.get();
       if (e.spec.role == PanelRole::Status) status = e.panel.get();
     }
+    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr);
     const float mpp = focused && focused->w > 0 ? focused->overlay.placement.width * 2 / focused->w : .001f;
     bool openMenu = false;
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Menu && e.panel->surfaceConfigured &&
           surfacePictureReady(e.panel->surface, e.panel->uploadedSeq, e.panel->uploadedReceived) &&
           e.panel->surface.anchor == "menubar") openMenu = true;
-    menuReveal.update(menubar && menubar->surface.visible && menubar->surface.hot, openMenu, now, float((now-lastFrame)/1000));
+    bool menuPointed = false;
+    if (menubar && menubar->overlay.interactive())
+      for (const auto &hand : session->hand) if (hand.valid && surfacePick(hand.ray(), menubar->overlay.surfaceGeometry))
+        menuPointed = true;
+    menuReveal.update(menuPointed || (menubar && menubar->surface.visible && menubar->surface.hot), openMenu,
+                      now, float((now-lastFrame)/1000));
     auto place = [&](PanelRunner *panel, const PanelSurface &surface, bool valid) {
       if (!panel) return;
       panel->surfaceConfigured = spatial.spatial && valid && surface.height > 0 && surface.placement.width > 0;
@@ -1315,7 +1391,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     }
     std::vector<PanelSurface> auxiliaries;
     for (auto &[path, e] : entries) if (e.panel && e.panel->auxiliary() && e.panel->overlay.interactive())
-      auxiliaries.push_back({e.spec.key, e.panel->overlay.placement, e.panel->overlay.panelHeight(), e.spec.role});
+      {
+        auto s = e.panel->overlay.surfaceGeometry; s.key = e.spec.key;
+        auxiliaries.push_back(s);
+      }
     auto auxiliaryHit = [&](const EyeRay &ray) { return bool(pickPanel(ray, auxiliaries)); };
     int hot = -1;
     PanelPick uiHit;
@@ -1369,7 +1448,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       } catch (...) {
       }
     }
-    tiles = spatialLayout(spatial, anchor, menuID);
+    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr);
     if (now - lastSpatialDraw >= 33) {
       lastSpatialDraw = now;
       spatialRenderer.draw(
@@ -1383,28 +1462,18 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             return SpatialPicture{};
           });
     }
-    std::string handOwner[2];
+    std::string handOwner[2], revealOwner[2];
     for (int hand = 0; hand < 2; ++hand) {
-      if (session->hand[hand].valid && auxiliaryHit(session->hand[hand].ray())) continue;
-      if(dismissedMenu || (spatial.spatial&&spatial.open&&grip[hand]))continue;
-      if (session->hand[hand].valid &&
-          spatialPick(session->hand[hand].ray(), tiles) >= 0)
-        continue;
-      float nearest = 0;
-      bool nearestForeground = false;
+      if (!session->hand[hand].valid) continue;
+      HandRoute route(auxiliaryHit(session->hand[hand].ray()) || dismissedMenu ||
+          (spatial.spatial && spatial.open && grip[hand]) || spatialPick(session->hand[hand].ray(), tiles) >= 0);
       for (const auto &[path, entry] : entries) {
         if (!entry.panel || entry.spec.role != PanelRole::Window) continue;
         const auto &o = entry.panel->overlay;
-        if (o.draggingHand() == hand) { handOwner[hand] = path; break; }
-        if (!session->hand[hand].valid) continue;
-        float distance = o.interactionDistance(session->hand[hand].pose);
-        const bool foreground = o.spatialForeground;
-        if (distance > 0 && (handOwner[hand].empty() ||
-            (foreground && !nearestForeground) ||
-            (foreground == nearestForeground && distance < nearest))) {
-          nearest = distance; nearestForeground = foreground; handOwner[hand] = path;
-        }
+        route.consider(path, o.interactionDistance(session->hand[hand].pose),
+            o.revealDistance(session->hand[hand].pose), o.spatialForeground, o.draggingHand() == hand);
       }
+      handOwner[hand] = route.hit.key; revealOwner[hand] = route.reveal.key;
     }
     std::vector<PanelSurface> surfaces;
     for (auto &[path, entry] : entries) {
@@ -1412,7 +1481,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       auto &panel = *entry.panel;
       try {
         unsigned hands = (handOwner[0] == path ? 1u : 0u) | (handOwner[1] == path ? 2u : 0u);
-        if (!panel.tick(false, false, hands, spatial.spatial && spatial.open)) {
+        unsigned revealHands = (revealOwner[0] == path ? 1u : 0u) | (revealOwner[1] == path ? 2u : 0u);
+        if (!panel.tick(false, false, hands, spatial.spatial && spatial.open, revealHands)) {
           panel.finish();
           focus.remove(entry.spec.key); entry.panel.reset(); continue;
         }
@@ -1428,7 +1498,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     }
     auxiliaries.clear();
     for (auto &[path, e] : entries) if (e.panel && e.panel->auxiliary() && e.panel->overlay.interactive())
-      auxiliaries.push_back({e.spec.key, e.panel->overlay.placement, e.panel->overlay.panelHeight(), e.spec.role});
+      {
+        auto s = e.panel->overlay.surfaceGeometry; s.key = e.spec.key;
+        auxiliaries.push_back(s);
+      }
     EyeRay ray, eyes[2];
     gazeStatus = session->eyes ? session->eyes->sample(eyes) : "unavailable";
     bool eye = gazeStatus == "valid" && binocularRay(eyes, ray);

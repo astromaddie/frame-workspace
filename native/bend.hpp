@@ -106,10 +106,52 @@ inline BendSegment bendSegment(const BendShape &b, int index, float layerSpan, f
   return out;
 }
 
+// An offset rectangular region of a window layer. Its centre is a tangent
+// frame, but the seam remains at the window centre, not the region centre.
+struct BendRegion {
+  BendShape shape;
+  float x = 0, y = 0, depth = 0;
+  bool attached = false;
+  HmdMatrix34_t centre() const { return bendPointXY(shape, x, y, depth); }
+  HmdMatrix34_t point(float px, float py, float z = 0) const {
+    return multiply(inverseRigid(centre()), bendPointXY(shape, x + px, y + py, depth + z));
+  }
+  int segments(float width, float height) const {
+    const float mid = shape.vertical ? y : x, span = shape.vertical ? height : width;
+    return shape.split() && mid - span/2 < 0 && mid + span/2 > 0 ? 2 : 1;
+  }
+  BendSegment segment(int index, float width, float height) const {
+    const float mid = shape.vertical ? y : x, span = shape.vertical ? height : width;
+    const float start = mid - span/2, end = mid + span/2;
+    const bool two = segments(width, height) == 2;
+    const int half = two ? index : mid < 0 ? 0 : 1;
+    const float lo = two && index == 1 ? std::max(start, -.002f) : start;
+    const float hi = two && index == 0 ? std::min(end, .002f) : end;
+    // Continue each half across the tiny overlap using that half's radius.
+    auto b = shape; b.amount[0] = b.amount[1] = shape.amount[half];
+    BendSegment out;
+    const float R = b.radius(half), r = R > 0 ? std::max(R-depth,.05f) : 0;
+    out.width = (hi-lo) * (R > 0 ? r/R : 1);
+    out.curvature = R > 0 ? out.width/(2*float(M_PI)*r) : 0;
+    out.local = multiply(inverseRigid(centre()), bendPoint(b, (lo+hi)/2, shape.vertical ? x : y, depth));
+    out.bounds = {(lo-start)/span, 1, (hi-start)/span, 0};
+    if (shape.vertical) {
+      const HmdMatrix34_t turn{{{0,-1,0,0},{1,0,0,0},{0,0,1,0}}};
+      out.local = multiply(out.local, turn);
+    }
+    return out;
+  }
+  bool operator==(const BendRegion &o) const {
+    return attached == o.attached && shape.vertical == o.shape.vertical && shape.span == o.shape.span &&
+        shape.amount[0] == o.shape.amount[0] && shape.amount[1] == o.shape.amount[1] &&
+        x == o.x && y == o.y && depth == o.depth;
+  }
+};
+
 // Where a ray (panel local origin o, direction d) meets the surface `z` in
 // front of the window, in window coordinates. Past the window's edges the
 // outer halves continue, so handles beyond them are still hit.
-inline bool bendHit(const BendShape &b, const float o[3], const float d[3], float z, float &x, float &y, float *distance = nullptr) {
+inline bool bendHit(const BendShape &b, const float o[3], const float d[3], float z, float &x, float &y, float *distance = nullptr, float edgeMargin = .2f) {
   // Work in (along, across, depth).
   const float oa = b.vertical ? o[1] : o[0], oc = b.vertical ? o[0] : o[1], od = o[2];
   const float da = b.vertical ? d[1] : d[0], dc = b.vertical ? d[0] : d[1], dd = d[2];
@@ -135,8 +177,8 @@ inline bool bendHit(const BendShape &b, const float o[3], const float d[3], floa
       const float pa = oa + t * da, pd = od + t * dd;
       const float angle = std::atan2(pa, R - pd);
       if ((angle < 0) != (half == 0) && std::fabs(angle) > 1e-6f) continue;
-      // Only the window's own arc, and 20 cm past its edge for the handles.
-      if (std::fabs(angle) > std::min((b.span / 2 + 0.2f) / R, float(M_PI) * 0.98f)) continue;
+      // Only the requested arc, normally 20 cm past the window for handles.
+      if (std::fabs(angle) > std::min((b.span / 2 + edgeMargin) / R, float(M_PI) * 0.98f)) continue;
       if (bestT < 0 || t < bestT) { bestT = t; bestS = sign * std::fabs(angle) * R; bestC = oc + t * dc; }
     }
   }

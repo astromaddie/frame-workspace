@@ -3,6 +3,7 @@
 // and room are diagnostic stand-ins; panel geometry/materials are production.
 #include "overlay.hpp"
 #include "spatial_render.hpp"
+#include "wall.hpp"
 #include <sstream>
 
 namespace fw {
@@ -83,10 +84,12 @@ class SceneRenderer {
   // Reconstruct each actual SteamVR overlay, including its split seam and UV
   // bounds. Vertical source sampling is the inverse of the host's transpose.
   static void draw(const Layer &l) {
-    const auto &b = l.bend;
+    const auto &b = l.surface.region.attached ? l.surface.region.shape : l.bend;
     glBindTexture(GL_TEXTURE_2D, l.texture);
-    for (int half = 0; half < b.segments(); ++half) {
-      const auto seg = bendSegment(b, half, b.vertical ? l.height : l.width, l.depth);
+    const int count = l.surface.region.attached ? l.surface.region.segments(l.width,l.height) : b.segments();
+    for (int half = 0; half < count; ++half) {
+      const auto seg = l.surface.region.attached ? l.surface.region.segment(half,l.width,l.height) :
+          bendSegment(b, half, b.vertical ? l.height : l.width, l.depth);
       const float across = b.vertical ? l.width : l.height;
       const float radius = seg.curvature > 1e-4f ? seg.width / (2 * float(M_PI) * seg.curvature) : 0;
       glPushMatrix(); matrix(multiply(l.surface.placement.matrix, seg.local));
@@ -99,7 +102,8 @@ class SceneRenderer {
         float tu = seg.bounds.uMin + u * (seg.bounds.uMax - seg.bounds.uMin);
         for (int top : {1, 0}) {
           float tv = top ? 1 - seg.bounds.vMin : 1 - seg.bounds.vMax;
-          glTexCoord2f(b.vertical ? tv : tu, b.vertical ? 1 - tu : tv);
+          const bool sourceTurned = b.vertical && !l.surface.region.attached;
+          glTexCoord2f(sourceTurned ? tv : tu, sourceTurned ? 1 - tu : tv);
           glVertex3f(px, (top ? .5f : -.5f) * across, pz);
         }
       }
@@ -138,10 +142,16 @@ public:
       s.key = str(p, "id");
       if (str(p, "role") != "window") throw std::runtime_error("panel role must be window");
       auto pose = field(p, "placement");
-      if (!pose || !parsePlacement(json_object_to_json_string(pose), s.placement))
-        throw std::runtime_error("invalid scene placement");
       Image pic = load(str(p, "texture"));
-      s.height = float(num(p, "height", s.placement.width * pic.height / pic.width));
+      const int slot = wallSlot(p);
+      if (pose) {
+        if (!parsePlacement(json_object_to_json_string(pose), s.placement))
+          throw std::runtime_error("invalid scene placement");
+      } else if (slot >= 0)
+        s.placement = wallPlacement(slot, float(pic.width) / pic.height, spatialIdentity());
+      else throw std::runtime_error("scene needs placement or slot");
+      s.height = slot >= 0 && !pose ? s.placement.width * pic.height / pic.width :
+          float(num(p, "height", s.placement.width * pic.height / pic.width));
       if (!std::isfinite(s.height) || s.height <= 0 || s.height > 8)
         throw std::runtime_error("invalid scene panel height");
       bool selected = flag(p, "focused");
@@ -153,12 +163,20 @@ public:
       frame.focused = selected;
       frame.focusGlow = float(num(p, "focusGlow", 0));
       frame.focusSnap = float(num(p, "focusSnap", 1));
-      controls.reveal[handleIndex(Handle::Pill)] = controls.reveal[handleIndex(Handle::Close)] = 1;
+      if (flag(p, "pillLaser")) {
+        controls.tip = true; controls.tipX = layout.pillX(); controls.tipY = layout.rowY();
+        const unsigned shown = layout.revealed(controls.tipX, controls.tipY);
+        for (int h = 0; h < handleCount; ++h) if (shown & (1u << h)) controls.reveal[h] = 1;
+        tip = multiply(s.placement.matrix, bendPointXY(bendShape(s.placement, s.height),
+                        controls.tipX, controls.tipY, controlsDepth + .002f));
+      }
       if (selected) {
         focused = s; focusedPixels = pic.width;
+        if (!flag(p, "pillLaser")) {
         frame.tip = true; frame.tipX = layout.width * .30f; frame.tipY = -layout.height * .23f;
         tip = multiply(s.placement.matrix, bendPointXY(bendShape(s.placement, s.height),
                         frame.tipX, frame.tipY, .002f));
+        }
       }
       for (int layer = 0; layer < 2; ++layer) {
         float w = layer ? layout.chromeWidth() : layout.frameWidth();
@@ -181,7 +199,12 @@ public:
     }
     // HMD pose is the scene's room origin. Moving the diagnostic eye does not
     // recenter existing panels or the head-anchored shelf.
-    auto tiles = spatialLayout(state, spatialAnchor(spatialIdentity(), 1.3f, 0));
+    SurfaceMessage statusMessage;
+    if (auto statusItem = field(scene, "status")) {
+      auto metadata = field(object(statusItem), "surface");
+      if (metadata) statusMessage = SurfaceMessage::parse(json_object_to_json_string(metadata));
+    }
+    auto tiles = spatialLayout(state, spatialAnchor(spatialIdentity(), 1.3f, 0), "", &statusMessage);
     SpatialRenderer shelf(session);
     shelf.draw(state, tiles, -1, 0, 0, false, root.string(),
                [](const std::string &) { return SpatialPicture{}; });
@@ -201,7 +224,7 @@ public:
       const float mpp = focusedPixels ? focused.placement.width * 2 / focusedPixels : .001f;
       if (std::string(name) == "menubar") {
         if (!focusedPixels) throw std::runtime_error("menubar needs a focused window");
-        menubar = s = menuStripPlacement(focused, m, mpp, m.hot ? 1.f : 0.f);
+        menubar = s = menuStripPlacement(focused, m, mpp, float(num(item, "reveal", m.hot ? 1.f : 0.f)));
       } else if (std::string(name) == "status") {
         status = s = statusStripPlacement(tiles, m, .001f);
       } else {
@@ -210,8 +233,10 @@ public:
       }
       if (s.height <= 0 || s.placement.width <= 0) throw std::runtime_error("missing auxiliary anchor");
       auto pic = load(str(item, "texture")); GLuint t = texture();
-      material.render(pic.texture, t, pic.width, pic.height);
-      add(s, t, std::string(name) == "dropdown" ? 104 : 102);
+      const bool transposed = s.region.attached && s.region.shape.vertical;
+      material.render(pic.texture, t, transposed ? pic.height : pic.width,
+          transposed ? pic.width : pic.height, s, transposed, false);
+      add(s, t, std::string(name) == "dropdown" ? 104 : std::string(name) == "menubar" ? 51 : 102);
     }
     if (focusedPixels) {
       GLuint cursor = createCursorTexture(); textures.push_back(cursor);
