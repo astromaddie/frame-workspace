@@ -13,11 +13,13 @@ pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.j
 # `--name` is the panel title SteamVR shows; `--initial-pose JSON` places a new
 # panel (for example beside the Workspace) until it has a saved pose. `--pose`
 # replaces the saved pose for the next start, after the previous viewer stops.
+role="window"
 panel="" panel_name="" initial_pose="" pose_override="" expected_generation=""
 initial_pose_set=0 pose_override_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --panel) [ "$#" -ge 2 ] || exit 2; panel=$2; shift 2 ;;
+    --role) [ "$#" -ge 2 ] || exit 2; role=$2; shift 2 ;;
     --name) [ "$#" -ge 2 ] || exit 2; panel_name=$2; shift 2 ;;
     --generation) [ "$#" -ge 2 ] || exit 2; expected_generation=$2; shift 2 ;;
     --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; initial_pose_set=1; shift 2 ;;
@@ -25,6 +27,17 @@ while [ "$#" -gt 0 ]; do
     *) break ;;
   esac
 done
+case "$role" in
+  window|menubar|status|menu) ;;
+  *) echo '--role must be window, menubar, status or menu.' >&2; exit 2 ;;
+esac
+if [ "$role" != window ]; then
+  [ "${FRAME_NATIVE_HOST:-}" = 1 ] || { echo 'Auxiliary roles require FRAME_NATIVE_HOST=1.' >&2; exit 2; }
+  case "$role:$panel" in menubar:menubar|status:status|menu:menu[0-3]) ;;
+    *) echo 'Auxiliary roles require their reserved panel ID.' >&2; exit 2 ;; esac
+  [ "$pose_override_set" -eq 0 ] && [ "$initial_pose_set" -eq 0 ] || {
+    echo 'Auxiliary panels have no saved or initial pose.' >&2; exit 2; }
+fi
 if [ "$pose_override_set" -eq 1 ]; then
   [ "${1:-}" = start ] || { echo '--pose is only valid with start.' >&2; exit 2; }
   [ "$initial_pose_set" -eq 0 ] || { echo '--pose conflicts with --initial-pose.' >&2; exit 2; }
@@ -129,7 +142,7 @@ import tempfile
 import time
 
 (mode, panel, uid, legacy_unit, host_root_raw, panel_runtime_raw, pose_path_raw, key,
- expected_generation, *start_args) = sys.argv[1:]
+ expected_generation, role, *start_args) = sys.argv[1:]
 host_root = pathlib.Path(host_root_raw)
 panel_runtime = pathlib.Path(panel_runtime_raw)
 pose_path = pathlib.Path(pose_path_raw)
@@ -375,6 +388,7 @@ def start_panel():
     os.chmod(request_dir, 0o700)
     spec = {
         'version': 1,
+        'role': role,
         'generation': generation,
         'urlFile': str(url_path),
         'overlayKey': key,
@@ -387,7 +401,7 @@ def start_panel():
         'decoder': decoder,
         'conversion': conversion,
     }
-    if foveation in ('1', 'gaze'):
+    if role == 'window' and foveation in ('1', 'gaze'):
         spec['foveation'] = foveation == '1'
         spec['gaze'] = foveation == 'gaze'
     try:
@@ -461,7 +475,7 @@ case "${1:-}" in
     # runtime files; its saved pose stays for next time.
     [ "$#" -eq 1 ] || exit 2
     if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
-      host_panel stop "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "$expected_generation"
+      host_panel stop "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "$expected_generation" "$role"
       exit $?
     fi
     systemctl --user stop "$unit" >/dev/null 2>&1 || true
@@ -839,7 +853,7 @@ if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
     echo 'Diagnostic gaze is not supported by the native host panel route.' >&2
     exit 2
   fi
-  host_panel start "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "" \
+  host_panel start "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "" "$role" \
     "$url" "$w" "$h" "$tag" "$decoder" "$conversion" "$panel_name" "$initial_pose" \
     "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}"
   exit $?

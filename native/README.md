@@ -179,6 +179,7 @@ paths, unique window key and files; `initialPose` is an optional pose JSON strin
 {
   "version": 1,
   "generation": "fc12345678",
+  "role": "window",
   "urlFile": "/run/user/1000/frame-workspace/panel-w42/view-fc12345678.url",
   "overlayKey": "com.frame-workspace.native.1000.panel-w42",
   "overlayName": "Terminal",
@@ -709,13 +710,102 @@ its visual state changes. Thumbnail content refreshes even if the source reuses
 the same GL texture name; texture storage is allocated only on size changes.
 No device performance claim follows from these implementation choices.
 
+### Shared Display Surfaces (Option B)
+
+The [shared-display contract](../docs/frame-workspace/spatial-shared-contract.md)
+adds `role: "window" | "menubar" | "status" | "menu"` to host specs; omitted
+roles remain windows. The launcher accepts `--role ROLE` before its command.
+Auxiliary roles require `FRAME_NATIVE_HOST=1` and reserved IDs `menubar`, `status`,
+and `menu0` through `menu3`. Source names `menu:0` through `menu:3` remain in the
+stream URL. Invalid roles, mismatched auxiliary IDs, and auxiliary `--pose` or
+`--initial-pose` options fail before service or file mutations. Existing window
+launches keep their standalone or opt-in host route. Auxiliary launch specs omit
+foveation/gaze negotiation, which applies to window streams.
+
+Auxiliary overlays have no placement input, chrome/handle overlays, initial or
+saved pose. Pose controls cannot move them. They are excluded from focus and
+switcher selection, but consume gaze and controller rays before underlying
+windows or shelf tiles. Desktop Mode hides them. The streamed texture itself has
+a thin, rounded silver-lavender Palladium rim, using `SurfaceRenderer` on the
+same upload path as production video; there are no separate asset files.
+
+The menubar follows `HostFocus.active` along the top-left bezel, including its
+bend tangent. It is 0.35 of the focused window's width and 60% of the strip height
+at rest. `hot` or an uploaded visible menubar-anchored menu expands it to
+`menusWidth`; a 1-second grace period after both clear precedes collapse. The
+0.12-second reveal matches the existing handle slide. Texture aspect is set
+explicitly so changing geometry also resizes a held still picture. Status sits
+6 mm past the actual D1 shelf's right end at 1 mm per point. Menu offsets use
+`rect.minX - anchorRect.minX` and `rect.minY - anchorRect.maxY`, at the anchor's
+point scale, 1 cm forward. Status menus open upward; negative offsets from padded
+status surfaces are clamped to the shelf edge. With `anchor: "none"`, the focused
+window is the fallback anchor; absent anchors keep the surface hidden.
+
+A validated version-1 `surface` text message carries `seq`, `visible`, `rect`,
+`anchor`, `anchorRect`, optional `menusWidth`, and `hot`. Auxiliary streams start
+hidden. A show/re-show waits for a successfully uploaded picture whose sequence
+is strictly newer than the fence and which arrived after the message. Hide is
+immediate on the next host iteration. Older metadata is ignored, 32-bit sequence
+wrap is supported, and same-sequence hot-only updates retain an eligible held
+picture. Reconnect invalidates previous metadata. State exposes `role`,
+`surfaceVisible`, `surfaceSeq`, `surfaceRevision`, `uploadedSeq`, and
+`surfaceHeight` for local diagnostics. A Spatial Mode focus snap writes the
+existing companion request and queues `{"t":"focus","u":...,"v":...}` on the
+selected window's stream; switcher selection sends centre coordinates.
+
+**Contract limitation:** the current host spec/hello has no window point width.
+The host estimates the focused window's metres per point as
+`2 * panelWidthMetres / uploadedWidthPixels`, matching uncapped 2x capture. A
+stream downscaled by its encoder cap makes that estimate too large. Exact scale
+requires the helper/companion packages to carry the actual current window point
+width (or point-to-pixel scale) to the native host; those files are outside this
+package. Placement helpers accept an exact metres-per-point value already.
+No live helper or headset run was performed for this package.
+
+The four compact PNGs in `native/evidence/` are synthetic Mac content rendered
+through the production surface material, inspected locally on Apple M4 OpenGL:
+
+```sh
+native/build/frame-workspace-native --render-spatial-style menubar-slim native/evidence/menubar-slim.png
+native/build/frame-workspace-native --render-spatial-style menubar-wide native/evidence/menubar-wide.png
+native/build/frame-workspace-native --render-spatial-style status native/evidence/status.png
+native/build/frame-workspace-native --render-spatial-style menu native/evidence/menu.png
+```
+
+`menu` now names the streamed dropdown PNG scene; `app-menu` preserves the older
+D1 app-action-menu PPM diagnostic. These images establish renderer appearance,
+not SteamVR presentation, tracked ray input, real Mac menu discovery/input, focus
+latency, or worn comfort.
+
+**Local verification (2026-10-21):** `scripts/build-workspace-native.sh` and its
+self-test passed with zero warnings. On macOS the unchanged Linux build script
+uses a temporary `gl.pc` with `Libs: -framework OpenGL` and
+`Cflags: -DGL_SILENCE_DEPRECATION`; the temporary compiler wrapper marks Homebrew
+include directories as system headers to suppress dependency-only json-c
+unused-function warnings. This is an Apple M4 development build, not a Linux
+ARM64 or headset build. `python3 native/tests_host.py
+native/build/frame-workspace-native` passed both integration scenarios: existing
+host lifecycle/still/live/pose isolation, and four roles across five loopback
+streams with surface fences, hide/re-show, hot updates, focus text and companion
+request delivery, absent auxiliary pose files, ignored pose controls and
+Desktop Mode isolation. `PYTHONPATH=tests python3 -m unittest
+tests.test_native_pose_launcher` passed 20 tests. The self-test additionally
+covers role parsing, focus exclusion, placement, sequence wrap and reveal timing.
+Temporary binaries and fixtures are removed after verification; retain these
+commands and the four small PNGs to reproduce the checks. Use `TMPDIR` and
+`FRAME_NATIVE_TEST_TMP` to direct integration/launcher scratch to an isolated
+folder; `PYTHONDONTWRITEBYTECODE=1` avoids test bytecode files. Cleanup removed
+6.73 MiB of generated binaries, debug symbols, build metadata and scratch.
+All loopback processes and sockets were closed; the four PNGs total about 52 KiB
+on disk and remain as the current review deliverables.
+
 Local diagnostic scenes use the production renderer:
 
 ```sh
 native/build/frame-workspace-native --render-spatial-style rest /tmp/spatial.ppm
 native/build/frame-workspace-native --render-spatial-style hover /tmp/hover.ppm
 native/build/frame-workspace-native --render-spatial-style held /tmp/held.ppm
-native/build/frame-workspace-native --spatial-state /tmp/fixture/spatial-ui.json --render-spatial-style menu /tmp/menu.ppm
+native/build/frame-workspace-native --spatial-state /tmp/fixture/spatial-ui.json --render-spatial-style app-menu /tmp/menu.ppm
 native/build/frame-workspace-native --render-chrome focus-glow /tmp/glow.ppm
 native/build/frame-workspace-native --render-chrome focus-snap /tmp/snap.ppm
 ```

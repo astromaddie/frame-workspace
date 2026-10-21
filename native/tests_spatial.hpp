@@ -6,6 +6,89 @@ inline void selfTestSpatial() {
     if (!ok)
       throw std::runtime_error(why);
   };
+  const std::string spec = R"({"version":1,"generation":"test","urlFile":"/tmp/view","overlayKey":"panel.test","controlFile":"/tmp/control","stateFile":"/tmp/state","poseFile":"/tmp/pose","requestDir":"/tmp/requests"})";
+  check(PanelSpec::parse(spec).role == PanelRole::Window, "default window role");
+  for (const auto &role : {"window", "menubar", "status", "menu"}) {
+    auto j = json(spec);
+    json_object_object_add(j.get(), "role", json_object_new_string(role));
+    check(PanelSpec::parse(json_object_to_json_string(j.get())).role == panelRole(role), "panel role parsing");
+  }
+  for (const auto &bad : {"other", "Window", "", "true"}) {
+    auto j = json(spec);
+    json_object_object_add(j.get(), "role", json_object_new_string(bad));
+    bool rejected = false;
+    try { PanelSpec::parse(json_object_to_json_string(j.get())); } catch (...) { rejected = true; }
+    check(rejected, "invalid role rejected");
+  }
+  for (auto value : {"null", "true", "1", "[]", "{}"}) {
+    auto j = json(spec), invalid = json(value);
+    json_object_object_add(j.get(), "role", json_object_get(invalid.get()));
+    bool rejected = false;
+    try { PanelSpec::parse(json_object_to_json_string(j.get())); } catch (...) { rejected = true; }
+    check(rejected, "non-string panel role rejected");
+  }
+  auto metadata = SurfaceMessage::parse(R"({"t":"surface","v":1,"seq":7,"visible":true,"rect":[10,20,600,36],"anchor":"menubar","anchorRect":[10,20,600,36],"menusWidth":600,"hot":true})");
+  metadata.received = 10;
+  check(!surfacePictureReady(metadata, 7, 11) && !surfacePictureReady(metadata, 6, 11) &&
+        !surfacePictureReady(metadata, 8, 9) && surfacePictureReady(metadata, 8, 11),
+        "surface requires uploaded newer sequence arriving after message");
+  auto hidden = SurfaceMessage::parse(R"({"t":"surface","v":1,"seq":8,"visible":false})");
+  check(!surfacePictureReady(hidden, 9, 12) && sequenceNewer(0, UINT32_MAX), "hide and sequence wrap");
+  for (const auto &bad : {R"({"t":"surface","v":2,"seq":0,"visible":false})",
+                         R"({"t":"surface","v":1,"seq":-1,"visible":false})",
+                         R"({"t":"surface","v":1,"seq":1.5,"visible":false})",
+                         R"({"t":"surface","v":1,"seq":1,"visible":true,"rect":[0,0,0,36]})"}) {
+    bool rejected = false;
+    try { SurfaceMessage::parse(bad); } catch (...) { rejected = true; }
+    check(rejected, "malformed surface metadata rejected");
+  }
+  PanelSurface window{"window", {}, .8f};
+  window.placement.width = 1.2f; window.placement.matrix = spatialIdentity();
+  auto slim = menuStripPlacement(window, metadata, .001f, 0);
+  auto wide = menuStripPlacement(window, metadata, .001f, 1);
+  check(std::abs(slim.placement.width - .42f) < 1e-6 && std::abs(slim.height - .0216f) < 1e-6 &&
+        std::abs(wide.placement.width - .6f) < 1e-6 && std::abs(wide.height - .036f) < 1e-6,
+        "menu strip slim and full point scale");
+  check(std::abs(wide.placement.matrix.m[0][3] - wide.placement.width/2 + .6f) < 1e-6 &&
+        wide.placement.matrix.m[1][3] > .4f, "menu strip follows top left bezel");
+  MenuStripReveal reveal;
+  reveal.update(true, false, 0, .12f);
+  check(reveal.wide > .8f, "menu strip uses quick chrome reveal");
+  reveal.update(false, true, 800, .1f);
+  reveal.update(false, false, 1799, .1f);
+  check(reveal.wide == 1, "visible menu and one second grace hold wide");
+  reveal.update(false, false, 1801, .1f);
+  reveal.update(false, false, 1901, .1f);
+  check(reveal.wide == 0, "menu strip slims after grace");
+  SpatialState shelfState; shelfState.spatial = true;
+  shelfState.apps.push_back({"app", "App", "", true, false});
+  auto shelfTiles = spatialLayout(shelfState, spatialIdentity());
+  auto status = statusStripPlacement(shelfTiles, metadata, .001f);
+  check(status.height > 0 && status.placement.matrix.m[0][3] > .3f &&
+        std::abs(status.placement.matrix.m[1][3] + .48f) < 1e-6,
+        "status strip uses actual shelf right end");
+  check(statusStripPlacement({}, metadata, .001f).height == 0, "no detached status without shelf");
+  metadata.rect = {40, 62, 200, 120}; metadata.anchorRect = {10,20,600,36};
+  auto dropdown = surfacePlacement(wide, metadata, .001f);
+  check(std::abs(dropdown.placement.matrix.m[0][3] - (wide.placement.matrix.m[0][3] - .3f + .03f + .1f)) < 1e-6 &&
+        std::abs(dropdown.placement.matrix.m[1][3] - (wide.placement.matrix.m[1][3] - .018f - .006f - .06f)) < 1e-6 &&
+        std::abs(dropdown.placement.matrix.m[2][3] - wide.placement.matrix.m[2][3] - .01f) < 1e-6,
+        "surface offset uses global anchor bottom and one centimetre front");
+  metadata.anchor = "status";
+  auto above = surfacePlacement(status, metadata, .001f);
+  check(above.placement.matrix.m[1][3] - above.height/2 > status.placement.matrix.m[1][3] + status.height/2,
+        "status anchored menu opens above shelf");
+  metadata.rect.y = 20;
+  above = surfacePlacement(status, metadata, .001f);
+  check(above.placement.matrix.m[1][3] - above.height/2 >= status.placement.matrix.m[1][3] + status.height/2 - 1e-6,
+        "padded status panel cannot open below shelf");
+  window.placement.matrix.m[2][3] = -2;
+  auto auxiliary = window; auxiliary.key = "auxiliary"; auxiliary.role = PanelRole::Menu;
+  auxiliary.placement.matrix.m[2][3] = -1;
+  EyeRay focusRay{{0,0,0},{0,0,-1}};
+  check(spatialPanelPick(focusRay, {window, auxiliary}, "auxiliary").key == "window" &&
+        pickPanel(focusRay, {auxiliary}).key == "auxiliary" && !focusSurface(auxiliary),
+        "auxiliary takes hits but is excluded from focus surfaces");
   Placement near, far;
   near.matrix = spatialIdentity(); near.matrix.m[2][3] = -1;
   far.matrix = spatialIdentity(); far.matrix.m[2][3] = -2;
