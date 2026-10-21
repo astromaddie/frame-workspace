@@ -1,0 +1,157 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Menu Bar Mockups</title>
+<style>
+:root{--top:#fbfafd;--face:#e3dfea;--bottom:#cbc4d6;--border:#8d82a0;--ink:#776a8a;--light:#fff;--shade:#a296b3;--blue:#1a9fff}
+*{box-sizing:border-box}
+body{margin:0;background:#15131a;color:#e9e4ee;font:14px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,sans-serif;padding:40px 44px 48px;width:1720px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700}
+h2{font-size:21px;margin:40px 0 4px;font-weight:650}
+.sub{color:#a59cae;margin:0 0 18px;max-width:1260px}
+.row{display:flex;gap:22px}
+.card{background:linear-gradient(#1f1c26,#18161d);border:1px solid #2c2834;border-radius:16px;padding:0 0 16px;overflow:hidden;flex:1}
+.label{padding:0 20px;margin-top:12px;font-weight:650;font-size:16px}
+.note{padding:0 20px;color:#a59cae;font-size:13px;margin-top:2px}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;color:#6cc0ff;margin-left:8px;vertical-align:2px}
+/* room */
+.scene{height:430px;perspective:1100px;perspective-origin:50% 38%;position:relative;overflow:hidden;
+  background:radial-gradient(120% 90% at 50% 0%,#3a3646 0%,#24212c 45%,#141218 100%)}
+.scene::after{content:"";position:absolute;left:0;right:0;bottom:0;height:90px;background:linear-gradient(transparent,#0d0c11cc)}
+.world{position:absolute;left:50%;top:46%;transform-style:preserve-3d}
+.world *{transform-style:preserve-3d}
+.win{position:absolute;border-radius:6px;background:#1d1f27;box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 18px 30px #0008;overflow:hidden}
+.win .bar{height:12px;background:#2a2d37;display:flex;gap:4px;align-items:center;padding-left:6px;font-size:8px;color:#9aa}
+.win .bar i{width:5px;height:5px;border-radius:50%;background:#ff5f57}.win .bar i:nth-child(2){background:#febc2e}.win .bar i:nth-child(3){background:#28c840}
+.win .body,.thumb .body{padding:8px;display:grid;gap:4px}
+.win .body b,.thumb .body b{display:block;height:4px;border-radius:2px;background:#5d6a85}
+.thumb.light{background:#f4f2f7}.thumb.light .body b{background:#c9c3d4}
+.win.light{background:#f4f2f7}.win.light .bar{background:#e4e0ea}.win.light .body b{background:#c9c3d4}
+.win .menubar{height:9px;background:#2f3240cc;font-size:7px;color:#cfd;padding-left:6px;line-height:9px}
+.win.focus{box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 0 0 9px #1a9fff55,0 18px 30px #0008}
+.cursor{position:absolute;width:0;height:0;border-left:6px solid #fff;border-right:4px solid transparent;border-bottom:11px solid transparent;filter:drop-shadow(0 1px 1px #000)}
+.floor{position:absolute;left:10%;right:10%;bottom:20px;height:60px;border-radius:50%;background:radial-gradient(closest-side,#0008,transparent);filter:blur(8px)}
+/* palladium metal */
+.pal{background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);border:1px solid var(--border);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),inset 2px 2px 0 #ffffff70,0 2px 3px #0005,0 8px 18px #0007}
+.icon{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;color:#fff;
+  box-shadow:inset 0 1px 0 #ffffff55,0 2px 4px #0006;position:relative}
+.icon .dot{position:absolute;bottom:-7px;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:#5d5170}
+.hot{box-shadow:inset 0 1px 0 #ffffff55,0 0 0 2px #fff,0 0 12px 3px #1a9fffaa}
+.tipmenu{position:absolute;border-radius:10px;padding:6px 0;min-width:150px;font-size:12px;color:#3a2f47}
+.tipmenu div{padding:4px 14px}.tipmenu div.sel{background:radial-gradient(circle 30px at 30% 50%,#c4e4ffd0,transparent);color:#1a4f86}
+.thumb{position:absolute;border-radius:8px;overflow:hidden;background:#1d1f27;box-shadow:0 0 0 2px #e3dfea,0 12px 22px #0009}
+.caption{position:absolute;font-size:9px;color:#3a2f47;text-align:center;left:6px;right:6px;bottom:4px;background:#e3dfeae6;border-radius:4px}
+/* dash panel toggle */
+.dash{width:88%;margin:26px auto 0;border-radius:18px;background:linear-gradient(#1b2838,#0e141b);padding:22px 26px;box-shadow:0 20px 40px #0008}
+.dash h4{margin:0 0 14px;font-size:11px;letter-spacing:.2em;color:#8f98a0}
+.dcard{background:#ffffff0b;border:1px solid #ffffff12;border-radius:12px;padding:16px 18px}
+.dcard .t{font-size:19px;font-weight:600;color:#fff}.dcard .s{font-size:13px;color:#59bf40;margin:4px 0 12px}
+.seg{display:inline-flex;background:#0006;border-radius:10px;padding:3px;gap:3px}
+.seg span{padding:9px 18px;border-radius:8px;color:#c7d0d8;font-size:14px}
+.seg span.on{background:linear-gradient(90deg,#47bfff,#1a44c2);color:#fff;font-weight:600}
+.btn{display:inline-block;padding:10px 18px;border-radius:8px;background:#676f7b3d;color:#dcdedf;font-size:14px;margin-left:10px}
+.btn.primary{background:linear-gradient(90deg,#47bfff,#1a44c2);color:#fff;font-weight:600}
+.macpage{width:88%;margin:26px auto 0;border-radius:12px;background:#f5f5f7;color:#1d1d1f;padding:18px 22px;box-shadow:0 20px 40px #0008;font-size:13px}
+.macpage .seg{background:#e3e3e8}.macpage .seg span{color:#333}.macpage .seg span.on{background:#fff;color:#000;box-shadow:0 1px 3px #0003;font-weight:600}
+.small{font-size:12px;color:#86868b;margin-top:8px}
+</style></head><body>
+<style>
+.mbar{position:absolute;height:22px;border-radius:8px;display:flex;align-items:center;gap:12px;padding:0 12px;font-size:10px;color:#3a2f47;white-space:nowrap}
+.mbar b{font-weight:700}
+.mbar .sel{color:#1a4f86;background:radial-gradient(circle 22px at 50% 50%,#c4e4ffd0,transparent);border-radius:4px;padding:1px 4px;margin:0 -4px}
+.drop{position:absolute;border-radius:8px;padding:5px 0;min-width:120px;font-size:10px;color:#3a2f47}
+.drop div{padding:3px 12px}.drop div.sel{background:radial-gradient(circle 30px at 30% 50%,#c4e4ffd0,transparent);color:#1a4f86}
+.drop hr{border:0;border-top:1px solid #a296b366;margin:3px 8px}
+.st{display:flex;gap:9px;align-items:center;font-size:10px;color:#3a2f47}
+.st i{display:inline-block;width:12px;height:9px;border-radius:2px;background:#776a8a}
+.st i.r{border-radius:50%;width:10px;height:10px}
+.lever{position:absolute;width:70px;height:7px;border-radius:4px}
+</style>
+<h1>The Menu Bar in Spatial Mode</h1>
+<p class="sub">In Spatial Mode every window sits on one hidden display on the Mac, so the focused app's menu bar (File, Edit, View…) isn't part of any window and needs a place of its own in the room. Its dropdown menus come with it, live. The menu bar always shows the app you're looking at; the cursor stays where it was in that window.</p>
+
+<h2>1 · App Menus</h2>
+<p class="sub">Where File, Edit, View… appear. The laser or the Mac's cursor opens a menu; it drops down from the bar as it does on the Mac.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="m1"></div><div class="floor"></div></div>
+    <div class="label">M1 · Above the Focused Window<span class="tag">RECOMMENDED</span></div>
+    <div class="note">A slim Palladium strip on the top bezel of the window you're looking at, with that app's menus. It moves to whichever window takes focus, so menus open right above what you're working on.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="m2"></div><div class="floor"></div></div>
+    <div class="label">M2 · One Bar Overhead</div>
+    <div class="note">One curved bar high in front of you, like the Mac's, showing the focused app's menus. It stays in place and follows you when you turn far away, like the shelf.</div></div>
+</div>
+<div class="row" style="margin-top:22px">
+  <div class="card"><div class="scene"><div class="world" id="m3"></div><div class="floor"></div></div>
+    <div class="label">M3 · On the Shelf</div>
+    <div class="note">The menus join the dock shelf below your line of sight: the app's menus on the left, its icons in the middle. Menus open upward. Everything that isn't a window is in one place.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="m4"></div><div class="floor"></div></div>
+    <div class="label">M4 · Pull Down When Needed</div>
+    <div class="note">No bar until you want it: a small tab sits on the focused window's top bezel; point at it (or press Cmd-?) and the menus slide out like the adjustment handles, then tuck away.</div></div>
+</div>
+
+<h2>2 · Status Items</h2>
+<p class="sub">The right-hand side of the Mac's menu bar: the clock, Wi-Fi, battery, Control Center and app icons such as ExpressVPN. Clicking one opens its menu or panel as on the Mac.</p>
+<div class="row">
+  <div class="card"><div class="scene"><div class="world" id="i1"></div><div class="floor"></div></div>
+    <div class="label">I1 · Right End of the Shelf<span class="tag">RECOMMENDED</span></div>
+    <div class="note">Status items sit at the shelf's right end, past the dock icons, as they sit at the right of the Mac's screen. Always there, never in front of your work.</div></div>
+  <div class="card"><div class="scene"><div class="world" id="i2"></div><div class="floor"></div></div>
+    <div class="label">I2 · With the Menus</div>
+    <div class="note">Status items stay on the right of the menu bar, wherever the menus go (with M1 they ride along above the focused window).</div></div>
+  <div class="card"><div class="scene"><div class="world" id="i3"></div><div class="floor"></div></div>
+    <div class="label">I3 · Behind One Button</div>
+    <div class="note">Only the clock shows, on the shelf; pointing at it fans out every status item above it.</div></div>
+</div>
+
+<script>
+const lines = (n, light) => `<div class="body">${Array.from({length:n},(_, i)=>`<b style="width:${30+((i*37)%60)}%;${light?'':`background:${['#c792ea','#82aaff','#9ccc65','#5d6a85'][i%4]}`}"></b>`).join("")}</div>`;
+function win({x,y,z=0,ry=0,w=180,h=120,title="Window",light=false,focus=false,cursor=false}) {
+  return `<div class="win ${light?'light':''} ${focus?'focus':''}" style="width:${w}px;height:${h}px;transform:translate3d(${x - w/2}px,${y - h/2}px,${z}px) rotateY(${ry}deg)">
+    <div class="bar"><i></i><i></i><i></i>&nbsp;${title}</div>${lines(Math.floor(h/12), light)}
+    ${cursor?`<div class="cursor" style="left:${w*0.55}px;top:${h*0.6}px"></div>`:''}</div>`;
+}
+const apps = [["Sa","#2f7bf5"],["Te","#222"],["Co","#1e88e5"],["Fi","#4aa3ff"],["Mu","#fa233b"],["No","#f5c400"]];
+const dockIcons = (scale=.8) => apps.map(([l,c])=>`<div class="icon" style="background:${c};transform:scale(${scale})">${l}</div>`).join("");
+function room() {
+  return win({x:-270,y:-20,z:-60,ry:32,w:170,h:120,title:"Safari",light:true}) +
+         win({x:0,y:-30,z:-140,w:240,h:150,title:"Terminal",focus:true,cursor:true}) +
+         win({x:270,y:-20,z:-60,ry:-32,w:170,h:120,title:"Code"});
+}
+const menus = (open=-1) => ["<b>Terminal</b>","Shell","Edit","View","Window","Help"].map((m,i)=>i===open?`<span class="sel">${m}</span>`:`<span>${m}</span>`).join("");
+const status = (all=true) => `<div class="st">${all?'<i></i><i class="r"></i><i></i><i class="r"></i>':''}<span>Wed 21 Oct&nbsp;14:32</span></div>`;
+const drop = (left, top, z, up=false) => `<div class="drop pal" style="left:${left}px;top:${top}px;transform:translateZ(${z}px)${up?' translateY(-100%)':''}">
+  <div>New Window</div><div class="sel">New Tab</div><div>Split Pane</div><hr><div>Close Window</div></div>`;
+const shelf = (inner, w=360, left=-180) => `<div class="pal" style="position:absolute;left:${left}px;top:120px;width:${w}px;height:44px;border-radius:14px;display:flex;gap:8px;align-items:center;justify-content:center;padding:0 12px;transform:translateZ(40px) rotateX(-28deg)">${inner}</div>`;
+
+// M1: strip on the focused window's top bezel
+document.getElementById("m1").innerHTML = room() +
+  `<div class="mbar pal" style="left:-120px;top:-138px;transform:translateZ(-136px)">${menus(1)}</div>` +
+  drop(-62,-114,-128) + shelf(dockIcons(), 260, -130);
+// M2: overhead bar
+document.getElementById("m2").innerHTML = room() +
+  `<div class="mbar pal" style="left:-240px;top:-170px;width:480px;justify-content:flex-start;transform:translateZ(-40px) rotateX(14deg)">${menus(1)}<span style="flex:1"></span>${status()}</div>` +
+  drop(-140,-146,-30) + shelf(dockIcons(), 260, -130);
+// M3: menus on the shelf
+document.getElementById("m3").innerHTML = room() +
+  shelf(`<div class="st" style="gap:10px;font-size:10px">${menus(1)}</div><span style="width:1px;height:26px;background:#a296b3;margin:0 6px"></span>${dockIcons(.7)}`, 520, -260) +
+  drop(-188,118,70,true);
+// M4: pull-down tab
+document.getElementById("m4").innerHTML = room() +
+  `<div class="lever pal" style="left:-35px;top:-112px;transform:translateZ(-132px)"></div>` +
+  `<div class="mbar pal" style="left:-120px;top:-140px;transform:translateZ(-128px);box-shadow:inset 1px 1px 0 #fff,0 0 0 1px #1a9fff88,0 0 14px #1a9fff66">${menus()}</div>` +
+  shelf(dockIcons(), 260, -130);
+["i1","i2","i3"].forEach(id=>document.getElementById(id).style.transform="scale(.78)");
+// I1: status at the shelf's right end
+document.getElementById("i1").innerHTML = room() +
+  `<div class="mbar pal" style="left:-120px;top:-138px;transform:translateZ(-136px)">${menus()}</div>` +
+  shelf(`${dockIcons(.7)}<span style="width:1px;height:26px;background:#a296b3;margin:0 6px"></span>${status()}`, 470, -235);
+// I2: status with the menus
+document.getElementById("i2").innerHTML = room() +
+  `<div class="mbar pal" style="left:-150px;top:-138px;transform:translateZ(-136px)">${menus()}<span style="width:16px"></span>${status()}</div>` +
+  shelf(dockIcons(), 260, -130);
+// I3: behind one button
+document.getElementById("i3").innerHTML = room() +
+  `<div class="mbar pal" style="left:-120px;top:-138px;transform:translateZ(-136px)">${menus()}</div>` +
+  shelf(`${dockIcons(.7)}<span style="width:1px;height:26px;background:#a296b3;margin:0 6px"></span><div class="st" style="padding:2px 6px;border-radius:6px;box-shadow:0 0 0 1px #fff,0 0 10px #1a9fffaa">${status(false).replace(/<div class="st">|<\/div>/g,'')}</div>`, 400, -200) +
+  `<div class="pal" style="position:absolute;left:70px;top:60px;padding:6px 10px;border-radius:12px;transform:translateZ(70px)">${status(true).replace('<span>Wed 21 Oct&nbsp;14:32</span>','')}</div>`;
+</script>
+</body></html>
