@@ -1,0 +1,125 @@
+{
+  "sourceHead": "f89285a8ffb4b867d6d59f7e92e27295460ca7bd",
+  "buildCommand": "npm run dist:workspace:dir",
+  "buildResult": "success",
+  "appVersion": "0.4.7",
+  "installedPath": "/Applications/Frame Workspace.app",
+  "bundleIdentifier": "com.astromaddie.frame-workspace",
+  "architecture": "arm64",
+  "appAsarSha256": "9ba09407a10aecfc8da53e7613d96e0d272e9fb5ad7c60a3f1838dd5935530f1",
+  "installedAppAsarMatchesBuild": true,
+  "codesign": "deep strict verification passed; ad-hoc signature, no Developer ID",
+  "resources": [
+    "ui/server.py",
+    "scripts/workspace-launch-on-frame.py",
+    "scripts/workspace-dash-on-frame.sh",
+    "tools/adb",
+    "python/bin/python3"
+  ],
+  "frameControlUrlProtocol": "absent",
+  "appLaunch": "server listening; #macview loaded; Mac UI displayed workspace controls; linked to Frame",
+  "preferencesRestoredExactly": {
+    "last-start": "faca806a62c942d760437c663fb2c1297160322d680461910a0c5ff3f08499a8",
+    "last-session": "0e5258f4ab84d0c2c86fabe91526d4abb6d374c7d3ddf07c804d2431571d302a",
+    "profiles": "64c870a51b565da03cc0d017fe9fd20bb97cfea21cda5221fd301493dda44b11"
+  },
+  "frameScripts": {
+    "launcher": "~/.local/share/frame-workspace/launcher/workspace-launch-on-frame.py:a396f66ff5d097d5af05dcdb5ba95131e6d6a566895e539c7dbad5eb5a0d7fe4",
+    "dashboard": "~/.local/share/frame-workspace/launcher/workspace-dash-on-frame.sh:0bdc4e41b6d7501013376386c89518d1b80a66640ef0cee18f15ee41ad0c180a"
+  },
+  "nativeBinaryHashesUnchanged": true,
+  "steamShortcut": "not registered; no Steam restart performed",
+  "headsetLaunch": "not attempted: preflight changed to device 0 leaving standby at 17:06:47 JST",
+  "streamReadiness": "not tested; no native decoder ready claim",
+  "permissionPrompt": "none encountered; Screen Recording stream gate remains untested",
+  "appSessionAfterTest": "App left running as the Mac companion; it still holds temporary Desktop mode in memory while saved settings are exactly restored to spatial. Restart after headset returns idle to reload saved mode; not performed during active headset use.",
+  "installedSourceChecks": {
+    "app/main.js": {
+      "sha256": "0ded63e2326d8d6882ba664c861e59fdc7b58df6ce5d50cb3e85e303e26ad708",
+      "installedSha256": "0ded63e2326d8d6882ba664c861e59fdc7b58df6ce5d50cb3e85e303e26ad708",
+      "installedMatches": true
+    },
+    "app/runtime-profile.js": {
+      "sha256": "9cec592a26c455d929b893b803e29212fe7f315d03bc0351c892da00ef0b1d6c",
+      "installedSha256": "9cec592a26c455d929b893b803e29212fe7f315d03bc0351c892da00ef0b1d6c",
+      "installedMatches": true
+    },
+    "ui/server.py": {
+      "sha256": "2fdd93fbf8be6040c4fae5ce6544d9a52990cfac93f71c09b458fe331134916d",
+      "installedSha256": "2fdd93fbf8be6040c4fae5ce6544d9a52990cfac93f71c09b458fe331134916d",
+      "installedMatches": true
+    },
+    "ui/frame_host.py": {
+      "sha256": "67335a7f88e4a0a69fef3d3446df9743265c8a5d52e986ae02045a2358bb313b",
+      "installedSha256": "67335a7f88e4a0a69fef3d3446df9743265c8a5d52e986ae02045a2358bb313b",
+      "installedMatches": true
+    },
+    "ui/frame_macview.py": {
+      "sha256": "4eb11987e0a1575c96f54453f9359547d1259254f62b2dd27e139a1ce12e6354",
+      "installedSha256": "4eb11987e0a1575c96f54453f9359547d1259254f62b2dd27e139a1ce12e6354",
+      "installedMatches": true
+    },
+    "scripts/workspace-launch-on-frame.py": {
+      "sha256": "a396f66ff5d097d5af05dcdb5ba95131e6d6a566895e539c7dbad5eb5a0d7fe4",
+      "installedSha256": "a396f66ff5d097d5af05dcdb5ba95131e6d6a566895e539c7dbad5eb5a0d7fe4",
+      "installedMatches": true
+    },
+    "scripts/workspace-dash-on-frame.sh": {
+      "sha256": "0bdc4e41b6d7501013376386c89518d1b80a66640ef0cee18f15ee41ad0c180a",
+      "installedSha256": "0bdc4e41b6d7501013376386c89518d1b80a66640ef0cee18f15ee41ad0c180a",
+      "installedMatches": true
+    },
+    "scripts/workspace-native-on-frame.sh": {
+      "sha256": "e5508fdbb1dfac5a46a1ef3d3b5eaccc300c20b22ec287a727ae99dac0fcf604",
+      "installedSha256": "e5508fdbb1dfac5a46a1ef3d3b5eaccc300c20b22ec287a727ae99dac0fcf604",
+      "installedMatches": true
+    },
+    "scripts/workspace-spatial-on-frame.py": {
+      "sha256": "130bdd7b7ee2a77e3aa133552b7f0602d1ef9f159c24a36105ced97ffccb812d",
+      "installedSha256": "130bdd7b7ee2a77e3aa133552b7f0602d1ef9f159c24a36105ced97ffccb812d",
+      "installedMatches": true
+    },
+    "mac/bin/frame-mac-view": {
+      "sha256": "12e08a4581dea18fe641709ff7fe34a10ef68d8cec46f7b4582b70987dc971a3",
+      "installedSha256": "4c92de863f1d674072fd4d15a0190c59957bed4ae9d2f48993dec0547fa4a8f8",
+      "installedMatches": false,
+      "unsignedPayloadMatches": true,
+      "unsignedPayloadSha256": "0f024fbf93c8bd7090b4cbe332423bfd921fd07d299d33fbd2ffe08db5d3a6e4",
+      "note": "Packager applies its app signing identity to the bundled executable."
+    }
+  },
+  "checks": {
+    "nodeAppTests": {
+      "passed": 37
+    },
+    "macViewTests": {
+      "run": 103,
+      "skipped": 1,
+      "result": "passed"
+    },
+    "workspaceProfileAndLauncherTests": {
+      "run": 41,
+      "result": "passed"
+    },
+    "resolvedBuildProfiles": "Complete resources, validation hook, app identity, mac agent and URL protocols verified through installed electron-builder resolver.",
+    "iconConcepts": "Rendered from original SVG geometry and visually inspected at large and small sizes."
+  },
+  "originalIcon": {
+    "state": "three original concepts prepared; selection pending",
+    "preview": "launcher-design/concepts.png",
+    "recommendation": "B: Open volume",
+    "installedIcon": "inherited Frame Control icon; replacement pending selection"
+  },
+  "sourceTreeAtBuild": "uncommitted launcher implementation on sourceHead; installedSourceChecks establish the exact packaged inputs",
+  "cleanup": {
+    "removedPaths": [
+      "/Users/mads/code/frame-workspace/app/dist",
+      "/tmp/frame-workspace-launch-design",
+      "/tmp/frame-workspace-original-icons"
+    ],
+    "removedAllocatedBytes": 396800000,
+    "removedLogicalBytes": 389233854,
+    "freeSpaceDeltaBytes": 397545472,
+    "retained": "Installed Mac app, installed Frame scripts, source, original icon proposals and compact evidence. Build dependencies retained for the pending icon build."
+  }
+}

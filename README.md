@@ -6,6 +6,8 @@
 > See the [commands, device measurements and remaining
 > acceptance checks](docs/frame-workspace/VALIDATION.md). Worn coding/readability
 > validation is still required before FW-02 through FW-04 can be called complete.
+> Local Mac server and Frame launcher setup is documented in
+> [Workspace launchers](docs/frame-workspace/LAUNCHERS.md).
 > The Frame Control documentation below describes the inherited app. Workspace
 > installers are not released yet; upstream updates and release packaging are
 > disabled for this prototype.

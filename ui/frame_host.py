@@ -114,7 +114,9 @@ def data_dir(*parts):
 
 
 def cache_dir(*parts):
-    if MAC:
+    if os.environ.get("FRAME_CONTROL_CACHE_DIR"):
+        base = Path(os.environ["FRAME_CONTROL_CACHE_DIR"])
+    elif MAC:
         base = Path.home() / "Library" / "Caches" / "Frame Control"
     elif WINDOWS:
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "Frame Control" / "Cache"

@@ -10,10 +10,12 @@
   "scripts": {
     "start": "env -u ELECTRON_RUN_AS_NODE electron .",
     "icon": "env -u ELECTRON_RUN_AS_NODE electron build/make-icon.js",
-    "dist": "sh ../mac/frame-mac-view/build.sh && node build/fetch-deps.js mac arm64 && electron-builder --mac --arm64 --publish never",
-    "dist:dir": "sh ../mac/frame-mac-view/build.sh && node build/fetch-deps.js mac arm64 && electron-builder --mac --arm64 --dir",
-    "dist:linux": "node build/fetch-deps.js linux x64 arm64 && electron-builder --linux --x64 --arm64 --publish never",
-    "dist:win": "node build/fetch-deps.js win x64 && electron-builder --win --x64 --publish never"
+    "dist": "sh ../mac/frame-mac-view/build.sh && node build/fetch-deps.js mac arm64 && electron-builder --mac --arm64 --publish never --config build/frame-control.js",
+    "dist:dir": "sh ../mac/frame-mac-view/build.sh && node build/fetch-deps.js mac arm64 && electron-builder --mac --arm64 --dir --config build/frame-control.js",
+    "dist:workspace": "sh ../mac/frame-mac-view/build.sh && node build/fetch-deps.js mac arm64 && electron-builder --mac --arm64 --publish never --config build/workspace.js",
+    "dist:workspace:dir": "sh ../mac/frame-mac-view/build.sh && node build/fetch-deps.js mac arm64 && electron-builder --mac --arm64 --dir --config build/workspace.js",
+    "dist:linux": "node build/fetch-deps.js linux x64 arm64 && electron-builder --linux --x64 --arm64 --publish never --config build/frame-control.js",
+    "dist:win": "node build/fetch-deps.js win x64 && electron-builder --win --x64 --publish never --config build/frame-control.js"
   },
   "devDependencies": {
     "electron": "^44.4.5",
@@ -22,14 +24,6 @@
   "build": {
     "appId": "com.saphid.frame-control",
     "productName": "Frame Control",
-    "protocols": [
-      {
-        "name": "Frame Control install link",
-        "schemes": [
-          "frame-control"
-        ]
-      }
-    ],
     "afterPack": "build/check-resources.js",
     "directories": {
       "output": "dist",
@@ -37,6 +31,7 @@
     },
     "files": [
       "main.js",
+      "runtime-profile.js",
       "preload.js",
       "install-link.js",
       "updater.js",
@@ -69,7 +64,8 @@
         "to": "scripts",
         "filter": [
           "*.sh",
-          "workspace-spatial-on-frame.py"
+          "workspace-spatial-on-frame.py",
+          "workspace-launch-on-frame.py"
         ]
       },
       {

@@ -20,6 +20,7 @@ import sandbox  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ui"))
+import frame_host  # noqa: E402
 import frame_macview  # noqa: E402
 import frame_workspace_profiles as profiles  # noqa: E402
 
@@ -39,6 +40,10 @@ def sample_pose(x=0):
 
 
 class ProfileStoreTests(unittest.TestCase):
+    def test_workspace_cache_uses_its_separate_profile_root(self):
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_CACHE_DIR": "/tmp/frame-workspace-cache"}):
+            self.assertEqual(frame_host.cache_dir("apk"), Path("/tmp/frame-workspace-cache") / "apk")
+
     def test_saved_profiles_remain_readable_when_backend_changes(self):
         with tempfile.TemporaryDirectory() as temp:
             store = profiles.ProfileStore(Path(temp) / "profiles.json")

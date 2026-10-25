@@ -12,18 +12,38 @@ const path = require("path");
 const { SCHEME, parseInstallLink, linkFromArgv } = require("./install-link");
 const updater = require("./updater");
 const { createMetaSignIn } = require("./meta-signin");
+const { initialPage, isWorkspaceProfile, migrateWorkspaceData, workspaceServerEnvironment } = require("./runtime-profile");
 
 const run = promisify(execFile);
 
 const IS_MAC = process.platform === "darwin";
 const IS_WIN = process.platform === "win32";
+const WORKSPACE_PROFILE = isWorkspaceProfile(require("./package.json"));
+const PRODUCT_NAME = WORKSPACE_PROFILE ? "Frame Workspace" : "Frame Control";
+if (WORKSPACE_PROFILE) app.setName(PRODUCT_NAME);
+const APP_DATA_DIR = WORKSPACE_PROFILE ? path.join(app.getPath("appData"), PRODUCT_NAME) : app.getPath("userData");
+const CACHE_DIR = WORKSPACE_PROFILE
+  ? (IS_MAC ? path.join(os.homedir(), "Library", "Caches", PRODUCT_NAME)
+             : path.join(APP_DATA_DIR, "cache"))
+  : null;
+const MIGRATED_WORKSPACE_FILES = [];
+let WORKSPACE_MIGRATION_WARNING = null;
+if (WORKSPACE_PROFILE) {
+  app.setPath("userData", APP_DATA_DIR);
+  try {
+    MIGRATED_WORKSPACE_FILES.push(...migrateWorkspaceData(
+      path.join(app.getPath("appData"), "Frame Workspace Preview"), APP_DATA_DIR));
+  } catch (error) {
+    WORKSPACE_MIGRATION_WARNING = error.message;
+  }
+}
 
 // Packaged: <resources>/{ui,scripts,python}. Dev: the repo checkout.
 const ROOT = app.isPackaged ? process.resourcesPath : path.join(__dirname, "..");
 const TOOLS = path.join(ROOT, "tools");  // bundled adb and CA certificates
 const SERVER = path.join(ROOT, "ui", "server.py");
 const SCRIPTS = path.join(ROOT, "scripts");
-const LOG_DIR = IS_MAC ? path.join(os.homedir(), "Library", "Logs", "Frame Control")
+const LOG_DIR = IS_MAC ? path.join(os.homedir(), "Library", "Logs", PRODUCT_NAME)
                        : path.join(app.getPath("userData"), "logs");
 const LOG = path.join(LOG_DIR, "server.log");
 const BG = "#0d1117";
@@ -89,7 +109,7 @@ async function hasSsh(env) {
   try { await run("ssh", ["-V"], { timeout: 5000, env, windowsHide: true }); return true; } catch { return false; }
 }
 
-const PYTHON_HELP = app.isPackaged ? "The bundled Python is missing; reinstall Frame Control."
+const PYTHON_HELP = app.isPackaged ? `The bundled Python is missing; reinstall ${PRODUCT_NAME}.`
   : "Install Python 3.8 or later, then reopen the app.";
 const SSH_HELP = IS_WIN
   ? "Turn on Windows' OpenSSH client: Settings → System → Optional features → Add a feature → OpenSSH Client."
@@ -118,18 +138,23 @@ function ping(target) {
 async function startServer() {
   // The version, the time zone and whether this is a built app go to ui/frame_telemetry.py,
   // which sends nothing from a source checkout.
-  const env = { ...process.env, PATH: await loginPath(), FRAME_CONTROL_APP: "1",
+  let env = { ...process.env, PATH: await loginPath(), FRAME_CONTROL_APP: "1",
                 FRAME_CONTROL_VERSION: app.getVersion(), FRAME_CONTROL_LOG: LOG,
                 FRAME_CONTROL_TIMEZONE: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
                 ...(app.isPackaged ? { FRAME_CONTROL_PACKAGED: "1" } : {}),
                 ...(fs.existsSync(TOOLS) ? { FRAME_CONTROL_TOOLS: TOOLS } : {}) };
+  if (WORKSPACE_PROFILE) {
+    env = workspaceServerEnvironment(env, { dataDir: APP_DATA_DIR, cacheDir: CACHE_DIR });
+  }
   python = await findPython(env);
-  if (!python) throw new Error(`Frame Control needs Python 3.8 or later. ${PYTHON_HELP}`);
-  if (!await hasSsh(env)) throw new Error(`Frame Control needs the ssh command. ${SSH_HELP}`);
+  if (!python) throw new Error(`${PRODUCT_NAME} needs Python 3.8 or later. ${PYTHON_HELP}`);
+  if (!await hasSsh(env)) throw new Error(`${PRODUCT_NAME} needs the ssh command. ${SSH_HELP}`);
   const port = await freePort();
   fs.mkdirSync(LOG_DIR, { recursive: true });
   const log = fs.openSync(LOG, "a");
   fs.writeSync(log, `\n--- ${new Date().toISOString()} ${python} ${SERVER} --port ${port}\n`);
+  for (const file of MIGRATED_WORKSPACE_FILES) fs.writeSync(log, `copied Workspace Preview data without replacing existing settings: ${file}\n`);
+  if (WORKSPACE_MIGRATION_WARNING) fs.writeSync(log, `Workspace Preview data copy warning: ${WORKSPACE_MIGRATION_WARNING}\n`);
   // stdin stays open while the app runs; the server exits cleanly when it closes.
   const child = spawn(python, [...PY_FLAGS, SERVER, "--port", String(port), "--exit-on-eof"],
                       { env, stdio: ["pipe", log, log], windowsHide: true });
@@ -177,7 +202,7 @@ function stopServer() {
   if (server) endServer(server);
 }
 
-function errorPage(message, title = "Frame Control couldn't start") {
+function errorPage(message, title = `${PRODUCT_NAME} couldn't start`) {
   const esc = (s) => s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
   const html = `<!doctype html><meta charset="utf-8"><body style="margin:0;height:100vh;display:grid;
     place-items:center;background:${BG};color:#e6edf3;font:14px -apple-system,sans-serif">
@@ -197,7 +222,7 @@ function serverDied(why) {
   url = null;
   if (!win) return;
   if (Date.now() - serverStarted > 60000) restartServer();
-  else win.loadURL(errorPage(`Its server stopped unexpectedly (${why}). See ${LOG}.`, "Frame Control stopped"));
+  else win.loadURL(errorPage(`Its server stopped unexpectedly (${why}). See ${LOG}.`, `${PRODUCT_NAME} stopped`));
 }
 
 // Restarts that overlap share one: two could each start a server, and the one
@@ -231,7 +256,7 @@ async function load() {
   const gen = ++loadGen;
   try {
     if (!url) await (starting ||= startServer().finally(() => { starting = null; }));
-    if (gen === loadGen && win) { await win.loadURL(url); firstRunCheck(); }
+    if (gen === loadGen && win) { await win.loadURL(initialPage(url, WORKSPACE_PROFILE)); firstRunCheck(); }
   } catch (e) {
     if (gen === loadGen && win) await win.loadURL(errorPage(e.message));
   }
@@ -290,9 +315,9 @@ ipcMain.handle("clipboard:writeImage", (e, bytes) => {
 });
 ipcMain.handle("connection:setup", (e) => { if (fromUi(e)) setUpConnection(); });
 ipcMain.on("keys:capture", (e, on) => { if (fromUi(e)) win.webContents.setIgnoreMenuShortcuts(on === true); });
-ipcMain.handle("update:get", (e) => fromUi(e) ? publicUpdate() : null);
-ipcMain.handle("update:check", (e) => fromUi(e) ? checkForUpdate({ manual: true }).then(publicUpdate) : null);
-ipcMain.handle("update:install", (e) => { if (fromUi(e)) installUpdate(); });
+ipcMain.handle("update:get", (e) => !WORKSPACE_PROFILE && fromUi(e) ? publicUpdate() : null);
+ipcMain.handle("update:check", (e) => !WORKSPACE_PROFILE && fromUi(e) ? checkForUpdate({ manual: true }).then(publicUpdate) : null);
+ipcMain.handle("update:install", (e) => { if (!WORKSPACE_PROFILE && fromUi(e)) installUpdate(); });
 
 // The page reports the headsets it knows (the server's Devices tab), so the Frame
 // menu can switch between them. Only plain names and ids go into the menu.
@@ -311,7 +336,7 @@ const activeAlias = () => (devices.find(d => d.active) || {}).alias || FRAME;
 // SSH through the server, so it goes to the headset and address the app is using
 // (with its own pinned identity), and refuses when there's none.
 function openSsh() {
-  if (!url) return dialog.showErrorBox("Couldn't open SSH", "Frame Control's server isn't running.");
+  if (!url) return dialog.showErrorBox("Couldn't open SSH", `${PRODUCT_NAME}'s server isn't running.`);
   const body = JSON.stringify({ what: "terminal" });
   const req = http.request(new URL("/api/open", url), {
     method: "POST", timeout: 15000,
@@ -338,7 +363,7 @@ ipcMain.handle("comfort:notify", (e, message) => {
   if (!fromUi(e) || typeof message !== "string" || message.length > 500) throw new Error("Invalid notification");
   if (!Notification.isSupported()) throw new Error("System notifications are unavailable");
   return new Promise((resolve, reject) => {
-    const notification = new Notification({title: "Frame Control", body: message});
+    const notification = new Notification({title: PRODUCT_NAME, body: message});
     const timer = setTimeout(() => reject(new Error("Notification delivery was not confirmed. Check system notification settings.")), 5000);
     notification.once("show", () => { clearTimeout(timer); resolve(true); });
     notification.once("failed", (_event, error) => {
@@ -354,7 +379,7 @@ ipcMain.handle("comfort:notify", (e, message) => {
 // connect path; the page asks for it and only hears the server's answer.
 function postApi(apiPath, body) {
   return new Promise((resolve, reject) => {
-    if (!url) return reject(new Error("Frame Control's server isn't running."));
+    if (!url) return reject(new Error(`${PRODUCT_NAME}'s server isn't running.`));
     const data = JSON.stringify(body);
     const req = http.request(new URL(apiPath, url), {
       method: "POST", timeout: 60000,
@@ -491,12 +516,13 @@ async function installUpdate() {
 }
 
 function scheduleUpdateChecks() {
-  if (!updater.updatesEnabled || process.env.FRAME_CONTROL_NO_UPDATE_CHECK === "1") return;
+  if (WORKSPACE_PROFILE || !updater.updatesEnabled || process.env.FRAME_CONTROL_NO_UPDATE_CHECK === "1") return;
   setTimeout(checkForUpdate, 8000);
   setInterval(checkForUpdate, UPDATE_EVERY).unref();
 }
 
 function registerScheme() {
+  if (WORKSPACE_PROFILE) return;
   // A checkout runs as `electron .`, so the OS must be told the script too.
   // (macOS takes the scheme from Info.plist, which only the built app has.)
   if (process.defaultApp) {
@@ -509,7 +535,7 @@ function registerScheme() {
 function createWindow() {
   win = new BrowserWindow({
     width: 1400, height: 950, minWidth: 760, minHeight: 560,
-    title: "Frame Control", backgroundColor: BG, show: false,
+    title: PRODUCT_NAME, backgroundColor: BG, show: false,
     ...(IS_MAC ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 26 } }
                : { icon: path.join(__dirname, "build", "icon.png") }),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
@@ -558,8 +584,8 @@ async function setUpConnection(name = activeAlias()) {
 
 function buildMenu() {
   const template = [
-    ...(IS_MAC ? [{ label: app.name, submenu: [
-      { role: "about" }, { label: "Check for Updates…", click: () => checkForUpdate({ manual: true }) },
+    ...(IS_MAC ? [{ label: PRODUCT_NAME, submenu: [
+      { role: "about" }, ...(!WORKSPACE_PROFILE ? [{ label: "Check for Updates…", click: () => checkForUpdate({ manual: true }) }] : []),
       { type: "separator" }, { role: "services" }, { type: "separator" },
       { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" },
     ] }] : []),
@@ -597,13 +623,15 @@ function buildMenu() {
     {
       role: "help",
       submenu: [
-        ...(IS_MAC ? [] : [{ label: "Check for Updates…", click: () => checkForUpdate({ manual: true }) }]),
+        ...(!WORKSPACE_PROFILE && !IS_MAC ? [{ label: "Check for Updates…", click: () => checkForUpdate({ manual: true }) }] : []),
         { label: "Report a Problem…", click: () => {
           if (win && url && linkPage === win.webContents) win.webContents.send("report:open");
           else shell.openExternal("https://frame-control.pages.dev/feedback/");  // the page isn't up
         } },
-        { label: "Release Notes", click: () => shell.openExternal(updater.RELEASES) },
-        { label: "Project on GitHub", click: () => shell.openExternal("https://github.com/saphid/steam-frame") },
+        ...(!WORKSPACE_PROFILE ? [
+          { label: "Release Notes", click: () => shell.openExternal(updater.RELEASES) },
+          { label: "Project on GitHub", click: () => shell.openExternal("https://github.com/saphid/steam-frame") },
+        ] : []),
       ],
     },
   ];
@@ -614,14 +642,14 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   // macOS delivers install links here, even before the app is ready.
-  app.on("open-url", (e, link) => { e.preventDefault(); openInstallLink(link); });
+  if (!WORKSPACE_PROFILE) app.on("open-url", (e, link) => { e.preventDefault(); openInstallLink(link); });
   // Windows and Linux start a second instance with the link as an argument.
   app.on("second-instance", (_e, argv) => {
     if (win) { if (win.isMinimized()) win.restore(); win.focus(); }
-    const link = linkFromArgv(argv);
+    const link = WORKSPACE_PROFILE ? null : linkFromArgv(argv);
     if (link) openInstallLink(link);
   });
-  const firstLink = IS_MAC ? null : linkFromArgv(process.argv);
+  const firstLink = WORKSPACE_PROFILE || IS_MAC ? null : linkFromArgv(process.argv);
   if (firstLink) openInstallLink(firstLink);
   app.whenReady().then(() => {
     registerScheme();
@@ -630,7 +658,7 @@ if (!app.requestSingleInstanceLock()) {
     scheduleUpdateChecks();
   });
   app.on("activate", () => { if (!win) createWindow(); });
-  app.on("window-all-closed", () => app.quit());
+  app.on("window-all-closed", () => { if (!WORKSPACE_PROFILE || !IS_MAC) app.quit(); });
   app.on("before-quit", () => { quitting = true; stopServer(); });
   process.on("exit", stopServer);
 }

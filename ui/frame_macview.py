@@ -1190,6 +1190,12 @@ class MacView:
                 continue
             if not isinstance(request, dict):
                 continue
+            if request.get("source") == "steam-library":
+                expires = request.get("expiresAt")
+                now = time.time()
+                if (type(expires) not in (int, float) or not math.isfinite(expires) or
+                        expires <= now or expires > now + 12):
+                    continue
             if self.spatial_apps.handle_request(request):
                 continue
             action, key = request.get("action"), str(request.get("key") or "")

@@ -349,6 +349,21 @@ class Helpers(unittest.TestCase):
         mv.dash_jobs.join()
         self.assertEqual(calls, [("start", ("2880x2560", 1, "sharp")), ("recenter",), ("stop",)])
 
+    def test_steam_library_start_request_is_bounded_and_expired_requests_are_ignored(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.last_workspace = ("2880x2560", 1, "sharp")
+        mv.mode = "spatial"
+        calls = []
+        mv.start_workspace = lambda *a, **k: calls.append((mv.mode, a, k))
+        now = time.time()
+        request = {"action": "workspace_start", "source": "steam-library", "expiresAt": now + 10}
+        expired = {**request, "expiresAt": now - 1}
+        far_future = {**request, "expiresAt": now + 60}
+        with mock.patch.object(frame_macview.time, "time", return_value=now):
+            mv._handle_frame_requests("\n".join(map(json.dumps, (expired, far_future, request))))
+        mv.dash_jobs.join()
+        self.assertEqual(calls, [("spatial", ("2880x2560", 1, "sharp"), {"resume": True})])
+
     def test_bar_panel_state_lists_the_workspace_and_windows(self):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
         mv.workspace_manager.state = lambda: {"state": "running", "preset": "2880x2560"}

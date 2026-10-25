@@ -35,9 +35,19 @@ function size(file) {
   }
 }
 
+const WORKSPACE_REQUIRED = [
+  "scripts/workspace-dash-on-frame.sh",
+  "scripts/workspace-launch-on-frame.py",
+  "scripts/workspace-native-on-frame.sh",
+  "scripts/workspace-spatial-on-frame.py",
+  "scripts/workspace-viewer-on-frame.sh",
+  "mac/bin/frame-mac-view",
+];
+
 // Required files that are missing or empty.
-function missing(dir) {
-  return REQUIRED.filter((rel) => size(path.join(dir, rel)) <= 0);
+function missing(dir, workspace = false) {
+  return [...REQUIRED, ...(workspace ? WORKSPACE_REQUIRED : [])]
+    .filter((rel) => size(path.join(dir, rel)) <= 0);
 }
 
 // Files under reference that aren't in dir at the same size.
@@ -55,7 +65,8 @@ function differences(dir, reference) {
 
 exports.default = async function afterPack(context) {
   const dir = resourcesDir(context);
-  const gone = missing(dir);
+  const workspace = context.packager.appInfo.productName === "Frame Workspace";
+  const gone = missing(dir, workspace);
   if (gone.length) {
     throw new Error(`packaged app is missing required resources in ${dir}: ${gone.join(", ")}`);
   }
@@ -63,17 +74,21 @@ exports.default = async function afterPack(context) {
 exports.missing = missing;
 exports.differences = differences;
 exports.REQUIRED = REQUIRED;
+exports.WORKSPACE_REQUIRED = WORKSPACE_REQUIRED;
 
 if (require.main === module) {
-  const [dir, reference] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const workspace = args.includes("--workspace");
+  const positional = args.filter((arg) => arg !== "--workspace");
+  const [dir, reference] = positional;
   if (!dir) {
-    console.error("usage: node build/check-resources.js INSTALLED_RESOURCES [REFERENCE_RESOURCES]");
+    console.error("usage: node build/check-resources.js INSTALLED_RESOURCES [REFERENCE_RESOURCES] [--workspace]");
     process.exit(2);
   }
-  const problems = [...missing(dir), ...(reference ? differences(dir, reference) : [])];
+  const problems = [...missing(dir, workspace), ...(reference ? differences(dir, reference) : [])];
   if (problems.length) {
     console.error(`${dir} is missing or has the wrong size for:\n  ${[...new Set(problems)].join("\n  ")}`);
     process.exit(1);
   }
-  console.log(`${dir}: all required resources present${reference ? ", and every file of " + reference : ""}`);
+  console.log(`${dir}: all required resources present${workspace ? " for Frame Workspace" : ""}${reference ? ", and every file of " + reference : ""}`);
 }

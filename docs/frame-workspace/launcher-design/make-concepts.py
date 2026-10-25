@@ -1,0 +1,26 @@
+from pathlib import Path
+p=Path(__file__).resolve().parent
+base='''<defs><linearGradient id="bg" x1="0" y1="0" x2="0.7" y2="1"><stop stop-color="#303047"/><stop offset="0.55" stop-color="#17232e"/><stop offset="1" stop-color="#0b1522"/></linearGradient><linearGradient id="silver" x1="0" y1="0" x2="0.6" y2="1"><stop stop-color="#ffffff"/><stop offset="0.6" stop-color="#dce8e8"/><stop offset="1" stop-color="#a3bdbf"/></linearGradient><linearGradient id="mint" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d7ffed"/><stop offset="1" stop-color="#48bca9"/></linearGradient><linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#8bd9cc"/><stop offset="0.45" stop-color="#294d5d"/><stop offset="1" stop-color="#172e3e"/></linearGradient><linearGradient id="side" x1="0" y1="0" x2="1" y2="0"><stop stop-color="#618d92"/><stop offset="1" stop-color="#b3d8d4"/></linearGradient><filter id="shadow" x="-40%" y="-40%" width="180%" height="200%"><feDropShadow dx="0" dy="24" stdDeviation="18" flood-color="#030b18" flood-opacity=".6"/></filter></defs><rect x="32" y="32" width="960" height="960" rx="222" fill="url(#bg)"/><rect x="35" y="35" width="954" height="954" rx="220" fill="none" stroke="#aac8c9" stroke-opacity=".14" stroke-width="4"/>'''
+A='''<g filter="url(#shadow)"><path d="M160 365Q150 369 150 385V596Q150 610 165 615L315 666Q330 671 330 652V316Q330 298 314 305Z" fill="url(#glass)" stroke="#a9d9d2" stroke-width="22"/><path d="M864 365Q874 369 874 385V596Q874 610 859 615L709 666Q694 671 694 652V316Q694 298 710 305Z" fill="url(#glass)" stroke="#a9d9d2" stroke-width="22"/><rect x="362" y="242" width="300" height="458" rx="36" fill="url(#silver)"/><rect x="388" y="270" width="248" height="402" rx="14" fill="url(#glass)"/><path d="M410 292H614" stroke="#e2fff3" stroke-opacity=".45" stroke-width="10" stroke-linecap="round"/></g><path d="M266 756Q512 850 758 756" fill="none" stroke="#7dd5c4" stroke-width="16" stroke-linecap="round" opacity=".65"/>'''
+B='''<g fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#shadow)"><path d="M192 400V648Q192 678 218 693L436 820" stroke="url(#silver)" stroke-width="38"/><path d="M832 400V648Q832 678 806 693L588 820" stroke="url(#silver)" stroke-width="38"/><path d="M310 292L488 188Q512 174 536 188L714 292" stroke="#8bdcc8" stroke-width="38"/></g><g filter="url(#shadow)"><path d="M344 350Q330 342 330 360V566Q330 582 344 590L552 710Q566 718 566 700V494Q566 478 552 470Z" fill="url(#silver)"/><path d="M585 368Q575 362 575 378V564Q575 580 589 588L717 662Q731 670 731 652V466Q731 450 717 442Z" fill="url(#mint)"/><path d="M358 392L536 495V662L358 559Z" fill="url(#glass)"/></g>'''
+C='''<g filter="url(#shadow)"><path d="M172 318Q172 290 196 300L340 358V724L196 666Q172 656 172 632Z" fill="url(#side)"/><path d="M340 358L512 238V596L340 724Z" fill="url(#silver)"/><path d="M512 238L684 358V724L512 596Z" fill="url(#mint)"/><path d="M684 358L828 300Q852 290 852 318V632Q852 656 828 666L684 724Z" fill="url(#silver)"/><path d="M340 358V724M512 238V596M684 358V724" fill="none" stroke="#183e49" stroke-width="8" stroke-opacity=".25"/></g>'''
+icons={}
+for key,shape in [('a',A),('b',B),('c',C)]:
+ s=f'<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">{base}{shape}</svg>'
+ icons[key]=s
+ (p/f'icon-{key}.svg').write_text(s)
+def icon(key,x,y,size):
+ inside=icons[key].split('>',1)[1].rsplit('</svg>',1)[0]
+ # Keep each nested SVG's gradient/filter identities distinct.
+ for identifier in ['bg','silver','mint','glass','side','shadow']:
+  inside=inside.replace(f'id="{identifier}"',f'id="{key}{x}{size}{identifier}"').replace(f'url(#{identifier})',f'url(#{key}{x}{size}{identifier})')
+ return f'<svg x="{x}" y="{y}" width="{size}" height="{size}" viewBox="0 0 1024 1024">{inside}</svg>'
+def t(x,y,size,s,color='#e7efed',weight=400):return f'<text x="{x}" y="{y}" font-family="Arial,sans-serif" font-size="{size}" font-weight="{weight}" fill="{color}">{s}</text>'
+parts=['<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900"><rect width="1500" height="900" fill="#101820"/>',t(48,58,30,'Frame Workspace · original icon concepts',weight=700),t(48,94,18,'Floating surfaces, room depth, and an open workspace. New geometry created for this app.','#9fb6bb')]
+labels=[('a','A · Spatial windows','Three surfaces arranged around you.','A direct, readable workspace symbol.'),('b','B · Open volume','A workspace inside a three-dimensional room.','Recommended for spatial computing.'),('c','C · Spatial W','A folded W made from panels in depth.','A more abstract, distinctive app mark.')]
+for index,(key,title,line1,line2) in enumerate(labels):
+ x=48+index*490
+ parts.append(f'<rect x="{x}" y="130" width="444" height="710" rx="18" fill="#1b2730"/>')
+ parts += [icon(key,x+52,155,340),t(x+26,537,25,title,weight=700),t(x+26,574,16,line1,'#b2c4c8'),t(x+26,604,16,line2,'#b2c4c8'),t(x+26,652,14,'Dock / library icon', '#90a5aa'),icon(key,x+20,674,88),icon(key,x+132,701,48),icon(key,x+210,713,24)]
+parts += [t(48,880,17,'Each option will receive matching macOS and Steam assets after selection.','#9fb6bb'),'</svg>']
+(p/'concepts.svg').write_text(''.join(parts))
