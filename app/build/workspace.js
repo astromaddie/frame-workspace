@@ -15,8 +15,10 @@ module.exports = {
     frameWorkspaceProfile: true,
     productName: PRODUCT_NAME,
   },
+  files: build.files.map(file => file === "build/icon.png" ? "build/workspace/icon.png" : file),
   mac: {
     ...build.mac,
+    icon: "build/workspace/icon.icns",
     artifactName: "Frame-Workspace-mac-${arch}.${ext}",
     extendInfo: {
       ...build.mac.extendInfo,

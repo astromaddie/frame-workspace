@@ -1,0 +1,18 @@
+{
+  "design": "Open volume: one centered floating window inside an open room",
+  "provenance": "Original SVG geometry created for Frame Workspace; no upstream icon reused",
+  "files": {
+    "icon.svg": "7abf39248a8a0f7da33bace17574f84c9c2b21ebdb1fc35bd8c51eb1a7943700",
+    "icon.png": "6a0f5ea5d1a2ffa867b017b9958e2a51fa68b0bb46aa87262615f6b5950aec4c",
+    "icon.icns": "11386aa50e91107baa35c2ea2408df9179b3cf1674b0e1c3e5b6e84ba548afe0",
+    "steam/capsule.png": "2e9c0624014282c5996f3563d46707afa47d5e1bdd391ed1a99f7b48274b5fe6",
+    "steam/capsule.svg": "25812994801a782b9ce16d1b18d385b2d99d208ae43f4ff8c3d1c6699c943f1f",
+    "steam/header.png": "5502f59d4116d16a005fd6b5af02b8fe57895145253d6eaa78d11393de4e528d",
+    "steam/header.svg": "da6a1ed2e3586066374a3a3f2b7bf43a977cb2856dfb91c734db5f6ec123ec01",
+    "steam/hero.png": "6114d27658e178e632643c5831ff9729c8152486b7e384be7d42b3b441784eb3",
+    "steam/hero.svg": "533a940512e2cd6405446c6aef5305149d1490ad26c516f4064f859d66313112",
+    "steam/icon.png": "2c1f430719c4b48de648effd0085372956430a41e75b7864ccc2613b420c2da3",
+    "steam/logo.png": "598ecefd1bd913b36ea619ca0dc64c82e0196654f0ad9031b38d34c70387fec8",
+    "steam/logo.svg": "50ad97f93e806d2c59a7fe7fbe36ed0389261a8ae653d01253d2bd1eee6d01b3"
+  }
+}

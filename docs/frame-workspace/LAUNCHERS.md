@@ -75,19 +75,18 @@ live monitor launch are pending an idle headset: the device left standby during
 the installation preflight, before Steam was restarted. No streaming readiness
 claim is made by this installation record.
 
-## Original icon proposals
+## Original artwork
 
-The [icon preview](launcher-design/concepts.png) contains three original
-directions: Spatial windows, Open volume, and Spatial W. Their vector sources
-and 1024 px PNG exports are in `launcher-design/`. Open volume is the recommended
-direction for a spatial computing identity. Selection is pending; the installed
-Mac build still has the inherited icon. The earlier icon proposal has been
-superseded. The companion interface continues to use its existing controls.
+The original **Open volume** icon has one centered floating window inside an
+open room outline. The [SVG source](../../app/build/workspace/icon.svg),
+[1024 px PNG](../../app/build/workspace/icon.png), macOS icon set, and matching
+Steam library artwork are in `app/build/workspace/`. The geometry was created
+for Workspace. Frame Control retains its own icon and packaging profile.
 
-To regenerate the icon preview and PNG exports:
+The asset manifest records SHA-256 hashes for the exports. Regenerate them on
+macOS with:
 
 ```sh
-python3 docs/frame-workspace/launcher-design/make-concepts.py
-env -u ELECTRON_RUN_AS_NODE app/node_modules/.bin/electron \
-  docs/frame-workspace/launcher-design/render-concepts.cjs
+cd app
+npm run icon:workspace
 ```

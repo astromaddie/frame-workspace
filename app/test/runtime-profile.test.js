@@ -68,10 +68,13 @@ test("electron-builder resolves both profiles with the complete base resources a
   const base = await getConfig(appDir, null, null);
   const workspace = await getConfig(appDir, "build/workspace.js", null);
   const frameControl = await getConfig(appDir, "build/frame-control.js", null);
+  const workspaceFiles = base.files.map(entry => ({ ...entry,
+    filter: entry.filter.map(file => file === "build/icon.png" ? "build/workspace/icon.png" : file),
+  }));
 
   for (const resolved of [workspace, frameControl]) {
     assert.equal(resolved.afterPack, packageJson.build.afterPack);
-    assert.deepEqual(resolved.files, base.files);
+    assert.deepEqual(resolved.files, resolved === workspace ? workspaceFiles : base.files);
     assert.deepEqual(resolved.extraResources, base.extraResources);
     assert.deepEqual(resolved.mac.extraResources, base.mac.extraResources);
     assert.deepEqual(resolved.mac.target, base.mac.target);
@@ -90,6 +93,8 @@ test("electron-builder resolves both profiles with the complete base resources a
   assert.equal(workspace.productName, "Frame Workspace");
   assert.equal(workspace.artifactName, "Frame-Workspace-mac-${arch}.${ext}");
   assert.equal(workspace.mac.artifactName, "Frame-Workspace-mac-${arch}.${ext}");
+  assert.equal(workspace.mac.icon, "build/workspace/icon.icns");
+  assert.equal(frameControl.mac.icon, base.mac.icon);
   assert.equal(workspace.dmg.title, "Frame Workspace ${version}");
   assert.equal(workspace.extraMetadata.frameWorkspaceProfile, true);
   assert.equal(workspace.extraMetadata.productName, "Frame Workspace");

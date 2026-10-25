@@ -537,7 +537,7 @@ function createWindow() {
     width: 1400, height: 950, minWidth: 760, minHeight: 560,
     title: PRODUCT_NAME, backgroundColor: BG, show: false,
     ...(IS_MAC ? { titleBarStyle: "hiddenInset", trafficLightPosition: { x: 18, y: 26 } }
-               : { icon: path.join(__dirname, "build", "icon.png") }),
+               : { icon: path.join(__dirname, "build", ...(WORKSPACE_PROFILE ? ["workspace", "icon.png"] : ["icon.png"])) }),
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false,
                       preload: path.join(__dirname, "preload.js") },
   });

@@ -105,10 +105,11 @@
     "iconConcepts": "Rendered from original SVG geometry and visually inspected at large and small sizes."
   },
   "originalIcon": {
-    "state": "three original concepts prepared; selection pending",
-    "preview": "launcher-design/concepts.png",
-    "recommendation": "B: Open volume",
-    "installedIcon": "inherited Frame Control icon; replacement pending selection"
+    "state": "approved Open volume with one centered window; exports and staged Mac bundle verified",
+    "source": "../../app/build/workspace/icon.svg",
+    "assetManifest": "../../app/build/workspace/manifest.json",
+    "installedIcon": "pending idle Frame booking for companion restart and installation",
+    "supersededProposalBytesRemoved": 1216512
   },
   "sourceTreeAtBuild": "uncommitted launcher implementation on sourceHead; installedSourceChecks establish the exact packaged inputs",
   "cleanup": {
