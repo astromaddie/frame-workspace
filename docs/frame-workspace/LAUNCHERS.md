@@ -6,6 +6,7 @@ the Frame. The Mac app opens the existing **Mac in the headset** controls.
 ## Daily use
 
 1. Open **Frame Workspace** from Applications, Spotlight, or the Dock on the Mac.
+   Allow its Screen Recording and Accessibility requests when macOS asks.
 2. Open **Frame Workspace** from the Steam library on the Frame. It opens the
    Workspace dashboard and requests the last saved workspace.
 3. Use **Stop Workspace** in the companion or the headset dashboard to close the
@@ -71,11 +72,15 @@ node app/build/check-resources.js "/Applications/Frame Workspace.app/Contents/Re
 
 Local package and device results are recorded in `launcher-validation.json`.
 
-The Mac app is installed and its bundled server connects to the Frame. Both
-launcher scripts are installed on the Frame. Steam library registration and a
-live monitor launch are pending an idle headset: the device left standby during
-the installation preflight, before Steam was restarted. No streaming readiness
-claim is made by this installation record.
+The Mac app and the Frame's Steam library entry are installed with the original
+artwork. A launch from Steam reached the companion and started the saved Spatial
+workspace. That run exposed hardware decoder errors for individual panels;
+window panels now select software decoding before startup.
+
+The updated app is installed and runs with its Workspace stopped. macOS reset
+its Screen Recording and Accessibility grants after replacement. Reapprove
+those permissions through the normal macOS prompt before testing capture.
+Live capture with the updated window decoder remains pending that OS consent.
 
 ## Original artwork
 

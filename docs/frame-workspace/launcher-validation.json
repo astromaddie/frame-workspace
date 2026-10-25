@@ -1,126 +1,161 @@
 {
-  "sourceHead": "f89285a8ffb4b867d6d59f7e92e27295460ca7bd",
-  "buildCommand": "npm run dist:workspace:dir",
-  "buildResult": "success",
-  "appVersion": "0.4.7",
-  "installedPath": "/Applications/Frame Workspace.app",
-  "bundleIdentifier": "com.astromaddie.frame-workspace",
-  "architecture": "arm64",
-  "appAsarSha256": "9ba09407a10aecfc8da53e7613d96e0d272e9fb5ad7c60a3f1838dd5935530f1",
-  "installedAppAsarMatchesBuild": true,
-  "codesign": "deep strict verification passed; ad-hoc signature, no Developer ID",
-  "resources": [
-    "ui/server.py",
-    "scripts/workspace-launch-on-frame.py",
-    "scripts/workspace-dash-on-frame.sh",
-    "tools/adb",
-    "python/bin/python3"
-  ],
-  "frameControlUrlProtocol": "absent",
-  "appLaunch": "server listening; #macview loaded; Mac UI displayed workspace controls; linked to Frame",
-  "preferencesRestoredExactly": {
-    "last-start": "faca806a62c942d760437c663fb2c1297160322d680461910a0c5ff3f08499a8",
-    "last-session": "0e5258f4ab84d0c2c86fabe91526d4abb6d374c7d3ddf07c804d2431571d302a",
-    "profiles": "64c870a51b565da03cc0d017fe9fd20bb97cfea21cda5221fd301493dda44b11"
+  "sourceCommit": "5d1c66b360cb538001c33e8cf520a2d132b99c3a",
+  "iconSourceCommit": "d0bc7b01fcf0681233bab8c12f519645eb0f19ba",
+  "build": {
+    "command": "npm run dist:workspace:dir",
+    "result": "passed",
+    "logSha256": "34777e2afbada93808dac3cf98e1797555863dbb90c6528fa5ed9c0a1efd03c6"
   },
-  "frameScripts": {
-    "launcher": "~/.local/share/frame-workspace/launcher/workspace-launch-on-frame.py:a396f66ff5d097d5af05dcdb5ba95131e6d6a566895e539c7dbad5eb5a0d7fe4",
-    "dashboard": "~/.local/share/frame-workspace/launcher/workspace-dash-on-frame.sh:0bdc4e41b6d7501013376386c89518d1b80a66640ef0cee18f15ee41ad0c180a"
+  "installedApp": {
+    "path": "/Applications/Frame Workspace.app",
+    "bundleIdentifier": "com.astromaddie.frame-workspace",
+    "architecture": "arm64",
+    "signature": "codesign --verify --deep --strict passed; ad-hoc, no notarization",
+    "appAsarSha256": "9ac381af7afa3c66babc812cc447868950cfd56021e0dc152eacf27d30fcff0f",
+    "macviewSourceSha256": "370bc4ea7416f144d0d5548335720e59c85439e27be81d690f800fd4c2d13cae",
+    "macviewMatchesSource": true,
+    "iconIcnsSha256": "11386aa50e91107baa35c2ea2408df9179b3cf1674b0e1c3e5b6e84ba548afe0",
+    "iconPngSha256": "6a0f5ea5d1a2ffa867b017b9958e2a51fa68b0bb46aa87262615f6b5950aec4c",
+    "iconMatchesSource": true
   },
-  "nativeBinaryHashesUnchanged": true,
-  "steamShortcut": "not registered; no Steam restart performed",
-  "headsetLaunch": "not attempted: preflight changed to device 0 leaving standby at 17:06:47 JST",
-  "streamReadiness": "not tested; no native decoder ready claim",
-  "permissionPrompt": "none encountered; Screen Recording stream gate remains untested",
-  "appSessionAfterTest": "App left running as the Mac companion; it still holds temporary Desktop mode in memory while saved settings are exactly restored to spatial. Restart after headset returns idle to reload saved mode; not performed during active headset use.",
-  "installedSourceChecks": {
-    "app/main.js": {
-      "sha256": "0ded63e2326d8d6882ba664c861e59fdc7b58df6ce5d50cb3e85e303e26ad708",
-      "installedSha256": "0ded63e2326d8d6882ba664c861e59fdc7b58df6ce5d50cb3e85e303e26ad708",
-      "installedMatches": true
-    },
-    "app/runtime-profile.js": {
-      "sha256": "9cec592a26c455d929b893b803e29212fe7f315d03bc0351c892da00ef0b1d6c",
-      "installedSha256": "9cec592a26c455d929b893b803e29212fe7f315d03bc0351c892da00ef0b1d6c",
-      "installedMatches": true
-    },
-    "ui/server.py": {
-      "sha256": "2fdd93fbf8be6040c4fae5ce6544d9a52990cfac93f71c09b458fe331134916d",
-      "installedSha256": "2fdd93fbf8be6040c4fae5ce6544d9a52990cfac93f71c09b458fe331134916d",
-      "installedMatches": true
-    },
-    "ui/frame_host.py": {
-      "sha256": "67335a7f88e4a0a69fef3d3446df9743265c8a5d52e986ae02045a2358bb313b",
-      "installedSha256": "67335a7f88e4a0a69fef3d3446df9743265c8a5d52e986ae02045a2358bb313b",
-      "installedMatches": true
-    },
-    "ui/frame_macview.py": {
-      "sha256": "4eb11987e0a1575c96f54453f9359547d1259254f62b2dd27e139a1ce12e6354",
-      "installedSha256": "4eb11987e0a1575c96f54453f9359547d1259254f62b2dd27e139a1ce12e6354",
-      "installedMatches": true
-    },
-    "scripts/workspace-launch-on-frame.py": {
-      "sha256": "a396f66ff5d097d5af05dcdb5ba95131e6d6a566895e539c7dbad5eb5a0d7fe4",
-      "installedSha256": "a396f66ff5d097d5af05dcdb5ba95131e6d6a566895e539c7dbad5eb5a0d7fe4",
-      "installedMatches": true
-    },
-    "scripts/workspace-dash-on-frame.sh": {
-      "sha256": "0bdc4e41b6d7501013376386c89518d1b80a66640ef0cee18f15ee41ad0c180a",
-      "installedSha256": "0bdc4e41b6d7501013376386c89518d1b80a66640ef0cee18f15ee41ad0c180a",
-      "installedMatches": true
-    },
-    "scripts/workspace-native-on-frame.sh": {
-      "sha256": "e5508fdbb1dfac5a46a1ef3d3b5eaccc300c20b22ec287a727ae99dac0fcf604",
-      "installedSha256": "e5508fdbb1dfac5a46a1ef3d3b5eaccc300c20b22ec287a727ae99dac0fcf604",
-      "installedMatches": true
-    },
-    "scripts/workspace-spatial-on-frame.py": {
-      "sha256": "130bdd7b7ee2a77e3aa133552b7f0602d1ef9f159c24a36105ced97ffccb812d",
-      "installedSha256": "130bdd7b7ee2a77e3aa133552b7f0602d1ef9f159c24a36105ced97ffccb812d",
-      "installedMatches": true
-    },
-    "mac/bin/frame-mac-view": {
-      "sha256": "12e08a4581dea18fe641709ff7fe34a10ef68d8cec46f7b4582b70987dc971a3",
-      "installedSha256": "4c92de863f1d674072fd4d15a0190c59957bed4ae9d2f48993dec0547fa4a8f8",
-      "installedMatches": false,
-      "unsignedPayloadMatches": true,
-      "unsignedPayloadSha256": "0f024fbf93c8bd7090b4cbe332423bfd921fd07d299d33fbd2ffe08db5d3a6e4",
-      "note": "Packager applies its app signing identity to the bundled executable."
+  "originalArtwork": {
+    "design": "Open volume with one centered window",
+    "source": "../../app/build/workspace/icon.svg",
+    "manifest": "../../app/build/workspace/manifest.json",
+    "steamGridHashes": {
+      "header": "5502f59d4116d16a005fd6b5af02b8fe57895145253d6eaa78d11393de4e528d",
+      "capsule": "2e9c0624014282c5996f3563d46707afa47d5e1bdd391ed1a99f7b48274b5fe6",
+      "hero": "6114d27658e178e632643c5831ff9729c8152486b7e384be7d42b3b441784eb3",
+      "icon": "2c1f430719c4b48de648effd0085372956430a41e75b7864ccc2613b420c2da3",
+      "logo": "598ecefd1bd913b36ea619ca0dc64c82e0196654f0ad9031b38d34c70387fec8"
     }
   },
-  "checks": {
-    "nodeAppTests": {
-      "passed": 37
-    },
-    "macViewTests": {
+  "frameLauncher": {
+    "name": "Frame Workspace",
+    "appid": 4134748219,
+    "steamRunId": 17758608377832800256,
+    "vr": true,
+    "compatRuntime": false,
+    "executable": "~/.local/share/frame-workspace/launcher/workspace-launch-on-frame.py",
+    "startDir": "~/.local/share/frame-workspace/launcher",
+    "registrationExitCode": 0
+  },
+  "decoderPolicy": {
+    "desktopMonitor": "FRAME_WORKSPACE_DECODER=v4l2 in app profile",
+    "independentWindowAndAuxiliaryPanels": "FRAME_WINDOW_DECODER defaults to software; explicit v4l2 override accepted",
+    "fallback": "No silent runtime failover; decoder selected before launch"
+  },
+  "tests": {
+    "nodeAppTests": 37,
+    "macviewHelpers": 40,
+    "spatialAndWorkspaceLifecycle": 39,
+    "priorMacviewFullSuite": {
       "run": 103,
       "skipped": 1,
-      "result": "passed"
+      "result": "passed before the scoped decoder policy change"
     },
-    "workspaceProfileAndLauncherTests": {
-      "run": 41,
-      "result": "passed"
+    "installedPackageAndSourceHashes": "passed"
+  },
+  "captureAcceptance": {
+    "updatedWindowPolicyOnDevice": "pending macOS permission approval",
+    "screenRecording": false,
+    "accessibility": false,
+    "normalPermissionSetupRequested": true,
+    "workspaceState": "stopped",
+    "streams": 0,
+    "workspaceVirtualDisplayPresent": false,
+    "appServerRunning": true,
+    "savedMode": "spatial",
+    "bookings": "released"
+  },
+  "priorProductionLaunchEvidence": {
+    "steamPipeWriteExitCode": 0,
+    "requestEvidence": "launcher-last updated; request queue empty; dash state transitioned to workspace running. Direct launcher stdout/exit was not captured, so request consumption is inferred.",
+    "v4l2PanelCounts": {
+      "errorNotReady": 2,
+      "connectingNotReady": 1,
+      "streamingReady": 1
     },
-    "resolvedBuildProfiles": "Complete resources, validation hook, app identity, mac agent and URL protocols verified through installed electron-builder resolver.",
-    "iconConcepts": "Rendered from original SVG geometry and visually inspected at large and small sizes."
-  },
-  "originalIcon": {
-    "state": "approved Open volume with one centered window; exports and staged Mac bundle verified",
-    "source": "../../app/build/workspace/icon.svg",
-    "assetManifest": "../../app/build/workspace/manifest.json",
-    "installedIcon": "pending idle Frame booking for companion restart and installation",
-    "supersededProposalBytesRemoved": 1216512
-  },
-  "sourceTreeAtBuild": "uncommitted launcher implementation on sourceHead; installedSourceChecks establish the exact packaged inputs",
-  "cleanup": {
-    "removedPaths": [
-      "/Users/mads/code/frame-workspace/app/dist",
-      "/tmp/frame-workspace-launch-design",
-      "/tmp/frame-workspace-original-icons"
+    "v4l2Errors": [
+      "open/VIDIOC_REQBUFS: EINVAL (-22)",
+      "send: EBUSY (-16)"
     ],
-    "removedAllocatedBytes": 396800000,
-    "removedLogicalBytes": 389233854,
-    "freeSpaceDeltaBytes": 397545472,
-    "retained": "Installed Mac app, installed Frame scripts, source, original icon proposals and compact evidence. Build dependencies retained for the pending icon build."
+    "nativeClient": {
+      "arch": "aarch64",
+      "sourceRevision": "empty",
+      "nativeBinarySha256": "a095111d6e49a3a1f94d26b3ee061482f34805c392ababcc1a58eb0f2b756eca",
+      "dashBinarySha256": "48c40d5e7fd6fcde5bab03bdf87804db61600625a7db844d7d065a504885205e",
+      "metadataSourceFiles": 54,
+      "mismatchCountVsRepoHead": 16,
+      "mismatchFiles": [
+        "native/bend.hpp",
+        "native/chrome.hpp",
+        "native/chrome_preview.hpp",
+        "native/handles.hpp",
+        "native/host.hpp",
+        "native/main.cpp",
+        "native/overlay.hpp",
+        "native/placement.hpp",
+        "native/probe_bends.cpp",
+        "native/session.hpp",
+        "native/spatial.hpp",
+        "native/spatial_render.hpp",
+        "native/tests_host.hpp",
+        "native/tests_host.py",
+        "native/tests_spatial.hpp",
+        "native/video.hpp"
+      ],
+      "repoHead": "d0bc7b01fcf0681233bab8c12f519645eb0f19ba",
+      "interpretation": "Installed binary source revision cannot be established from metadata; mismatch does not prove whether these changes caused observed decoder failures. Native binary left unchanged."
+    },
+    "interpretation": "One panel decoded/uploaded successfully; other hardware-decoded panels failed. This motivated upfront software selection for independent panels. It does not validate the revised software path on device."
+  },
+  "restoration": {
+    "macWindows": {
+      "apiStop": "completed after initial client timeout; no retry",
+      "workspaceState": "stopped",
+      "removed": true,
+      "panelCleanupPending": false,
+      "workspaceVirtualDisplayPresent": false,
+      "prePostWindowGeometryDigest": "1d3b50b7256d3cbab3cdec22f6042d2ab3a2948225a8e66cbe46945ddae7c4ae",
+      "geometryDigestMatched": true
+    },
+    "preferences": {
+      "lastStartSha256": "faca806a62c942d760437c663fb2c1297160322d680461910a0c5ff3f08499a8",
+      "lastSessionSha256": "0e5258f4ab84d0c2c86fabe91526d4abb6d374c7d3ddf07c804d2431571d302a",
+      "profilesSha256": "64c870a51b565da03cc0d017fe9fd20bb97cfea21cda5221fd301493dda44b11",
+      "bytesAndModesRestored": true
+    },
+    "framePoses": {
+      "poseFiles": 13,
+      "hashesExactlyRestored": true,
+      "testCreatedPoseFilesRemoved": 1
+    }
+  },
+  "cleanup": {
+    "operational": {
+      "appDistRemovedBytes": 623738849,
+      "preferenceAndPoseBackupsRemovedBytes": 1987,
+      "supersededBundleRemovedBytes": 623737175,
+      "remoteArtStagingRemovedBytes": 613072,
+      "totalBytesRemovedThisSequence": 1248091083,
+      "supersededBundle": "/Applications/Frame Workspace.app.previous removed after exact appID check and zero running process references",
+      "remoteArtStaging": "5 files removed after exact source hash and Steam grid verification; no live process references",
+      "gridHashesStillMatchApprovedArt": true,
+      "tempArtNoLongerExists": true,
+      "appDistNoLongerExists": true,
+      "frameControlAppTouched": false,
+      "rollbackBundleRetained": false
+    },
+    "local": {
+      "pathsRemoved": [
+        "app/node_modules",
+        "app/build/deps",
+        "frame/kdeconnect/packages"
+      ],
+      "allocatedBytesRemoved": 508481536,
+      "freeSpaceDeltaBytes": 528982016,
+      "currentDeliverablesPreserved": "Installed Mac app, Frame launcher and grid art, original SVG/PNG/ICNS assets, source and compact verification evidence."
+    }
   }
 }
