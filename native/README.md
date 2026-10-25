@@ -436,22 +436,28 @@ unit (`frame-workspace-dash-UID.service`) if it isn't running, and hands back
 the requests made since: `workspace_start` (with the settings last used on the
 Mac), `workspace_stop`, `recenter`, `close` with a panel key, and Spatial Mode
 `focus` with a window panel key and `(u,v)`. Additional Spatial Mode request
-shapes are documented below. A state file
-older than 6 s shows "Mac Not Connected", so the entry stays on the bar after
-the companion quits, with the buttons off. `FRAME_WORKSPACE_DASH=0` turns the
-sync off (the MCP adapter's backend does).
+shapes are documented below. A state file older than 6 s shows "Mac Not
+Connected", so the entry stays on the bar after the companion quits. Start,
+Recenter, and Close require the Mac link; Stop remains available for Frame-local
+cleanup of the owned Workspace services and can queue window restoration when
+the Mac link is available. `FRAME_WORKSPACE_DASH=0` turns the sync off (the MCP
+adapter's backend does).
 
 ```bash
 frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]
 frame-workspace-dash --render-mock OUT.png list|tiles running|stopped|offline
 ```
 
-Verified 2026-10-20 (Frame, SteamOS as installed that day), with the panel not
-yet looked at worn: the panel builds and starts on the Frame, renders the
-offline, stopped, running and one-window states, and requests written to the
-folder start the Workspace, recenter it, close a window panel and stop the
-Workspace. Not yet verified: the bar thumbnail, and laser hover and clicks on
-the dashboard overlay.
+Verified 2026-10-25 (Frame, SteamOS): the updated panel builds and starts, and its
+offline render exposes Stop. With HMD0 in standby, an
+OpenVR event-queue probe checked `IsViewingPermitted` for the owned dashboard,
+then posted MouseMove/Down/Up at Stop while the synced state exposed
+`stopAvailable=true`. The production journal recorded `workspace_stop`; the
+bounded `sleep` fixture in the exact Workspace host unit stopped and did not
+respawn during a 10-second check. This verifies event routing and unit cleanup
+without starting a Mac display. It does not verify worn laser interaction or a
+hung-host fallback.
+The bar thumbnail and worn hover/click behavior remain unverified.
 
 ## Bounded pipeline and synchronization
 

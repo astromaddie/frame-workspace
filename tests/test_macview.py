@@ -100,6 +100,39 @@ class Helpers(unittest.TestCase):
             mv._apply_link_cap()
         self.assertEqual(calls, [("/link", "12000000"), ("/link", "0"), ("/link", "12000000")])
 
+    def test_frame_exit_helper_is_installed_once_with_private_executable_mode(self):
+        calls = []
+        mv = frame_macview.MacView(["ssh"], lambda remote, **kwargs: calls.append((remote, kwargs)) or "", "frame")
+
+        mv._install_frame_exit_helper()
+        mv._install_frame_exit_helper()
+
+        self.assertEqual(len(calls), 1)
+        self.assertIn("chmod 700", calls[0][0])
+        self.assertIn("adopt --session", calls[0][0])
+        self.assertIn("workspace-exit-on-frame.py", calls[0][0])
+        self.assertIn('def retire_and_stop', calls[0][1]["stdin"])
+        self.assertEqual(mv._exit_helper_frame, mv.frame)
+
+    def test_frame_exit_helper_install_does_not_cache_a_retargeted_frame(self):
+        mv = frame_macview.MacView(["ssh"], lambda remote, **kwargs: setattr(mv, "frame", "other") or "", "frame")
+
+        with self.assertRaisesRegex(frame_macview.MacViewError, "connection changed"):
+            mv._install_frame_exit_helper()
+
+        self.assertIsNone(mv._exit_helper_frame)
+
+    def test_frame_owned_orphan_enables_existing_stop_button(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager.state = lambda: {"state": "stopped"}
+        mv._exit_helper_frame = mv.frame
+        mv.run = mock.Mock(return_value='{"stopAvailable":true}')
+
+        mv._frame_stop_available = mv._probe_frame_stop_available()
+
+        self.assertTrue(mv.dash_state()["workspace"]["stopAvailable"])
+        self.assertIn(" status", mv.run.call_args.args[0])
+
     def test_window_panel_opens_beside_the_workspace_facing_the_viewer(self):
         workspace = [1, 0, 0, 0, 0, 1, 0, 1.3, 0, 0, 1, -2]  # 2 m ahead of a viewer at (0, 1.3, 0)
         viewer = [0, 1.3, 0]
@@ -352,15 +385,19 @@ class Helpers(unittest.TestCase):
 
     def test_bar_panel_requests_start_stop_and_recenter_the_workspace(self):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
-        mv.last_workspace = ("2880x2560", 1, "sharp")
+        started, release = threading.Event(), threading.Event()
         calls = []
-        mv.start_workspace = lambda *a, **k: calls.append(("start", a)) if k == {"resume": True} else None
-        mv.stop_workspace = lambda: calls.append(("stop",))
-        mv._focus_workspace_viewer = lambda: calls.append(("recenter",))
-        mv._handle_frame_requests("DASH_STARTED\n" + "\n".join(
-            json.dumps({"action": a}) for a in ("workspace_start", "recenter", "workspace_stop", "reboot")))
+        mv._dash_run("starting", lambda: (started.set(), release.wait(2)))
+        self.assertTrue(started.wait(1))
+        mv._dash_run("starting", lambda: calls.append(("start",)))
+        mv._dash_run(None, lambda: calls.append(("recenter",)))
+        mv._stop_workspace_session = lambda: calls.append(("stop",))
+        mv._handle_frame_requests(json.dumps({"action": "workspace_stop", "session": mv.session_id}))
+        self.assertTrue(mv.exit_pending)
+        release.set()
         mv.dash_jobs.join()
-        self.assertEqual(calls, [("start", ("2880x2560", 1, "sharp")), ("recenter",), ("stop",)])
+        self.assertEqual(calls, [("stop",)])
+        self.assertTrue(mv.exit_pending)
 
     def test_steam_library_start_request_is_bounded_and_expired_requests_are_ignored(self):
         mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
@@ -386,11 +423,93 @@ class Helpers(unittest.TestCase):
             "window:4": {"panel": "w4", "key": "com.frame-workspace.native.1000.panel-w4", "slot": 0, "title": "Terminal"},
         }
         state = mv.dash_state()
-        self.assertEqual(state["workspace"], {"running": True, "busy": None, "label": "9:8 · 2880 × 2560", "mode": "desktop"})
+        self.assertEqual(state["workspace"], {"running": True, "busy": None, "label": "9:8 · 2880 × 2560",
+                                               "mode": "desktop", "stopAvailable": True,
+                                               "session": mv.session_id})
         self.assertEqual([w["title"] for w in state["windows"]], ["Terminal", "Notes"])
         mv.workspace_manager.state = lambda: {"state": "stopped"}
         mv.workspace_panel_key = None
         self.assertFalse(mv.dash_state()["workspace"]["running"])
+
+    def test_completed_stop_rotates_the_session_for_a_later_start(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager.state = lambda: {"state": "stopped"}
+        mv._exit_helper_frame = mv.frame
+        mv.run = lambda *a, **k: "Frame Workspace viewer session stopped."
+        mv.stop_workspace = mock.Mock(return_value={"state": "stopped", "removed": True})
+        mv._stop_workspace_viewer = lambda: "already stopped"
+        mv._close_window_panels = lambda: None
+        old_session = mv.session_id
+        mv.exit_pending = True
+
+        result = mv._stop_workspace_session()
+
+        self.assertEqual(result, {"state": "stopped", "removed": True})
+        self.assertFalse(mv.exit_pending)
+        self.assertNotEqual(mv.session_id, old_session)
+        self.assertTrue(mv.dash_state()["workspace"]["session"] == mv.session_id)
+
+    def test_exit_pending_rejects_direct_mode_change_before_cleanup_or_mutation(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.mode = "spatial"
+        mv.exit_pending = True
+        mv.workspace_manager.state = mock.Mock(side_effect=AssertionError("mode change must not inspect/restart"))
+        mv._close_window_panels = mock.Mock()
+
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Stop is still being confirmed"):
+            mv.set_mode("desktop")
+
+        self.assertEqual(mv.mode, "spatial")
+        mv.workspace_manager.state.assert_not_called()
+        mv._close_window_panels.assert_not_called()
+
+    def test_session_stop_closes_frame_viewers_and_retries_unconfirmed_mac_restore(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        states = iter(({"state": "error", "removed": False}, {"state": "stopped", "removed": True}))
+        mv.workspace_manager.state = lambda: next(states)
+        mv.stop_workspace = mock.Mock(side_effect=[frame_macview.MacViewError("Mac restore pending"),
+                                                   {"state": "stopped"}])
+        mv._stop_workspace_viewer = mock.Mock()
+        mv._close_window_panels = mock.Mock()
+        mv._exit_helper_frame = mv.frame
+        mv.agent = mock.Mock(poll=lambda: None)
+        mv.call = mock.Mock(return_value={"closed": 0})
+        mv.run = mock.Mock(return_value="Frame Workspace viewer session stopped.")
+        mv.exit_pending = True
+        old_session = mv.session_id
+
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Mac restore pending"):
+            mv._stop_workspace_session()
+
+        self.assertTrue(mv.exit_pending)
+        self.assertIn("Mac restore pending", mv.exit_error)
+        mv._stop_workspace_viewer.assert_called_once()
+        mv._close_window_panels.assert_called_once()
+        self.assertTrue(any(call.args and "--hidedashboard" in call.args[0] for call in mv.run.call_args_list))
+
+        result = mv._stop_workspace_session()
+
+        self.assertEqual(result, {"state": "stopped", "removed": True})
+        self.assertFalse(mv.exit_pending)
+        self.assertNotEqual(mv.session_id, old_session)
+
+    def test_failed_frame_local_stop_does_not_rotate_mac_session(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.workspace_manager.state = lambda: {"state": "stopped", "removed": True}
+        mv.stop_workspace = mock.Mock(return_value={"state": "stopped", "removed": True})
+        mv._stop_workspace_viewer = mock.Mock()
+        mv._close_window_panels = mock.Mock()
+        mv._exit_helper_frame = mv.frame
+        mv.run = mock.Mock(side_effect=lambda command, **kwargs:
+                           "local helper failed" if "workspace-exit-on-frame.py" in command else "")
+        mv.exit_pending = True
+        old_session = mv.session_id
+
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Frame did not confirm"):
+            mv._stop_workspace_session()
+
+        self.assertTrue(mv.exit_pending)
+        self.assertEqual(mv.session_id, old_session)
 
     def test_headset_start_uses_the_last_workspace_settings(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1399,6 +1518,7 @@ class SpatialMode(unittest.TestCase):
         self.addCleanup(self.env.stop)
         os.environ.pop("FRAME_WINDOW_DECODER", None)
         self.mv = frame_macview.MacView(["ssh"], self.remote_run, "fake-frame")
+        self.mv._exit_helper_frame = self.mv.frame  # the bar installed its local helper before Start
         self.mv.agent = mock.Mock(poll=lambda: None)
         self.mv.workspace_manager = mock.Mock()
         self.mv.workspace_manager.state.return_value = {"state": "stopped"}
@@ -1810,6 +1930,7 @@ class WorkspaceLifecycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
             mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv._exit_helper_frame = mv.frame
             mv.workspace_manager = manager
             mv.build = lambda: None
             mv.remote_port = 47900
@@ -1833,6 +1954,7 @@ class WorkspaceLifecycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             manager = frame_macview.WorkspaceDisplayManager(self.fake_helper(Path(temp) / "fake-frame-mac-view"))
             mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv._exit_helper_frame = mv.frame
             mv.workspace_manager = manager
             mv.build = lambda: None
             mv.remote_port = 47900
@@ -1857,7 +1979,7 @@ class WorkspaceLifecycle(unittest.TestCase):
             def run(remote, **kwargs):
                 nonlocal active
                 launches.append((remote, kwargs))
-                if remote.startswith("bash -s -- 'start'"):
+                if "bash -s -- '--session'" in remote and "'start'" in remote:
                     tag = re.search(r"'(fc[0-9a-f]{8})'$", remote).group(1)
                     active = True
                     return f"Workspace viewer ready: 5120x1440 and registered OpenVR key com.frame-control.workspace.1000.{tag}"
@@ -1871,7 +1993,7 @@ class WorkspaceLifecycle(unittest.TestCase):
             self.assertEqual(shown["captureSrc"], "display:4242")
             self.assertEqual(shown["workspace"]["id"], "workspace")
             self.assertEqual(shown["panel"], "com.frame-control.workspace.1000." + re.search(r"fc[0-9a-f]{8}", shown["detail"]).group(0))
-            self.assertTrue(launches[0][0].startswith("bash -s -- 'start' "))
+            self.assertIn("bash -s -- '--session'", launches[0][0])
             self.assertIn("--nested-width", launches[0][1]["stdin"])
             self.assertIn("--vr-overlay-explicit-name \"Frame Workspace\"", launches[0][1]["stdin"])
             already = mv.start_workspace(quality="sharp")
@@ -1908,6 +2030,7 @@ class WorkspaceLifecycle(unittest.TestCase):
 
             manager.stop = stop_owner_and_record
             mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv._exit_helper_frame = mv.frame
             mv.workspace_manager = manager
             mv.build = mock.Mock()
             mv.remote_port = 47900
@@ -1938,7 +2061,7 @@ class WorkspaceLifecycle(unittest.TestCase):
                     events.append("viewer-stop")
                     active = False
                     return "Workspace viewer stopped"
-                if remote.startswith("bash -s -- 'start'"):
+                if "bash -s -- '--session'" in remote and "'start'" in remote:
                     viewer_starts.append((remote, kwargs))
                     events.append("viewer-start")
                     active = True
@@ -2017,6 +2140,7 @@ class WorkspaceLifecycle(unittest.TestCase):
             starts, viewer_starts, closes = [], [], []
             manager = frame_macview.WorkspaceDisplayManager(helper, track=lambda proc: starts.append(proc.args))
             mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+            mv._exit_helper_frame = mv.frame
             mv.workspace_manager = manager
             mv.build = mock.Mock()
             mv.remote_port = 47900
@@ -2044,7 +2168,7 @@ class WorkspaceLifecycle(unittest.TestCase):
                 if remote == "bash -s -- stop":
                     active = False
                     return "Workspace viewer stopped"
-                if remote.startswith("bash -s -- 'start'"):
+                if "bash -s -- '--session'" in remote and "'start'" in remote:
                     viewer_starts.append(remote)
                     active = True
                     tag = re.search(r"'(fc[0-9a-f]{8})'$", remote).group(1)

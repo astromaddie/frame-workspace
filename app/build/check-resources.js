@@ -37,6 +37,7 @@ function size(file) {
 
 const WORKSPACE_REQUIRED = [
   "scripts/workspace-dash-on-frame.sh",
+  "scripts/workspace-exit-on-frame.py",
   "scripts/workspace-launch-on-frame.py",
   "scripts/workspace-native-on-frame.sh",
   "scripts/workspace-spatial-on-frame.py",

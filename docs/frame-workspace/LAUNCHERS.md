@@ -9,8 +9,12 @@ the Frame. The Mac app opens the existing **Mac in the headset** controls.
    Allow its Screen Recording and Accessibility requests when macOS asks.
 2. Open **Frame Workspace** from the Steam library on the Frame. It opens the
    Workspace dashboard and requests the last saved workspace.
-3. Use **Stop Workspace** in the companion or the headset dashboard to close the
-   monitor. Quit the Mac app to stop its server and close its owned viewers.
+3. In the headset, press the Steam button, open **Frame Workspace** from the
+   SteamVR bar, then choose **Stop** on its Workspace card. This closes the
+   Workspace-owned Frame viewers and returns to SteamVR when available; the Mac
+   may finish restoring its windows and display after the local viewer closes.
+   Stop is also available in the companion. Quit the Mac app to stop its server
+   and close its owned viewers.
 
 Closing the Mac window keeps the server available. Click the Dock icon to reopen
 the controls. Saved Desktop/Spatial mode, size, scale, quality, and session
@@ -44,6 +48,9 @@ Install `scripts/workspace-launch-on-frame.py` and
 The Steam shortcut runs `workspace-launch-on-frame.py` directly as a VR entry.
 It uses the native viewer and dashboard already installed in
 `~/.local/share/frame-workspace/native/`.
+Install `scripts/workspace-exit-on-frame.py` beside that dashboard with mode
+`700` for local Stop while disconnected. The Mac companion also installs this
+helper when it connects.
 
 The Mac bundle uses `com.astromaddie.frame-workspace` and keeps its state in
 `~/Library/Application Support/Frame Workspace`, cache in
@@ -81,6 +88,13 @@ The updated app is installed and runs with its Workspace stopped. macOS reset
 its Screen Recording and Accessibility grants after replacement. Reapprove
 those permissions through the normal macOS prompt before testing capture.
 Live capture with the updated window decoder remains pending that OS consent.
+
+Frame-local Stop routing was verified while HMD0 was in standby: a permission-
+gated OpenVR event sequence reached the owned dashboard's Stop handler, stopped
+a capture-free fixture in the exact Workspace host unit, and produced no respawn
+during a 10-second check. This did not test worn interaction, Mac window
+restoration, capture, or the hung-host fallback. The installed app currently reports Screen Recording
+and Accessibility as unavailable.
 
 ## Original artwork
 

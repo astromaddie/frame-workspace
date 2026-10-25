@@ -1,10 +1,9 @@
 {
-  "sourceCommit": "5d1c66b360cb538001c33e8cf520a2d132b99c3a",
   "iconSourceCommit": "d0bc7b01fcf0681233bab8c12f519645eb0f19ba",
   "build": {
     "command": "npm run dist:workspace:dir",
     "result": "passed",
-    "logSha256": "34777e2afbada93808dac3cf98e1797555863dbb90c6528fa5ed9c0a1efd03c6"
+    "installedResourcesMatchReviewedSource": true
   },
   "installedApp": {
     "path": "/Applications/Frame Workspace.app",
@@ -12,11 +11,13 @@
     "architecture": "arm64",
     "signature": "codesign --verify --deep --strict passed; ad-hoc, no notarization",
     "appAsarSha256": "9ac381af7afa3c66babc812cc447868950cfd56021e0dc152eacf27d30fcff0f",
-    "macviewSourceSha256": "370bc4ea7416f144d0d5548335720e59c85439e27be81d690f800fd4c2d13cae",
+    "macviewSourceSha256": "0cdc3c910354f6c6fbef838990cbbbb0fc6b47e94a479bb8df7638cb713be4b6",
     "macviewMatchesSource": true,
     "iconIcnsSha256": "11386aa50e91107baa35c2ea2408df9179b3cf1674b0e1c3e5b6e84ba548afe0",
     "iconPngSha256": "6a0f5ea5d1a2ffa867b017b9958e2a51fa68b0bb46aa87262615f6b5950aec4c",
-    "iconMatchesSource": true
+    "iconMatchesSource": true,
+    "spatialAppsSourceSha256": "c29d374e63cfcf4c4e29d7ed393a8f088d87fa4525372a813f1a4fb75b26991c",
+    "exitHelperSha256": "e72bc4cc1684334b23a2bec2aa40c1535ed74022ebb1505a81c344a035a0dd9a"
   },
   "originalArtwork": {
     "design": "Open volume with one centered window",
@@ -47,13 +48,13 @@
   },
   "tests": {
     "nodeAppTests": 37,
-    "macviewHelpers": 40,
-    "spatialAndWorkspaceLifecycle": 39,
-    "priorMacviewFullSuite": {
-      "run": 103,
-      "skipped": 1,
-      "result": "passed before the scoped decoder policy change"
-    },
+    "workspaceExitHelper": 11,
+    "nativeLauncher": 24,
+    "macviewHelpersSpatialModeWorkspaceLifecycle": 86,
+    "spatialAppsCompanion": 14,
+    "pythonCompilation": "passed",
+    "shellSyntax": "passed",
+    "diffCheck": "passed",
     "installedPackageAndSourceHashes": "passed"
   },
   "captureAcceptance": {
@@ -110,7 +111,36 @@
     },
     "interpretation": "One panel decoded/uploaded successfully; other hardware-decoded panels failed. This motivated upfront software selection for independent panels. It does not validate the revised software path on device."
   },
-  "restoration": {
+  "previousValidationSourceCommit": "5d1c66b360cb538001c33e8cf520a2d132b99c3a",
+  "sourceSnapshot": {
+    "baseCommit": "0727cade5fe66f4b60b7ceaa676d2918cf2fd424",
+    "change": "Headset exit-flow source changes committed with this record; artifact identity established by the source hashes below.",
+    "sha256": {
+      "app/build/check-resources.js": "2153b32e465ec236e17fab1ecde8264b7a6af3127aa84427f32f65bb0c2ba166",
+      "app/package.json": "226fa8aa298c4796f0be70ebf88047f2f37f8f5c257f71d35fe086e977f2642e",
+      "native/dash.cpp": "11232547e5bb5123b5c0f28ea98a4d205381cad463b64190e8cadfae1272bee4",
+      "native/dash_ui.hpp": "5be6abd300444ba9eecd889ef47c7e4518c07048a262cf799fd0f177a8e0f33e",
+      "native/vendor/openvr/openvr_capi.h": "c80f5733e2381afb4012eb1625c603930388c9cc6030b8fe161ad044c35637c7",
+      "scripts/workspace-dash-on-frame.sh": "6393b395355318fa70884bbb589907b1de89900ae3ed52ead9e1482ae71578ee",
+      "scripts/workspace-exit-on-frame.py": "e72bc4cc1684334b23a2bec2aa40c1535ed74022ebb1505a81c344a035a0dd9a",
+      "scripts/workspace-native-on-frame.sh": "25e3b9ac81376d2f5ddb47668fae2435c2d53941f9ddd085171cc3f0b1a98576",
+      "scripts/workspace-viewer-on-frame.sh": "0d093397d681218eefc5aef2551d3976a5ef2a4a847ea722913f57c51073b8ae",
+      "ui/frame_macview.py": "0cdc3c910354f6c6fbef838990cbbbb0fc6b47e94a479bb8df7638cb713be4b6",
+      "ui/frame_spatial_apps.py": "c29d374e63cfcf4c4e29d7ed393a8f088d87fa4525372a813f1a4fb75b26991c"
+    }
+  },
+  "priorTests": {
+    "nodeAppTests": 37,
+    "macviewHelpers": 40,
+    "spatialAndWorkspaceLifecycle": 39,
+    "priorMacviewFullSuite": {
+      "run": 103,
+      "skipped": 1,
+      "result": "passed before the scoped decoder policy change"
+    },
+    "installedPackageAndSourceHashes": "passed"
+  },
+  "priorRestoration": {
     "macWindows": {
       "apiStop": "completed after initial client timeout; no retry",
       "workspaceState": "stopped",
@@ -132,7 +162,7 @@
       "testCreatedPoseFilesRemoved": 1
     }
   },
-  "cleanup": {
+  "priorCleanup": {
     "operational": {
       "appDistRemovedBytes": 623738849,
       "preferenceAndPoseBackupsRemovedBytes": 1987,
@@ -157,5 +187,109 @@
       "freeSpaceDeltaBytes": 528982016,
       "currentDeliverablesPreserved": "Installed Mac app, Frame launcher and grid art, original SVG/PNG/ICNS assets, source and compact verification evidence."
     }
-  }
+  },
+  "dashboardOnlyBuild": {
+    "command": "Frame g++ -std=c++17 -O2 -g -Wall -Wextra -Wpedantic native/dash.cpp -o frame-workspace-dash.candidate $(pkg-config --cflags --libs cairo pangocairo json-c) -ldl",
+    "architecture": "aarch64 Linux",
+    "sourceHashes": {
+      "native/dash.cpp": "11232547e5bb5123b5c0f28ea98a4d205381cad463b64190e8cadfae1272bee4",
+      "native/dash_ui.hpp": "5be6abd300444ba9eecd889ef47c7e4518c07048a262cf799fd0f177a8e0f33e",
+      "native/vendor/openvr/openvr_capi.h": "c80f5733e2381afb4012eb1625c603930388c9cc6030b8fe161ad044c35637c7"
+    },
+    "binarySha256": "9280d7ab02a0f8bbde46731b8efcb4564fda1ca9c3412b1c6450104a1059ec77",
+    "installedMainHostSha256Unchanged": "a095111d6e49a3a1f94d26b3ee061482f34805c392ababcc1a58eb0f2b756eca",
+    "metadata": "DASH-BUILD-METADATA.json installed separately; BUILD-METADATA.json unchanged",
+    "helperSha256": "e72bc4cc1684334b23a2bec2aa40c1535ed74022ebb1505a81c344a035a0dd9a",
+    "dashLauncherSha256": "6393b395355318fa70884bbb589907b1de89900ae3ed52ead9e1482ae71578ee"
+  },
+  "dashboardStopTest": {
+    "frameLock": "codex-workspace-launch; released at completion",
+    "hmd0": "latest reachable standby entry 2026-10-25 22:07:00.999 JST; no scene app observed",
+    "overlay": "com.frame-workspace.dash; IsViewingPermitted=true; dashboardVisible=true; IsActiveDashboardOverlay=false",
+    "actionGate": {
+      "workspaceRunning": false,
+      "stopAvailable": true,
+      "windowCount": 0,
+      "busy": null
+    },
+    "hostFixture": "bounded no-window sleep process under exact frame-workspace-host-1000.service",
+    "event": "MouseMove/Down/Up delivered through OpenVR PostOverlayEvent to the owned visible overlay; production journal recorded [dash] workspace_stop",
+    "result": {
+      "hostUnit": "inactive",
+      "viewerUnit": "inactive",
+      "dashboardUnit": "active",
+      "pendingRequests": 0,
+      "respawnCheckSeconds": 10,
+      "respawned": false
+    },
+    "hungHostFallback": "not device-tested; second bounded SSH attempt could not resolve frame.local",
+    "finalFramePoseComparison": "not completed because frame.local DNS was unresolved; no Workspace/display start was issued during this test",
+    "captureAcceptance": "not run: installed app Screen Recording=false and Accessibility=false; no permissions changed",
+    "steamShortcutDoctor": "exit 0; appid 4134748219; VR enabled; approved library icon/grid copies present",
+    "reproduction": [
+      "Book an idle Frame, preserve preferences/poses, and keep Mac capture stopped.",
+      "Create a bounded capture-free fixture in the exact Workspace host unit; wait until synced dashboard state exposes stopAvailable=true. The same button position is Start when Stop is unavailable.",
+      "Show com.frame-workspace.dash. Find that exact overlay, require IsViewingPermitted through IVROverlayView_003, then PostOverlayEvent MouseMove/left Down/Up at the Stop center (432,223 in the 1280-wide top-origin drawing, converted using the actual overlay mouse scale).",
+      "Check the dashboard journal for workspace_stop, confirm host/viewer inactive, and observe no respawn for 10 seconds. This proves event routing and unit cleanup; it does not exercise a live renderer, Mac capture, or worn interaction."
+    ]
+  },
+  "finalRuntime": {
+    "appServerRunning": true,
+    "appOpenExitCode": 0,
+    "launch": "normal open -a with scoped runtime access succeeded",
+    "mode": "spatial",
+    "workspaceState": "stopped",
+    "streams": 0,
+    "windows": 0,
+    "displays": 1,
+    "tunnel": false,
+    "screenPermission": false,
+    "accessibilityPermission": false,
+    "workspaceVirtualDisplayPresent": false,
+    "frameState": "dashboard active; host/viewer inactive at last reachable check; booking released"
+  },
+  "preferencePreservation": {
+    "lastStartSha256": "faca806a62c942d760437c663fb2c1297160322d680461910a0c5ff3f08499a8",
+    "lastSessionSha256": "0e5258f4ab84d0c2c86fabe91526d4abb6d374c7d3ddf07c804d2431571d302a",
+    "profilesSha256": "64c870a51b565da03cc0d017fe9fd20bb97cfea21cda5221fd301493dda44b11",
+    "currentHashesMatchPreInstall": true
+  },
+  "cleanup": {
+    "appDistRemovedBytes": 393248768,
+    "supersededBundleRemovedBytes": 388472832,
+    "supersededBundle": "/Applications/Frame Workspace.app.previous removed after matching app ID and zero open-file references; new app launch/API verified",
+    "rollbackBundleRetained": false,
+    "appDistNoLongerExists": true,
+    "generatedLocalPathsRemoved": [
+      "app/dist",
+      "app/node_modules",
+      "app/build/deps/mac-arm64",
+      "frame/kdeconnect/packages",
+      "/private/tmp/frame-workspace-clang-cache",
+      "/private/tmp/frame-workspace-swift-cache",
+      "/private/tmp/frame-workspace-overlay-stop-probe.cpp",
+      "task build/test logs, offline PNG, pre-install preference backup"
+    ],
+    "removedBlocksKiB": 1032536,
+    "removedBytes": 1057316864,
+    "removedMiB": 1008.34,
+    "remoteStagingPath": "Frame:/tmp/frame-workspace-dash-build-20261025-2149",
+    "remoteStagingSizeBytes": null,
+    "remoteTempArtifacts": [
+      "/tmp/frame-workspace-overlay-stop-probe.cpp",
+      "/tmp/frame-workspace-overlay-stop-probe",
+      "/tmp/openvr_capi.h"
+    ],
+    "remoteCleanup": "not completed: bounded SSH retry could not resolve frame.local; installed deliverables retained",
+    "otherSupersededEvidenceRemovedKiB": 52,
+    "sourceOwnerPycacheRemovedBytesApprox": 651264,
+    "additionalTemporaryEvidenceRemovedBytes": 20480
+  },
+  "testCommands": [
+    "node --test app/test/*.test.js",
+    "python3 -m unittest discover -s tests -p 'test_workspace_exit.py'",
+    "python3 -m unittest discover -s tests -p 'test_native_pose_launcher.py'",
+    "PYTHONPATH=tests:ui python3 -m unittest test_macview.Helpers test_macview.SpatialMode test_macview.WorkspaceLifecycle",
+    "PYTHONPATH=tests:ui python3 -m unittest test_spatial_apps.Companion"
+  ]
 }

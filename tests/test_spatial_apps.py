@@ -42,6 +42,7 @@ class FakeAgent:
 class FakeMacView:
     def __init__(self):
         self.mode, self.closing = "spatial", False
+        self.spatial_workspace, self.exit_pending = {"state": "running"}, False
         self.agent = FakeAgent()
         self._spatial_lock = threading.Lock()
         self._spatial_focused = None
@@ -168,6 +169,21 @@ class Companion(unittest.TestCase):
         self.apps.sync()
         self.assertEqual(sum(r == ["clear"] for r in self.mv.remote), 1)
 
+    def test_pending_stop_disables_spatial_apps_and_clears_published_state(self):
+        self.apps.refresh()
+        self.apps.sync()
+        self.mv.exit_pending = True
+        self.assertFalse(self.apps.enabled)
+        self.apps.sync()
+        self.assertEqual(self.mv.remote[-1], ["clear"])
+        self.assertFalse(self.apps._published)
+
+    def test_workspace_must_be_running_to_publish_spatial_apps(self):
+        self.mv.spatial_workspace["state"] = "stopped"
+        self.apps.refresh()
+        self.apps.sync()
+        self.assertEqual(self.mv.remote, [])
+
     def test_lost_sync_reply_still_clears_state_on_mode_exit(self):
         self.apps.refresh()
         original_run = self.mv.run
@@ -222,6 +238,7 @@ class Companion(unittest.TestCase):
     def test_real_macview_dispatch_hook_uses_existing_job_queue(self):
         mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
         mv.mode = "spatial"
+        mv.spatial_workspace["state"] = "running"
         mv.native_panels = self.mv.native_panels
         mv.call = self.mv.call
         mv.agent = self.mv.agent

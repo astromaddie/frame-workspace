@@ -3,7 +3,9 @@ import sandbox  # noqa: F401  (first: keep tests off real user data and services
 import json
 import os
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -34,6 +36,9 @@ class NativePoseLauncherTests(unittest.TestCase):
         binary = install / "frame-workspace-native"
         binary.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         binary.chmod(0o755)
+        exit_helper = install / "workspace-exit-on-frame.py"
+        exit_helper.write_bytes((ROOT / "scripts" / "workspace-exit-on-frame.py").read_bytes())
+        exit_helper.chmod(0o700)
 
         if panel:
             pose_file = data / "frame-workspace" / "panels" / "p1-pose.json"
@@ -120,6 +125,9 @@ exit 0
         binary = install / "frame-workspace-native"
         binary.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
         binary.chmod(0o755)
+        exit_helper = install / "workspace-exit-on-frame.py"
+        exit_helper.write_bytes((ROOT / "scripts" / "workspace-exit-on-frame.py").read_bytes())
+        exit_helper.chmod(0o700)
         status = root / "host-service"
         status.write_text("not-found\ninactive\n0\n", encoding="utf-8")
         legacy_status = root / "legacy-service"
@@ -145,6 +153,13 @@ for path in sorted(root.glob('*.json')):
 import json, os, pathlib, sys
 args = sys.argv[1:]
 with open(os.environ['TEST_CALLS'], 'a') as f: f.write('systemctl ' + ' '.join(args) + '\\n')
+if args[:2] == ['--user', 'list-units']:
+    for unit, env_name in ((f"frame-workspace-host-{os.getuid()}.service", 'TEST_HOST_STATUS'),
+                           (f"frame-workspace-panel-{os.getuid()}-p1.service", 'TEST_LEGACY_STATUS')):
+        status = pathlib.Path(os.environ[env_name]).read_text().splitlines()
+        if status[1] in ('active', 'activating', 'deactivating'):
+            print(unit + ' loaded ' + status[1] + ' running')
+    sys.exit(0)
 if len(args) >= 4 and args[0] == '--user' and args[1] == 'show':
     unit = args[2]
     status_path = pathlib.Path(os.environ['TEST_LEGACY_STATUS']) if unit.startswith('frame-workspace-panel-') else pathlib.Path(os.environ['TEST_HOST_STATUS'])
@@ -222,13 +237,15 @@ if len(args) >= 4 and args[0] == '--user' and args[1] == 'show':
     print({'ActiveState': active, 'MainPID': str(pid),
            'LoadState': load}.get(prop, ''))
     sys.exit(1 if prop == 'LoadState' and load == 'not-found' else 0)
-if len(args) >= 4 and args[0] == '--user' and args[1] == '--no-block' and args[2] == 'stop':
-    unit = args[3]
-    if unit.startswith('frame-workspace-panel-'):
-        pathlib.Path(os.environ['TEST_LEGACY_STATUS']).write_text('loaded\\ninactive\\n0\\n')
-        with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('legacy-stop\\n')
-        sys.exit(0)
-    sys.exit(1)
+if len(args) >= 4 and args[:3] == ['--user', '--no-block', 'stop']:
+    for unit in args[3:]:
+        if unit.startswith('frame-workspace-panel-'):
+            pathlib.Path(os.environ['TEST_LEGACY_STATUS']).write_text('loaded\\ninactive\\n0\\n')
+            with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('legacy-stop\\n')
+        elif unit.startswith('frame-workspace-host-'):
+            pathlib.Path(os.environ['TEST_HOST_STATUS']).write_text('loaded\\ninactive\\n0\\n')
+            with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-stop\\n')
+    sys.exit(0)
 if len(args) >= 2 and args[0] == '--user' and args[1] == 'reset-failed': sys.exit(0)
 sys.exit(0)
 """,
@@ -240,6 +257,13 @@ sys.exit(0)
 import os, pathlib, sys
 count = pathlib.Path(os.environ['TEST_RUN_COUNT'])
 count.write_text(str(int(count.read_text()) + 1 if count.exists() else 1))
+hold = os.environ.get('TEST_HOLD_HOST_START')
+if hold:
+    import time
+    pathlib.Path(hold).write_text('started')
+    release = pathlib.Path(os.environ['TEST_RELEASE_HOST_START'])
+    deadline = time.monotonic() + 3
+    while not release.exists() and time.monotonic() < deadline: time.sleep(.01)
 pathlib.Path(os.environ['TEST_HOST_STATUS']).write_text('loaded\\nactive\\n4321\\n')
 pathlib.Path(os.environ['TEST_RUN_ARGS']).write_text('\\n'.join(sys.argv[1:]))
 with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
@@ -247,6 +271,13 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
             encoding="utf-8",
         )
         (bindir / "systemd-run").chmod(0o755)
+        # The production exit helper enumerates app-owned processes while it
+        # stops a session. Keep this launcher test isolated from unrelated
+        # host Chromium processes.
+        for name in ("pgrep", "pkill"):
+            path = bindir / name
+            path.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+            path.chmod(0o755)
         common_env = {
             **os.environ,
             "HOME": str(home),
@@ -255,6 +286,7 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
             "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
             "FRAME_NATIVE_HOST": "1",
             "FRAME_NATIVE_VRCMD": str(vrcmd),
+            "FRAME_WORKSPACE_VRCMD": str(vrcmd),
             "TEST_HOST_STATUS": str(status),
             "TEST_LEGACY_STATUS": str(legacy_status),
             "TEST_CALLS": str(calls),
@@ -426,6 +458,63 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
             self.assertNotIn("systemctl --user stop", calls.read_text(encoding="utf-8"))
             self.assertIn("stop-url-present:True", events.read_text(encoding="utf-8"))
         finally:
+            context.cleanup()
+
+    def test_retired_session_cannot_publish_a_late_native_panel_spec(self):
+        context, root, env, status, runtime, _, events, run_count = self.host_fixture()
+        session = "c" * 32
+        try:
+            started = self.run_launcher(env, self.host_start_args("p1", "fc11111111", "--session", session))
+            self.assertEqual(started.returncode, 0, started.stdout + started.stderr)
+            spec_path = runtime / "frame-workspace" / "host" / "panels" / "p1.json"
+            self.assertEqual(json.loads(spec_path.read_text())["session"], session)
+            stopped = subprocess.run([sys.executable, str(ROOT / "scripts" / "workspace-exit-on-frame.py"),
+                                      "stop", "--session", session], env=env, capture_output=True,
+                                     text=True, timeout=8)
+            self.assertEqual(stopped.returncode, 0, stopped.stdout + stopped.stderr)
+            spec_path.unlink(missing_ok=True)
+            count_before = run_count.read_text()
+
+            late = self.run_launcher(env, self.host_start_args("p1", "fc22222222", "--session", session))
+
+            self.assertNotEqual(late.returncode, 0)
+            self.assertIn("already stopped", late.stderr)
+            self.assertEqual(run_count.read_text(), count_before)
+            self.assertFalse(spec_path.exists())
+        finally:
+            context.cleanup()
+
+    def test_stop_waits_for_inflight_host_start_then_stops_it_without_late_respawn(self):
+        context, root, env, status, runtime, _, _, run_count = self.host_fixture()
+        session = "d" * 32
+        entered, release = root / "host-start-entered", root / "host-start-release"
+        race_env = {**env, "TEST_HOLD_HOST_START": str(entered), "TEST_RELEASE_HOST_START": str(release)}
+        start = subprocess.Popen(["bash", str(SCRIPT), *self.host_start_args("p1", "fc11111111", "--session", session)],
+                                 env=race_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            deadline = time.monotonic() + 3
+            while not entered.exists() and time.monotonic() < deadline:
+                time.sleep(.01)
+            self.assertTrue(entered.exists(), "native host start reached its guarded systemd-run command")
+
+            stop = subprocess.Popen([sys.executable, str(ROOT / "scripts" / "workspace-exit-on-frame.py"),
+                                     "stop", "--session", session], env=env,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            time.sleep(.08)
+            release.write_text("continue")
+            stop_out, stop_err = stop.communicate(timeout=8)
+            start_out, start_err = start.communicate(timeout=8)
+
+            self.assertEqual(stop.returncode, 0, stop_out + stop_err)
+            self.assertNotEqual(start.returncode, 0, start_out + start_err)
+            self.assertEqual(status.read_text(encoding="utf-8"), "loaded\ninactive\n0\n")
+            self.assertEqual(run_count.read_text(encoding="utf-8"), "1")
+            self.assertFalse((runtime / "frame-workspace" / "host" / "panels" / "p1.json").exists())
+        finally:
+            release.touch(exist_ok=True)
+            if start.poll() is None:
+                start.kill()
+                start.wait(timeout=2)
             context.cleanup()
 
     def test_host_wall_slot_roundtrip_and_portrait_pose(self):

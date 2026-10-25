@@ -15,6 +15,7 @@ requests="$runtime/requests"
 images="$runtime/dash"
 state="$runtime/dash-state.json"
 binary="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/frame-workspace-dash"
+exit_helper="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/workspace-exit-on-frame.py"
 
 usage() {
   echo 'usage: workspace-dash-on-frame.sh sync STATE_JSON | show | stop' >&2
@@ -71,8 +72,10 @@ ensure_dash() {
   if systemd-run --user --unit="$unit" --description='Frame Workspace SteamVR bar panel' --collect \
       --property=Type=exec --property=Restart=no --property=TimeoutStopSec=3s \
       --setenv="HOME=$HOME" --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}" \
+      --setenv="XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}" \
       --setenv=LC_ALL=C.UTF-8 \
-      "$binary" --state "$state" --request-dir "$requests" --images "$images" >/dev/null 2>&1; then
+      "$binary" --state "$state" --request-dir "$requests" --images "$images" \
+        --exit-helper "$exit_helper" >/dev/null 2>&1; then
     echo 'DASH_STARTED'
   else
     # A concurrent show/sync may have started this same unit after the first

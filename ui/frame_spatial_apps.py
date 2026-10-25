@@ -38,7 +38,10 @@ class SpatialApps:
 
     @property
     def enabled(self):
-        return getattr(self.macview, "mode", "desktop") == "spatial" and not self.macview.closing
+        workspace = getattr(self.macview, "spatial_workspace", {})
+        return (getattr(self.macview, "mode", "desktop") == "spatial" and
+                workspace.get("state") == "running" and not self.macview.closing and
+                not getattr(self.macview, "exit_pending", False))
 
     def start(self, connected=lambda: True):
         if self.thread and self.thread.is_alive():
@@ -178,6 +181,12 @@ class SpatialApps:
         # A dropped SSH reply can follow a successful write; still clear it on mode exit.
         self._published = True
         out = self._run("sync", raw)
+        # Stop may be requested while the helper call is in flight. Clear its
+        # just-published chrome before returning so a stale reply cannot make
+        # the apps panel visible again.
+        if not self.enabled and self._published:
+            self._run("clear")
+            self._published = False
         for line in out.splitlines():
             if line.startswith("SPATIAL_ICONS_MISSING "):
                 missing = json.loads(line.split(" ", 1)[1])

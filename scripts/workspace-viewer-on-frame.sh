@@ -5,8 +5,26 @@
 set -eu
 
 usage() {
-  echo "usage: workspace-viewer-on-frame.sh start URL WIDTH HEIGHT TAG [browser flags...] | stop" >&2
+  echo "usage: workspace-viewer-on-frame.sh [--session ID] start URL WIDTH HEIGHT TAG [browser flags...] | stop" >&2
   exit 2
+}
+
+session=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --session) [ "$#" -ge 2 ] || usage; session=$2; shift 2 ;;
+    *) break ;;
+  esac
+done
+if [ -n "$session" ]; then
+  case "$session" in *[!0-9a-f]*) usage ;; esac
+  [ "${#session}" -eq 32 ] || usage
+fi
+exit_helper="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/workspace-exit-on-frame.py"
+session_command() {
+  [ -n "$session" ] || return 0
+  [ -x "$exit_helper" ] || { echo 'The local Workspace Stop helper is missing.' >&2; return 3; }
+  python3 "$exit_helper" "$1" --session "$session"
 }
 
 unit_property() {
@@ -138,6 +156,7 @@ if ! command -v xwininfo >/dev/null 2>&1 || ! command -v xprop >/dev/null 2>&1; 
   echo "The Frame is missing X11 window inspection tools required to verify Workspace startup." >&2
   exit 3
 fi
+if [ -n "$session" ]; then session_command begin; fi
 vrcmd_bin=${FRAME_WORKSPACE_VRCMD:-/opt/steamvr/bin/linuxarm64/vrcmd}
 if [ ! -x "$vrcmd_bin" ]; then
   vrcmd_bin=$(command -v "$vrcmd_bin" 2>/dev/null || true)
@@ -180,7 +199,7 @@ fi
 inner=(/bin/bash -c 'display=$1; shift; umask 077; printf "%s\n%s\n" "$DISPLAY" "${XAUTHORITY:-}" > "$display"; unset WAYLAND_DISPLAY; export QT_QPA_PLATFORM=xcb GDK_BACKEND=x11 MOZ_ENABLE_WAYLAND=0; exec "$@"' \
   frame-workspace-viewer "$display_file" "${browser[@]}")
 runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$uid}"
-if ! systemd-run --user --unit="$unit" --description="Frame Workspace viewer" --collect \
+viewer_start=(--user --unit="$unit" --description="Frame Workspace viewer" --collect \
     --property=Type=exec --property=KillMode=control-group --property=Restart=no \
     --property=TimeoutStopSec=3s \
     --setenv="HOME=$HOME" --setenv="XDG_RUNTIME_DIR=$runtime_dir" --setenv="LC_ALL=C.UTF-8" \
@@ -190,8 +209,23 @@ if ! systemd-run --user --unit="$unit" --description="Frame Workspace viewer" --
       --vr-overlay-key "com.frame-control.workspace.$uid.$tag" \
       --vr-overlay-explicit-name "Frame Workspace" --vr-overlay-enable-control-bar \
       --vr-overlay-physical-width "$physical_width" \
-      -- "${inner[@]}" >"$log" 2>&1; then
-  stop_viewer quiet || true
+      -- "${inner[@]}")
+if [ -n "$session" ]; then
+  start_status=0
+  python3 "$exit_helper" guarded-run --session "$session" -- systemd-run "${viewer_start[@]}" >"$log" 2>&1 || start_status=$?
+elif systemd-run "${viewer_start[@]}" >"$log" 2>&1; then
+  start_status=0
+else
+  start_status=1
+fi
+if [ "$start_status" -ne 0 ]; then
+  if [ -n "$session" ]; then
+    if python3 "$exit_helper" guarded-run --session "$session" -- systemctl --user --no-block stop "$unit" >/dev/null 2>&1; then
+      for _ in $(seq 1 15); do unit_is_stopped && break; sleep 0.2; done
+    fi
+  else
+    stop_viewer quiet || true
+  fi
   echo "Could not start the dedicated Frame Workspace OpenVR viewer:" >&2
   print_redacted_log
   rm -f "$display_file" "$log"

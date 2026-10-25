@@ -15,7 +15,7 @@ pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.j
 # replaces the saved pose for the next start, after the previous viewer stops.
 role="window"
 wall_slot="" wall_slot_set=0
-panel="" panel_name="" initial_pose="" pose_override="" expected_generation=""
+panel="" panel_name="" initial_pose="" pose_override="" expected_generation="" session=""
 initial_pose_set=0 pose_override_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -24,11 +24,23 @@ while [ "$#" -gt 0 ]; do
     --role) [ "$#" -ge 2 ] || exit 2; role=$2; shift 2 ;;
     --name) [ "$#" -ge 2 ] || exit 2; panel_name=$2; shift 2 ;;
     --generation) [ "$#" -ge 2 ] || exit 2; expected_generation=$2; shift 2 ;;
+    --session) [ "$#" -ge 2 ] || exit 2; session=$2; shift 2 ;;
     --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; initial_pose_set=1; shift 2 ;;
     --pose) [ "$#" -ge 2 ] || exit 2; pose_override=$2; pose_override_set=1; shift 2 ;;
     *) break ;;
   esac
 done
+case "$session" in
+  "") ;;
+  *[!0-9a-f]*) echo '--session must be 32 lowercase hexadecimal characters.' >&2; exit 2 ;;
+esac
+[ -z "$session" ] || [ "${#session}" -eq 32 ] || { echo '--session must be 32 lowercase hexadecimal characters.' >&2; exit 2; }
+exit_helper="$install/workspace-exit-on-frame.py"
+session_command() {
+  [ -n "$session" ] || return 0
+  [ -x "$exit_helper" ] || { echo 'The local Workspace Stop helper is missing; restart the companion before opening Workspace.' >&2; return 3; }
+  python3 "$exit_helper" "$1" --session "$session"
+}
 if [ "$wall_slot_set" -eq 1 ]; then
   case "$wall_slot" in ""|*[!0-9]*|?????*) echo '--slot must be an integer from 0 to 1023.' >&2; exit 2 ;; esac
   [ "$((10#$wall_slot))" -le 1023 ] && [ "$role" = window ] && [ -n "$panel" ] &&
@@ -306,7 +318,7 @@ def lock_host():
     fcntl.flock(fd, fcntl.LOCK_EX)
     return os.fdopen(fd, 'r+')
 
-def ensure_host(binary, runtime_dir):
+def ensure_host(binary, runtime_dir, session=None, exit_helper=None):
     deadline = time.monotonic() + 12
     active, pid = service_status(host_unit)
     if active == 'active' and pid and pid > 0:
@@ -324,20 +336,31 @@ def ensure_host(binary, runtime_dir):
     if active is None:
         raise RuntimeError('Could not inspect the native host service before startup.')
     systemctl('reset-failed', host_unit)
+    command = [
+        'systemd-run', '--user', f'--unit={host_unit}',
+        '--description=Frame Workspace native host', '--collect',
+        '--property=Type=exec', '--property=KillMode=control-group',
+        '--property=Restart=no', '--property=TimeoutStopSec=3s',
+        f'--setenv=HOME={os.environ.get("HOME", "/")}',
+        f'--setenv=XDG_RUNTIME_DIR={runtime_dir}', '--setenv=DISPLAY=:0',
+        '--setenv=LC_ALL=C.UTF-8', binary, '--host-dir', str(spec_dir),
+        '--state-file', str(host_root / 'state.json')]
     try:
-        launch = subprocess.run([
-            'systemd-run', '--user', f'--unit={host_unit}',
-            '--description=Frame Workspace native host', '--collect',
-            '--property=Type=exec', '--property=KillMode=control-group',
-            '--property=Restart=no', '--property=TimeoutStopSec=3s',
-            f'--setenv=HOME={os.environ.get("HOME", "/")}',
-            f'--setenv=XDG_RUNTIME_DIR={runtime_dir}', '--setenv=DISPLAY=:0',
-            '--setenv=LC_ALL=C.UTF-8', binary, '--host-dir', str(spec_dir),
-            '--state-file', str(host_root / 'state.json')],
-            capture_output=True, text=True, timeout=10)
+        if session and exit_helper is not None:
+            # Serialize only the short systemd-run mutation with Stop. Waiting
+            # for the host to become ready happens after releasing the lock.
+            launch_status = exit_helper.guarded_run(session, command, timeout=2)
+            launch_failed = launch_status != 0
+        else:
+            launch = subprocess.run(command, capture_output=True, text=True, timeout=10)
+            launch_failed = launch.returncode != 0
     except (OSError, subprocess.TimeoutExpired):
-        launch = None
-    if launch is None or launch.returncode != 0:
+        launch_failed = True
+    except Exception as exc:
+        if exit_helper is None or not isinstance(exc, exit_helper.ExitError):
+            raise
+        launch_failed = True
+    if launch_failed:
         raise RuntimeError('Could not start the native host service.')
     while time.monotonic() < deadline:
         active, pid = service_status(host_unit)
@@ -350,7 +373,17 @@ def ensure_host(binary, runtime_dir):
 
 def start_panel():
     (url, width, height, generation, decoder, conversion, title, initial_pose,
-     pose_override, foveation, diagnostic_gaze, binary, runtime_dir, wall_slot) = start_args
+     pose_override, foveation, diagnostic_gaze, binary, runtime_dir, wall_slot, session) = start_args
+    exit_helper = None
+    if session:
+        import importlib.util
+        exit_helper_path = pathlib.Path(binary).with_name('workspace-exit-on-frame.py')
+        spec = importlib.util.spec_from_file_location('frame_workspace_exit', exit_helper_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError('The local Workspace Stop helper is missing.')
+        exit_helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(exit_helper)
+        exit_helper.session_command('begin', session)
     old = current_spec()
     if old is None and spec_path.exists():
         raise RuntimeError('Could not read the existing native panel spec; leaving it in place.')
@@ -386,7 +419,7 @@ def start_panel():
         # Pose is shared by this panel across generations; both old owner
         # kinds have been confirmed stopped before replacing it.
         atomic_write(pose_path, pose_override)
-    ensure_host(binary, runtime_dir)
+    ensure_host(binary, runtime_dir, session=session, exit_helper=exit_helper)
     panel_runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(panel_runtime, 0o700)
     url_path = panel_runtime / f'view-{generation}.url'
@@ -409,14 +442,27 @@ def start_panel():
         'decoder': decoder,
         'conversion': conversion,
     }
+    if session:
+        spec['session'] = session
     if wall_slot:
         spec['slot'] = int(wall_slot)
     if role == 'window' and foveation in ('1', 'gaze'):
         spec['foveation'] = foveation == '1'
         spec['gaze'] = foveation == 'gaze'
     try:
-        atomic_write(spec_path, json.dumps(spec, separators=(',', ':'), allow_nan=False) + '\n')
+        if exit_helper is not None:
+            with exit_helper.session_guard(session):
+                atomic_write(spec_path, json.dumps(spec, separators=(',', ':'), allow_nan=False) + '\n')
+        else:
+            atomic_write(spec_path, json.dumps(spec, separators=(',', ':'), allow_nan=False) + '\n')
     except BaseException:
+        if exit_helper is not None:
+            try:
+                subprocess.run([sys.executable, str(exit_helper_path), 'guarded-run', '--session', session,
+                                '--', 'systemctl', '--user', '--no-block', 'stop', host_unit],
+                               capture_output=True, timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         url_path.unlink(missing_ok=True)
         raise
 
@@ -865,9 +911,11 @@ if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
   fi
   host_panel start "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "" "$role" \
     "$url" "$w" "$h" "$tag" "$decoder" "$conversion" "$panel_name" "$initial_pose" \
-    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}" "$wall_slot"
+    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}" "$wall_slot" "$session"
   exit $?
 fi
+
+if [ -n "$session" ]; then session_command begin; fi
 
 # Same reserved service as the browser route. Confirm complete shutdown before
 # replacing it, including an orphan left by a previous companion process.
@@ -939,13 +987,29 @@ panel_args=(--request-dir "$requests")
 if [ -n "$panel_name" ]; then panel_args+=(--overlay-name "$panel_name"); fi
 if [ -n "$initial_pose" ]; then panel_args+=(--initial-pose "$initial_pose"); fi
 vrcmd=/opt/steamvr/bin/linuxarm64/vrcmd
-if ! systemd-run --user --unit="$unit" --description='Frame Workspace native viewer' --collect \
+native_start=(--user --unit="$unit" --description='Frame Workspace native viewer' --collect \
   --property=Type=exec --property=KillMode=control-group --property=Restart=no --property=TimeoutStopSec=3s \
   --setenv="HOME=$HOME" --setenv="XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$uid}" \
   --setenv=DISPLAY=:0 --setenv=LC_ALL=C.UTF-8 \
   "$binary" --url-file "$secret" --overlay-key "$key" --control-file "$control" \
     --state-file "$state" --pose-file "$pose" --decoder "$decoder" \
-    --conversion "$conversion" "${foveation_args[@]}" "${panel_args[@]}" >/dev/null 2>&1; then
+    --conversion "$conversion" "${foveation_args[@]}" "${panel_args[@]}")
+if [ -n "$session" ]; then
+  launch_status=0
+  python3 "$exit_helper" guarded-run --session "$session" -- systemd-run "${native_start[@]}" >/dev/null 2>&1 || launch_status=$?
+elif systemd-run "${native_start[@]}" >/dev/null 2>&1; then
+  launch_status=0
+else
+  launch_status=1
+fi
+if [ "$launch_status" -ne 0 ]; then
+  if [ -n "$session" ] && ! session_command check; then
+    echo 'Workspace Stop cancelled the native viewer start.' >&2
+    exit 1
+  fi
+  if [ -n "$session" ]; then
+    python3 "$exit_helper" guarded-run --session "$session" -- systemctl --user --no-block stop "$unit" >/dev/null 2>&1 || true
+  fi
   echo 'Could not start the native Workspace service.' >&2
   exit 1
 fi

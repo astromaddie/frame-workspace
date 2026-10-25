@@ -11,13 +11,17 @@
 #include "vendor/openvr/openvr_capi.h"
 #include <json-c/json.h>
 #include <csignal>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <string>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 using namespace fw;
@@ -26,6 +30,7 @@ static DashState mockState(const std::string &which) {
   DashState s;
   s.macConnected = which != "offline";
   s.workspaceRunning = which == "running" || which == "spatial";
+  s.workspaceStopAvailable = s.workspaceRunning || !s.macConnected;
   s.spatial = which == "spatial";
   if (s.workspaceRunning)
     s.windows = {{"mads — grok — -zsh — 138×46", "com.frame-workspace.native.1000.panel-w105"},
@@ -87,19 +92,27 @@ static bool renderThumbnail(const std::string &out) {
   return ok;
 }
 
-// Reads the companion's state file. Fresh (rewritten within 6 s) means the Mac
-// is connected.
+// Reads the companion's last state. Fresh (rewritten within 6 s) means the Mac
+// is connected; stale state still identifies a session that can be stopped
+// locally while the Mac is offline.
 static DashState readState(const std::string &path) {
   DashState s;
   struct stat st {};
-  if (stat(path.c_str(), &st) != 0 || time(nullptr) - st.st_mtime > 6) return s;
+  if (stat(path.c_str(), &st) != 0) {
+    // With no Mac state, Stop is still a useful Frame-local orphan cleanup.
+    s.workspaceStopAvailable = true;
+    return s;
+  }
+  const bool fresh = time(nullptr) - st.st_mtime <= 6;
   json_object *j = json_object_from_file(path.c_str());
   if (!j) return s;
   json_object *v = nullptr;
-  s.macConnected = json_object_object_get_ex(j, "connected", &v) && json_object_get_boolean(v);
+  s.macConnected = fresh && json_object_object_get_ex(j, "connected", &v) && json_object_get_boolean(v);
   json_object *ws = nullptr;
   if (json_object_object_get_ex(j, "workspace", &ws)) {
     if (json_object_object_get_ex(ws, "running", &v)) s.workspaceRunning = json_object_get_boolean(v);
+    if (json_object_object_get_ex(ws, "stopAvailable", &v)) s.workspaceStopAvailable = json_object_get_boolean(v);
+    else s.workspaceStopAvailable = s.workspaceRunning;
     if (json_object_object_get_ex(ws, "busy", &v) && json_object_is_type(v, json_type_string)) {
       const std::string busy = json_object_get_string(v);
       s.workspaceBusy = busy == "starting" || busy == "stopping";
@@ -108,6 +121,8 @@ static DashState readState(const std::string &path) {
     if (json_object_object_get_ex(ws, "label", &v)) s.workspaceLabel = json_object_get_string(v);
     if (json_object_object_get_ex(ws, "mode", &v) && json_object_is_type(v, json_type_string))
       s.spatial = std::string(json_object_get_string(v)) == "spatial";
+    if (json_object_object_get_ex(ws, "session", &v) && json_object_is_type(v, json_type_string))
+      s.session = json_object_get_string(v);
   }
   json_object *windows = nullptr;
   if (json_object_object_get_ex(j, "windows", &windows) && json_object_is_type(windows, json_type_array))
@@ -116,33 +131,95 @@ static DashState readState(const std::string &path) {
       if (json_object_object_get_ex(w, "title", &t) && json_object_object_get_ex(w, "key", &k))
         s.windows.push_back({json_object_get_string(t), json_object_get_string(k)});
     }
+  if (!fresh) {
+    s.workspaceBusy = false;
+    s.workspaceStopAvailable = true; // local owned-service cleanup needs no Mac link
+    s.windows.clear(); // do not present stale window entries as live
+  }
   json_object_put(j);
   return s;
 }
 
 static bool sameState(const DashState &a, const DashState &b) {
   if (a.macConnected != b.macConnected || a.workspaceRunning != b.workspaceRunning ||
-      a.workspaceBusy != b.workspaceBusy || a.spatial != b.spatial || a.busyText != b.busyText || a.locked != b.locked || a.workspaceLabel != b.workspaceLabel || a.windows.size() != b.windows.size())
+      a.workspaceBusy != b.workspaceBusy || a.workspaceStopAvailable != b.workspaceStopAvailable ||
+      a.spatial != b.spatial || a.busyText != b.busyText || a.locked != b.locked ||
+      a.workspaceLabel != b.workspaceLabel || a.session != b.session || a.windows.size() != b.windows.size())
     return false;
   for (size_t i = 0; i < a.windows.size(); i++)
     if (a.windows[i].title != b.windows[i].title || a.windows[i].key != b.windows[i].key) return false;
   return true;
 }
 
-static void writeRequest(const std::string &dir, const std::string &action, const std::string &key) {
+static bool writeRequest(const std::string &dir, const std::string &action, const std::string &key,
+                         const std::string &session) {
   static int sequence = 0;
   const std::string file = dir + "/dash-" + std::to_string(getpid()) + "-" + std::to_string(++sequence) + ".json";
   const std::string tmp = file + ".tmp";
   FILE *f = fopen(tmp.c_str(), "w");
-  if (!f) return;
+  if (!f) return false;
   json_object *j = json_object_new_object();
+  if (!j) { fclose(f); unlink(tmp.c_str()); return false; }
   json_object_object_add(j, "action", json_object_new_string(action.c_str()));
   if (!key.empty()) json_object_object_add(j, "key", json_object_new_string(key.c_str()));
-  fputs(json_object_to_json_string_ext(j, JSON_C_TO_STRING_PLAIN), f);
+  if (!session.empty()) json_object_object_add(j, "session", json_object_new_string(session.c_str()));
+  bool ok = fputs(json_object_to_json_string_ext(j, JSON_C_TO_STRING_PLAIN), f) >= 0 && fputc('\n', f) != EOF &&
+            fflush(f) == 0 && fsync(fileno(f)) == 0;
   json_object_put(j);
-  fclose(f);
-  chmod(tmp.c_str(), 0600);
-  rename(tmp.c_str(), file.c_str());
+  if (fclose(f) != 0) ok = false;
+  if (ok && chmod(tmp.c_str(), 0600) != 0) ok = false;
+  if (ok && rename(tmp.c_str(), file.c_str()) != 0) ok = false;
+  if (!ok) unlink(tmp.c_str());
+  return ok;
+}
+
+static bool spawnLocalExit(const std::string &helper, const std::string &requestDir,
+                           const std::string &session, const std::string &operation) {
+  if (helper.empty() || access(helper.c_str(), X_OK) != 0 ||
+      (operation != "stop" && operation != "exit" && operation != "exit-current")) return false;
+  int execPipe[2];
+  if (pipe(execPipe) != 0) return false;
+  if (fcntl(execPipe[1], F_SETFD, FD_CLOEXEC) != 0) {
+    close(execPipe[0]); close(execPipe[1]); return false;
+  }
+  const pid_t child = fork();
+  if (child < 0) { close(execPipe[0]); close(execPipe[1]); return false; }
+  if (child == 0) {
+    close(execPipe[0]);
+    const pid_t worker = fork();
+    if (worker < 0) {
+      const int error = errno; write(execPipe[1], &error, sizeof(error)); _exit(126);
+    }
+    if (worker > 0) _exit(0);
+    if (setsid() < 0) {
+      const int error = errno; write(execPipe[1], &error, sizeof(error)); _exit(126);
+    }
+    if (operation == "exit-current")
+      execl(helper.c_str(), helper.c_str(), "exit-current", "--request-dir", requestDir.c_str(),
+            static_cast<char *>(nullptr));
+    else if (operation == "exit")
+      execl(helper.c_str(), helper.c_str(), "exit", "--session", session.c_str(),
+            "--request-dir", requestDir.c_str(), static_cast<char *>(nullptr));
+    else
+      execl(helper.c_str(), helper.c_str(), "stop", "--session", session.c_str(),
+            static_cast<char *>(nullptr));
+    const int error = errno; write(execPipe[1], &error, sizeof(error));
+    _exit(127);
+  }
+  close(execPipe[1]);
+  int status = 0;
+  while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+  struct pollfd event {execPipe[0], POLLIN | POLLHUP, 0};
+  int ready;
+  do { ready = poll(&event, 1, 1000); } while (ready < 0 && errno == EINTR);
+  int childError = 0;
+  ssize_t bytes = -1;
+  if (ready > 0) {
+    do { bytes = read(execPipe[0], &childError, sizeof(childError)); }
+    while (bytes < 0 && errno == EINTR);
+  }
+  close(execPipe[0]);
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0 && ready > 0 && bytes == 0;
 }
 
 static volatile sig_atomic_t stopping = 0;
@@ -154,13 +231,21 @@ int main(int argc, char **argv) {
     return renderPng(r, mockState(which), which == "running" ? "close:com.frame-workspace.native.1000.panel-w212" : "",
                      argv[3], argv[2]).empty() ? 1 : 0;
   }
-  std::string statePath, requestDir, images = "/tmp", layout = "tiles";
+  std::string statePath, requestDir, images = "/tmp", layout = "tiles", exitHelper;
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string a = argv[i], v = argv[i + 1];
     if (a == "--state") statePath = v;
     else if (a == "--request-dir") requestDir = v;
     else if (a == "--images") images = v;
     else if (a == "--layout") layout = v == "list" ? "list" : "tiles";
+    else if (a == "--exit-helper") exitHelper = v;
+  }
+  if (exitHelper.empty()) {
+    const char *dataHome = std::getenv("XDG_DATA_HOME");
+    const char *home = std::getenv("HOME");
+    exitHelper = std::string(dataHome && *dataHome ? dataHome :
+                             (home && *home ? std::string(home) + "/.local/share" : "/.local/share")) +
+                 "/frame-workspace/native/workspace-exit-on-frame.py";
   }
   if (statePath.empty() || requestDir.empty()) {
     fprintf(stderr, "usage: frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]\n");
@@ -246,7 +331,31 @@ int main(int argc, char **argv) {
       } else if (ev.eventType == EVREventType_VREvent_MouseButtonDown && !pending) {
         for (auto &b : buttons)
           if (b.enabled && b.contains(x, y)) {
-            writeRequest(requestDir, b.action, b.key);
+            if (b.action == "workspace_stop") {
+              // First persist the Mac restore request in the dashboard's normal
+              // request channel. The detached helper then does only the local
+              // close; failed exec leaves the durable request for the companion.
+              const bool requestSaved = state.session.empty()
+                  ? false : writeRequest(requestDir, b.action, b.key, state.session);
+              const std::string operation = state.session.empty() ? "exit-current" :
+                                            requestSaved ? "stop" : "exit";
+              const bool helperStarted = spawnLocalExit(exitHelper, requestDir, state.session, operation);
+              const bool fallbackSaved = requestSaved ||
+                  (!state.session.empty() && writeRequest(requestDir, b.action, b.key, state.session)) ||
+                  (state.session.empty() && !helperStarted && writeRequest(requestDir, b.action, b.key, state.session)) ||
+                  (state.session.empty() && helperStarted);
+              if (!fallbackSaved)
+                fprintf(stderr, "[dash] could not save the Mac Stop request or start its local helper\n");
+              else if (requestSaved && !helperStarted)
+                fprintf(stderr, "[dash] Mac restore was queued; local viewer cleanup could not be started\n");
+              state.workspaceRunning = false;
+              state.workspaceStopAvailable = true;
+              state.workspaceBusy = true;
+              state.busyText = "Stopping…";
+              state.windows.clear();
+            } else {
+              writeRequest(requestDir, b.action, b.key, state.session);
+            }
             pending = true;
             pressedAt = now();
             pendingAction = b.action;

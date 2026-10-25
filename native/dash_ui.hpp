@@ -17,9 +17,10 @@ struct DashWindow {
 };
 struct DashState {
   bool macConnected = false;
-  bool workspaceRunning = false, workspaceBusy = false;
+  bool workspaceRunning = false, workspaceBusy = false, workspaceStopAvailable = false;
   bool spatial = false;  // Spatial Mode (every window in the room) rather than Desktop Mode (FW-15)
   std::string busyText = "Starting…";  // shown while busy
+  std::string session;
   bool locked = false;  // a press is being carried out: every button waits
   std::string workspaceLabel = "9:8 · 2880 × 2560";
   std::vector<DashWindow> windows;
@@ -63,14 +64,15 @@ public:
                                           : "Running · Desktop Mode · " + s.workspaceLabel;
     text(s.workspaceBusy ? s.busyText : s.workspaceRunning ? running : "Stopped",
          64, 160, 17, 400, s.workspaceRunning ? green : muted);
-    const bool can = s.macConnected && !s.workspaceBusy && !s.locked;
+    const bool canStart = s.macConnected && !s.workspaceBusy && !s.locked;
     // T1: Desktop | Spatial, always on the card; Start starts whichever is chosen.
-    segments(64, 198, s.spatial, hover, can);
-    if (s.workspaceRunning) {
-      button(372, 198, 120, 50, "Stop", "workspace_stop", "", hover, false, can);
-      button(508, 198, 160, 50, "Recenter", "recenter", "", hover, false, can);
+    segments(64, 198, s.spatial, hover, canStart);
+    if (s.workspaceStopAvailable || s.workspaceRunning) {
+      button(372, 198, 120, 50, "Stop", "workspace_stop", "", hover, false, !s.locked);
+      button(508, 198, 160, 50, "Recenter", "recenter", "", hover, false,
+             s.macConnected && s.workspaceRunning && !s.workspaceBusy && !s.locked);
     } else {
-      button(372, 198, 260, 50, "Start Workspace", "workspace_start", "", hover, true, can);
+      button(372, 198, 260, 50, "Start Workspace", "workspace_start", "", hover, true, canStart);
     }
     // Windows
     text("WINDOWS", 48, 304, 14, 700, muted, 2.4);
