@@ -140,6 +140,7 @@ class Helpers(unittest.TestCase):
         mv.run = run
         mv.call = lambda path, **kw: {"windows": [{"src": "window:42", "title": "Terminal\tzsh", "w": 1200, "h": 800}]}
         with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2",
+                                          "FRAME_WINDOW_DECODER": "v4l2",
                                           "FRAME_WORKSPACE_CONVERSION": "gpu"}):
             mv._show_native_window("window:42", "http://127.0.0.1:1/view?x", "fc12345678", 1200, 800)
         self.assertTrue(runs[-1].startswith("bash -s -- "))
@@ -151,6 +152,18 @@ class Helpers(unittest.TestCase):
         self.assertEqual(args[-2:], ["v4l2", "gpu"])
         self.assertEqual(mv.native_panels["window:42"]["key"], "com.frame-workspace.native.1000.panel-w42")
         self.assertIs(mv.native_panels["window:42"]["host"], False)
+
+    def test_native_window_defaults_software_even_when_workspace_uses_v4l2(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv.run = mock.Mock(return_value="registered OpenVR key com.frame-workspace.native.1000.panel-w42")
+        mv.call = mock.Mock(return_value={"windows": [{"src": "window:42", "title": "Terminal", "w": 1200, "h": 800}]})
+        mv._workspace_frame_placement = mock.Mock(return_value=None)
+        with mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native", "FRAME_WORKSPACE_DECODER": "v4l2",
+                                          "FRAME_WORKSPACE_CONVERSION": "gpu"}):
+            os.environ.pop("FRAME_WINDOW_DECODER", None)
+            mv._show_native_window("window:42", "http://127.0.0.1:1/view?x", "fc12345678", 1200, 800)
+        args = shlex.split(mv.run.call_args.args[0])
+        self.assertEqual(args[-2:], ["software", "gpu"])
 
     def test_native_host_is_opt_in_and_stop_reuses_recorded_host_selection(self):
         mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
@@ -1381,9 +1394,10 @@ class SpatialMode(unittest.TestCase):
 
     def setUp(self):
         self.env = mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native",
-            "FRAME_WINDOW_DISPLAYS": "0", "FRAME_NATIVE_HOST": "0"})
+            "FRAME_WORKSPACE_DECODER": "v4l2", "FRAME_WINDOW_DISPLAYS": "0", "FRAME_NATIVE_HOST": "0"})
         self.env.start()
         self.addCleanup(self.env.stop)
+        os.environ.pop("FRAME_WINDOW_DECODER", None)
         self.mv = frame_macview.MacView(["ssh"], self.remote_run, "fake-frame")
         self.mv.agent = mock.Mock(poll=lambda: None)
         self.mv.workspace_manager = mock.Mock()
@@ -1530,6 +1544,8 @@ class SpatialMode(unittest.TestCase):
             self.assertEqual(args[args.index("--role") + 1], role)
             self.assertIn("src=" + frame_macview.quote(source, safe=""), args[args.index("start") + 1])
             self.assertTrue(self.mv.native_panels[source]["host"])
+        for args in self.launches:
+            self.assertEqual(args[-2:], ["software", "cpu"])
         self.assertEqual(self.mv.native_panels["spatial:42"]["slot"], 0)
         self.mv._spatial_mode_tick()
         self.jobs_once()
@@ -1542,6 +1558,25 @@ class SpatialMode(unittest.TestCase):
                    if event == "remote" and shlex.split(cmd)[-1:] == ["stop"]]
         self.assertEqual({args[args.index("--panel") + 1] for args in stopped},
                          {"w42", "menubar", "status", "menu0", "menu1", "menu2", "menu3"})
+
+    def test_invalid_window_decoder_fails_before_spatial_mode_or_display_change(self):
+        with mock.patch.dict(os.environ, {"FRAME_WINDOW_DECODER": "auto"}):
+            with self.assertRaisesRegex(frame_macview.MacViewError, "FRAME_WINDOW_DECODER must be software or v4l2"):
+                self.mv.start_workspace(mode="spatial")
+        self.assertEqual(self.mv.mode, "desktop")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.launches, [])
+        self.mv.ensure_tunnel.assert_not_called()
+
+    def test_invalid_window_decoder_does_not_stop_running_workspace_on_mode_switch(self):
+        self.mv.workspace_manager.state.return_value = {"state": "running"}
+        self.mv.stop_workspace = mock.Mock()
+        with mock.patch.dict(os.environ, {"FRAME_WINDOW_DECODER": "auto"}):
+            with self.assertRaisesRegex(frame_macview.MacViewError, "FRAME_WINDOW_DECODER must be software or v4l2"):
+                self.mv.set_mode("spatial")
+        self.assertEqual(self.mv.mode, "desktop")
+        self.mv.stop_workspace.assert_not_called()
+        self.assertEqual(self.events, [])
 
     def test_auxiliary_launch_failure_retries_without_relaunching_other_panels(self):
         self.failed_panels.add("menu2")

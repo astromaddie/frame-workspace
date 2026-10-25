@@ -49,7 +49,9 @@ The Mac bundle uses `com.astromaddie.frame-workspace` and keeps its state in
 `~/Library/Caches/Frame Workspace`, and server log in
 `~/Library/Logs/Frame Workspace/server.log`. On first launch it copies only missing
 Workspace settings from `Frame Workspace Preview`; it keeps the originals.
-It uses native viewing, V4L2 decoding, CPU conversion, and a 30 fps stream target.
+It uses native viewing, CPU conversion, and a 30 fps stream target. The desktop
+monitor uses V4L2 decoding; independent window and Spatial menu/status panels
+default to software decoding (`FRAME_WINDOW_DECODER`).
 Upstream updates, telemetry, and Frame Control install-link registration are
 disabled for this profile.
 

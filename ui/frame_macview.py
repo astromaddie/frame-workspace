@@ -101,6 +101,14 @@ def workspace_decoder():
     return decoder
 
 
+def native_window_decoder():
+    """Decoder for independent native window and Spatial auxiliary panels."""
+    decoder = os.environ.get("FRAME_WINDOW_DECODER", "software")
+    if decoder not in ("software", "v4l2"):
+        raise MacViewError("FRAME_WINDOW_DECODER must be software or v4l2.")
+    return decoder
+
+
 def workspace_foveation():
     value = os.environ.get("FRAME_WORKSPACE_FOVEATION", "0")
     if value not in ("0", "1"):
@@ -1568,7 +1576,7 @@ print(json.dumps(poses))
         role_args = ["--role", role] if role != "window" or self.mode == "spatial" else []
         slot_args = ["--slot", slot] if self.mode == "spatial" and slot is not None else []
         args = ["--panel", panel, "--name", title] + role_args + pose_args + slot_args + \
-               ["start", url, w, h, tag, workspace_decoder(), workspace_conversion()]
+               ["start", url, w, h, tag, native_window_decoder(), workspace_conversion()]
         remote_env = "FRAME_NATIVE_HOST=1 " if host else ""
         out = self.run(remote_env + "bash -s -- " + " ".join(_quote(str(a)) for a in args),
                        stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=60)
@@ -1777,6 +1785,8 @@ print(json.dumps(poses))
         """Select a durable mode, replacing a running setup after confirmed Stop."""
         if mode not in ("desktop", "spatial"):
             raise MacViewError("Mode Must Be Desktop Or Spatial.")
+        if mode == "spatial":
+            native_window_decoder()  # validate before closing the current display or panels
         with self.workspace_lock:
             if mode == self.mode:
                 return {"mode": mode, "workspace": self.workspace_state(), "changed": False}
@@ -1816,8 +1826,10 @@ print(json.dumps(poses))
             if self.closing:
                 raise MacViewError("The Companion Is Shutting Down.")
             WorkspaceDisplayManager._validate_request(preset, scale, quality)
-            if (mode or self.mode) == "spatial" and quality_settings(quality)["codec"] != "h264":
-                raise MacViewError("Spatial Mode Requires Sharp, Balanced Or Light Quality.")
+            if (mode or self.mode) == "spatial":
+                if quality_settings(quality)["codec"] != "h264":
+                    raise MacViewError("Spatial Mode Requires Sharp, Balanced Or Light Quality.")
+                native_window_decoder()  # reject invalid panel settings before a mode/display change
             if mode is not None:
                 self.set_mode(mode, restart=False)
             if (resume and pose is None and self.mode == "desktop" and self.resume_workspace_pose and
@@ -1840,7 +1852,7 @@ print(json.dumps(poses))
         request = WorkspaceDisplayManager._validate_request(preset, scale, quality)
         if quality_settings(quality)["codec"] != "h264":
             raise MacViewError("Spatial Mode Requires Sharp, Balanced Or Light Quality.")
-        workspace_decoder()
+        native_window_decoder()
         workspace_conversion()
         spatial_decode_pixels()
         if self.spatial_workspace.get("state") == "running":

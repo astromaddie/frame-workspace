@@ -40,6 +40,11 @@ the reserved Workspace viewer unit and owned Mac display. SteamVR and the main
 Gamescope session are not restarted. The original installed Frame Control app is
 preserved.
 
+Independent native window panels and Spatial menu/status panels use the separate
+`FRAME_WINDOW_DECODER` setting. It defaults to `software`; set it to `v4l2` only
+when explicitly testing hardware decoding on those panels. Invalid values are
+rejected before switching to Spatial mode or changing the owned display.
+
 The current installed binary SHA-256 is
 `9ebd783d7d90f5b695189d094d41502fd3c861583674a47fd552db0d66191545`;
 its build metadata SHA-256 is
