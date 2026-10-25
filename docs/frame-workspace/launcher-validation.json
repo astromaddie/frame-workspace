@@ -291,5 +291,29 @@
     "python3 -m unittest discover -s tests -p 'test_native_pose_launcher.py'",
     "PYTHONPATH=tests:ui python3 -m unittest test_macview.Helpers test_macview.SpatialMode test_macview.WorkspaceLifecycle",
     "PYTHONPATH=tests:ui python3 -m unittest test_spatial_apps.Companion"
-  ]
+  ],
+  "stopFailureRepair": {
+    "date": "2026-10-26",
+    "baseCommit": "c46bc78e1ad468e06607710e461759db57da9432",
+    "cause": "Python-only (?:...) groups were passed to pgrep/pkill, which use POSIX ERE. On Frame pgrep exited 2 with regex error: Invalid preceding regular expression. This made an empty session appear unconfirmed, hid Start, and rejected Stop.",
+    "fix": "Use a shared POSIX ERE browser-profile pattern for inventory and termination.",
+    "exitHelperSha256": "f873e18f4428a28850efc9cd5172b185d9ab0af8f719c161b6f8d63c2ceec88b",
+    "installedMacResourceMatchesSource": true,
+    "frameBefore": {
+      "host": "inactive",
+      "viewer": "inactive",
+      "stopAvailable": true,
+      "stopJournal": "Frame Workspace visuals are closing, but an owned viewer is still active or cannot be verified; retry Stop."
+    },
+    "frameAfter": {
+      "exitHelper": "Frame Workspace viewer session stopped.",
+      "stopAvailable": false,
+      "workspaceRunning": false,
+      "pendingBusy": null
+    },
+    "macLaunch": "Selected /Applications/Frame Workspace.app in Finder (Kind: Application), double-clicked, and observed the running app window with live server and Frame connection. Repaired copy signed and registered; launched again through Finder.",
+    "macCapture": "System Settings shows Frame Workspace Screen Recording on, but the running capture helper reports screen=false/accessibility=false. Normal Refresh and Allow were tried; permission refresh approval pending.",
+    "regression": "Real pgrep accepts the production pattern; existing helper regression cases pass.",
+    "oldValidationLimit": "Prior fake pgrep fixture did not parse the regex, so it missed this production failure."
+  }
 }

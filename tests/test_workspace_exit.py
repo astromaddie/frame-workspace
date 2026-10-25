@@ -1,5 +1,6 @@
 """Production-path tests for Frame Workspace's local Stop helper."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -7,11 +8,25 @@ import sys
 import tempfile
 import time
 import unittest
+import shutil
 
 import sandbox  # noqa: F401
 
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "scripts" / "workspace-exit-on-frame.py"
+
+
+class BrowserProcessPatternTests(unittest.TestCase):
+    def test_pattern_is_valid_for_real_pgrep(self):
+        spec = importlib.util.spec_from_file_location("workspace_exit", HELPER)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        pgrep = shutil.which("pgrep")
+        if pgrep is None:
+            self.skipTest("pgrep unavailable on this host")
+        result = subprocess.run([pgrep, "-f", helper.BROWSER_PATTERN], capture_output=True,
+                                text=True, timeout=3)
+        self.assertIn(result.returncode, (0, 1), result.stderr)
 
 
 class WorkspaceExitTests(unittest.TestCase):

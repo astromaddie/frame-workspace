@@ -20,6 +20,7 @@ import time
 
 SESSION = re.compile(r"[0-9a-f]{32}\Z")
 PANEL_UNIT = re.compile(r"frame-workspace-panel-(\d+)-[a-z0-9]{1,16}\.service\Z")
+BROWSER_PATTERN = r"[f]rame-workspace/(mac-view|workspace-viewer)|[d]ata/frame-workspace/(mac-view|workspace-viewer)"
 
 
 class ExitError(Exception):
@@ -318,7 +319,7 @@ def owned_processes_alive(pattern):
 
 def terminate_browsers():
     # The profile path belongs to this app. Avoid all generic Chromium names.
-    pattern = r"[f]rame-workspace/(?:mac-view|workspace-viewer)|[d]ata/frame-workspace/(?:mac-view|workspace-viewer)"
+    pattern = BROWSER_PATTERN
     run(["pkill", "-TERM", "-f", pattern], .2)
     return pattern
 
@@ -330,7 +331,7 @@ def stop_available():
     except ExitError:
         # Enable the existing app-scoped Stop when inventory cannot be read.
         return True
-    pattern = r"[f]rame-workspace/(?:mac-view|workspace-viewer)|[d]ata/frame-workspace/(?:mac-view|workspace-viewer)"
+    pattern = BROWSER_PATTERN
     return bool(units) or owned_processes_alive(pattern) is not False
 
 
