@@ -84,17 +84,18 @@ artwork. A launch from Steam reached the companion and started the saved Spatial
 workspace. That run exposed hardware decoder errors for individual panels;
 window panels now select software decoding before startup.
 
-The updated app is installed and runs with its Workspace stopped. macOS reset
-its Screen Recording and Accessibility grants after replacement. Reapprove
-those permissions through the normal macOS prompt before testing capture.
-Live capture with the updated window decoder remains pending that OS consent.
+The installed Mac app opens from Finder. A Steam library launch opened a real
+2880 × 2560 Desktop monitor; the Frame decoded its Mac capture and submitted the
+texture. Stop through the installed dashboard closed that viewer, ended the Mac
+stream, removed the virtual display, and restored Start. Desktop is selected
+for the next single-monitor launch. The independent Spatial-window software
+decoder policy still needs its own live run.
 
-Frame-local Stop routing was verified while HMD0 was in standby: a permission-
-gated OpenVR event sequence reached the owned dashboard's Stop handler, stopped
-a capture-free fixture in the exact Workspace host unit, and produced no respawn
-during a 10-second check. This did not test worn interaction, Mac window
-restoration, capture, or the hung-host fallback. The installed app currently reports Screen Recording
-and Accessibility as unavailable.
+macOS can retain permission entries for an older signed app even when their
+switches are on. If the app still reports denied access after granting it,
+remove its stale entries from Screen & System Audio Recording and Accessibility,
+then add the exact `/Applications/Frame Workspace.app` again and allow macOS to
+quit and reopen it. This restored both grants for the installed app.
 
 ## Original artwork
 

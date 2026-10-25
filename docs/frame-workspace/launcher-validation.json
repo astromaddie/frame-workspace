@@ -17,7 +17,7 @@
     "iconPngSha256": "6a0f5ea5d1a2ffa867b017b9958e2a51fa68b0bb46aa87262615f6b5950aec4c",
     "iconMatchesSource": true,
     "spatialAppsSourceSha256": "c29d374e63cfcf4c4e29d7ed393a8f088d87fa4525372a813f1a4fb75b26991c",
-    "exitHelperSha256": "e72bc4cc1684334b23a2bec2aa40c1535ed74022ebb1505a81c344a035a0dd9a"
+    "exitHelperSha256": "f873e18f4428a28850efc9cd5172b185d9ab0af8f719c161b6f8d63c2ceec88b"
   },
   "originalArtwork": {
     "design": "Open volume with one centered window",
@@ -58,15 +58,15 @@
     "installedPackageAndSourceHashes": "passed"
   },
   "captureAcceptance": {
-    "updatedWindowPolicyOnDevice": "pending macOS permission approval",
-    "screenRecording": false,
-    "accessibility": false,
+    "updatedWindowPolicyOnDevice": "Independent Spatial-window policy not rerun; real Desktop monitor verified separately after permission rebinding.",
+    "screenRecording": true,
+    "accessibility": true,
     "normalPermissionSetupRequested": true,
     "workspaceState": "stopped",
     "streams": 0,
     "workspaceVirtualDisplayPresent": false,
     "appServerRunning": true,
-    "savedMode": "spatial",
+    "savedMode": "desktop",
     "bookings": "released"
   },
   "priorProductionLaunchEvidence": {
@@ -237,14 +237,14 @@
     "appServerRunning": true,
     "appOpenExitCode": 0,
     "launch": "normal open -a with scoped runtime access succeeded",
-    "mode": "spatial",
+    "mode": "desktop",
     "workspaceState": "stopped",
     "streams": 0,
     "windows": 0,
     "displays": 1,
-    "tunnel": false,
-    "screenPermission": false,
-    "accessibilityPermission": false,
+    "tunnel": true,
+    "screenPermission": true,
+    "accessibilityPermission": true,
     "workspaceVirtualDisplayPresent": false,
     "frameState": "dashboard active; host/viewer inactive at last reachable check; booking released"
   },
@@ -312,8 +312,44 @@
       "pendingBusy": null
     },
     "macLaunch": "Selected /Applications/Frame Workspace.app in Finder (Kind: Application), double-clicked, and observed the running app window with live server and Frame connection. Repaired copy signed and registered; launched again through Finder.",
-    "macCapture": "System Settings shows Frame Workspace Screen Recording on, but the running capture helper reports screen=false/accessibility=false. Normal Refresh and Allow were tried; permission refresh approval pending.",
+    "macCapture": "Both stale app permission entries were removed and the exact /Applications/Frame Workspace.app was re-added through System Settings with explicit user approval. Running helper now reports screen=true and accessibility=true.",
     "regression": "Real pgrep accepts the production pattern; existing helper regression cases pass.",
-    "oldValidationLimit": "Prior fake pgrep fixture did not parse the regex, so it missed this production failure."
+    "oldValidationLimit": "Prior fake pgrep fixture did not parse the regex, so it missed this production failure.",
+    "realMonitorFlow": {
+      "launch": "Actual Steam URI steam://rungameid/17758608377832800256; Desktop mode selected through the installed Mac app.",
+      "running": {
+        "displayID": 5,
+        "width": 2880,
+        "height": 2560,
+        "codec": "h264",
+        "viewerPID": 25184,
+        "ready": true,
+        "decoded": 3,
+        "uploaded": 2,
+        "decoder": "h264_v4l2m2m",
+        "errors": 0
+      },
+      "stop": "Bounded permitted OpenVR mouse event on the actual running dashboard Stop control, followed by production journal workspace_stop and viewer session stopped at 03:35:43-44 JST.",
+      "after": {
+        "workspace": "stopped",
+        "streams": 0,
+        "displays": 1,
+        "viewerMainPID": 0,
+        "hostMainPID": 0,
+        "stopAvailable": false,
+        "dashboard": "not_visible",
+        "screen": true,
+        "accessibility": true
+      },
+      "savedMode": "desktop; leaves the tested single-monitor path ready for the next launch",
+      "scope": "Live Mac capture and Frame rendering, followed by the actual dashboard exit handler; no wearer visual confirmation and no new Spatial-mode run."
+    },
+    "cleanup": {
+      "localStagingBytesRemoved": 777048064,
+      "pythonCacheBytesRemoved": 61440,
+      "remoteProbeBytesRemoved": 196608,
+      "installedAppPreserved": true,
+      "rollbackCopiesRemoved": true
+    }
   }
 }
