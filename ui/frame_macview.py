@@ -17,6 +17,7 @@ Runs on the Mac, inside Frame Control's server. The pieces:
 Stdlib only. MacView gets a plain ssh argv for the tunnel (its own
 connection) and the server's `run(remote, stdin=, timeout=)` for commands.
 """
+import collections
 import json
 import math
 import os
@@ -718,6 +719,9 @@ class MacView:
         self.dash_jobs = queue.Queue()
         self.dash_lock = threading.Lock()
         self.dash_worker = None
+        # Recent failed headset actions and panel launches, for the bar panel
+        # and the Mac page (newest last).
+        self.recent_errors = collections.deque(maxlen=8)
         self.spatial_apps = SpatialApps(self)
         self.dash_wake = self.spatial_apps.wake  # one waker for the bar and the spatial state
         self.last_workspace_file = last_workspace_file
@@ -1347,6 +1351,17 @@ class MacView:
             self.call("/focus", method="POST", src=src, u=u, v=v)
             with self._spatial_lock:
                 self._spatial_focused = src
+
+    AUX_NAMES = {"menubar": "Menu Bar", "status": "Status", "menu": "Menu"}
+
+    def _record_error(self, message, kind="action"):
+        """Keep a failure the user caused (a headset click, a panel launch) visible."""
+        message = re.sub(r"[\x00-\x1f]+", " ", str(message or "")).strip()[:160] or "Something Went Wrong."
+        self.recent_errors.append({"at": time.time(), "kind": kind, "message": message})
+        self.dash_wake.set()
+
+    def errors_state(self):
+        return [dict(e) for e in list(self.recent_errors)]
 
     def _dash_run(self, busy, fn, *args):
         """Carry out headset requests in order, off the sync loop, so the
@@ -2047,13 +2062,19 @@ print(json.dumps(poses))
         finally:
             self.workspace_lock.release()
 
+    def _spatial_cancelled(self, generation):
+        return (self.closing or self.exit_pending or self.mode != "spatial" or generation != self._mode_generation or
+                self.spatial_workspace.get("state") != "running")
+
     def _reconcile_spatial_windows(self, generation):
         # One new panel per job keeps Stop/mode requests responsive between
         # launches. AX notifications update the helper's confirmed window list.
+        # Windows go first: Menu Bar, Status and the menu slots launch only
+        # when no window is waiting, so an idle or failing one never delays them.
+        again = False
         with self.workspace_lock:
             try:
-                if self.closing or self.exit_pending or self.mode != "spatial" or generation != self._mode_generation or \
-                        self.spatial_workspace.get("state") != "running":
+                if self._spatial_cancelled(generation):
                     return
                 state = self.call("/spatial")
                 if state.get("state") != "running" or self._spatial_agent is not self.agent:
@@ -2063,7 +2084,6 @@ print(json.dumps(poses))
                     self._close_window_panels()
                     self.spatial_workspace["panelCleanupPending"] = False
                     return
-                self._ensure_spatial_aux_panels()
                 windows = {"spatial:" + str(w["id"]): w for w in state.get("windows", [])
                            if isinstance(w, dict) and type(w.get("id")) is int and w["id"] > 0}
                 self._spatial_suppressed.intersection_update(windows)
@@ -2100,14 +2120,22 @@ print(json.dumps(poses))
                         self.call("/close", method="POST", src=candidate)
                         self._stop_native_panels(candidate)
                         self._spatial_retry[candidate] = {"after": now + 5, "error": str(exc)}
+                        self._record_error(f"Couldn't Show {info.get('app') or 'A Window'}: {exc}", kind="panel")
+                    again = True
+                elif not self._spatial_cancelled(generation):
+                    again = self._ensure_spatial_aux_panels()
                 self.spatial_workspace.update(home=state,
                     panelsReady=not pending and SPATIAL_AUX_ROLES.keys() <= self.native_panels.keys(), windowCount=len(windows),
                     panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows or s in SPATIAL_AUX_ROLES})
                 self.dash_wake.set()
             finally:
                 self._spatial_reconcile_queued = False
+                # Keep launching while there is work, without waiting for the next tick.
+                if again and not self._spatial_cancelled(generation):
+                    self._queue_spatial_reconcile()
 
     def _ensure_spatial_aux_panels(self):
+        """Launch the next missing auxiliary panel; True if one launched."""
         now = time.monotonic()
         for source, role in SPATIAL_AUX_ROLES.items():
             if source in self.native_panels or self._spatial_retry.get(source, {}).get("after", 0) > now:
@@ -2115,10 +2143,14 @@ print(json.dumps(poses))
             try:
                 self._show(source, self.spatial_workspace["quality"], None, None, role=role)
                 self._spatial_retry.pop(source, None)
+                return True
             except Exception as exc:
                 self.call("/close", method="POST", src=source)
                 self._stop_native_panels(source)
                 self._spatial_retry[source] = {"after": now + 5, "error": str(exc)}
+                self._record_error(f"Couldn't Open The {self.AUX_NAMES.get(role, 'Menu')} Panel: {exc}", kind="panel")
+                return True  # it waits five seconds; the next one may go now
+        return False
 
     def _stop_spatial(self):
         with self.workspace_lock:

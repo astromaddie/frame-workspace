@@ -1273,6 +1273,7 @@ class SpatialPolicy(unittest.TestCase):
         self.mv.call = self.call
         # Exercise the production request handler without background timing.
         self.mv._dash_run = lambda busy, fn, *args: fn(*args)
+        self.mv._action_run = lambda fn, *args: fn(*args)
 
     def call(self, path, method="GET", **q):
         self.calls.append((path, method, q))
@@ -1528,6 +1529,7 @@ class SpatialMode(unittest.TestCase):
         self.mv.call = self.call
         self.jobs, self.events, self.launches = [], [], []
         self.mv._dash_run = lambda busy, fn, *args: self.jobs.append((fn, args))
+        self.mv._action_run = lambda fn, *args: self.jobs.append((fn, args))
         self.running, self.removed, self.fail_start = False, True, False
         self.failed_panels = set()
         self.windows = [self.window(42)]
@@ -1573,7 +1575,11 @@ class SpatialMode(unittest.TestCase):
             self.launches.append(args)
             if panel in self.failed_panels:
                 raise frame_macview.MacViewError("Panel Launch Failed")
-            return "registered OpenVR key com.frame-workspace.native.1000.panel-" + panel
+            # The launcher's own words: a window panel has a picture; an idle
+            # Menu Bar, Status or menu slot registers with none.
+            idle = "" if panel.startswith("w") else " (idle, no picture yet)"
+            return ("Native Workspace ready: registered OpenVR key com.frame-workspace.native.1000.panel-" + panel +
+                    " in frame-workspace-host-1000.service" + idle)
         return "stopped"
 
     def jobs_once(self):
@@ -1581,10 +1587,23 @@ class SpatialMode(unittest.TestCase):
         for fn, args in jobs:
             fn(*args)
 
+    def drain(self):
+        for _ in range(50):
+            if not self.jobs:
+                return
+            self.jobs_once()
+        self.fail("reconciliation kept queueing jobs")
+
+    def panel_launches(self):
+        return [a[a.index("--panel") + 1] for a in self.launches]
+
+    def window_launch(self, panel="w42"):
+        return next(a for a in reversed(self.launches) if a[a.index("--panel") + 1] == panel)
+
     def start(self):
         self.mv.set_mode("spatial")
         result = self.mv.start_workspace(quality="balanced")
-        self.jobs_once()
+        self.drain()
         return result
 
     def test_wall_slots_follow_focus_order_reuse_and_saved_pose_precedence(self):
@@ -1635,8 +1654,8 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(self.mv.shown, {"spatial:42", *frame_macview.SPATIAL_AUX_ROLES})
         self.assertTrue(self.mv.native_panels["spatial:42"]["host"])
         self.assertEqual(self.mv.native_panels["spatial:42"]["title"], "Shell 42")
-        self.assertEqual(self.launches[-1][0], "FRAME_NATIVE_HOST=1")
-        self.assertIn("src=spatial%3A42", " ".join(self.launches[-1]))
+        self.assertEqual(self.window_launch()[0], "FRAME_NATIVE_HOST=1")
+        self.assertIn("src=spatial%3A42", " ".join(self.window_launch()))
         self.assertTrue(self.mv.spatial_workspace["panelsReady"])
         self.assertTrue(self.mv.dash_state()["workspace"]["running"])
         self.assertEqual(self.mv.dash_state()["workspace"]["mode"], "spatial")
@@ -1652,14 +1671,15 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(snapshot["menus"], [])
         self.assertEqual(snapshot["focusedSrc"], "spatial:42")
         self.assertNotIn("src", snapshot["windows"][0])
-        args = self.launches[-1]
+        args = self.window_launch()
         start = args.index("start")
         self.assertEqual(args[start + 2:start + 4], list(map(str, frame_macview.fit(3600, 2119))))
         self.assertNotIn("spatial:44", self.mv.native_panels)
 
-    def test_auxiliary_roles_launch_first_once_and_stop_with_the_mode(self):
+    def test_windows_launch_before_idle_auxiliary_roles_once_and_stop_with_the_mode(self):
         self.start()
-        for args, (source, role) in zip(self.launches, frame_macview.SPATIAL_AUX_ROLES.items()):
+        self.assertEqual(self.panel_launches(), ["w42", "menubar", "status", "menu0", "menu1", "menu2", "menu3"])
+        for args, (source, role) in zip(self.launches[1:], frame_macview.SPATIAL_AUX_ROLES.items()):
             self.assertEqual(args[args.index("--panel") + 1], source.replace(":", ""))
             self.assertEqual(args[args.index("--role") + 1], role)
             self.assertIn("src=" + frame_macview.quote(source, safe=""), args[args.index("start") + 1])
@@ -1697,6 +1717,30 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(self.mv.mode, "desktop")
         self.mv.stop_workspace.assert_not_called()
         self.assertEqual(self.events, [])
+
+    def test_failing_auxiliary_panels_never_delay_window_panels(self):
+        self.failed_panels.update({"menubar", "status", "menu0", "menu1", "menu2", "menu3"})
+        self.windows = [self.window(42), self.window(43)]
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.mv.set_mode("spatial")
+            self.mv.start_workspace(quality="balanced")
+            self.jobs_once()
+            self.assertEqual(self.panel_launches(), ["w42"])
+            self.jobs_once()
+            self.assertEqual(self.panel_launches(), ["w42", "w43"])
+            self.drain()
+        self.assertEqual(self.panel_launches()[:2], ["w42", "w43"])
+        self.assertEqual(set(self.panel_launches()[2:]), {"menubar", "status", "menu0", "menu1", "menu2", "menu3"})
+        self.assertEqual({s for s in self.mv.native_panels}, {"spatial:42", "spatial:43"})
+        errors = [e["message"] for e in self.mv.errors_state()]
+        self.assertIn("Couldn't Open The Menu Bar Panel: Panel Launch Failed", errors)
+        self.assertFalse(self.mv.workspace_state()["panelsReady"])
+        # A window that appears while every auxiliary panel is retrying goes first.
+        self.windows.append(self.window(44))
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=101):
+            self.mv._spatial_mode_tick()
+            self.jobs_once()
+        self.assertEqual(self.panel_launches()[-1], "w44")
 
     def test_auxiliary_launch_failure_retries_without_relaunching_other_panels(self):
         self.failed_panels.add("menu2")

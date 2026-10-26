@@ -183,9 +183,18 @@ if len(args) >= 4 and args[0] == '--user' and args[1] == 'show':
                 control_present = (panel_runtime / 'control.json').exists()
                 with open(os.environ['TEST_EVENTS'], 'a') as f:
                     f.write('spec:' + spec['generation'] + ':control:' + str(control_present) + '\\n')
+                role = spec.get('role', 'window')
                 if os.environ.get('TEST_HOST_ERROR') == '1':
                     state = {'ready': False, 'state': 'error', 'hostGeneration': spec['generation'],
                              'hostPid': pid, 'overlayKey': spec['overlayKey']}
+                elif role != 'window' or os.environ.get('TEST_WINDOW_IDLE') == '1':
+                    # What the real host reports for an idle menu slot: connected
+                    # with its surface message, and no picture.
+                    registered = os.environ.get('TEST_AUX_SILENT') != '1'
+                    state = {'ready': False, 'registered': registered, 'role': role,
+                             'state': 'idle' if registered else 'connecting',
+                             'hostGeneration': spec['generation'], 'hostPid': pid,
+                             'overlayKey': spec['overlayKey'], 'textureWidth': 0, 'textureHeight': 0}
                 else:
                     state = {'ready': True, 'state': 'streaming', 'hostGeneration': spec['generation'],
                              'hostPid': pid, 'overlayKey': spec['overlayKey'],
@@ -372,9 +381,27 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
                 try:
                     run = self.run_launcher(env, self.host_start_args(panel, "fc11111111", "--role", role))
                     self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+                    self.assertIn("registered OpenVR key com.frame-workspace.native.%d.panel-%s" % (os.getuid(), panel),
+                                  run.stdout)
+                    self.assertIn("(idle, no picture yet)", run.stdout)
                     spec = json.loads((runtime / "frame-workspace/host/panels" / (panel + ".json")).read_text())
                     self.assertEqual(spec["role"], role)
                     self.assertFalse(Path(spec["poseFile"]).exists())
+                finally:
+                    context.cleanup()
+
+    def test_unregistered_auxiliary_and_pictureless_window_time_out_and_are_removed(self):
+        for panel, options, extra in (("menu1", ("--role", "menu"), {"TEST_AUX_SILENT": "1"}),
+                                      ("p1", (), {"TEST_WINDOW_IDLE": "1"})):
+            with self.subTest(panel=panel):
+                context, _, env, _, runtime, _, _, _ = self.host_fixture()
+                try:
+                    env.update(extra, FRAME_NATIVE_READY_SECONDS="1")
+                    run = self.run_launcher(env, self.host_start_args(panel, "fc11111111", *options))
+                    self.assertEqual(run.returncode, 1, run.stdout + run.stderr)
+                    self.assertNotIn("registered OpenVR key", run.stdout)
+                    self.assertIn("menu panel" if panel == "menu1" else "submit a decoded texture", run.stderr)
+                    self.assertFalse((runtime / "frame-workspace/host/panels" / (panel + ".json")).exists())
                 finally:
                     context.cleanup()
 

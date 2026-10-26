@@ -625,6 +625,13 @@ public:
   uint32_t uploadedSeq = 0;
   double uploadedReceived = 0;
   bool auxiliary() const { return role != PanelRole::Window; }
+  // A window is registered once it shows a picture. An auxiliary strip or menu
+  // slot can be idle with nothing to draw (a closed menu sends no video), so it
+  // registers once its stream is connected and its first surface message has
+  // arrived. Its overlay still stays hidden until a fresh picture is uploaded.
+  bool registered() {
+    return ready || (auxiliary() && pipe.connected && pipe.surface().second > 0);
+  }
   void refreshSurface() {
     if (!auxiliary()) return;
     auto next = pipe.surface();
@@ -697,6 +704,7 @@ public:
                                  : "null";
     return "{\"version\":1,\"state\":\"" + std::string(status) +
            "\",\"ready\":" + (ready ? "true" : "false") +
+           ",\"registered\":" + (registered() ? "true" : "false") +
            ",\"diagnostic\":" + (test ? "true" : "false") +
            ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
            "\",\"hostGeneration\":" + jsonString(hostGeneration) +
@@ -1062,7 +1070,7 @@ public:
       previousState = now;
       lastState = now;
       atomicWrite(stateFile, state(ready ? (test ? "diagnostic" : "streaming")
-                                         : "connecting"));
+                                         : registered() ? "idle" : "connecting"));
     }
     if (now - lastLog >= 10000) {
       lastLog = now;
@@ -1309,11 +1317,19 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         }
         // Menu Bar belongs to the Spatial session, even when it has no windows.
         // Its next generation also resets a host retained by Desktop panels.
+        // Window panels launch before Menu Bar, so Menu Bar adopts the wall they
+        // already share; a Menu Bar retry mid-session keeps it too.
         std::string nextSession;
-        for (const auto &[path, spec] : desired)
+        bool spatialPanels = false;
+        for (const auto &[path, spec] : desired) {
           if (spec.role == PanelRole::Menubar) nextSession = spec.generation;
-        if (nextSession != wallSession || desired.empty()) {
-          wall = std::make_shared<WallAnchor>(); wallSession = nextSession;
+          spatialPanels |= spec.role != PanelRole::Window || spec.slot >= 0;
+        }
+        if (desired.empty() || (!spatialPanels && (wall->ready || !wallSession.empty()))) {
+          wall = std::make_shared<WallAnchor>(); wallSession.clear();
+        } else if (!nextSession.empty() && nextSession != wallSession) {
+          if (!wallSession.empty()) wall = std::make_shared<WallAnchor>();
+          wallSession = nextSession;
         }
         auto changes = book.plan(desired);
         for (const auto &path : changes.remove) remove(path);
