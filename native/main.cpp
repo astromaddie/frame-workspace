@@ -1523,9 +1523,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     book.removed(path);
   };
   auto panelError = [&](const PanelSpec &s, const char *error) {
-    atomicWrite(s.stateFile, "{\"version\":1,\"state\":\"error\",\"ready\":false,\"overlayKey\":" + jsonString(s.key) +
-        ",\"hostGeneration\":" + jsonString(s.generation) + ",\"hostPid\":" + std::to_string(getpid()) +
-        ",\"exitReason\":" + jsonString(error) + "}");
+    // Its folder may already be gone (a stopped launch): never end the host.
+    try {
+      atomicWrite(s.stateFile, "{\"version\":1,\"state\":\"error\",\"ready\":false,\"overlayKey\":" + jsonString(s.key) +
+          ",\"hostGeneration\":" + jsonString(s.generation) + ",\"hostPid\":" + std::to_string(getpid()) +
+          ",\"exitReason\":" + jsonString(error) + "}");
+    } catch (...) {
+      fprintf(stderr, "[native-host] could not write a panel error state\n");
+    }
   };
   writeHostState("hosting");
   while (!interrupted && (defaults.seconds == 0 || nowMs() - start < defaults.seconds * 1000)) {
