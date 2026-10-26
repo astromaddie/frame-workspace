@@ -762,6 +762,73 @@ its visual state changes. Thumbnail content refreshes even if the source reuses
 the same GL texture name; texture storage is allocated only on size changes.
 No device performance claim follows from these implementation choices.
 
+### Launcher (FW-15 A)
+
+`launcher.hpp` (data, layout, hit testing, gestures), `launcher_render.hpp` (Cairo drawing)
+and `launcherTiles` in `spatial.hpp`. The companion adds a `launcher` object to the state:
+
+```json
+{"available":true,"open":false,"seq":3,"catalog":1761442810000,"query":"pa","results":["com.example.paint"],"selected":0,"pageStep":0,"keyboard":true}
+```
+
+and writes the catalogue it names to `launcher.json` beside the state, only when it changes:
+
+```json
+{"catalog":1761442810000,"apps":[{"id":"com.apple.Safari","name":"Safari","v":"26.3-…"}],"items":[{"app":"com.apple.Safari"},{"folder":"folder-1","name":"Games","apps":["com.apple.Chess"]}],"recent":["com.apple.Safari"]}
+```
+
+The host reads `launcher.json` when the state names a catalogue it does not have (retrying
+every 250 ms until the file matches), and checks it like the writer: valid bundle IDs, each
+app once, no empty folders, at most 600 apps; apps the items leave out join the end. With an
+available launcher the shelf's first slot is an Applications button (tile kind `Apps`, after
+the app tiles in the list so their indices stay put), magnified like the icons and lit while
+the launcher is open. Opening is local and immediate, as the switcher's is: the host sends
+`{"action":"launcher","verb":"open"}` and keeps it open until the companion's `seq` moves on.
+The panel opens 1.15 m ahead of the head's horizontal facing at eye level, 1.1 × 0.68 m with
+OpenVR curvature 0.152 (a cylinder round the head); a feathered black backdrop at 45%
+(sort order 90, 1.4 m, 72% of a circle) dims the windows behind and not the shelf. The panel
+is order 101, a carried icon 102. While it is open, windows take no hands and gaze does not
+change focus.
+
+Layout is in the mockup's units (600 × 372): the field at the top, Recent Apps (up to eight),
+a groove, then 8 × 3 cells a page and the page dots at y 352. The texture is 1440 × 893. A
+search shows `results` in the companion's order (folders included); an open folder shows its
+apps in a recessed area with Back. Presses bind to what is under the laser:
+`launcher:recent:<id>`, `launcher:cell:<id or folder:id>`, `launcher:dot:<page>`,
+`launcher:back`. With the eyes on an icon, a hand aimed at nothing presses it. Clicking an app
+sends `{"action":"app","verb":"open","bundleID":…}` and closes the launcher; a trigger aimed at
+nothing closes it. Holding 500 ms on a cell (not while searching, not by the eyes) picks it
+up; the drop gap is before a cell's left 30%, after its right 30%, nothing over its middle,
+and the end past the last icon. Held 650 ms at the left or right edge, the page turns. A drop
+that changes the order is applied locally and sent as
+`{"action":"launcher","verb":"move","id":…,"before":…|null,"folder":…|null}`. `pageStep`
+counts the Mac's Left/Right arrows on an empty field; a new query starts at its first page; the
+keyboard selection keeps its page in view. Host state reports `launcherOpen`, `launcherApps`
+and `launcherItems`.
+
+Painting happens when what is shown changes (hover, page, query, a carried icon's gap, an icon
+file arriving); the laser spot is a GL pass over the cached picture. Labels use Cairo's toy
+font API, as the shelf does, so scripts that font lacks fall back to its boxes.
+
+`--render-scene` accepts a `launcher` object: `catalog` (inline, the `launcher.json` format),
+`query`, `results`, `selected`, `keyboard`, `folder`, `page`, `hover` (`{"kind":"cell"|"recent"|"dot"|"back","index":N}`)
+and `carry` (`{"id":…,"x":…,"y":…}` in panel units). Icons are `<bundle>.png` beside the JSON.
+The evidence pictures come from generic fixture icons (no real app artwork) and the
+companion's own search:
+
+```sh
+python3 native/scene/generate-launcher-scenes.py "$scratch"
+for n in open search folder carry; do
+  native/build/frame-workspace-native --render-scene "$scratch/launcher-$n.json" \
+    native/evidence/launcher-$n.png --look 0,-5 --fov 72 --size 960x600
+done
+```
+
+`launcher-open.png` (Recent Apps, the grid, the laser on an icon, the button lit),
+`launcher-search.png` ("pa": Paint by name, Écran Partagé by word, the first selected),
+`launcher-folder.png` (Utilities open, the laser on Back) and `launcher-carry.png` (an icon
+carried between two others) were compared with mockup A.
+
 ### Shared Display Surfaces (Option B)
 
 The [shared-display contract](../docs/frame-workspace/spatial-shared-contract.md)

@@ -28,6 +28,80 @@ Fixes for the first installed launch ([SPATIAL-AUDIT.md](SPATIAL-AUDIT.md)). Che
   slots or idle auxiliary panels are missing. A capable viewer built from other sources still
   starts; the Mac page offers **Update Headset Viewer** (see [NATIVE.md](NATIVE.md)).
 
+## Launcher A: the Applications grid (2026-10-26)
+
+The approved launcher (FW-15 decision, `evidence/launcher-mockup.png` option A). Checked
+locally on macOS (helper unit tests, companion tests with a fake Frame, native self-tests and
+host integration, offline renders); **not yet run on the device or worn**.
+
+- **Opening it.** The shelf gets an Applications button at its left end, magnified like the
+  icons. Laser plus trigger opens a curved Palladium panel at eye level, 1.15 m in front of the
+  head, with a backdrop that dims the windows behind. The button again, Esc on the Mac, a
+  trigger aimed at nothing, or opening an app closes it. While it is open the windows behind
+  take no clicks or gaze focus.
+- **What it shows.** Search Applications, Recent Apps (Spotlight's `kMDItemLastUsedDate`, eight,
+  newest first), then All Applications in pages of 8 × 3 with page dots. Folders open in place
+  with a Back button. Pages turn with the dots, the Mac's Left/Right arrows (empty field), or a
+  held icon at the panel's edge. Thumbstick paging is written (`LauncherStick`) but has no
+  input yet: the stick reaches the host with the controller content-input work.
+- **Where the apps come from.** `GET /launcher` in the helper (`LauncherCatalog.swift`) scans
+  `/Applications`, `/System/Applications` (Utilities included) and `~/Applications` three
+  folders deep, never inside a bundle, plus Finder. Agent and background-only apps
+  (`LSUIElement`, `LSBackgroundOnly`) are left out, which also drops the launcher stubs for
+  Siri, Mission Control, Time Machine and Apps. A bundle ID installed twice keeps Launch
+  Services' default copy. Order and folders come from the old Launchpad database
+  (`$(getconf DARWIN_USER_DIR)com.apple.dock.launchpad/db/db`): a private copy is opened
+  read-only and immutable, then deleted. Apps it lists that are gone are dropped, empty folders
+  too, and every other app follows by name. The user's own rearrangement lives in the Mac app's
+  data folder (`spatial-launcher-layout.json`), never in macOS data.
+- **Icons once.** The same 128 px icon pipeline as the shelf, cached by bundle ID and version
+  (bundle version plus Info.plist time). The Frame keeps `icons/versions.json`; publishing the
+  catalogue (`launcher.json`) reports which icons it lacks or has old versions of, and those
+  go over in batches of up to 90 KB per SSH command, recent apps first.
+- **Typing.** While it is open the helper lends the keyboard to the search field
+  (`LauncherKeys.swift`, through the existing Spatial Mode event tap): printable keys, Delete,
+  Esc, Return and the arrows are consumed and queued; Command and Control shortcuts, Tab and
+  function keys pass. The companion polls `GET /launcher/keys?after=N` every 100 ms, which
+  renews a 3 s lease. Closing, Desktop Mode, Stop, a helper restart and helper exit end it; a
+  companion that stops polling lets it lapse. The up of a consumed key is consumed too, so no
+  app sees half a keystroke. The filter (`ui/frame_spatial_launcher.py`) is case- and
+  diacritic-insensitive: names starting with the query, then names with a word starting with
+  it, then names containing it; recent apps first within each. Return opens the selected match
+  (the first until the arrows move it).
+- **Rearranging.** Hold the trigger on an icon for 500 ms to pick it up; it follows the laser
+  and a blue bar marks the gap. Releasing between two icons moves it there (top level, or
+  inside the open folder); onto an icon or off the panel nothing changes and no folder is made.
+  The host shows the move at once and sends `{"action":"launcher","verb":"move","id":…,
+  "before":…,"folder":…}`; the companion saves its layout file and republishes.
+
+On this Mac (macOS 26.3.1, read-only probe, 2026-10-26): **167 apps** in 0.17 s (0.27 s with
+Spotlight dates). The Launchpad database exists and **imported**: 119 app entries, 98 of them
+still installed, three folders (Other 25, Games 3, SheepShaver (Other) 4); 138 top-level
+items; catalogue JSON 21.6 KB. Recent Apps came back as Claude, Safari, WhatsApp, Frame
+Workspace, AnyDesk, Terminal, System Settings, Xcode. `/Applications/Safari.app` is a hidden
+symlink into the Safari cryptex, so the scan keeps hidden-flagged items (dot files are still
+skipped).
+
+Checks, all local:
+
+```sh
+cd mac/frame-mac-view
+xcrun swiftc -swift-version 5 Sources/AppsState.swift Sources/LauncherCatalog.swift \
+  Sources/LauncherKeys.swift tests/LauncherTests.swift -lsqlite3 -o "$scratch/LauncherTests"
+"$scratch/LauncherTests"
+cd ../.. && PYTHONPATH=tests python3 -m unittest test_spatial_apps
+python3 native/tests_host.py "$build/frame-workspace-native"
+```
+
+Device checklist (not done yet): the button opens and closes the panel and lights while open;
+the panel sits at eye level and wraps round the head; windows dim; laser hover, click, page dots
+and folders; eyes plus trigger on an icon; Mac typing filters with no keystroke reaching the
+focused window, and Command shortcuts still work; Esc closes and gives the keyboard back;
+Return opens the match and brings its panel forward; pick-up, edge page turn and drop between
+icons, kept after a companion restart; icons all arrive once and are not resent on the next
+start; the shelf and status band unchanged; Cairo raster time for the 1440 × 893 panel on the
+Frame.
+
 ## Apps and Cmd-Tab contract (stage 2)
 
 The approved dock is **D1**, the floating shelf; the switcher is **S1**, the curved window

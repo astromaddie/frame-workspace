@@ -153,14 +153,14 @@ def scene(name, **launcher):
     (OUT / f"{name}.json").write_text(json.dumps(s, indent=1, ensure_ascii=False) + "\n")
 
 
+# Search results come from the companion's own search (ui/frame_spatial_launcher.py).
+sys.path.insert(0, str(ROOT.parent.parent / "ui"))
+from frame_spatial_launcher import search  # noqa: E402
+
 scene("launcher-open", hover={"kind": "cell", "index": 3})
-query = "pho"
-matches = [ids[n] for n in ("Photos",)] + [b for n, b in ids.items() if n != "Photos" and "pho" in n.lower()]
-scene("launcher-search", query="Pho", results=[ids["Photos"]], selected=0)
-scene("launcher-search-wide", query="e", selected=2,
-      results=[ids[n] for n in ("Editor", "Écran Partagé", "Terminal", "Preview", "Settings", "Network", "Keychain",
-                                "Reminders", "Weather", "Calendar", "Sheets", "Store", "Racer", "Puzzles", "Chess",
-                                "Video", "News", "Voice Memos", "Archive", "Calculator", "Console", "Disk Tool")])
+for name, query in (("launcher-search", "pa"), ("launcher-search-wide", "e")):
+    scene(name, query=query, selected=0,
+          results=search([(ids[n], n) for n, _, _ in APPS], query, catalog["recent"]))
 scene("launcher-folder", folder="folder-2", hover={"kind": "back"})
 scene("launcher-carry", carry={"id": ids["Weather"], "x": 300 - 1.5 * 66 + 33, "y": 168 + 60 + 17})
 print("wrote", len(APPS), "icons and launcher scenes to", OUT)
