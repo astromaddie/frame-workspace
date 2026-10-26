@@ -1,6 +1,7 @@
 #pragma once
 #include "chrome.hpp"
 #include "host.hpp"
+#include "launcher.hpp"
 #include "shelf.hpp"
 #include <functional>
 namespace fw {
@@ -23,6 +24,8 @@ struct SpatialState {
   std::string chosen;
   std::vector<SpatialApp> apps;
   std::vector<SpatialWindow> windows;
+  // Launcher A: present when the companion has a catalogue.
+  LauncherState launcher;
   static SpatialState parse(const std::string &raw) {
     auto j = json(raw);
     if (!j || !json_object_is_type(j.get(), json_type_object))
@@ -68,6 +71,7 @@ struct SpatialState {
     }
     if (s.index < 0 || s.index >= int(s.windows.size()))
       s.index = 0;
+    s.launcher = LauncherState::parse(field(j, "launcher"));
     return s;
   }
 };
@@ -192,7 +196,9 @@ struct HostFocus {
   }
 };
 struct SpatialTile {
-  enum Kind { Dock, Window, Menu, Shelf, Move } kind = Dock;
+  // Apps: the Applications button at the shelf's left end. Launcher: the
+  // launcher panel; Dim: the backdrop behind it; Carry: an icon being moved.
+  enum Kind { Dock, Window, Menu, Shelf, Move, Apps, Launcher, Dim, Carry } kind = Dock;
   int index = 0;
   PanelSurface surface;
   std::string label;
@@ -205,7 +211,22 @@ struct SpatialTile {
   bool pickable = true, shown = true;
   HandleLayout layout;
   ChromeState chrome;
+  bool lit = false;                                 // Apps: the launcher is open
+  std::shared_ptr<const LauncherPicture> picture;   // Launcher
+  std::string icon;                                 // Carry: the icon's file
 };
+// Overlay sort bands: windows 1-4 (51-54 selected), the launcher's backdrop
+// above them, the shelf, the shelf's icons and cards, the launcher panel and
+// the icon carried across it.
+inline uint32_t spatialSortOrder(SpatialTile::Kind kind) {
+  switch (kind) {
+  case SpatialTile::Dim: return 90;
+  case SpatialTile::Shelf: return 99;
+  case SpatialTile::Launcher: return 101;
+  case SpatialTile::Carry: return 102;
+  default: return 100;
+  }
+}
 inline HmdMatrix34_t spatialAnchor(const HmdMatrix34_t &head, float distance,
                                    float down) {
   float x = head.m[0][2], z = head.m[2][2], n = std::hypot(x, z);
@@ -237,9 +258,11 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     return tiles;
   const HmdMatrix34_t &base = view.pinned ? view.pose : anchor;
   const float k = std::clamp(view.scale, .05f, 1.5f);
+  // The Applications button takes the row's first slot when the launcher exists.
+  const size_t lead = s.launcher.available ? 1 : 0, slots = s.apps.size() + lead;
   // Scale the whole ordered shelf to fit 1.35 m; no app silently disappears.
-  const float step0 = std::min(.105f, 1.35f / std::max(size_t(1), s.apps.size()));
-  const float step = step0 * k, n = float(s.apps.size());
+  const float step0 = std::min(.105f, 1.35f / std::max(size_t(1), slots));
+  const float step = step0 * k, n = float(slots);
   const float reach = shelfIconReach * step, boost = shelfIconBoost * std::clamp(view.magnify, 0.f, 1.f);
   auto stretch = [&](float u) { return shelfMagnifiedX(u, view.pointer, boost, reach); };
   auto place = [&](float x, float y, float z) {
@@ -252,7 +275,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
   // Icon i spans [stretch(a), stretch(b)] along the row; bottoms stay level.
   const float rowBottom = -shelfRowDrop - shelfIconHeight * k / 2;
   float menuX = 0, menuTop = 0, shelfX = 0, shelfY = 0;
-  if (!s.apps.empty()) {
+  if (slots) {
     const float fullWidth = step0 * n + .022f;
     Placement p;
     const float scale = status && status->rect.w > 0 ? std::min(.001f, (fullWidth - 2*shelfInset) / status->rect.w) : .001f;
@@ -269,7 +292,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
   }
   for (size_t i = 0; i < s.apps.size(); ++i) {
     Placement p;
-    const float a = (float(i) - n / 2) * step, xa = stretch(a), xb = stretch(a + step);
+    const float a = (float(i + lead) - n / 2) * step, xa = stretch(a), xb = stretch(a + step);
     p.width = xb - xa;
     const float height = shelfIconHeight * k * p.width / step;
     p.matrix = place((xa + xb) / 2, rowBottom + height / 2, 0);
@@ -281,6 +304,18 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
                      int(i),
                      {"dock:" + s.apps[i].id, p, height, PanelRole::Menu},
                      s.apps[i].name});
+  }
+  if (lead) {
+    // After the app icons in the list (their tile indices stay put), drawn at
+    // the left end and magnified like them.
+    Placement p;
+    const float a = -n / 2 * step, xa = stretch(a), xb = stretch(a + step);
+    p.width = xb - xa;
+    const float height = shelfIconHeight * k * p.width / step;
+    p.matrix = place((xa + xb) / 2, rowBottom + height / 2, 0);
+    SpatialTile apps{SpatialTile::Apps, 0, {"apps", p, height, PanelRole::Menu}, "Applications"};
+    apps.lit = s.launcher.open;
+    tiles.push_back(apps);
   }
   if (s.open)
     for (size_t i = 0; i < s.windows.size(); ++i) {
@@ -322,7 +357,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
                        : i == 1 ? (s.apps[menu].hidden ? "Unhide" : "Hide")
                                 : "Quit"});
     }
-  if (!s.apps.empty() && view.pinned) {
+  if (slots && view.pinned) {
     // The window move pill, hung from a virtual window the size of the full
     // shelf and shrunk with it; centred under the shelf as drawn.
     SpatialTile move{SpatialTile::Move, 0, {"shelf:move", {}, 0, PanelRole::Menu}, ""};
@@ -337,6 +372,44 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     tiles.push_back(move);
   }
   return tiles;
+}
+// The launcher's tiles, appended after the shelf's: the dimming backdrop (not
+// pickable), the curved panel, and the icon being carried, which follows the
+// laser a little in front of the panel.
+inline PanelSurface launcherSurface(const LauncherView &v) {
+  PanelSurface s{"launcher", {}, launcherHeight, PanelRole::Menu};
+  s.placement.width = launcherWidth;
+  s.placement.matrix = v.pose;
+  s.placement.bendA = s.placement.bendB = launcherCurvature();
+  return s;
+}
+inline void launcherTiles(std::vector<SpatialTile> &tiles, const LauncherView &v,
+                          std::shared_ptr<const LauncherPicture> picture, const std::string &carryIcon = "") {
+  if (!v.open) return;
+  PanelSurface dim{"launcher:dim", {}, 2.6f, PanelRole::Menu};
+  const float wrap = .72f; // of a full circle round the head
+  dim.placement.width = 2 * float(M_PI) * launcherDimDistance * wrap;
+  dim.placement.matrix = v.dimPose;
+  dim.placement.bendA = dim.placement.bendB = wrap;
+  SpatialTile backdrop{SpatialTile::Dim, 0, dim, ""};
+  backdrop.pickable = false;
+  tiles.push_back(backdrop);
+  SpatialTile panel{SpatialTile::Launcher, 0, launcherSurface(v), ""};
+  panel.picture = std::move(picture);
+  tiles.push_back(panel);
+  if (v.carry.active() && v.carry.onPanel) {
+    const auto surface = launcherSurface(v);
+    const float x = (v.carry.x / launcherUnits - .5f) * launcherWidth;
+    const float y = (.5f - v.carry.y / launcherUnitsHigh) * launcherHeight;
+    const float size = launcherIcon / launcherUnits * launcherWidth * 1.2f;
+    PanelSurface icon{"launcher:carry", {}, size * 140 / 128, PanelRole::Menu};
+    icon.placement.width = size;
+    icon.placement.matrix = surfacePoint(surface, x, y, .03f);
+    SpatialTile carried{SpatialTile::Carry, 0, icon, ""};
+    carried.pickable = false;
+    carried.icon = carryIcon;
+    tiles.push_back(carried);
+  }
 }
 // Auxiliary poses and their window-layer regions are host-owned; UV stays top-left.
 inline PanelSurface menuStripPlacement(const PanelSurface &window, const SurfaceMessage &m,

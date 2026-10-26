@@ -256,6 +256,43 @@ def run(binary):
                     atomic_json(root / "spatial-ui.json", spatial)
                     time.sleep(.2)
                     assert len(switches()) == 2, "unavailable key must be ignored"
+                    # Launcher A: the catalogue beside the state, opened and closed by the companion.
+                    tiles_before = host_state()["spatialTiles"]
+                    catalog = {"catalog": 3, "apps": [{"id": f"test.app{i}", "name": f"App {i}", "v": "1"}
+                                                      for i in range(30)],
+                               "items": [{"app": f"test.app{i}"} for i in range(26)] +
+                                        [{"folder": "folder-1", "name": "Tools", "apps": ["test.app26", "test.app27"]}],
+                               "recent": ["test.app3", "test.app1"]}
+                    atomic_json(root / "launcher.json", catalog)
+                    spatial["launcher"] = {"available": True, "open": False, "seq": 1, "catalog": 3, "query": "",
+                                           "selected": 0, "pageStep": 0, "keyboard": False}
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    wait(lambda: host_state().get("launcherApps") == 30 and host_state().get("launcherItems") == 29,
+                         "launcher catalogue loads (left-out apps join the end)")
+                    wait(lambda: host_state()["spatialTiles"] == tiles_before + 1, "Applications button on the shelf")
+                    assert not host_state()["launcherOpen"]
+                    spatial["launcher"].update(open=True, seq=2, query="App 1",
+                                               results=["test.app1", "test.app10", "missing.app"], keyboard=True)
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    wait(lambda: host_state().get("launcherOpen") and host_state()["spatialTiles"] == tiles_before + 3,
+                         "launcher panel and backdrop open in front of the head")
+                    spatial["launcher"].update(open=False, seq=3, query="")
+                    spatial["launcher"].pop("results")
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    wait(lambda: not host_state().get("launcherOpen") and
+                         host_state()["spatialTiles"] == tiles_before + 1, "launcher closes")
+                    catalog["catalog"] = 4
+                    del catalog["apps"][29]
+                    atomic_json(root / "spatial-ui.json", {**spatial, "launcher": {**spatial["launcher"], "catalog": 4}})
+                    time.sleep(.4)
+                    assert host_state()["launcherApps"] == 30, "a catalogue is read only once it is written"
+                    atomic_json(root / "launcher.json", catalog)
+                    wait(lambda: host_state().get("launcherApps") == 29, "newer catalogue replaces the old one")
+                    assert not any(json.loads(p.read_text()).get("action") == "launcher"
+                                   for p in requests.glob("spatial-*.json")), "the companion's open/close is not echoed"
+                    del spatial["launcher"]
+                    atomic_json(root / "spatial-ui.json", spatial)
+                    wait(lambda: host_state()["spatialTiles"] == tiles_before, "no catalogue, no Applications button")
                     spatial["mode"] = "desktop"
                     spatial["switcher"].update(seq=11, chosen="test.panel.b")
                     atomic_json(root / "spatial-ui.json", spatial)
@@ -326,7 +363,7 @@ def run(binary):
                     output = log.read()
                     assert output.count("[native] GL vendor=") == 1, "host must create exactly one GL context"
                     assert streams[0].connections == 2 and streams[1].connections == 1
-                    print("host integration passed: one GL context, two streams, still/live, controls/pose, add/remove/re-add, failure and close isolation, spatial live strip/chosen/seq/desktop/empty-host")
+                    print("host integration passed: one GL context, two streams, still/live, controls/pose, add/remove/re-add, failure and close isolation, spatial live strip/chosen/seq/desktop/empty-host, launcher catalogue/open/close/button")
                 except Exception:
                     log.seek(0)
                     print(log.read(), file=sys.stderr)
