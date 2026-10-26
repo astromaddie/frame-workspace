@@ -12,7 +12,7 @@ It owns an OpenVR overlay, not a SteamVR scene application. The last submitted
 picture remains world-locked in the compositor between desktop updates. Head
 tracking is handled by SteamVR; this program does not render eye images or
 sample a pose every video frame. Window placement samples the HMD when placing
-or recentering the screen; Spatial Mode also samples head yaw for its shelf.
+or recentering the screen; Spatial Mode also samples the head once to place its shelf.
 
 Keyboard and trackpad input stay on the Mac. Native chrome and the approved
 Spatial Mode shelf and switcher surround the streamed Mac windows.
@@ -672,8 +672,40 @@ text rasterization through its runtime API; GL draws the Palladium material and
 composites the labels, icons and live panel textures. There is no new native link
 dependency. `mode != "spatial"` hides every spatial UI layer.
 
-The D1 icon row sits 0.48 m below the head's horizontal sightline, 1.3 m forward,
-and reanchors after a yaw change greater than 0.8 radians. Its icons keep the
+The D1 shelf is placed once and then stays where it is: no head-following. Its
+frame sits 1.3 m ahead of the head's horizontal facing, at head height, with the
+icon row 0.48 m below it. A saved pose wins; otherwise the first valid head pose
+places it there (not saved until it is moved or recentered). The pose lives in
+`$XDG_DATA_HOME/frame-workspace/panels/spatial-shelf-pose.json` (`spatial-shelf-pose.json`
+beside the state file when `--spatial-state` is given), in the window pose format,
+and is checked like one (orthonormal rows, within 10 m) plus handedness. The
+status band and the app menus move with it. A pose that fails is ignored.
+
+Move it the way a window moves: the same Palladium move pill slides out under the
+shelf when a controller laser comes near it, and a trigger (or grip, while the
+switcher is closed) press on the pill carries the shelf rigidly with the
+controller until release, which saves the pose. A SteamVR recenter (seated or
+standing zero pose reset) or the dashboard's Recenter in Spatial Mode brings the
+shelf back in front of the user and saves that. The dashboard request reaches the
+host through the companion: it publishes `recenterSeq` in the spatial state, and
+the host recenters when that counter grows (the first value it sees only sets the
+baseline). The switcher cards keep their own head anchor (0.8 rad snap).
+
+At rest the shelf is 60% of full size. A controller laser or the eye-gaze ray on
+it, within 1.5 cm (gaze 3.5 cm) of its edges, enlarges it over 200 ms with a
+smootherstep ease, and magnifies the icons like the macOS Dock: the icon under the
+pointer reaches 1.5x, falling off as a cosine bell over 2.2 icons, the row
+stretching around the pointer so the spot under it stays put, and icons grow upward
+from a level base. When the ray leaves, it waits 500 ms, then shrinks back over
+200 ms; while enlarged the hit region grows to 6 cm (8 cm for gaze), so a ray near
+the edge does not flicker it. Icons relax in 150 ms as soon as the ray leaves the
+icons. `spatialLayout` takes the shelf's scale, magnification, pointer and pose, and
+its tiles are the geometry both drawn and picked, so clicks land on the icon under
+the ray at every size. The shelf consumes gaze like any foreground UI: looking at it
+magnifies it but does not change the focused window. The shelf backing's raster
+follows its drawn size (whole 8 px steps).
+
+Its icons keep the
 companion's order and show running dots. Trigger release opens an app; a
 500 ms uninterrupted hold opens Show All Windows, Hide (Unhide for hidden apps),
 and Quit. An outside trigger click dismisses the menu. Dock presses and open
@@ -934,6 +966,12 @@ version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `h
 `focusSnap`, `pillLaser`), `apps` (`id`, `name`, 128×128 `icon`), and optional `menubar`,
 `status`, `dropdown` entries (`texture` and the existing `surface` message, including optional menubar `selectedRect` in global points).
 An optional menubar `reveal` from 0 to 1 forces a transition frame for diagnostics.
+An optional `shelf` object pins and draws the shelf as the host does: `scale` (1 full
+size, 0.6 at rest), `magnify` (0 to 1), `icon` (the app index under the laser, which
+sets the pointer and lights it) and `handle` (true shows the move pill). Without it the
+shelf is the old full-size one. The shelf pictures in `evidence/shelf-*.png` come from
+`native/scene/shelf-{before,rest,magnified,move}.json`, rendered with
+`--render-scene native/scene/shelf-rest.json native/evidence/shelf-rest.png --look 0,-24 --fov 62 --size 960x560`.
 `pillLaser` aims the scene ray at that window's pill and reveals its below-edge controls.
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.
 Only one window may be focused. The fixture poses are explicitly arranged to
