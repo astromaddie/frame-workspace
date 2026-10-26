@@ -1773,6 +1773,14 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(self.mv.native_panels["spatial:43"]["slot"], 1)
         self.assertEqual(self.placeholder_syncs()[-1], [])
 
+    def test_a_leftover_capture_is_replaced_without_suppressing_the_window(self):
+        self.windows = [self.window(42), self.window(43)]
+        self.streams.append({"src": "spatial:43"})  # left by an earlier attempt
+        self.start()
+        self.assertIn("spatial:43", self.mv.native_panels)
+        self.assertNotIn("spatial:43", self.mv._spatial_suppressed)
+        self.assertIn(("/close", {"src": "spatial:43"}), self.events)
+
     def test_a_placeholder_close_stops_that_window_opening(self):
         self.windows = [self.window(42), self.window(43)]
         self.failed_panels.add("w43")

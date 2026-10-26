@@ -1252,7 +1252,7 @@ class MacView:
         if self.mode == "spatial":
             label = "Spatial Mode"
         windows = [{"title": p.get("title") or "Mac Window", "key": p["key"]}
-                   for p in sorted(self.native_panels.values(), key=lambda p: p.get("slot") if p.get("slot") is not None else 1024)
+                   for p in sorted(list(self.native_panels.values()), key=lambda p: p.get("slot") if p.get("slot") is not None else 1024)
                    if p.get("role", "window") == "window"]
         stop_available = (workspace.get("state") != "stopped" or self.exit_pending or
                           bool(self.workspace_panel_key) or bool(self.native_panels) or
@@ -1340,7 +1340,7 @@ class MacView:
                 continue
             if action == "wall_release":
                 with self.workspace_lock:
-                    for panel in self.native_panels.values():
+                    for panel in list(self.native_panels.values()):
                         if panel.get("key") == key and panel.get("generation") == request.get("generation"):
                             panel["slot"] = None
             elif action == "close":
@@ -1502,7 +1502,7 @@ class MacView:
             if key == self.workspace_panel_key:
                 self.stop_workspace()
             return
-        src = next((s for s, p in self.native_panels.items() if p["key"] == key), None)
+        src = next((s for s, p in list(self.native_panels.items()) if p["key"] == key), None)
         if src:
             if self.mode == "spatial":
                 self._spatial_suppressed.add(src)
@@ -1613,7 +1613,7 @@ class MacView:
                 self.launching -= 1
 
     def _show(self, src, quality, width, height, panel_key=None, public_src=None, pose=None, role="window",
-              wall_slot=None):
+              wall_slot=None, reconciled=False):
         if self.exit_pending:
             raise MacViewError("Workspace Stop is in progress; the Frame viewer was not started.")
         auxiliary = self.mode == "spatial" and SPATIAL_AUX_ROLES.get(src) == role
@@ -1634,7 +1634,13 @@ class MacView:
         if src in self.shown or any(st.get("src") == src for st in state.get("streams", [])):
             # Showing it again replaces the old viewer, connected or not: this
             # revokes its keys so it can't come back alongside the new one.
-            self.stop(src)
+            if reconciled:
+                # The Spatial reconciler's own retry: a leftover capture, not
+                # the user closing the window, so the window is not suppressed.
+                self.call("/close", method="POST", src=src)
+                self.shown.discard(src)
+            else:
+                self.stop(src)
         # Viewers that lost the tunnel keep retrying its old port, even though
         # the agent no longer counts them, so only move when none are out there.
         others = self.shown - {src}
@@ -2249,7 +2255,7 @@ print(json.dumps(poses))
                         self._spatial_slots.pop(source, None)
                         self._spatial_retry.pop(source, None)
                 # The helper supplies front-to-back order; focused window gets first refusal.
-                available = (windows.keys() - self.native_panels.keys() - self._spatial_suppressed -
+                available = (windows.keys() - set(list(self.native_panels)) - self._spatial_suppressed -
                              self._spatial_launching.keys())
                 pending = [s for s in windows if s in available]
                 focused = state.get("focusedSrc")
@@ -2278,7 +2284,7 @@ print(json.dumps(poses))
                     self._sync_spatial_placeholders(windows)
                     self._update_spatial_cover()
                 self.spatial_workspace.update(home=state,
-                    panelsReady=not pending and not launching and SPATIAL_AUX_ROLES.keys() <= self.native_panels.keys(),
+                    panelsReady=not pending and not launching and SPATIAL_AUX_ROLES.keys() <= set(list(self.native_panels)),
                     windowCount=len(windows),
                     panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows or s in SPATIAL_AUX_ROLES})
                 self.dash_wake.set()
@@ -2303,7 +2309,7 @@ print(json.dumps(poses))
                 self.launching += 1
             try:
                 self._show(src, self.spatial_workspace.get("quality", "balanced"), info.get("w"), info.get("h"),
-                           pose=validate_pose(pose) if pose is not None else None, wall_slot=slot)
+                           pose=validate_pose(pose) if pose is not None else None, wall_slot=slot, reconciled=True)
             finally:
                 with self.viewer_lock:
                     self.launching -= 1
@@ -2408,7 +2414,7 @@ print(json.dumps(poses))
         A window panel is in native_panels only after its launcher saw a
         submitted picture, so this is the first moment the user can see the
         Mac in the headset. If every window panel goes, the laptop shows again."""
-        want = any(p.get("role", "window") == "window" for p in self.native_panels.values())
+        want = any(p.get("role", "window") == "window" for p in list(self.native_panels.values()))
         if want == self._spatial_cover:
             return
         try:
