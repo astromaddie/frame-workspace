@@ -245,6 +245,68 @@ inline void selfTestShelf() {
       check(spatialPick(rayAt(view.pose, x, -shelfRowDrop), tiles) == under, "the ray picks the icon drawn under it");
     check(under == rested, "the icon under the pointer is the one it pointed at before magnifying");
   }
+  // The shelf's texture keeps one size through a whole enlarge/shrink animation
+  // with the same apps: SteamVR recreates its remote image for every new size.
+  {
+    ShelfHover hover;
+    ShelfRaster first;
+    bool haveFirst = false;
+    int steps = 0, changes = 0;
+    ShelfRaster last;
+    float widest = 0;
+    // 400 ms enlarging with the pointer sweeping the row, a pause, then shrinking.
+    for (int frame = 0; frame < 120; ++frame) {
+      const double now = frame * 16.0;
+      const bool over = frame < 40;
+      const float x = -.5f + frame * .02f;
+      hover.update(now, .016f, over, over, over, x);
+      auto view = pinnedView;
+      view.scale = hover.scale();
+      view.magnify = hover.magnify;
+      view.pointer = hover.pointer;
+      auto tiles = spatialLayout(st, front, "", &statusMessage, view);
+      const auto &shelfTile = tiles.front();
+      auto raster = shelfRaster(shelfTile);
+      if (!haveFirst) { first = raster; haveFirst = true; }
+      else {
+        check(raster.canvasW == first.canvasW && raster.canvasH == first.canvasH,
+              "the shelf texture keeps its dimensions while it magnifies");
+        if (raster.w != last.w || raster.h != last.h) ++changes;
+      }
+      last = raster;
+      ++steps;
+      widest = std::max(widest, shelfTile.surface.placement.width);
+      // The drawn part fits the texture, covers the overlay at the density it
+      // had before, and gives the overlay the same aspect as the shelf.
+      check(raster.w >= 16 && raster.h >= 16 && raster.w <= raster.canvasW && raster.h <= raster.canvasH &&
+            raster.canvasW <= 2048 && std::abs(raster.u * raster.canvasW - raster.w) < 1e-2f &&
+            std::abs(raster.v * raster.canvasH - raster.h) < 1e-2f,
+            "the drawn shelf is a corner of the texture");
+      check(std::abs(raster.w / shelfPixelsPerMetre - shelfTile.surface.placement.width) <= 4 / shelfPixelsPerMetre + 1e-5f &&
+            std::abs(raster.h / shelfPixelsPerMetre - shelfTile.surface.height) <= 4 / shelfPixelsPerMetre + 1e-5f,
+            "the drawn shelf keeps its pixels per metre at every step");
+      check(std::abs(float(raster.w) / raster.h / (shelfTile.surface.placement.width / shelfTile.surface.height) - 1) < .06f,
+            "the overlay keeps the shelf's aspect");
+      // Picking follows the drawn geometry at this step of the animation.
+      for (size_t i = 0; i < tiles.size(); ++i) {
+        if (tiles[i].kind != SpatialTile::Dock) continue;
+        auto local = multiply(inverseRigid(view.pose), tiles[i].surface.placement.matrix);
+        PanelPick pick;
+        check(spatialPick(rayAt(view.pose, local.m[0][3], local.m[1][3]), tiles, &pick) == int(i) &&
+              std::abs(pick.u - .5f) < 1e-4 && std::abs(pick.v - .5f) < 1e-4,
+              "a ray at an icon's centre picks it at every animation step");
+      }
+    }
+    check(steps == 120 && changes > 20, "the animation really changed the drawn size");
+    check(widest <= first.canvasW / shelfPixelsPerMetre + 1e-5f, "the texture holds the widest the shelf gets");
+    // Different content is a different texture: more apps or a taller status band.
+    auto more = st; more.apps.push_back({"f", "f", "", true, false});
+    check(shelfRaster(spatialLayout(more, front, "", nullptr, pinnedView).front()).canvasW > first.canvasW,
+          "another app resizes the texture");
+    SurfaceMessage tall = SurfaceMessage::parse(R"({"t":"surface","v":1,"seq":1,"visible":true,"rect":[0,0,186,120],"anchor":"none","anchorRect":[0,0,186,120]})");
+    check(shelfRaster(spatialLayout(st, front, "", &tall, pinnedView).front()).canvasH > first.canvasH,
+          "a taller status band resizes the texture");
+  }
   // The move pill is never a pick target, but it is drawn and moves with the shelf.
   auto moveTile = fullTiles.back();
   check(spatialPick(rayAt(pinnedView.pose, 0, -.48f - .155f), fullTiles) != int(fullTiles.size() - 1), "pill overlay is not pickable");

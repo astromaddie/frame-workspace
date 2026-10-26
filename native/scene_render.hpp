@@ -36,6 +36,7 @@ class SceneRenderer {
     GLuint texture;
     float width, height, depth;
     int order;
+    float extentU = 1, extentV = 1; // the part of the texture that is drawn on
   };
   std::vector<Layer> layers;
   std::filesystem::path root;
@@ -69,10 +70,10 @@ class SceneRenderer {
     return Json(json_object_get(o), json_object_put);
   }
   void add(const PanelSurface &s, GLuint t, int order, float depth = 0,
-           float width = 0, float height = 0) {
+           float width = 0, float height = 0, float extentU = 1, float extentV = 1) {
     layers.push_back({s, bendShape(s.placement, s.height), t,
                       width ? width : s.placement.width,
-                      height ? height : s.height, depth, order});
+                      height ? height : s.height, depth, order, extentU, extentV});
   }
   static void matrix(const HmdMatrix34_t &m) {
     float v[16] = {m.m[0][0],m.m[1][0],m.m[2][0],0,
@@ -99,9 +100,9 @@ class SceneRenderer {
         float u = float(i) / steps, x = (u - .5f) * seg.width;
         float px = radius ? radius * std::sin(x / radius) : x;
         float pz = radius ? radius * (1 - std::cos(x / radius)) : 0;
-        float tu = seg.bounds.uMin + u * (seg.bounds.uMax - seg.bounds.uMin);
+        float tu = (seg.bounds.uMin + u * (seg.bounds.uMax - seg.bounds.uMin)) * l.extentU;
         for (int top : {1, 0}) {
-          float tv = top ? 1 - seg.bounds.vMin : 1 - seg.bounds.vMax;
+          float tv = (top ? 1 - seg.bounds.vMin : 1 - seg.bounds.vMax) * l.extentV;
           const bool sourceTurned = b.vertical && !l.surface.region.attached;
           glTexCoord2f(sourceTurned ? tv : tu, sourceTurned ? 1 - tu : tv);
           glVertex3f(px, (top ? .5f : -.5f) * across, pz);
@@ -331,7 +332,9 @@ public:
                false, root.string(), [](const std::string &) { return SpatialPicture{}; });
     for (size_t i = 0; i < tiles.size(); ++i) {
       if (!tiles[i].shown) continue;
-      add(tiles[i].surface, shelf.tileTexture(i), int(SpatialRenderer::sortOrder(tiles[i].kind)));
+      float eu = 1, ev = 1;
+      shelf.tileExtent(i, eu, ev);
+      add(tiles[i].surface, shelf.tileTexture(i), int(SpatialRenderer::sortOrder(tiles[i].kind)), 0, 0, 0, eu, ev);
     }
     if (shelfHot >= 0 && shelfHot == launcherTile) {
       const auto &surface = tiles[launcherTile].surface;

@@ -3,6 +3,7 @@
 #include "overlay.hpp"
 #include "spatial_render.hpp"
 #include <iostream>
+#include <set>
 
 int main() {
   std::string pattern = (std::filesystem::temp_directory_path() /
@@ -61,7 +62,58 @@ int main() {
     const auto blue = render(texture);
     glDeleteTextures(1, &texture);
     if (red == blue) throw std::runtime_error("same-texture thumbnail did not refresh");
-    std::cout << "spatial renderer passed: late icon and live same-texture updates\n";
+    // The shelf's texture is allocated once and keeps its size through a whole
+    // enlarge/shrink animation (SteamVR recreates its remote image per size), and
+    // only changing the shelf's content reallocates it.
+    {
+      fw::SpatialRenderer shelf(session);
+      fw::SpatialState apps;
+      apps.spatial = true;
+      for (const char *id : {"a", "b", "c", "d"}) apps.apps.push_back({id, id, "", true, false});
+      fw::ShelfHover hover;
+      fw::ShelfView view;
+      view.pinned = true;
+      auto textureSize = [&](GLuint t) {
+        int w = 0, h = 0;
+        glBindTexture(GL_TEXTURE_2D, t);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &w);
+        glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &h);
+        return std::make_pair(w, h);
+      };
+      std::pair<int, int> canvas{0, 0};
+      std::set<std::pair<float, float>> extents;
+      auto animate = [&](fw::SpatialState &state, int frames, bool over) {
+        for (int frame = 0; frame < frames; ++frame) {
+          static double now = 0;
+          now += 16;
+          hover.update(now, .016f, over, over, over, -.2f + frame * .01f);
+          view.scale = hover.scale();
+          view.magnify = hover.magnify;
+          view.pointer = hover.pointer;
+          auto tiles = fw::spatialLayout(state, fw::spatialAnchor(fw::spatialIdentity(), 1.3f, 0), "", nullptr, view);
+          shelf.draw(state, tiles, -1, 0, 0, false, pattern,
+                     [&](const std::string &) { return fw::SpatialPicture{}; });
+          const auto size = textureSize(shelf.tileTexture(0));
+          if (canvas.first == 0) canvas = size;
+          if (size != canvas) throw std::runtime_error("shelf texture changed size while it animated");
+          float u, v;
+          shelf.tileExtent(0, u, v);
+          extents.insert({u, v});
+        }
+      };
+      animate(apps, 60, true);   // enlarging and magnifying
+      animate(apps, 120, false); // grace period, then shrinking
+      if (extents.size() < 10) throw std::runtime_error("shelf animation did not change what is drawn");
+      if (shelf.shelfAllocationCount() != 1)
+        throw std::runtime_error("shelf texture was allocated more than once during the animation");
+      apps.apps.push_back({"e", "e", "", true, false});
+      canvas = {0, 0};
+      animate(apps, 1, true);
+      if (shelf.shelfAllocationCount() != 2) throw std::runtime_error("shelf content change did not reallocate");
+      animate(apps, 60, true);
+      if (shelf.shelfAllocationCount() != 2) throw std::runtime_error("shelf texture reallocated again");
+    }
+    std::cout << "spatial renderer passed: late icon, live same-texture updates and a fixed-size shelf texture\n";
   } catch (const std::exception &e) {
     std::cerr << e.what() << '\n';
     return 1;

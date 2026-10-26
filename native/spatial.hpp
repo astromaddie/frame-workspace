@@ -211,10 +211,40 @@ struct SpatialTile {
   bool pickable = true, shown = true;
   HandleLayout layout;
   ChromeState chrome;
+  // Shelf: the largest the backing can be drawn (full size, icons magnified to
+  // the limit), in metres. The renderer keeps its texture this size, so the
+  // animation never changes the texture's dimensions.
+  float canvasWidth = 0, canvasHeight = 0;
   bool lit = false;                                 // Apps: the launcher is open
   std::shared_ptr<const LauncherPicture> picture;   // Launcher
   std::string icon;                                 // Carry: the icon's file
 };
+// How the shelf backing is rasterised. The texture handed to the overlay is
+// the fixed canvas (the shelf's largest size, which changes only when its
+// content does: the number of apps, the status band). The backing drawn at its
+// current size, in whole 8 px steps so a still shelf does not redraw, fills the
+// canvas's top-left corner and the overlay shows just that part through its
+// texture bounds (0..u across, 0..v down in texture rows). Texels per metre
+// stay shelfPixelsPerMetre and SteamVR sees one texture size throughout.
+struct ShelfRaster {
+  int canvasW = 0, canvasH = 0; // texture size
+  int w = 0, h = 0;             // the drawn part
+  float u = 1, v = 1;           // the drawn part as fractions of the canvas
+};
+inline ShelfRaster shelfRaster(const SpatialTile &t) {
+  auto eighths = [](float metres, bool up) {
+    const float px = metres * shelfPixelsPerMetre / 8;
+    return std::max(16, int(up ? std::ceil(px) : std::lround(px)) * 8);
+  };
+  ShelfRaster r;
+  r.canvasW = std::min(2048, eighths(std::max(t.canvasWidth, t.surface.placement.width), true));
+  r.canvasH = std::min(2048, eighths(std::max(t.canvasHeight, t.surface.height), true));
+  r.w = std::min(r.canvasW, eighths(t.surface.placement.width, false));
+  r.h = std::min(r.canvasH, eighths(t.surface.height, false));
+  r.u = float(r.w) / r.canvasW;
+  r.v = float(r.h) / r.canvasH;
+  return r;
+}
 // Overlay sort bands: windows 1-4 (51-54 selected), the launcher's backdrop
 // above them, the shelf, the shelf's icons and cards, the launcher panel and
 // the icon carried across it.
@@ -288,6 +318,10 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     SpatialTile shelf{SpatialTile::Shelf, 0, {"shelf", p, (shelfIconHeight + band) * k, PanelRole::Menu}, ""};
     shelf.layout.width = fullWidth;
     shelf.layout.height = shelfIconHeight + band;
+    // Magnifying stretches the row by at most boost * reach (the bell's area).
+    const float most = std::max(1.f, k);
+    shelf.canvasWidth = most * (fullWidth + shelfIconBoost * shelfIconReach * step0);
+    shelf.canvasHeight = most * (shelfIconHeight + band);
     tiles.push_back(shelf);
   }
   for (size_t i = 0; i < s.apps.size(); ++i) {
