@@ -5,6 +5,7 @@ from pathlib import Path
 import re
 import shlex
 import struct
+import sys
 import threading
 import time
 
@@ -14,10 +15,28 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "workspace-spatial
 BUNDLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 KEY = re.compile(r"com\.frame-workspace\.native\.\d{1,15}\.panel-w\d{1,15}\Z")
 SOURCE = re.compile(r"(?:window|separate|spatial):(\d{1,15})\Z")
+REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,48}\Z")
 VERBS = {"open", "hide", "unhide", "quit", "show_windows"}
 VERB_NAMES = {"open": "Open", "hide": "Hide", "unhide": "Show", "quit": "Quit", "show_windows": "Show"}
 CATALOG_REFRESH = 60      # seconds between launcher catalogue reads while Spatial Mode runs
 ICON_BATCH = 90000        # base64 bytes of icons per Frame write (one SSH command line)
+ACK_KEEP = 8              # recent request answers the headset is told about
+ACK_SECONDS = 60          # ... and for how long
+
+
+sink = None  # tests collect log lines here; otherwise they go to stderr
+
+
+def log(message):
+    """One line for a hop of a headset click, in the app's server.log (grep "dock:")."""
+    line = f"{time.strftime('%H:%M:%S')} dock: {message}"
+    if sink is not None:
+        sink(line)
+        return
+    try:
+        print(line, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass  # no stderr (a closed pipe)
 
 
 def default_layout_path():
@@ -69,6 +88,9 @@ class SpatialApps:
         self._keys_after = 0
         self._published_catalog = None
         self._launcher_icons = []
+        # What became of recent headset requests (by the id the headset gave them),
+        # published in the state so the shelf's icon can stop hopping.
+        self._acks = []
 
     @property
     def enabled(self):
@@ -185,7 +207,29 @@ class SpatialApps:
                 state["arrangeSeq"] = self.arrange_seq
             if self.catalog is not None:
                 state["launcher"] = self._launcher_locked()
+            acks = self._acks_locked()
+            if acks:
+                state["acks"] = acks
         self._set_state(state)
+
+    def _acks_locked(self):
+        cutoff = time.monotonic() - ACK_SECONDS
+        self._acks = [a for a in self._acks if a[0] >= cutoff][-ACK_KEEP:]
+        return [a[1] for a in self._acks]
+
+    def _ack(self, rid, ok, error=None):
+        """Tell the headset how its request `rid` ended; `error` is its notice text."""
+        if not rid:
+            return
+        ack = {"id": rid, "ok": bool(ok)}
+        if error:
+            ack["error"] = clean(error, 160)
+        with self.lock:
+            self._acks = [a for a in self._acks if a[1]["id"] != rid] + [(time.monotonic(), ack)]
+            acks = self._acks_locked()
+            state = {**self.state, "acks": acks} if self.state else None
+        if state is not None:
+            self._set_state(state)
 
     @staticmethod
     def _switcher(raw, entries):
@@ -499,6 +543,15 @@ class SpatialApps:
         if state is not None:
             self._set_state(state)
 
+    def _reject(self, rid, why, shown=None):
+        """A request the companion will not carry out: say why in the log, answer the
+        headset and, for one a person should hear of, show the amber notice."""
+        log(f"companion rejected id={rid or '-'}: {why}")
+        self._ack(rid, False, shown or why)
+        record = getattr(self.macview, "_record_error", None)
+        if shown and record:
+            record(shown)
+
     def handle_request(self, request):
         action = request.get("action")
         if action == "arrange_windows":
@@ -514,16 +567,33 @@ class SpatialApps:
             return True
         if action not in ("app", "switch", "switcher", "launcher"):
             return False
+        rid = request.get("id") if isinstance(request.get("id"), str) and REQUEST_ID.fullmatch(request["id"]) else None
         if not self.enabled:
+            workspace = getattr(self.macview, "spatial_workspace", {})
+            self._reject(rid, f"{action} request dropped: Spatial Mode is not running (mode "
+                              f"{getattr(self.macview, 'mode', '?')}, workspace {workspace.get('state')}, "
+                              f"stopping {bool(getattr(self.macview, 'exit_pending', False))})")
             return True
         if action == "app":
             bundle, verb = request.get("bundleID"), request.get("verb")
+            selected = request.get("selected") if isinstance(request.get("selected"), str) else None
+            log(f"companion received id={rid or '-'} verb={verb!r} bundle={bundle!r} selected={selected or '-'}")
             with self.lock:
                 known = {a["bundleID"] for a in self.state["apps"]} if self.state else set()
                 if self.catalog is not None and verb == "open":
                     known |= {a["bundleID"] for a in self.catalog["apps"]}
-            if isinstance(bundle, str) and bundle in known and isinstance(verb, str) and verb in VERBS:
-                self._lane(self._app_action, bundle, verb)
+            if not isinstance(bundle, str) or not BUNDLE.fullmatch(bundle):
+                self._reject(rid, "the bundle ID is not valid")
+            elif not isinstance(verb, str) or verb not in VERBS:
+                self._reject(rid, f"the verb is not one of {sorted(VERBS)}")
+            elif bundle not in known:
+                self._reject(rid, f"{bundle} is not on the shelf" + (" or in the catalogue" if verb == "open" else ""),
+                             f"Couldn't {VERB_NAMES[verb]} {clean(self._app_name(bundle), 64)}: it isn't on the shelf")
+            else:
+                if selected is not None and not KEY.fullmatch(selected):
+                    selected = None
+                log(f"companion queued id={rid or '-'} on the action lane")
+                self._lane(self._app_action, bundle, verb, rid, selected)
         elif action == "launcher":
             verb = request.get("verb")
             if verb == "open":
@@ -540,7 +610,10 @@ class SpatialApps:
         elif action == "switch":
             key = request.get("key")
             if isinstance(key, str) and KEY.fullmatch(key) and self._source(key):
+                log(f"companion received switch key={key} (the headset selected this panel)")
                 self._lane(self._switch, key)
+            else:
+                log(f"companion rejected switch key={key!r}: not one of this Workspace's panels")
         elif request.get("verb") in ("open", "close"):
             self._lane(self._switcher_action, request["verb"])
         return True
@@ -573,22 +646,41 @@ class SpatialApps:
         return next((s for s, p in list(self.macview.native_panels.items())
                      if p.get("key") == key and SOURCE.fullmatch(s)), None)
 
-    def _app_action(self, bundle, verb):
+    def _app_action(self, bundle, verb, rid=None, selected=None):
+        """Carry out a shelf click on the helper. `rid` is the headset's request id; `selected`
+        is the panel it already brought forward, which then needs no second selection."""
         if not self.enabled:
+            log(f"companion dropped id={rid or '-'} {verb} {bundle}: Spatial Mode stopped first")
+            self._ack(rid, False, "Spatial Mode Stopped")
             return
         name = self._app_name(bundle)
+        log(f"companion asking the helper id={rid or '-'} {verb} {bundle}")
         try:
-            result = self.macview.call("/apps/action", method="POST", bundleID=bundle, verb=verb)
+            query = {"bundleID": bundle, "verb": verb}
+            if rid:
+                query["id"] = rid
+            result = self.macview.call("/apps/action", method="POST", **query)
             if isinstance(result, dict) and result.get("ok") is False:
                 raise ValueError(result.get("error") or "macOS refused")
         except Exception as exc:
             reason = str(exc).removeprefix("The Mac Streaming Helper: ")
-            raise RuntimeError(f"Couldn't {VERB_NAMES[verb]} {clean(name, 64)}: {clean(reason, 120)}") from exc
-        # Opening an app that already has a panel also brings that panel forward.
+            message = f"Couldn't {VERB_NAMES[verb]} {clean(name, 64)}: {clean(reason, 120)}"
+            log(f"companion helper refused id={rid or '-'}: {message}")
+            self._ack(rid, False, message)
+            raise RuntimeError(message) from exc
+        log(f"companion helper answered id={rid or '-'}: {result}")
+        # Opening an app that already has a panel also brings that panel forward, unless
+        # the headset has (it says so in `selected`).
         if verb in ("open", "show_windows"):
             keys = self._app_windows(bundle)
-            if keys and self.enabled:
+            if selected and selected in keys:
+                log(f"companion id={rid or '-'}: the headset already brought {selected} forward")
+            elif keys and self.enabled:
+                log(f"companion id={rid or '-'}: choosing {keys[0]} for the headset")
                 self.macview.call("/switcher", method="POST", mode="spatial", verb="choose", key=keys[0])
+            else:
+                log(f"companion id={rid or '-'}: {bundle} has no panel yet; the headset waits for one")
+        self._ack(rid, True)
         self.refresh()
 
     def _switch(self, key):

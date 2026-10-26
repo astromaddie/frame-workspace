@@ -196,18 +196,56 @@ inline void selfTestShelf() {
         std::abs(bottomOf(bigTiles, 0) - bottomOf(fullTiles, 0)) < 1e-5, "magnified icons grow upward from a level base");
   check(bigTiles.front().surface.placement.width > fullTiles.front().surface.placement.width &&
         bigTiles.front().surface.height == fullTiles.front().surface.height, "backing widens with the stretched row");
-  // The status band and its picture shrink with the shelf and stay inside it.
+  // One row: the backing hugs the icons, the status sits at its right end after a
+  // groove and shrinks with the shelf.
   SurfaceMessage statusMessage = SurfaceMessage::parse(R"({"t":"surface","v":1,"seq":1,"visible":true,"rect":[0,0,186,30],"anchor":"none","anchorRect":[0,0,186,30]})");
-  for (float k : {shelfRestScale, .8f, 1.f}) {
-    auto view = pinnedView; view.scale = k;
-    auto tiles = spatialLayout(st, front, "", &statusMessage, view);
-    auto status = statusStripPlacement(tiles, statusMessage, .001f, k);
-    const auto &shelf = tiles.front().surface;
-    auto local = multiply(inverseRigid(shelf.placement.matrix), status.placement.matrix);
-    check(std::abs(status.placement.width - .186f * k) < 1e-5 &&
-          local.m[0][3] + status.placement.width / 2 <= shelf.placement.width / 2 + 1e-6f &&
-          local.m[1][3] - status.height / 2 >= -shelf.height / 2 - 1e-6f,
-          "status picture scales with the shelf and stays inside it");
+  {
+    auto bare = spatialLayout(st, front, "", nullptr, pinnedView);
+    check(std::abs(bare.front().surface.height - shelfRowHeight * pinnedView.scale) < 1e-6 && shelfRowHeight < .11f &&
+          bare.front().dividerX < 0 && bare.front().statusScale == 0,
+          "the shelf is one row tall and has no groove without a status");
+    auto local = [&](const SpatialTile &t) { return multiply(inverseRigid(pinnedView.pose), t.surface.placement.matrix); };
+    for (float k : {shelfRestScale, 1.f}) {
+      auto view = pinnedView; view.scale = k;
+      auto tiles = spatialLayout(st, front, "", &statusMessage, view);
+      const auto &shelf = tiles.front();
+      const float top = local(shelf).m[1][3] + shelf.surface.height / 2, bottom = local(shelf).m[1][3] - shelf.surface.height / 2;
+      float tileTop = -1e9f, tileBottom = 1e9f, lastRight = -1e9f, firstLeft = 1e9f;
+      for (const auto &t : tiles) if (t.kind == SpatialTile::Dock) {
+        const auto l = local(t);
+        tileTop = std::max(tileTop, l.m[1][3] + t.surface.height / 2);
+        tileBottom = std::min(tileBottom, l.m[1][3] - t.surface.height / 2);
+        lastRight = std::max(lastRight, l.m[0][3] + t.surface.placement.width / 2);
+        firstLeft = std::min(firstLeft, l.m[0][3] - t.surface.placement.width / 2);
+      }
+      check(std::abs(top - (tileTop + shelfBackTop * k)) < 1e-5 && std::abs(bottom - (tileBottom + shelfBackBottom * k)) < 1e-5,
+            "the backing rises a few millimetres above the icons and ends under their dots");
+      auto strip = statusStripPlacement(tiles, statusMessage, .001f, k);
+      const auto stripLocal = multiply(inverseRigid(shelf.surface.placement.matrix), strip.placement.matrix);
+      const float shelfRight = shelf.surface.placement.width / 2;
+      check(std::abs(strip.placement.width - .186f * k) < 1e-5 && std::abs(strip.height - .03f * k) < 1e-5 &&
+            std::abs(stripLocal.m[0][3] + strip.placement.width / 2 - (shelfRight - shelfEndMargin * k)) < 1e-5 &&
+            std::abs(stripLocal.m[1][3]) < 1e-6 && strip.height < shelf.surface.height,
+            "status picture shares the row at its right end and scales with the shelf");
+      const float stripLeft = local(shelf).m[0][3] + stripLocal.m[0][3] - strip.placement.width / 2;
+      const float groove = local(shelf).m[0][3] - shelf.surface.placement.width / 2 + shelf.dividerX;
+      check(shelf.dividerX > 0 && groove > lastRight && groove < stripLeft &&
+            stripLeft - lastRight > .9f * shelfStatusGap * k,
+            "the groove sits between the last icon and the status");
+      check(firstLeft - (local(shelf).m[0][3] - shelf.surface.placement.width / 2) > shelfEndMargin * k - 1e-5f,
+            "end margin before the first icon");
+      // The whole row, status included, is centred on the pose.
+      check(std::abs(local(shelf).m[0][3]) < 1e-5, "the row is centred");
+    }
+    // Magnifying keeps the status inside the backing and pushes it along with the row.
+    auto restTiles = spatialLayout(st, front, "", &statusMessage, pinnedView);
+    auto view = pinnedView; view.magnify = 1; view.pointer = 0;
+    auto bigTiles = spatialLayout(st, front, "", &statusMessage, view);
+    auto strip = statusStripPlacement(bigTiles, statusMessage, .001f, view.scale);
+    const auto stripLocal = multiply(inverseRigid(bigTiles.front().surface.placement.matrix), strip.placement.matrix);
+    check(bigTiles.front().surface.placement.width > restTiles.front().surface.placement.width &&
+          stripLocal.m[0][3] + strip.placement.width / 2 <= bigTiles.front().surface.placement.width / 2 + 1e-6f &&
+          bigTiles.front().dividerX > restTiles.front().dividerX, "magnified row widens around the status and groove");
   }
   // Picking uses the drawn geometry at every size and magnification.
   for (float k : {shelfRestScale, .7f, .85f, 1.f}) for (float amount : {0.f, .3f, 1.f}) for (float pointer : {-.2f, 0.f, .13f, .31f}) {
@@ -299,13 +337,15 @@ inline void selfTestShelf() {
     }
     check(steps == 120 && changes > 20, "the animation really changed the drawn size");
     check(widest <= first.canvasW / shelfPixelsPerMetre + 1e-5f, "the texture holds the widest the shelf gets");
-    // Different content is a different texture: more apps or a taller status band.
+    // Different content is a different texture: more apps, or the status picture.
     auto more = st; more.apps.push_back({"f", "f", "", true, false});
-    check(shelfRaster(spatialLayout(more, front, "", nullptr, pinnedView).front()).canvasW > first.canvasW,
+    check(shelfRaster(spatialLayout(more, front, "", &statusMessage, pinnedView).front()).canvasW > first.canvasW,
           "another app resizes the texture");
     SurfaceMessage tall = SurfaceMessage::parse(R"({"t":"surface","v":1,"seq":1,"visible":true,"rect":[0,0,186,120],"anchor":"none","anchorRect":[0,0,186,120]})");
-    check(shelfRaster(spatialLayout(st, front, "", &tall, pinnedView).front()).canvasH > first.canvasH,
-          "a taller status band resizes the texture");
+    auto withTall = spatialLayout(st, front, "", &tall, pinnedView);
+    check(shelfRaster(withTall.front()).canvasH == first.canvasH && withTall.front().statusScale < .001f &&
+          withTall.front().statusScale * 120 <= shelfStatusMaxHeight + 1e-6f,
+          "a tall status shrinks to fit the row instead of making it taller");
   }
   // The move pill is never a pick target, but it is drawn and moves with the shelf.
   auto moveTile = fullTiles.back();
@@ -313,7 +353,7 @@ inline void selfTestShelf() {
   {
     auto local = multiply(inverseRigid(pinnedView.pose), moveTile.surface.placement.matrix);
     const auto &l = moveTile.layout;
-    check(std::abs(local.m[0][3] + l.pillX()) < 1e-5 && local.m[1][3] < -shelfRowDrop &&
+    check(std::abs(local.m[0][3] + l.pillX()) < 1e-5 && local.m[1][3] + l.rowY() < -shelfRowDrop - shelfIconHeight / 2 &&
           std::abs(moveTile.surface.placement.width - l.chromeWidth()) < 1e-6, "move pill hangs centred under the full shelf");
   }
 
@@ -755,6 +795,125 @@ inline void selfTestSpatialFocus() {
   }
 }
 
+// Dock clicks: the request a click writes, the pressed and launching feedback, and
+// delivery of a chosen panel (FW-15).
+inline void selfTestDock() {
+  auto check = [](bool ok, const char *why) {
+    if (!ok)
+      throw std::runtime_error(why);
+  };
+  // The request: a fixed shape with an id, and the panel already brought forward.
+  {
+    DockIds ids{4242, 0};
+    const auto first = ids.next(), second = ids.next();
+    check(first == "d4242-1" && second == "d4242-2", "request ids count within a run and carry the pid");
+    auto body = json(dockRequest("open", "com.apple.Terminal", first));
+    check(body && str(body, "action") == "app" && str(body, "verb") == "open" && str(body, "bundleID") == "com.apple.Terminal" &&
+          str(body, "id") == first && str(body, "selected").empty() && !field(body, "selected"),
+          "a dock click writes the app request with its id");
+    body = json(dockRequest("open", "com.apple.Terminal", second, "com.frame-workspace.native.1.panel-w2"));
+    check(body && str(body, "selected") == "com.frame-workspace.native.1.panel-w2", "the request names the panel already selected");
+    check(dockRequest("open", "a\"b", "d1-1").size() < 512, "a request fits the poller's read");
+  }
+  // The hop: starts at once, peaks half way, rests on the shelf between hops.
+  check(dockBounce(0) == 0 && std::abs(dockBounce(dockBounceMs / 2) - 1) < 1e-6f && dockBounce(dockBounceMs) < 1e-5f &&
+        std::abs(dockBounce(dockBounceMs * 3 + dockBounceMs / 4) - dockBounce(dockBounceMs / 4)) < 1e-4f &&
+        dockBounce(-5) == 0, "launching icons hop in a repeating arc");
+  for (double ms = 0; ms < 3000; ms += 17)
+    check(dockBounce(ms) >= 0 && dockBounce(ms) <= 1, "a hop stays within its height");
+
+  // State and feedback: parse acks and each window's app.
+  auto state = SpatialState::parse(R"({"mode":"spatial","apps":[
+      {"bundleID":"a.one","name":"One","running":true,"windows":[{"key":"com.frame-workspace.native.1.panel-w1","title":"x"}]},
+      {"bundleID":"b.two","name":"Two","running":false,"windows":[]}],
+    "acks":[{"id":"d1-1","ok":true},{"id":"d1-2","ok":false,"error":"Couldn't Open Two: application not found"},{"ok":true},3],
+    "switcher":{"open":false,"index":0,"seq":4,"chosen":null}})");
+  check(state.windows.size() == 1 && state.windows[0].bundle == "a.one" && spatialPanelCount(state, "a.one") == 1 &&
+        spatialPanelCount(state, "b.two") == 0, "each panel knows its app");
+  check(state.acks.size() == 2 && state.acks[0].ok && !state.acks[1].ok && state.acks[1].id == "d1-2" &&
+        state.acks[1].error.find("application not found") != std::string::npos, "acknowledgements parse, bad ones are skipped");
+  auto panels = [&](const std::string &bundle) { return spatialPanelCount(state, bundle); };
+  {
+    DockFeedback f;
+    f.launch("d1-1", "b.two", 1000, 0);
+    check(f.launching("b.two") && !f.launching("a.one") && f.since("b.two") == 1000, "a click starts a launch for that app");
+    check(f.observe({}, panels, 1500).empty() && f.launching("b.two"), "nothing happens yet: still launching");
+    check(f.observe({{"d1-1", "", true}}, panels, 2000).empty() && f.launches[0].acked, "an ok answer alone does not end it");
+    auto ended = f.observe({{"d1-1", "", true}}, panels, 2000 + dockAckedMaxMs);
+    check(ended.size() == 1 && ended[0].why == DockEnd::Timeout && !f.launching("b.two"), "a launch the Mac accepted gives up after a while");
+    f.launch("d1-2", "b.two", 0, 0);
+    ended = f.observe(state.acks, panels, 10);
+    check(ended.size() == 1 && ended[0].why == DockEnd::Error && ended[0].error.find("not found") != std::string::npos &&
+          !f.launching("b.two"), "an error ends the bounce and carries its message");
+    f.launch("d1-3", "b.two", 0, 0);
+    state.windows.push_back({"com.frame-workspace.native.1.panel-w2", "t", "Two", "b.two"});
+    ended = f.observe({}, panels, 10);
+    check(ended.size() == 1 && ended[0].why == DockEnd::Panel && ended[0].launch.id == "d1-3", "the app's panel appearing ends the bounce");
+    f.launch("d1-4", "b.two", 0, spatialPanelCount(state, "b.two"));
+    check(f.observe({}, panels, 10).empty(), "a panel the app already had does not end a launch");
+    ended = f.observe({}, panels, dockLaunchMaxMs);
+    check(ended.size() == 1 && ended[0].why == DockEnd::Timeout, "an unanswered launch stops by itself");
+    f.launch("d1-5", "b.two", 0, 0);
+    f.launch("d1-6", "b.two", 5, 0);
+    check(f.launches.size() == 1 && f.launches[0].id == "d1-6", "a second click on the same icon replaces the first launch");
+    f.finish("b.two");
+    check(f.launches.empty(), "bringing the panel forward finishes the launch");
+  }
+  // Delivery of a chosen panel: once per sequence, retried until it can be taken.
+  {
+    DockChosen c;
+    int tries = 0;
+    bool ready = false;
+    auto select = [&](const std::string &key) { ++tries; return ready && key == "k"; };
+    check(c.step(true, "", 5, 0, select) == DockChosen::Idle && c.step(false, "k", 5, 0, select) == DockChosen::Idle && tries == 0,
+          "nothing chosen, or Desktop Mode: nothing taken");
+    check(c.step(true, "k", 5, 100, select) == DockChosen::Waiting && c.failed, "a panel that is not ready is kept");
+    check(c.step(true, "k", 5, 600, select) == DockChosen::Waiting && tries == 2, "and tried again");
+    ready = true;
+    check(c.step(true, "k", 5, 700, select) == DockChosen::Taken, "taken as soon as it can be");
+    check(c.step(true, "k", 5, 800, select) == DockChosen::Idle && tries == 3, "a sequence is taken once");
+    check(c.step(true, "k", 6, 900, select) == DockChosen::Taken && tries == 4, "the next sequence is taken again, even for the same panel");
+    ready = false;
+    check(c.step(true, "k", 7, 1000, select) == DockChosen::Waiting, "waiting for a new sequence");
+    check(c.step(true, "k", 7, 1000 + dockChosenMaxMs - 1, select) == DockChosen::Waiting, "still waiting before the limit");
+    check(c.step(true, "k", 7, 1000 + dockChosenMaxMs, select) == DockChosen::GaveUp, "a panel that never comes is dropped");
+    ready = true;
+    check(c.step(true, "k", 7, 9000, select) == DockChosen::Idle, "and not taken later");
+    DockChosen d;
+    check(d.step(true, "gone", 1, 0, select) == DockChosen::Waiting && d.step(true, "gone", 1, dockChosenMaxMs, select) == DockChosen::GaveUp,
+          "an unknown panel is ignored");
+  }
+  // Feedback is a drawn effect: the pressed icon shrinks and the launching one hops, but
+  // picking still uses the laid-out geometry.
+  {
+    SpatialState st; st.spatial = true;
+    for (const char *id : {"a", "b", "c"}) st.apps.push_back({id, id, "", true, false});
+    ShelfView view; view.pinned = true; view.pose = spatialIdentity(); view.pose.m[2][3] = -1.3f;
+    auto tiles = spatialLayout(st, spatialIdentity(), "", nullptr, view);
+    auto plain = tiles;
+    DockFeedback f;
+    f.pressed = "dock:b";
+    f.launch("d1-1", "c", 1000, 0);
+    dockVisuals(tiles, st, f, 1000 + dockBounceMs / 2);
+    int shrunk = 0, lifted = 0;
+    for (size_t i = 0; i < tiles.size(); ++i) {
+      if (tiles[i].kind != SpatialTile::Dock) { check(tiles[i].visualScale == 1 && tiles[i].lift == 0, "only icons get feedback"); continue; }
+      shrunk += tiles[i].visualScale == dockPressScale;
+      lifted += tiles[i].lift > 0;
+      check(std::memcmp(&tiles[i].surface.placement.matrix, &plain[i].surface.placement.matrix, sizeof(HmdMatrix34_t)) == 0 &&
+            tiles[i].surface.placement.width == plain[i].surface.placement.width, "feedback never moves the pick geometry");
+    }
+    check(shrunk == 1 && tiles[2].visualScale == dockPressScale && lifted == 1 && tiles[3].lift > .4f * tiles[3].surface.height &&
+          tiles[3].lift <= dockBounceHeight * tiles[3].surface.height + 1e-6f, "the pressed icon shrinks and the launching one is lifted");
+    dockVisuals(tiles, st, DockFeedback{}, 0);
+    check(tiles[2].visualScale == 1 && tiles[3].lift == 0, "feedback clears with the state");
+    // A hand on the icon's drawn centre still picks it while it hops.
+    EyeRay ray;
+    const auto &t = plain[3];
+    for (int r = 0; r < 3; ++r) { ray.origin[r] = t.surface.placement.matrix.m[r][3] + t.surface.placement.matrix.m[r][2]; ray.direction[r] = -t.surface.placement.matrix.m[r][2]; }
+    check(spatialPick(ray, tiles) == 3, "picking is unchanged by feedback");
+  }
+}
 inline void selfTestSpatial() {
   auto check = [](bool ok, const char *why) {
     if (!ok)
@@ -942,29 +1101,36 @@ inline void selfTestSpatial() {
   check(reveal.wide == 0, "menu strip slims after grace");
   SpatialState shelfState; shelfState.spatial = true;
   shelfState.apps.push_back({"app", "App", "", true, false});
-  auto shelfTiles = spatialLayout(shelfState, spatialIdentity());
+  auto shelfTiles = spatialLayout(shelfState, spatialIdentity(), "", &metadata);
   auto status = statusStripPlacement(shelfTiles, metadata, .001f);
   const auto &shelf = shelfTiles.front().surface;
-  check(std::abs(shelf.height - (.115f + shelfStatusBand)) < 1e-6 &&
-        std::abs(shelf.placement.matrix.m[1][3] + shelf.height/2 - (-.48f+.115f/2)) < 1e-6,
-        "shelf extension preserves icon row and top edge");
+  check(std::abs(shelf.height - shelfRowHeight) < 1e-6 &&
+        std::abs(shelf.placement.matrix.m[1][3] + shelf.height/2 - (-.48f + .115f/2 + shelfBackTop)) < 1e-6,
+        "one-row shelf keeps the icon row and rises a few millimetres above it");
   check(status.height > 0 && status.placement.width < shelf.placement.width &&
         std::abs(status.placement.matrix.m[0][3] + status.placement.width/2 -
-                 (shelf.placement.width/2-shelfInset)) < 1e-6 &&
-        status.placement.matrix.m[1][3] + status.height/2 < -.48f-.115f/2,
-        "wide status fits inside the lower band and aligns right");
+                 (shelf.placement.width/2-shelfEndMargin)) < 1e-6 &&
+        std::abs(status.placement.matrix.m[1][3] - shelf.placement.matrix.m[1][3]) < 1e-6,
+        "status shares the icon row and aligns right");
   auto smallMetadata = metadata; smallMetadata.rect.w = 60; smallMetadata.rect.h = 30;
-  auto natural = statusStripPlacement(shelfTiles, smallMetadata, .001f);
+  auto smallTiles = spatialLayout(shelfState, spatialIdentity(), "", &smallMetadata);
+  auto natural = statusStripPlacement(smallTiles, smallMetadata, .001f);
   check(std::abs(natural.placement.width-.06f)<1e-6 && std::abs(natural.height-.03f)<1e-6,
-        "short status retains natural scale without widening shelf");
+        "short status retains natural scale");
   auto tallMetadata = smallMetadata; tallMetadata.rect.h = 90;
   auto tallTiles = spatialLayout(shelfState, spatialIdentity(), "", &tallMetadata);
   auto tall = statusStripPlacement(tallTiles, tallMetadata, .001f);
-  check(std::abs(tall.height-.09f)<1e-6 && std::abs(tall.placement.width-.06f)<1e-6 &&
-        std::abs(tallTiles.front().surface.height-(.115f+.09f+2*shelfInset))<1e-6 &&
-        std::abs(tallTiles.front().surface.placement.matrix.m[1][3]+tallTiles.front().surface.height/2-
-                 (-.48f+.115f/2))<1e-6,
-        "tall narrow status keeps natural scale and extends shelf downward");
+  check(tall.height <= shelfStatusMaxHeight + 1e-6f && tall.height < shelf.height &&
+        std::abs(tallTiles.front().surface.height - shelfRowHeight) < 1e-6,
+        "tall status shrinks to fit the row; the shelf does not grow");
+  auto wideMetadata = smallMetadata; wideMetadata.rect.w = 900;
+  auto wideTiles = spatialLayout(shelfState, spatialIdentity(), "", &wideMetadata);
+  check(statusStripPlacement(wideTiles, wideMetadata, .001f).placement.width <= shelfStatusMaxWidth + 1e-6f &&
+        wideTiles.front().surface.placement.width <= 1.4f, "wide status shrinks to its limit");
+  // A shelf laid out without room for the status still holds it, scaled to fit.
+  auto unreserved = spatialLayout(shelfState, spatialIdentity());
+  auto fitted = statusStripPlacement(unreserved, metadata, .001f);
+  check(fitted.height > 0 && fitted.placement.width < unreserved.front().surface.placement.width, "status without reserved room fits inside");
   check(statusStripPlacement({}, metadata, .001f).height == 0, "no detached status without shelf");
   metadata.rect = {40, 62, 200, 120}; metadata.anchorRect = {10,20,600,36};
   auto dropdown = surfacePlacement(wide, metadata, .001f);
@@ -1162,5 +1328,6 @@ inline void selfTestSpatial() {
     check(f.active.empty(), "removed focused panel clears state");
   }
   selfTestSpatialFocus();
+  selfTestDock();
 }
 } // namespace fw

@@ -57,6 +57,34 @@ extension SwitcherPanel {
     }
 }
 
+/// What a shelf click asks of the helper, checked before it reaches AppKit. `id` is the
+/// headset's request id (letters, digits, `.`, `_`, `-`, up to 48), only used to match log
+/// lines across the hops; one that does not fit is dropped, never an error.
+struct DockAction: Equatable {
+    static let verbs = ["open", "hide", "unhide", "quit", "show_windows"]
+    enum Failure: Error, Equatable { case bundleID, verb }
+
+    let bundleID: String
+    let verb: String
+    let id: String?
+
+    static func validRequestID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        return (1...48).contains(bytes.count) && bytes.allSatisfy {
+            ($0 >= 48 && $0 <= 57) || ($0 >= 65 && $0 <= 90) || ($0 >= 97 && $0 <= 122) || $0 == 46 || $0 == 95 || $0 == 45
+        }
+    }
+
+    static func parse(bundleID: String?, verb: String?, id: String?) -> Result<DockAction, Failure> {
+        guard let bundleID, SwitcherPanel.validBundleID(bundleID) else { return .failure(.bundleID) }
+        guard let verb, verbs.contains(verb) else { return .failure(.verb) }
+        return .success(DockAction(bundleID: bundleID, verb: verb, id: id.flatMap { validRequestID($0) ? $0 : nil }))
+    }
+
+    /// The start of every log line for this action, so one click can be followed by id.
+    var label: String { "id=\(id ?? "-") verb=\(verb) bundle=\(bundleID)" }
+}
+
 struct SwitcherSnapshot {
     let open: Bool
     let index: Int

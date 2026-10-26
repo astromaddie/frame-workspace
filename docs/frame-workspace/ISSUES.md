@@ -698,6 +698,11 @@ own display. The helper watches windows open and close (Accessibility) and gives
   procedure are recorded in `SPATIAL.md`. Stage 2 is not yet device-verified.
 - App data, icons and Cmd-Tab are a separate worker's scope. The companion provides UI-state
   and request hooks for that module; this stage does not claim Dock or switcher acceptance.
+- 2026-10-26 after the first headset run (the dock "too tall ... a big gray slab", clicks that did
+  nothing): the shelf is one row with the I1 status items at its right end, icons show a pressed
+  state and hop while an app launches, an app with a panel has it brought in front on click, and a
+  click is logged at every hop by request id (see `SPATIAL.md`, "The shelf: one row, and what a
+  click does"). Passes locally; not yet worn.
 
 ## Risks
 - Stream count: each live window needs Mac encoding and Frame decoding; the shared host saves

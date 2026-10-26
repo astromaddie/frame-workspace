@@ -1,0 +1,122 @@
+{
+ "panels": [
+  {
+   "id": "notes",
+   "role": "window",
+   "placement": {
+    "version": 1,
+    "width": 1.3,
+    "distance": 1.65,
+    "curvature": 0,
+    "bend": {
+     "vertical": false,
+     "a": 0.1,
+     "b": 0.1
+    },
+    "matrix": [
+     1.0,
+     0,
+     0.0,
+     0,
+     0,
+     1,
+     0,
+     0,
+     -0.0,
+     0,
+     1.0,
+     -1.65
+    ]
+   },
+   "texture": "document.png"
+  },
+  {
+   "id": "workbench",
+   "role": "window",
+   "placement": {
+    "version": 1,
+    "width": 1.1,
+    "distance": 2.1523243250030886,
+    "curvature": 0,
+    "bend": {
+     "vertical": true,
+     "a": 0.06,
+     "b": 0.14
+    },
+    "matrix": [
+     0.882947592858927,
+     0,
+     0.4694715627858908,
+     -1.1,
+     0,
+     1,
+     0,
+     0,
+     -0.4694715627858908,
+     0,
+     0.882947592858927,
+     -1.85
+    ]
+   },
+   "texture": "code.png"
+  }
+ ],
+ "apps": [
+  {
+   "id": "notes",
+   "name": "Notes",
+   "icon": "notes-icon.png"
+  },
+  {
+   "id": "workbench",
+   "name": "Workbench",
+   "icon": "workbench-icon.png"
+  },
+  {
+   "id": "metrics",
+   "name": "Metrics",
+   "icon": "metrics-icon.png"
+  },
+  {
+   "id": "files",
+   "name": "Files",
+   "icon": "files-icon.png"
+  },
+  {
+   "id": "mail",
+   "name": "Mail",
+   "icon": "notes-icon.png"
+  }
+ ],
+ "status": {
+  "texture": "status.png",
+  "surface": {
+   "t": "surface",
+   "v": 1,
+   "seq": 1,
+   "visible": true,
+   "rect": [
+    0,
+    0,
+    186,
+    30
+   ],
+   "anchor": "none",
+   "anchorRect": [
+    0,
+    0,
+    186,
+    30
+   ]
+  }
+ },
+ "shelf": {
+  "scale": 1,
+  "magnify": 0,
+  "press": 1,
+  "launch": {
+   "icon": 3,
+   "ms": 310
+  }
+ }
+}

@@ -38,6 +38,7 @@ from pathlib import Path
 from urllib.parse import quote, urlencode  # %20, not +: the agent's URLComponents keeps +
 
 from frame_native_update import HeadsetViewer, ViewerError
+import frame_spatial_apps
 from frame_spatial_apps import SpatialApps
 
 HERE = Path(__file__).resolve().parent
@@ -836,15 +837,31 @@ class MacView:
             self.track(self.agent)
             threading.Thread(target=self._keep_helper_log, args=(self.agent,), daemon=True).start()
 
-    HELPER_LOG = Path.home() / "Library" / "Logs" / "Frame Control" / "mac-helper.log"
+    @staticmethod
+    def helper_log_path():
+        """The helper's log lives beside the app's server.log: ~/Library/Logs/Frame Workspace/
+        in the Workspace app, ~/Library/Logs/Frame Control/ in Frame Control. The app tells
+        the server where its log is (FRAME_CONTROL_LOG); a bare run uses Frame Control's folder."""
+        server_log = os.environ.get("FRAME_CONTROL_LOG")
+        folder = Path(server_log).parent if server_log else Path.home() / "Library" / "Logs" / "Frame Control"
+        return folder / "mac-helper.log"
+
+    HELPER_LOG_LIMIT = 4 << 20
 
     def _keep_helper_log(self, agent):
-        """Keeps the helper's own messages (its errors explain refused streams
-        and failed Spatial steps) in ~/Library/Logs/Frame Control/mac-helper.log,
-        started afresh with each helper and capped at 4 MB."""
+        """Keeps the helper's own messages (its errors explain refused streams, failed
+        Spatial steps and every shelf click it was asked to carry out) in mac-helper.log
+        beside server.log. Each helper adds to the file under a header line, so a restart
+        does not wipe what an earlier one wrote; a file past 4 MB is moved to
+        mac-helper.log.1 first."""
+        path = self.helper_log_path()
         try:
-            self.HELPER_LOG.parent.mkdir(parents=True, exist_ok=True)
-            log = open(self.HELPER_LOG, "w", encoding="utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > self.HELPER_LOG_LIMIT:
+                os.replace(path, path.with_name(path.name + ".1"))
+            log = open(path, "a", encoding="utf-8")
+            log.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} ---- helper pid {agent.pid} started ----\n")
+            log.flush()
         except OSError:
             log = None
         written = 0
@@ -1201,23 +1218,35 @@ class MacView:
                     self.spatial_apps.sync()
                 except Exception as exc:  # retry the spatial state independently of bar availability
                     self.spatial_apps.error = str(exc)
+                    self._log_poll_failure("spatial state sync", exc)
                     failures += 1
                     continue
                 # The script bounds bar restarts; unreachable links retry every 5 s.
                 if failures and tick % 5:
                     continue
                 try:
-                    out = self.run("bash -s -- sync " + _quote(json.dumps(self.dash_state(), separators=(",", ":"),
-                                                                           allow_nan=False)),
+                    out = self.run("bash -s -- sync " + _quote(self.dash_state_text()),
                                    stdin=WORKSPACE_DASH_SCRIPT.read_text(encoding="utf-8"), timeout=8)
                     failures = 0
-                except Exception:  # noqa: BLE001 - asleep or out of reach; try again shortly
+                except Exception as exc:  # noqa: BLE001 - asleep or out of reach; try again shortly
+                    self._log_poll_failure("request poll", exc)
                     failures += 1
                     continue
                 self._handle_frame_requests(out)
 
         self.dash_thread = threading.Thread(target=loop, daemon=True)
         self.dash_thread.start()
+
+    def _log_poll_failure(self, what, exc):
+        """A failed poll of the headset's requests (a click made meanwhile may wait or
+        be lost): in server.log, each distinct failure at most every 30 seconds."""
+        message = f"{what} failed: {str(exc)[:200]}"
+        now = time.monotonic()
+        last = getattr(self, "_poll_logged", (None, 0))
+        if last[0] == message and now - last[1] < 30:
+            return
+        self._poll_logged = (message, now)
+        frame_spatial_apps.log(f"companion {message}")
 
     def _load_last_workspace(self):
         try:
@@ -1272,6 +1301,20 @@ class MacView:
             workspace["notice"] = notice
         return {"connected": True, "workspace": workspace, "windows": windows[:32],
                 "errors": [e["message"] for e in list(self.recent_errors)[-4:]]}
+
+    DASH_STATE_LIMIT = 24000  # bytes; the Frame's sync script refuses more than 32768 characters
+
+    def dash_state_text(self):
+        """dash_state() as the Frame's sync script takes it. One that is too big makes the
+        script refuse the whole call, and with it the poll for headset requests (a shelf
+        click would wait for nothing), so the window list is cut to fit. Titles written
+        out as \\u escapes are six bytes a character, which 32 long Japanese titles fill."""
+        state = self.dash_state()
+        text = json.dumps(state, separators=(",", ":"), allow_nan=False)
+        while len(text) > self.DASH_STATE_LIMIT and state["windows"]:
+            state["windows"] = state["windows"][:-1]
+            text = json.dumps(state, separators=(",", ":"), allow_nan=False)
+        return text
 
     def _install_frame_exit_helper(self):
         """Install the bounded local Stop helper before the dashboard is shown."""
@@ -1331,6 +1374,7 @@ class MacView:
             try:
                 request = json.loads(line)
             except ValueError:
+                frame_spatial_apps.log(f"companion could not read a request line from the headset: {line[:120]!r}")
                 continue
             if not isinstance(request, dict):
                 continue

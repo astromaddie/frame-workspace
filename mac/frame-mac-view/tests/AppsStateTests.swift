@@ -17,7 +17,30 @@ struct AppsStateTests {
         desktopModeAndLeaseExpiryResetState()
         cmdTabPassesThroughWithoutPanels()
         companionChoiceBringsAnExistingPanelForward()
-        print("PASS app switcher validation, MRU ordering, cycling, lease state, pass-through and choices")
+        dockActionsAreCheckedBeforeAppKitAndCarryTheirRequestID()
+        print("PASS app switcher validation, MRU ordering, cycling, lease state, pass-through, choices and dock actions")
+    }
+
+    private static func dockActionsAreCheckedBeforeAppKitAndCarryTheirRequestID() {
+        func parsed(_ bundle: String?, _ verb: String?, _ id: String?) -> DockAction? {
+            if case .success(let action) = DockAction.parse(bundleID: bundle, verb: verb, id: id) { return action }
+            return nil
+        }
+        for verb in DockAction.verbs {
+            expect(parsed("com.apple.Terminal", verb, "d42-7")?.verb == verb, "\(verb) is a dock verb")
+        }
+        let action = parsed("com.apple.Terminal", "open", "d42-7")
+        expect(action == DockAction(bundleID: "com.apple.Terminal", verb: "open", id: "d42-7"), "a click keeps its request id")
+        expect(action?.label == "id=d42-7 verb=open bundle=com.apple.Terminal", "log lines start with the id, verb and app")
+        expect(parsed("com.apple.Terminal", "open", nil)?.label == "id=- verb=open bundle=com.apple.Terminal",
+               "a request without an id still logs")
+        expect(parsed("com.apple.Terminal", "open", "bad id; rm")?.id == nil, "an id that does not fit is dropped, not trusted")
+        expect(parsed("com.apple.Terminal", "open", String(repeating: "a", count: 49))?.id == nil, "ids are at most 48 bytes")
+        expect(parsed("com.apple.Terminal", "open", String(repeating: "a", count: 48))?.id != nil, "48 bytes fit")
+        expect(DockAction.parse(bundleID: nil, verb: "open", id: nil) == .failure(.bundleID), "a bundle ID is required")
+        expect(DockAction.parse(bundleID: "../x", verb: "open", id: nil) == .failure(.bundleID), "path-like bundle IDs are refused")
+        expect(DockAction.parse(bundleID: "com.apple.Terminal", verb: "force_quit", id: nil) == .failure(.verb), "unknown verbs are refused")
+        expect(DockAction.parse(bundleID: "com.apple.Terminal", verb: nil, id: nil) == .failure(.verb), "a verb is required")
     }
 
     private static func tryInvalid(_ json: String) -> Bool {

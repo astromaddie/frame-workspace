@@ -433,7 +433,7 @@ and cross-panel drags; see [SPATIAL.md](../docs/frame-workspace/SPATIAL.md).
 ### Content input (FW-15)
 
 In Spatial Mode the controllers drive the Mac cursor in window pictures, the
-menu bar strip (M1), the status band (I1) and open menus. Point the laser and
+menu bar strip (M1), the shelf's status items (I1) and open menus. Point the laser and
 move it a little: a laser resting on something (a controller put down) never
 takes the pointer. The window under it comes forward and the Mac cursor follows
 the laser. Trigger is the left button (hold it to drag), right B is a right
@@ -743,7 +743,7 @@ The host never creates a Mac app/window inventory or changes the mode itself.
 The companion atomically publishes:
 
 ```json
-{"mode":"spatial","apps":[{"bundleID":"com.apple.Terminal","name":"Terminal","icon":"com.apple.Terminal.png","running":true,"pinned":true,"hidden":false,"active":true,"windows":[{"key":"PANEL_OPENVR_KEY","title":"zsh"}]}],"switcher":{"open":false,"index":0,"seq":0,"chosen":null}}
+{"mode":"spatial","apps":[{"bundleID":"com.apple.Terminal","name":"Terminal","icon":"com.apple.Terminal.png","running":true,"pinned":true,"hidden":false,"active":true,"windows":[{"key":"PANEL_OPENVR_KEY","title":"zsh"}]}],"switcher":{"open":false,"index":0,"seq":0,"chosen":null},"acks":[{"id":"d4242-7","ok":false,"error":"Couldn't Open Terminal: application not found"}]}
 ```
 
 `apps` and each app's `windows` retain companion order. `index` addresses the
@@ -762,7 +762,7 @@ places it there (not saved until it is moved or recentered). The pose lives in
 `$XDG_DATA_HOME/frame-workspace/panels/spatial-shelf-pose.json` (`spatial-shelf-pose.json`
 beside the state file when `--spatial-state` is given), in the window pose format,
 and is checked like one (orthonormal rows, within 10 m) plus handedness. The
-status band and the app menus move with it. A pose that fails is ignored.
+status items and the app menus move with it. A pose that fails is ignored.
 
 Move it the way a window moves: the same Palladium move pill slides out under the
 shelf when a controller laser comes near it, and a trigger (or grip, while the
@@ -791,7 +791,7 @@ the shelf's largest form (full size, icons fully magnified), and the overlay sho
 corner through its texture bounds, so SteamVR sees one texture size while the shelf
 grows, shrinks and magnifies and does not recreate its remote image on every frame.
 The texture is reallocated only when the shelf's content changes (its app count or
-status band). `tests_spatial_render.cpp` checks this with the renderer's allocation counter.
+status picture). `tests_spatial_render.cpp` checks this with the renderer's allocation counter.
 
 Its icons keep the
 companion's order and show running dots. Trigger release opens an app; a
@@ -820,10 +820,23 @@ Unavailable/closed keys are ignored. A non-null `chosen` is consumed once per
 `seq` during a host lifetime, even with `open:false`; local dismissal stays closed
 across unrelated state refreshes until acknowledged or a new sequence arrives.
 
+A click on a shelf icon shows at once: the icon shrinks while the trigger is held. For an
+app with panels, the host brings that app's most recently focused panel in front of the user
+through the switcher's select path (focus commits) and names it in the request as `selected`.
+For an app with none, the icon hops (`dockBounce`: 620 ms hops, up to 55% of the icon's
+height) until the app has more panels than when it was clicked, the companion's `acks` report
+an error for the request, or 20 s pass (12 s after an ok). The press and hop are drawn
+effects (`SpatialTile.visualScale` and `lift`): picking always uses the laid-out geometry.
+`host.json` lists the launching bundles as `dockLaunching`. A panel the companion `chosen`
+that is not ready (no picture, no head pose) is retried each frame for 5 s instead of being
+consumed. Every hop logs a line starting `dock:` to the host's stderr (the journal); see
+`dock.hpp` and [SPATIAL.md](../docs/frame-workspace/SPATIAL.md) for the trace across the
+poller, the companion and the helper.
+
 Requests use the existing atomic mode-0600 file writer:
 
 ```json
-{"action":"app","verb":"open","bundleID":"com.apple.Terminal"}
+{"action":"app","verb":"open","bundleID":"com.apple.Terminal","id":"d4242-7","selected":"PANEL_OPENVR_KEY"}
 {"action":"app","verb":"show_windows","bundleID":"com.apple.Terminal"}
 {"action":"app","verb":"hide","bundleID":"com.apple.Terminal"}
 {"action":"app","verb":"unhide","bundleID":"com.apple.Terminal"}
@@ -945,10 +958,14 @@ The linear 0.12-second slide matches the handles. Covered pixels do not take
 host gaze/laser hits; visible hits map to the inset source picture. Held still
 pictures redraw with the changing crop as well as streamed pictures.
 
-The shelf extends at least 52 mm below the icon row as one piece. Its width still follows
-the icons. Status is right-aligned inside that band, with 6 mm padding, at 1 mm
-per point; it shrinks uniformly when too wide. A taller picture extends the band downward
-to preserve its natural scale.
+The shelf is one row. The Applications button is at its left end, the app icons follow,
+and the status items (clock, Wi-Fi, battery, Control Center) sit at the right end, set
+off from the icons by a 3 px V-groove (the launcher's groove, upright). The backing
+hugs the icons: it rises 4 mm above the icon tiles and stops under their running dots,
+about 103 mm in all at full size, with 11 mm at each end. Magnified icons grow past its
+top edge, as in the macOS Dock. The status picture is 1 mm per point, shrunk to at most
+450 mm wide and 75 mm tall, centred on the row; the row (icons, groove, status) is centred
+on the shelf, which widens to fit it, and it all scales and magnifies with the shelf.
 It has no separate rim. Status-menu placement uses the fitted scale and the item's
 horizontal position, with clearance above the whole shelf. Other menu offsets use
 `rect.minX - anchorRect.minX` and `rect.minY - anchorRect.maxY`, at the anchor's
@@ -1123,9 +1140,11 @@ version-1 pose format or a nonnegative wall `slot`, `texture`, optional metre `h
 An optional menubar `reveal` from 0 to 1 forces a transition frame for diagnostics.
 An optional `shelf` object pins and draws the shelf as the host does: `scale` (1 full
 size, 0.6 at rest), `magnify` (0 to 1), `icon` (the app index under the laser, which
-sets the pointer and lights it) and `handle` (true shows the move pill). Without it the
+sets the pointer and lights it), `handle` (true shows the move pill), `press` (the app
+index held under the trigger) and `launch` (`{"icon": N, "ms": T}`, that icon T ms into
+its launching hop). Without it the
 shelf is the old full-size one. The shelf pictures in `evidence/shelf-*.png` come from
-`native/scene/shelf-{before,rest,magnified,move}.json`, rendered with
+`native/scene/shelf-{before,rest,magnified,move,launch}.json`, rendered with
 `--render-scene native/scene/shelf-rest.json native/evidence/shelf-rest.png --look 0,-24 --fov 62 --size 960x560`.
 `pillLaser` aims the scene ray at that window's pill and reveals its below-edge controls.
 PNG paths are relative to the JSON. Input is premultiplied through Cairo.

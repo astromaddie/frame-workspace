@@ -31,7 +31,8 @@ public:
   void (*rgba)(P, double, double, double, double), (*paint)(P),
       (*move)(P, double, double), (*fontSize)(P, double),
       (*text)(P, const char *), (*source)(P, P, double, double),
-      (*scale)(P, double, double), (*save)(P), (*restore)(P);
+      (*scale)(P, double, double), (*save)(P), (*restore)(P),
+      (*rectangle)(P, double, double, double, double), (*fill)(P);
   SpatialRaster() {
     for (auto n : {"libcairo.so.2", "libcairo.2.dylib",
                    "/opt/homebrew/lib/libcairo.2.dylib"})
@@ -60,16 +61,26 @@ public:
     C(scale, "scale");
     C(save, "save");
     C(restore, "restore");
+    C(rectangle, "rectangle");
+    C(fill, "fill");
 #undef C
   }
   ~SpatialRaster() {
     if (lib)
       dlclose(lib);
   }
+  // `divider` >= 0 cuts the shelf's 3 px V-groove (the launcher's groove, turned
+  // upright) at that column, from row `from` to row `to`.
   GLuint label(const std::string &label, const std::string &icon, int w, int h,
-               bool running) {
+               bool running, int divider = -1, int from = 0, int to = 0) {
     auto s = surface(0, w, h);
     auto c = create(s);
+    if (divider >= 0)
+      for (auto [dx, r, g, b] : {std::array<double, 4>{0, .635, .588, .702}, {1, .796, .769, .839}, {2, 1, 1, 1}}) {
+        rgba(c, r, g, b, 1);
+        rectangle(c, divider - 1 + dx, from, 1, to - from);
+        fill(c);
+      }
     if (!icon.empty()) {
       auto im = png(icon.c_str());
       if (!status(im) && width(im) == 128 && height(im) == 128) {
@@ -136,6 +147,15 @@ class SpatialRenderer {
 
 public:
   static uint32_t sortOrder(SpatialTile::Kind kind) { return spatialSortOrder(kind); }
+  // Where a tile is drawn: its layout, lifted by a launching icon's hop (a little
+  // in front, so it clears its neighbours).
+  static HmdMatrix34_t drawnMatrix(const SpatialTile &t) {
+    if (t.lift == 0) return t.surface.placement.matrix;
+    auto up = spatialIdentity();
+    up.m[1][3] = t.lift;
+    up.m[2][3] = .004f;
+    return multiply(t.surface.placement.matrix, up);
+  }
 
 private:
   std::vector<Layer> layers;
@@ -285,8 +305,13 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
         bool running = t.kind == SpatialTile::Dock && state.apps[t.index].running;
         const bool painted = t.kind == SpatialTile::Apps || t.kind == SpatialTile::Launcher || t.kind == SpatialTile::Dim;
         if (painted && !painter) painter = std::make_unique<LauncherPainter>();
+        // The shelf's groove sits at a column of the picture drawn at its current size.
+        const int divider = shelf && t.dividerX >= 0
+            ? std::clamp(int(std::lround(t.dividerX / std::max(.001f, t.surface.placement.width) * w)), 2, std::max(2, w - 3))
+            : -1;
         auto signature = t.surface.key + t.label + icon + std::to_string(running) + std::to_string(t.kind) +
-                         std::to_string(t.lit) + std::to_string(w) + "x" + std::to_string(h);
+                         std::to_string(t.lit) + std::to_string(w) + "x" + std::to_string(h) +
+                         "d" + std::to_string(divider);
         if (t.kind == SpatialTile::Launcher && t.picture)
           signature += t.picture->signature() + painter->iconStamp(*t.picture, nowMs());
         // Icons and JSON travel separately. Recheck without rerasterizing static
@@ -310,7 +335,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
             if (l.label)
               glDeleteTextures(1, &l.label);
             l.label = raster->label(t.kind == SpatialTile::Dock || t.kind == SpatialTile::Carry ? "" : t.label,
-                                    icon, w, h, running);
+                                    icon, w, h, running, divider, int(h * .22f), int(h * .78f));
           }
           l.signature = signature;
         }
@@ -412,11 +437,11 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           session->overlay->SetOverlayCurvature(l.overlay, curvature);
           l.curvature = curvature;
         }
-        auto m = t.surface.placement.matrix;
+        auto m = drawnMatrix(t);
         session->overlay->SetOverlayTransformAbsolute(
             l.overlay, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
         session->overlay->SetOverlayWidthInMeters(l.overlay,
-                                                  t.surface.placement.width);
+                                                  t.surface.placement.width * t.visualScale);
         if (shelf && (sr.u != l.boundsU || sr.v != l.boundsV)) {
           // Rows run top to bottom from v = 0, as the overlay's default flip
           // above has it: the drawn corner is [0, u] x [0, v].
@@ -475,7 +500,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       auto &t = tiles[i];
       if (!t.shown || i >= drawn.size())
         continue;
-      auto &m = t.surface.placement.matrix;
+      const auto m = drawnMatrix(t);
       float matrix[16] = {m.m[0][0], m.m[1][0], m.m[2][0], 0,
                           m.m[0][1], m.m[1][1], m.m[2][1], 0,
                           m.m[0][2], m.m[1][2], m.m[2][2], 0,
@@ -483,7 +508,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       glPushMatrix();
       glMultMatrixf(matrix);
       glBindTexture(GL_TEXTURE_2D, drawn[i]);
-      float x = t.surface.placement.width / 2, y = t.surface.height / 2;
+      float x = t.surface.placement.width * t.visualScale / 2, y = t.surface.height * t.visualScale / 2;
       const float eu = extent[i].first, ev = extent[i].second;
       glBegin(GL_QUADS);
       glTexCoord2f(0, 0);

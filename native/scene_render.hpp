@@ -299,8 +299,12 @@ public:
       const int icon = int(num(cfg, "icon", -1));
       if (icon >= int(state.apps.size())) throw std::runtime_error("invalid scene shelf icon");
       if (icon >= 0) {
-        const float step = std::min(.105f, 1.35f / std::max(size_t(1), state.apps.size())) * view.scale;
-        view.pointer = (float(icon) - (state.apps.size() - 1) * .5f) * step;
+        // The pointer is on that icon's centre as the resting row lays it out.
+        auto rest = view;
+        rest.magnify = 0;
+        for (const auto &t : spatialLayout(state, anchor, "", &statusMessage, rest))
+          if (t.kind == SpatialTile::Dock && t.index == icon)
+            view.pointer = multiply(inverseRigid(view.pose), t.surface.placement.matrix).m[0][3];
       }
       auto first = spatialLayout(state, anchor, "", &statusMessage, view);
       if (flag(cfg, "handle") && !first.empty()) {
@@ -381,6 +385,23 @@ public:
       }
     }
     auto tiles = spatialLayout(state, anchor, "", &statusMessage, view);
+    if (shelfConfig) {
+      // "press": the app index held under the trigger; "launch": {"icon": N, "ms": T},
+      // that icon T milliseconds into its launching hop.
+      auto cfg = object(shelfConfig);
+      DockFeedback feedback;
+      const int press = int(num(cfg, "press", -1));
+      if (press >= 0 && press < int(state.apps.size())) feedback.pressed = "dock:" + state.apps[press].id;
+      if (auto launch = field(cfg, "launch")) {
+        auto l = object(launch);
+        const int icon = int(num(l, "icon", -1));
+        if (icon < 0 || icon >= int(state.apps.size())) throw std::runtime_error("invalid scene shelf launch");
+        feedback.launch("scene", state.apps[icon].id, 0, 0);
+        dockVisuals(tiles, state, feedback, num(l, "ms", 0));
+      } else {
+        dockVisuals(tiles, state, feedback, 0);
+      }
+    }
     int launcherTile = -1;
     if (launcherView.open) {
       auto picture = std::make_shared<LauncherPicture>(
@@ -399,7 +420,11 @@ public:
       if (!tiles[i].shown) continue;
       float eu = 1, ev = 1;
       shelf.tileExtent(i, eu, ev);
-      add(tiles[i].surface, shelf.tileTexture(i), int(SpatialRenderer::sortOrder(tiles[i].kind)), 0, 0, 0, eu, ev);
+      PanelSurface drawn = tiles[i].surface;  // as the host draws it: pressed smaller, launching lifted
+      drawn.placement.matrix = SpatialRenderer::drawnMatrix(tiles[i]);
+      drawn.placement.width *= tiles[i].visualScale;
+      drawn.height *= tiles[i].visualScale;
+      add(drawn, shelf.tileTexture(i), int(SpatialRenderer::sortOrder(tiles[i].kind)), 0, 0, 0, eu, ev);
     }
     if (shelfHot >= 0 && shelfHot == launcherTile) {
       const auto &surface = tiles[launcherTile].surface;
