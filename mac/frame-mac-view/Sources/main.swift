@@ -1333,6 +1333,16 @@ final class Agent {
             startSpatial(c)
         case ("POST", "/spatial/stop"):
             stopSpatial(c)
+        case ("POST", "/spatial/cover"):
+            // The companion shows the laptop cover once a window panel is in
+            // the headset, and takes it down if that stops being true.
+            guard let show = req.query["show"], show == "1" || show == "0" else {
+                return c.respond(400, text: "show=1|0")
+            }
+            guard spatialMode.setCover(visible: show == "1") else {
+                return c.respond(409, json: ["error": "Spatial Mode is not running"])
+            }
+            c.respond(json: ["cover": show == "1"])
         case ("POST", "/pointer"):
             pointerResponse(req, c)
         case ("POST", "/focus"):

@@ -1549,6 +1549,10 @@ class SpatialMode(unittest.TestCase):
         if path == "/spatial/stop":
             self.running = False
             self.streams.clear()
+        if path == "/spatial/cover":
+            if not self.running:
+                raise frame_macview.MacViewError("The Mac Streaming Helper: Spatial Mode is not running")
+            return {"cover": query["show"] == "1"}
         if path.startswith("/spatial"):
             return {"state": "running" if self.running else "stopped", "removed": self.removed,
                     "windows": [{k: v for k, v in w.items() if k != "src"} for w in self.windows],
@@ -1741,6 +1745,39 @@ class SpatialMode(unittest.TestCase):
             self.mv._spatial_mode_tick()
             self.jobs_once()
         self.assertEqual(self.panel_launches()[-1], "w44")
+
+    def covers(self):
+        return [q["show"] for path, q in self.events if path == "/spatial/cover"]
+
+    def test_laptop_cover_waits_for_the_first_window_panel_and_lifts_without_one(self):
+        self.windows = []
+        self.start()
+        self.assertEqual(self.covers(), [], "auxiliary panels alone never black out the laptop")
+        self.windows = [self.window(42)]
+        self.failed_panels.add("w42")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), [], "a failed window launch keeps the laptop visible")
+        self.failed_panels.clear()
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=106):
+            self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), ["1"])
+        cover_at = next(i for i, e in enumerate(self.events) if e[0] == "/spatial/cover")
+        launched_at = max(i for i, e in enumerate(self.events) if e[0] == "remote" and "'w42'" in e[1])
+        self.assertLess(launched_at, cover_at, "the cover follows the window panel's registration")
+        self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), ["1"], "no repeated requests")
+        self.windows = []
+        self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), ["1", "0"], "the last window panel closing uncovers the laptop")
+
+    def test_failed_spatial_start_never_asks_for_the_cover(self):
+        self.mv.set_mode("spatial")
+        self.fail_start = True
+        with self.assertRaises(frame_macview.MacViewError):
+            self.mv.start_workspace()
+        self.drain()
+        self.assertEqual(self.covers(), [])
 
     def test_mac_page_stop_preempts_startup_between_stages(self):
         self.mv.set_mode("spatial")
@@ -2640,7 +2677,7 @@ class Agent(unittest.TestCase):
         self.assertEqual(self.get("/status")[0], 403)
         self.assertEqual(self.get("/status?k=wrong")[0], 403)
         for path in ("/streams/live?src=", "/pointer?shared=1", "/focus?src=separate:1&u=0&v=0",
-                     "/spatial/start", "/spatial/stop"):
+                     "/spatial/start", "/spatial/stop", "/spatial/cover?show=1"):
             self.assertEqual(self.get(path, method="POST")[0], 403)
         self.assertEqual(self.get("/spatial")[0], 403)
         status, body = self.get(f"/status?k={self.token}")
@@ -2655,6 +2692,10 @@ class Agent(unittest.TestCase):
         self.assertEqual(spatial["state"], "stopped")
         self.assertEqual(spatial["windows"], [])
         self.assertIsInstance(spatial["revision"], int)
+        self.assertIs(spatial["cover"], False)
+        # The laptop cover exists only inside a running Spatial Mode.
+        self.assertEqual(self.get(f"/spatial/cover?show=1&k={self.token}", method="POST")[0], 409)
+        self.assertEqual(self.get(f"/spatial/cover?show=yes&k={self.token}", method="POST")[0], 400)
         self.assertEqual(json.loads(self.get(f"/status?k={self.token}")[1])["spatial"]["state"], "stopped")
         self.assertEqual(json.loads(self.get(f"/displays?k={self.token}")[1])["displays"], before)
 

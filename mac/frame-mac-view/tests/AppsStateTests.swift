@@ -15,8 +15,9 @@ struct AppsStateTests {
         controllerRenewalWithoutEntriesPreservesPanels()
         controllerOpenReleaseAndCloseDoNotChoose()
         desktopModeAndLeaseExpiryResetState()
+        cmdTabPassesThroughWithoutPanels()
         companionChoiceBringsAnExistingPanelForward()
-        print("PASS app switcher validation, MRU ordering, cycling, lease state and choices")
+        print("PASS app switcher validation, MRU ordering, cycling, lease state, pass-through and choices")
     }
 
     private static func tryInvalid(_ json: String) -> Bool {
@@ -193,6 +194,25 @@ struct AppsStateTests {
         state.noteActivation("org.example.beta")
         expect(state.snapshot().chosen == nil,
                "acknowledged choices must not replay after a later app activation")
+    }
+
+    private static func cmdTabPassesThroughWithoutPanels() {
+        let state = SwitcherState()
+        state.seedMRU(["com.example.alpha"])
+        state.enableSpatial(entries: [], at: 1)
+        let before = state.snapshot()
+        expect(!state.cycle(reverse: false), "Cmd-Tab must reach macOS while no window has a panel")
+        expect(!state.cycle(reverse: true), "Shift-Cmd-Tab must reach macOS while no window has a panel")
+        let after = state.snapshot()
+        expect(!after.open && after.seq == before.seq, "an empty strip never opens the switcher")
+
+        let key = "com.frame-workspace.native.1000.panel-w1"
+        state.enableSpatial(entries: [SwitcherPanel(key: key, bundleID: "com.example.alpha")], at: 2)
+        expect(state.cycle(reverse: false), "a panel makes Cmd-Tab cycle the strip")
+        expect(state.snapshot().open, "the strip opens")
+        state.enableSpatial(entries: [], at: 3)
+        expect(!state.cycle(reverse: false), "the last panel closing hands Cmd-Tab back to macOS")
+        expect(!state.snapshot().open, "an open strip with no panels closes")
     }
 
     private static func companionChoiceBringsAnExistingPanelForward() {

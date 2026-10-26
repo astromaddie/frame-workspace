@@ -728,6 +728,7 @@ class MacView:
         # and the Mac page (newest last).
         self.recent_errors = collections.deque(maxlen=8)
         self._stop_requested = 0  # Mac-page Stops waiting for the Workspace lock
+        self._spatial_cover = False  # the helper's laptop cover is showing
         self.spatial_apps = SpatialApps(self)
         self.dash_wake = self.spatial_apps.wake  # one waker for the bar and the spatial state
         self.last_workspace_file = last_workspace_file
@@ -2066,6 +2067,7 @@ print(json.dumps(poses))
             raise MacViewError("Install The Native Window Host On The Frame Before Starting Spatial Mode.") from exc
         self._check_startup()
         self._close_window_panels()
+        self._spatial_cover = False
         self.spatial_workspace = {**request, "state": "starting", "removed": False, "panelsReady": False}
         self._spatial_owned.clear()
         self._spatial_suppressed.clear()
@@ -2134,6 +2136,7 @@ print(json.dumps(poses))
                     self.spatial_workspace.update(state="error", removed=state.get("removed") is True,
                                                   panelCleanupPending=bool(self.native_panels),
                                                   error=state.get("error") or "The Spatial Helper Stopped. Use Stop Before Restarting.")
+                    self._spatial_cover = False
                     self._close_window_panels()
                     self.spatial_workspace["panelCleanupPending"] = False
                     return
@@ -2177,6 +2180,8 @@ print(json.dumps(poses))
                     again = True
                 elif not self._spatial_cancelled(generation):
                     again = self._ensure_spatial_aux_panels()
+                if not self._spatial_cancelled(generation):
+                    self._update_spatial_cover()
                 self.spatial_workspace.update(home=state,
                     panelsReady=not pending and SPATIAL_AUX_ROLES.keys() <= self.native_panels.keys(), windowCount=len(windows),
                     panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows or s in SPATIAL_AUX_ROLES})
@@ -2186,6 +2191,21 @@ print(json.dumps(poses))
                 # Keep launching while there is work, without waiting for the next tick.
                 if again and not self._spatial_cancelled(generation):
                     self._queue_spatial_reconcile()
+
+    def _update_spatial_cover(self):
+        """Black out the laptop only while the headset shows a window panel.
+
+        A window panel is in native_panels only after its launcher saw a
+        submitted picture, so this is the first moment the user can see the
+        Mac in the headset. If every window panel goes, the laptop shows again."""
+        want = any(p.get("role", "window") == "window" for p in self.native_panels.values())
+        if want == self._spatial_cover:
+            return
+        try:
+            self.call("/spatial/cover", method="POST", show="1" if want else "0")
+            self._spatial_cover = want
+        except MacViewError as exc:
+            self._record_error(f"Couldn't {'Cover' if want else 'Uncover'} The Laptop Screen: {exc}", kind="panel")
 
     def _ensure_spatial_aux_panels(self):
         """Launch the next missing auxiliary panel; True if one launched."""
@@ -2229,6 +2249,7 @@ print(json.dumps(poses))
             self._spatial_owned.clear()
             self._spatial_resume_poses.clear()
             self._spatial_retry.clear()
+            self._spatial_cover = False  # the helper took it down with the display
             self.dash_wake.set()
             return {**removal, "mode": "spatial", "workspace": self.workspace_state()}
 
