@@ -276,7 +276,8 @@ public:
       auto m = SurfaceMessage::parse(json_object_to_json_string(msg));
       if (!m.visible) continue;
       PanelSurface s;
-      const float mpp = focusedPixels ? focused.placement.width * 2 / focusedPixels : .001f;
+      const float mpp = windowMetresPerPoint(focused.placement.width, focusedPixels,
+                                             float(num(item, "logicalWidth", 0)));
       if (std::string(name) == "menubar") {
         if (!focusedPixels) throw std::runtime_error("menubar needs a focused window");
         menubar = s = menuStripPlacement(focused, m, mpp, float(num(item, "reveal", m.hot ? 1.f : 0.f)));

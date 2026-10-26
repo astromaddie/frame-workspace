@@ -65,6 +65,15 @@ inline void selfTestContentPick() {
   auto inside = through(left + strip.inset + .1f, top - strip.inset - .01f);
   check(inside && inside.content && std::fabs(inside.u - .1f / .612f) < 2e-3, "menu strip picture maps at point scale");
   check(!through(left + .003f, top - strip.inset - .01f).content, "menu strip rim is not content");
+  // Menu scale from the window's logical width: a 2400-point window capped
+  // from 4800 to 1920 pixels was 2.5x too large with the decoded estimate.
+  check(std::fabs(windowMetresPerPoint(1.2f, 1920, 2400) - .0005f) < 1e-9f &&
+        std::fabs(windowMetresPerPoint(1.2f, 1920) / windowMetresPerPoint(1.2f, 1920, 2400) - 2.5f) < 1e-4f,
+        "menu point scale follows the logical width under a capture cap");
+  check(std::fabs(windowMetresPerPoint(1.2f, 1600, 800, .5f) - .00075f) < 1e-9f,
+        "content showing child windows past the frame scales by the window's share");
+  check(windowMetresPerPoint(1.2f, 1600, NAN) == 1.2f * 2 / 1600 && windowMetresPerPoint(1.2f, 0) == .001f,
+        "without geometry the uncapped estimate remains");
   // Geometry from the helper: padding outside the content rectangle.
   Pipeline::InputGeometry g;
   auto ok = Pipeline::InputGeometry::parse(json(R"({"t":"input-geometry","v":1,"revision":9,"pictureSeq":44,)"

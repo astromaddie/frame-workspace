@@ -1662,7 +1662,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       shelfView.handle = shelfMover.visible();
     }
     tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
-    const float mpp = focused && focused->w > 0 ? focused->overlay.placement.width * 2 / focused->w : .001f;
+    const bool logical = focused && focused->inputGeometryValid && focused->inputGeometry.visible;
+    const float mpp = !focused ? .001f : windowMetresPerPoint(focused->overlay.placement.width, focused->w,
+        logical ? focused->inputGeometry.rect.w : 0, logical ? focused->inputGeometry.content[2] : 1);
     bool openMenu = false;
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Menu && e.panel->surfaceConfigured &&
