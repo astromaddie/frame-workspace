@@ -1,5 +1,6 @@
 #pragma once
 #include "chrome.hpp"
+#include "dock.hpp"
 #include "host.hpp"
 #include "launcher.hpp"
 #include "shelf.hpp"
@@ -10,6 +11,7 @@ inline HmdMatrix34_t spatialIdentity() {
 }
 struct SpatialWindow {
   std::string key, title, app;
+  std::string bundle = "";
 };
 struct SpatialApp {
   std::string id, name, icon;
@@ -24,6 +26,8 @@ struct SpatialState {
   std::string chosen;
   std::vector<SpatialApp> apps;
   std::vector<SpatialWindow> windows;
+  // What the companion says became of recent dock requests, by request id.
+  std::vector<DockAck> acks;
   // Launcher A: present when the companion has a catalogue.
   LauncherState launcher;
   static SpatialState parse(const std::string &raw) {
@@ -58,8 +62,17 @@ struct SpatialState {
                      json_object_put);
             auto key = str(win, "key");
             if (validOverlayKey(key))
-              s.windows.push_back({key, str(win, "title"), app.name});
+              s.windows.push_back({key, str(win, "title"), app.name, app.id});
           }
+      }
+    auto acks = field(j, "acks");
+    if (acks && json_object_is_type(acks, json_type_array))
+      for (size_t i = 0; i < json_object_array_length(acks) && i < 16; ++i) {
+        Json item(json_object_get(json_object_array_get_idx(acks, i)), json_object_put);
+        if (!item || !json_object_is_type(item.get(), json_type_object) || str(item, "id").empty()) continue;
+        auto ok = field(item, "ok");
+        s.acks.push_back({str(item, "id"), str(item, "error"),
+                          !(ok && json_object_is_type(ok, json_type_boolean) && !json_object_get_boolean(ok))});
       }
     auto sw = field(j, "switcher");
     if (sw && json_object_is_type(sw, json_type_object)) {
@@ -123,6 +136,12 @@ struct SpatialNavigation {
       previous[i] = down[i];
   }
 };
+inline int spatialPanelCount(const SpatialState &state, const std::string &bundle) {
+  int count = 0;
+  for (const auto &w : state.windows)
+    if (w.bundle == bundle) ++count;
+  return count;
+}
 inline int spatialAppIndex(const SpatialState &state, const std::string &id) {
   for (size_t i = 0; i < state.apps.size(); ++i)
     if (state.apps[i].id == id)
@@ -251,6 +270,9 @@ struct SpatialTile {
   // per point at full size (0: no room was made for it), dividerX the groove between
   // the icons and it, in metres from the backing's left edge as drawn (-1: none).
   float statusScale = 0, dividerX = -1;
+  // Drawn effects only (picking uses `surface` as laid out): an icon under a held
+  // trigger shrinks, and one that is launching hops, `lift` metres up.
+  float visualScale = 1, lift = 0;
   bool lit = false;                                 // Apps: the launcher is open
   std::shared_ptr<const LauncherPicture> picture;   // Launcher
   std::string icon;                                 // Carry: the icon's file
@@ -449,6 +471,18 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     tiles.push_back(move);
   }
   return tiles;
+}
+// Press and launch feedback on the shelf's icons, from the host's DockFeedback.
+inline void dockVisuals(std::vector<SpatialTile> &tiles, const SpatialState &s, const DockFeedback &feedback,
+                        double now) {
+  for (auto &t : tiles) {
+    if (t.kind != SpatialTile::Dock && t.kind != SpatialTile::Apps) continue;
+    t.visualScale = feedback.pressed == t.surface.key ? dockPressScale : 1.f;
+    if (t.kind == SpatialTile::Dock && t.index >= 0 && t.index < int(s.apps.size())) {
+      const auto &bundle = s.apps[t.index].id;
+      t.lift = feedback.launching(bundle) ? dockBounce(now - feedback.since(bundle)) * dockBounceHeight * t.surface.height : 0.f;
+    }
+  }
 }
 // The launcher's tiles, appended after the shelf's: the dimming backdrop (not
 // pickable), the curved panel, and the icon being carried, which follows the

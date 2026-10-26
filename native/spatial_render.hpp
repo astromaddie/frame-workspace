@@ -147,6 +147,15 @@ class SpatialRenderer {
 
 public:
   static uint32_t sortOrder(SpatialTile::Kind kind) { return spatialSortOrder(kind); }
+  // Where a tile is drawn: its layout, lifted by a launching icon's hop (a little
+  // in front, so it clears its neighbours).
+  static HmdMatrix34_t drawnMatrix(const SpatialTile &t) {
+    if (t.lift == 0) return t.surface.placement.matrix;
+    auto up = spatialIdentity();
+    up.m[1][3] = t.lift;
+    up.m[2][3] = .004f;
+    return multiply(t.surface.placement.matrix, up);
+  }
 
 private:
   std::vector<Layer> layers;
@@ -428,11 +437,11 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           session->overlay->SetOverlayCurvature(l.overlay, curvature);
           l.curvature = curvature;
         }
-        auto m = t.surface.placement.matrix;
+        auto m = drawnMatrix(t);
         session->overlay->SetOverlayTransformAbsolute(
             l.overlay, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
         session->overlay->SetOverlayWidthInMeters(l.overlay,
-                                                  t.surface.placement.width);
+                                                  t.surface.placement.width * t.visualScale);
         if (shelf && (sr.u != l.boundsU || sr.v != l.boundsV)) {
           // Rows run top to bottom from v = 0, as the overlay's default flip
           // above has it: the drawn corner is [0, u] x [0, v].
@@ -491,7 +500,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       auto &t = tiles[i];
       if (!t.shown || i >= drawn.size())
         continue;
-      auto &m = t.surface.placement.matrix;
+      const auto m = drawnMatrix(t);
       float matrix[16] = {m.m[0][0], m.m[1][0], m.m[2][0], 0,
                           m.m[0][1], m.m[1][1], m.m[2][1], 0,
                           m.m[0][2], m.m[1][2], m.m[2][2], 0,
@@ -499,7 +508,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       glPushMatrix();
       glMultMatrixf(matrix);
       glBindTexture(GL_TEXTURE_2D, drawn[i]);
-      float x = t.surface.placement.width / 2, y = t.surface.height / 2;
+      float x = t.surface.placement.width * t.visualScale / 2, y = t.surface.height * t.visualScale / 2;
       const float eu = extent[i].first, ev = extent[i].second;
       glBegin(GL_QUADS);
       glTexCoord2f(0, 0);

@@ -920,8 +920,8 @@ def run_gaze_focus(binary):
                     try: return json.loads((root / name / "state.json").read_text())
                     except (OSError, ValueError): return {}
 
-                def host():
-                    try: return json.loads((root / "host.json").read_text())
+                def host(name="host.json"):
+                    try: return json.loads((root / name).read_text())
                     except (OSError, ValueError): return {}
 
                 def wait(predicate, label, timeout=8):
@@ -1012,10 +1012,136 @@ def run_gaze_focus(binary):
         for stream in streams.values(): stream.finish()
 
 
+def run_dock_click(binary):
+    """A click on a shelf icon through the production host: one request with an id and
+    the expected JSON, the panel of an app that has one brought forward, and a bounce
+    that stops when the panel arrives or an error comes back (--test-hands)."""
+    stream = Stream(encode("red", 320, 180), native=True)
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-dock-click-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests = root / "specs", root / "requests"
+            specs.mkdir(); requests.mkdir()
+            hands_file = root / "hands.json"
+            atomic_json(hands_file, {"hands": []})
+            folder = root / "a"; folder.mkdir()
+            (folder / "url").write_text(f"http://127.0.0.1:{stream.port}/view?src=spatial%3A1&t=local")
+            atomic_json(specs / "a.json", {"version": 1, "generation": "dock", "urlFile": str(folder / "url"),
+                "overlayKey": "test.panel.a", "overlayName": "a", "controlFile": str(folder / "control.json"),
+                "stateFile": str(folder / "state.json"), "poseFile": str(folder / "pose.json"),
+                "requestDir": str(requests), "slot": 0})
+            spatial = {"mode": "spatial", "apps": [
+                {"bundleID": "test.app", "name": "Fixture", "running": True, "windows": [{"key": "test.panel.a", "title": "A"}]},
+                {"bundleID": "test.empty", "name": "Empty", "running": False, "windows": []}],
+                "switcher": {"seq": 1, "open": False}}
+            atomic_json(root / "spatial.json", spatial)
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--no-vr", "--action-manifest", "none",
+                    "--state-file", str(root / "host.json"), "--spatial-state", str(root / "spatial.json"),
+                    "--test-hands", str(hands_file), "--seconds", "60"], stdout=log, stderr=log)
+
+                def host(name="host.json"):
+                    try: return json.loads((root / name).read_text())
+                    except (OSError, ValueError): return {}
+
+                def wait(predicate, label, timeout=8):
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited: " + label
+                        result = predicate()
+                        if result: return result
+                        time.sleep(.03)
+                    raise AssertionError("timed out: " + label)
+
+                def written():
+                    out = []
+                    for path in sorted(requests.glob("spatial-*.json"), key=lambda p: int(p.stem.rsplit("-", 1)[1])):
+                        assert path.stat().st_mode & 0o777 == 0o600
+                        out.append(json.loads(path.read_text()))
+                    return out
+
+                def apps():
+                    return [r for r in written() if r.get("action") == "app"]
+
+                hand = {"valid": True, "origin": [0, 0, 0], "direction": [0, 0, -1], "trigger": False,
+                        "secondary": False, "stick": [0, 0]}
+
+                def write(**change):
+                    hand.update(change)
+                    atomic_json(hands_file, {"hands": [{"valid": False}, dict(hand)]})
+                    time.sleep(.03)
+
+                # Two apps at rest: icons 63 mm apart about the shelf's centre, 1.3 m ahead,
+                # the row at 0.48 m below the head.
+                def icon(index):
+                    return [(index - .5) * .063, -.48, -1.3]
+
+                def log_text():
+                    log.seek(0); return log.read()
+
+                try:
+                    wait(lambda: host().get("state") == "hosting" and host("a/state.json").get("ready"), "panel ready")
+                    wait(lambda: host().get("spatialTiles", 0) >= 3, "shelf and icons laid out")
+                    # Hovering never asks for anything.
+                    write(direction=icon(0)); time.sleep(.7)
+                    assert not written(), written()
+                    # A click on the icon of an app that has a panel: that panel is brought forward and
+                    # the open request names it. One request, with an id.
+                    write(trigger=True); time.sleep(.15); write(trigger=False)
+                    wait(lambda: len(apps()) == 1, "the click writes its request")
+                    request = apps()[0]
+                    assert request["verb"] == "open" and request["bundleID"] == "test.app", request
+                    assert request["id"].startswith("d%d-" % process.pid) and request["selected"] == "test.panel.a", request
+                    assert {"action": "switch", "key": "test.panel.a"} in written(), "select path: focus commits"
+                    assert set(request) == {"action", "verb", "bundleID", "id", "selected"}, request
+                    # An app with no panel: the icon bounces until an error comes back.
+                    write(direction=icon(1)); time.sleep(.5)
+                    write(trigger=True); time.sleep(.15); write(trigger=False)
+                    wait(lambda: len(apps()) == 2, "second click writes its request")
+                    second = apps()[1]
+                    assert second["bundleID"] == "test.empty" and "selected" not in second and second["id"] != request["id"], second
+                    wait(lambda: host().get("dockLaunching") == ["test.empty"], "the icon is launching")
+                    spatial["acks"] = [{"id": second["id"], "ok": False, "error": "Couldn't Open Empty: application not found"}]
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: host().get("dockLaunching") == [], "an error stops the bounce")
+                    assert "dock: ack id=%s ok=0 error=Couldn't Open Empty" % second["id"] in log_text()
+                    # Again: this time its panel appears.
+                    write(trigger=True); time.sleep(.15); write(trigger=False)
+                    wait(lambda: len(apps()) == 3, "third click writes its request")
+                    wait(lambda: host().get("dockLaunching") == ["test.empty"], "launching again")
+                    spatial["acks"] = [{"id": apps()[2]["id"], "ok": True}]
+                    spatial["apps"][1]["windows"] = [{"key": "test.panel.b", "title": "B"}]
+                    spatial["switcher"]["seq"] = 2
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: host().get("dockLaunching") == [], "the app's panel appearing stops the bounce")
+                    # A press that leaves the icon, or is held for the menu, is not a click.
+                    write(trigger=True); time.sleep(.15); write(direction=[0, .6, -1]); time.sleep(.15); write(trigger=False)
+                    write(direction=icon(1)); time.sleep(.3)
+                    write(trigger=True); time.sleep(.8); write(trigger=False)
+                    time.sleep(.4)
+                    assert len(apps()) == 3, apps()
+                    text = log_text()
+                    for line in ("dock: press hand=1 tile=dock:test.empty", "dock: click tile=dock:test.app verb=open bundle=test.app id=" + request["id"],
+                                 "dock: launch ended id=" + second["id"] + " bundle=test.empty by=error",
+                                 "dock: release hand=1 tile=dock:test.empty no click", "dock: hold tile=dock:test.empty"):
+                        assert line in text, (line, text[-3000:])
+                    process.terminate(); assert process.wait(5) == 0
+                    print("dock click integration passed: one request with an id and the expected JSON, the panel of an "
+                          "app that has one is selected, the bounce clears on an error or the panel's arrival, a press "
+                          "that leaves the icon or is held writes nothing, every hop is logged")
+                except Exception:
+                    log.seek(0); print(log.read()[-4000:], file=sys.stderr)
+                    raise
+                finally:
+                    if process.poll() is None: process.terminate(); process.wait(5)
+    finally:
+        stream.finish()
+
+
 if __name__ == "__main__":
     binary = pathlib.Path(sys.argv[1]).resolve()
-    run_idle_auxiliary(binary)
-    run(binary)
-    run_surfaces(binary)
-    run_content_input(binary)
-    run_gaze_focus(binary)
+    tests = {"idle": run_idle_auxiliary, "host": run, "surfaces": run_surfaces, "content": run_content_input,
+             "gaze": run_gaze_focus, "dock": run_dock_click}
+    # One name after the binary runs just that test (while working on it).
+    for name in sys.argv[2:] or tests:
+        tests[name](binary)

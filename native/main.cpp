@@ -12,6 +12,7 @@
 #include "tests_content.hpp"
 #include <array>
 #include <cassert>
+#include <cstdarg>
 #include <csignal>
 #include <iostream>
 #include <utility>
@@ -21,6 +22,16 @@ static void signalHandler(int number) { interrupted = number; }
 static void require(bool ok, const char *message) {
   if (!ok)
     throw std::runtime_error(message);
+}
+// One line in the host's journal for a hop of a dock click (grep "dock:").
+static void dockLog(const char *format, ...) __attribute__((format(printf, 1, 2)));
+static void dockLog(const char *format, ...) {
+  char text[600];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(text, sizeof text, format, args);
+  va_end(args);
+  fprintf(stderr, "[native-host] dock: %s\n", text);
 }
 static float angularGazeDistance(const EyeRay &ray, const HmdMatrix34_t &placement) {
   float directionLength = std::sqrt(ray.direction[0] * ray.direction[0] +
@@ -1391,7 +1402,6 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   std::string menuID;
   SpatialNavigation navigation;
   double lastSpatial = -1000, lastFrame = nowMs();
-  std::set<int64_t> chosenSequences;
   SpatialVisibility visibility;
   std::string lastSpatialRaw, gazeKey;
   double gazeSince = 0;
@@ -1409,10 +1419,22 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   const std::string spatialFolder = std::filesystem::path(spatialPath).parent_path().string();
   auto emit = [&](const std::string &body) {
     static uint64_t serial = 0;
-    atomicWrite(spatialRequests + "/spatial-" + std::to_string(getpid()) + "-" +
-                    std::to_string(++serial) + ".json",
-                body);
+    const std::string path = spatialRequests + "/spatial-" + std::to_string(getpid()) + "-" +
+                             std::to_string(++serial) + ".json";
+    try {
+      atomicWrite(path, body);
+      return true;
+    } catch (const std::exception &error) {
+      std::error_code none;
+      dockLog("request not written: %s dir=%s exists=%d body=%.200s", error.what(), spatialRequests.c_str(),
+              int(std::filesystem::exists(spatialRequests, none)), body.c_str());
+      return false;
+    }
   };
+  DockFeedback dockFeedback;
+  DockChosen dockChosen;
+  DockIds dockIds{static_cast<unsigned long>(getpid()), 0};
+  std::set<std::string> dockAcksSeen;
   auto select = [&](const std::string &key) {
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window && e.spec.key == key && e.panel->overlay.interactive()) {
@@ -1440,6 +1462,11 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   double lastScan = -1000, lastState = -1000, lastFocusAttempt = -1000, start = nowMs();
   uint64_t requests = 0;
   std::string reason = "timer", gazeStatus = "unavailable";
+  auto dockLaunching = [&] {
+    std::string list = "[";
+    for (const auto &l : dockFeedback.launches) list += (list.size() > 1 ? "," : "") + jsonString(l.bundle);
+    return list + "]";
+  };
   auto writeHostState = [&](const char *status) {
     size_t running = 0;
     for (const auto &[path, entry] : entries) if (entry.panel) ++running;
@@ -1455,7 +1482,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         ",\"launcherOpen\":" + (launcherView.open ? std::string("true") : "false") +
         ",\"launcherApps\":" + std::to_string(launcherCatalog.apps.size()) +
         ",\"launcherItems\":" + std::to_string(launcherCatalog.items.size()) +
-        ",\"spatialTiles\":" + std::to_string(tiles.size()) +
+        ",\"spatialTiles\":" + std::to_string(tiles.size()) + ",\"dockLaunching\":" + dockLaunching() +
         ",\"overlayCount\":" + std::to_string(session->overlayCount()) +
         ",\"overlayBudget\":" + std::to_string(session->overlayBudgetLimit()) +
         ",\"hostOverlayCount\":" + std::to_string(session->hostOverlayCount()) +
@@ -1600,14 +1627,41 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             shelfPin.observeSequence(spatial.recenterSeq);
           if (!spatial.spatial)
             menuID.clear();
-          if (spatial.spatial && !spatial.chosen.empty() &&
-              !chosenSequences.count(spatial.seq)) {
-            chosenSequences.insert(spatial.seq);
-            select(spatial.chosen);
-          }
         }
       } catch (...) {
       } // Atomic replacement may be temporarily unavailable.
+    }
+    {
+      // The companion chose a panel (an app opened that already has one, or a
+      // Cmd-Tab release): taken once per sequence, retried for a few seconds if
+      // its picture or the head pose is not there yet.
+      const bool wasFailed = dockChosen.failed && dockChosen.seq == spatial.seq;
+      const std::string chosen = spatial.chosen;
+      switch (dockChosen.step(spatial.spatial, chosen, spatial.seq, now, [&](const std::string &key) { return select(key); })) {
+      case DockChosen::Taken:
+        dockLog("chosen panel taken key=%s seq=%lld", chosen.c_str(), (long long)spatial.seq);
+        for (const auto &w : spatial.windows)
+          if (w.key == chosen) dockFeedback.finish(w.bundle);
+        break;
+      case DockChosen::Waiting:
+        if (!wasFailed) dockLog("chosen panel not ready key=%s seq=%lld, retrying", chosen.c_str(), (long long)spatial.seq);
+        break;
+      case DockChosen::GaveUp:
+        dockLog("chosen panel dropped key=%s seq=%lld: not selectable after %.0f ms", chosen.c_str(), (long long)spatial.seq,
+                dockChosenMaxMs);
+        break;
+      default: break;
+      }
+      // What the companion says became of each request; a launching icon stops
+      // bouncing when its panel appears or an error comes back.
+      for (const auto &ack : spatial.acks)
+        if (dockAcksSeen.insert(ack.id).second)
+          dockLog("ack id=%s ok=%d%s%s", ack.id.c_str(), int(ack.ok), ack.error.empty() ? "" : " error=", ack.error.c_str());
+      for (const auto &ended : dockFeedback.observe(spatial.acks,
+               [&](const std::string &bundle) { return spatialPanelCount(spatial, bundle); }, now))
+        dockLog("launch ended id=%s bundle=%s by=%s%s%s", ended.launch.id.c_str(), ended.launch.bundle.c_str(),
+                ended.why == DockEnd::Panel ? "panel" : ended.why == DockEnd::Error ? "error" : "timeout",
+                ended.error.empty() ? "" : " error=", ended.error.c_str());
     }
     shelfPin.observeResets(session->zeroPoseResets);
     if (spatial.spatial || std::any_of(entries.begin(), entries.end(), [](const auto &entry) {
@@ -1751,6 +1805,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     bool launcherPressed = false;
     auto buildTiles = [&] {
       tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
+      dockVisuals(tiles, spatial, dockFeedback, now);
       if (!launcherView.open) return;
       const auto icons = spatialFolder + "/icons";
       auto picture = std::make_shared<LauncherPicture>(
@@ -1860,8 +1915,25 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     }
     if (launcherHover.kind == LauncherTarget::None && eyeOnIcon) launcherHover = eyeTarget;
     const int pressOwner = press.owner;
+    const std::string pressWas = press.key;
+    const bool pressHeldWas = press.held;
     auto gesture = press.update(handHits, down, now);
     const int gestureHand = press.owner >= 0 ? press.owner : pressOwner;
+    {
+      // The icon under a held trigger shows it at once; the hops are logged
+      // for the dock's own tiles (the launcher's are not).
+      auto dockKey = [](const std::string &key) {
+        return key.compare(0, 5, "dock:") == 0 || key == "apps" || key.compare(0, 5, "menu:") == 0;
+      };
+      dockFeedback.pressed = press.owner >= 0 && !press.held ? press.key : std::string();
+      if (press.owner >= 0 && pressOwner < 0 && dockKey(press.key))
+        dockLog("press hand=%d tile=%s", press.owner, press.key.c_str());
+      if (pressOwner >= 0 && press.owner < 0 && gesture.click.empty() && dockKey(pressWas))
+        dockLog("release hand=%d tile=%s no click (%s)", pressOwner, pressWas.c_str(),
+                pressHeldWas ? "held for the menu" : "the laser left the tile or the hand was lost");
+      if (!gesture.hold.empty() && dockKey(gesture.hold))
+        dockLog("hold tile=%s opens the menu", gesture.hold.c_str());
+    }
     if (launcherView.open) {
       auto starts = [](const std::string &key, const char *prefix, std::string &rest) {
         const size_t n = std::strlen(prefix);
@@ -1964,8 +2036,29 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
                                : t.index == 0              ? "show_windows"
                                : t.index == 1 ? (a.hidden ? "unhide" : "hide")
                                               : "quit";
-            emit("{\"action\":\"app\",\"verb\":" + jsonString(verb) +
-                 ",\"bundleID\":" + jsonString(a.id) + "}");
+            const std::string id = dockIds.next();
+            // An app that already has a panel: bring its most recently used one in
+            // front of the user now, as the switcher does, and commit its focus.
+            std::string selected;
+            if (t.kind == SpatialTile::Dock) {
+              uint64_t newest = 0;
+              for (const auto &w : spatial.windows)
+                if (w.bundle == a.id && (selected.empty() || focusRecency[w.key] > newest)) {
+                  selected = w.key;
+                  newest = focusRecency[w.key];
+                }
+              if (!selected.empty() && !select(selected)) {
+                dockLog("click id=%s: panel %s of %s is not ready; the companion will bring it forward", id.c_str(),
+                        selected.c_str(), a.id.c_str());
+                selected.clear();
+              }
+            }
+            const bool written = emit(dockRequest(verb, a.id, id, selected));
+            dockLog("click tile=%s verb=%s bundle=%s id=%s selected=%s request %s", t.surface.key.c_str(), verb.c_str(),
+                    a.id.c_str(), id.c_str(), selected.empty() ? "-" : selected.c_str(), written ? "written" : "NOT written");
+            // No panel to bring forward: the icon hops until one appears or an error comes back.
+            if (written && t.kind == SpatialTile::Dock && verb == "open" && selected.empty())
+              dockFeedback.launch(id, a.id, now, spatialPanelCount(spatial, a.id));
             menuID.clear();
           }
         }
