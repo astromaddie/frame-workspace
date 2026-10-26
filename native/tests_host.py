@@ -875,6 +875,153 @@ def run_content_input(binary):
         for stream in streams.values(): stream.finish()
 
 
+def png128(rgba):
+    """A plain 128 x 128 RGBA PNG, the size of the companion's app icons."""
+    import zlib
+    def chunk(kind, data):
+        return struct.pack("!I", len(data)) + kind + data + struct.pack("!I", zlib.crc32(kind + data) & 0xffffffff)
+    rows = b"".join(b"\x00" + bytes(rgba) * 128 for _ in range(128))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack("!IIBBBBB", 128, 128, 8, 6, 0, 0, 0)) +
+            chunk(b"IDAT", zlib.compress(rows)) + chunk(b"IEND", b""))
+
+
+def run_layout(binary):
+    """FW-15 layout: placeholders before video, remembered poses with provenance
+    only, wall cells against what is occupied, and Arrange Windows."""
+    late = Stream(encode("green", 320, 200), silent=True)  # connected, no picture until "live"
+    placed, legacy, other = (Stream(encode(c, 320, 200)) for c in ("blue", "red", "purple"))
+    streams = {"w11": late, "w12": placed, "w13": legacy, "w14": other}
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-host-layout-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests, poses = root / "specs", root / "requests", root / "panels"
+            for folder in (specs, requests, poses): folder.mkdir()
+            def spec(name, **extra):
+                folder = root / name; folder.mkdir(exist_ok=True)
+                value = {"version": 1, "role": "window", "generation": "g-" + name,
+                         "overlayKey": "test.panel-" + name, "overlayName": "Window " + name,
+                         "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
+                         "poseFile": str(poses / (name + "-pose.json")), "requestDir": str(requests),
+                         "bundleID": "com.test.app", "points": [800, 500], "session": "s" * 32}
+                if name in streams:
+                    (folder / "url").write_text(f"http://127.0.0.1:{streams[name].port}/view?src=spatial%3A1&t=local")
+                    value["urlFile"] = str(folder / "url")
+                value.update(extra)
+                return value
+            # Saved before this run: a user pose for w12 (at the centre cell, so
+            # newcomers must go around it), a pose without provenance for w13 (a
+            # test run's leftover), and a user pose of another app for w14.
+            identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0]
+            centre = {"version": 1, "width": .64, "distance": 1.75, "curvature": 0,
+                      "matrix": [1, 0, 0, 0, 0, .9799247, -.1993679, .3488938, 0, .1993679, .9799247, -1.714868]}
+            (poses / "w12-pose.json").write_text(json.dumps({**centre, "userSet": True, "bundleID": "com.test.app",
+                                                             "title": "Window w12", "session": "old"}))
+            (poses / "w13-pose.json").write_text(json.dumps({**centre, "matrix": identity[:3] + [-1.7] +
+                                                             identity[4:7] + [3] + identity[8:11] + [.3]}))
+            (poses / "w14-pose.json").write_text(json.dumps({**centre, "userSet": True, "bundleID": "com.other.app",
+                                                             "title": "Window w14"}))
+            (root / "icons").mkdir()
+            (root / "icons" / "com.test.app.png").write_bytes(png128((26, 143, 255, 255)))
+            spatial = {"mode": "spatial", "apps": [{"bundleID": "com.test.app", "name": "Test App",
+                                                    "icon": "com.test.app.png", "running": True, "windows": []}],
+                       "switcher": {"seq": 1, "open": False}}
+            atomic_json(root / "spatial.json", spatial)
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--no-vr",
+                    "--action-manifest", "none", "--state-file", str(root / "host.json"),
+                    "--spatial-state", str(root / "spatial.json"), "--seconds", "60"], stdout=log, stderr=log)
+                def state(name):
+                    try: return json.loads((root / name / "state.json").read_text())
+                    except (OSError, ValueError): return {}
+                def wait(predicate, label):
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited: " + label
+                        result = predicate()
+                        if result: return result
+                        time.sleep(.025)
+                    raise AssertionError("timed out: " + label)
+                def yaw(s):
+                    m = s["placement"]["matrix"]
+                    return math.degrees(math.atan2(m[3], -m[11]))
+                try:
+                    # Restored user pose; every newcomer asks for slot 0.
+                    atomic_json(specs / "w12.json", spec("w12", slot=0))
+                    s12 = wait(lambda: state("w12").get("ready") and state("w12"), "restored panel ready")
+                    assert s12["wallSlot"] == -1 and abs(s12["placement"]["matrix"][11] + 1.714868) < 1e-4, s12
+                    # A late window: the placeholder shows at once, at a free cell
+                    # (not on top of w12), sized for its 800-point Mac window.
+                    atomic_json(specs / "w11.json", spec("w11", slot=0))
+                    s11 = wait(lambda: state("w11").get("placeholder") and state("w11"), "placeholder before video")
+                    assert s11["ready"] is False and s11["textureWidth"] == 0 and late.connections == 1, s11
+                    assert s11["wallSlot"] == 0 and s11["wallCell"] == 1, s11
+                    assert abs(s11["placement"]["width"] - .4) < 1e-4 and abs(yaw(s11) + 25) < .01, s11
+                    assert s11["placeholderOnly"] is False and s11["state"] == "connecting"
+                    late.commands.put("live")
+                    s11 = wait(lambda: state("w11").get("ready") and state("w11"), "live picture replaces placeholder")
+                    assert s11["placeholder"] is False and s11["textureWidth"] == 320 and s11["wallCell"] == 1
+                    # A pose without provenance is ignored and moved aside; one of
+                    # another app is ignored and left alone.
+                    atomic_json(specs / "w13.json", spec("w13", slot=1))
+                    atomic_json(specs / "w14.json", spec("w14", slot=2))
+                    s13 = wait(lambda: state("w13").get("ready") and state("w13"), "legacy-pose panel")
+                    s14 = wait(lambda: state("w14").get("ready") and state("w14"), "other-app-pose panel")
+                    assert s13["wallSlot"] == 1 and s13["wallCell"] == 2, s13
+                    assert s14["wallSlot"] == 2 and s14["wallCell"] == 3, s14
+                    assert not (poses / "w13-pose.json").exists()
+                    aside = list(poses.glob("set-aside-????-??-??/w13-pose.json"))
+                    assert len(aside) == 1 and "userSet" not in json.loads(aside[0].read_text())
+                    assert json.loads((poses / "w14-pose.json").read_text())["bundleID"] == "com.other.app"
+                    assert not (poses / "w11-pose.json").exists(), "a wall position is not remembered"
+                    # Placeholder-only spec (a queued or failed window): no stream,
+                    # a short error, then its live spec takes over.
+                    atomic_json(specs / "w15.json", spec("w15", slot=3, placeholderOnly=True,
+                                                         placeholderError="Couldn't open this window. Retrying…"))
+                    s15 = wait(lambda: state("w15").get("placeholder") and state("w15"), "placeholder-only panel")
+                    assert s15["placeholderOnly"] and s15["placeholderError"].startswith("Couldn't open")
+                    assert s15["registered"] is False and s15["ready"] is False and s15["wallCell"] == 4, s15
+                    streams["w15"] = Stream(encode("yellow", 320, 200))
+                    live15 = spec("w15", slot=3, generation="live-w15")
+                    atomic_json(specs / "w15.json", live15)
+                    s15 = wait(lambda: state("w15").get("ready") and state("w15").get("hostGeneration") == "live-w15"
+                               and state("w15"), "live spec replaces placeholder-only")
+                    assert s15["wallCell"] == 4 and not s15["placeholderOnly"], s15
+                    # Arrange Windows: every window onto the wall in front, saved
+                    # as the user's own, wall slots released.
+                    atomic_json(root / "spatial.json", {**spatial, "arrangeSeq": 1})
+                    names = ("w11", "w12", "w13", "w14", "w15")
+                    wait(lambda: all((poses / (n + "-pose.json")).exists() and
+                                     json.loads((poses / (n + "-pose.json")).read_text()).get("bundleID") ==
+                                     "com.test.app" for n in names), "arranged poses saved")
+                    # State files follow once a second.
+                    arranged = wait(lambda: (lambda all_: all(a.get("wallSlot") == -1 for a in all_.values()) and all_)(
+                        {n: state(n) for n in names}), "arranged panels leave the automatic wall")
+                    yaws = sorted(round(yaw(a)) for a in arranged.values())
+                    assert yaws == [-25, 0, 0, 25, 25] or yaws == [-25, -25, 0, 0, 25], yaws
+                    cells = {(round(yaw(a)), round(a["placement"]["matrix"][7], 2)) for a in arranged.values()}
+                    assert len(cells) == 5, "arranged windows never share a cell"
+                    saved = json.loads((poses / "w12-pose.json").read_text())
+                    assert saved["userSet"] is True and saved["title"] == "Window w12" and saved["session"] == "s" * 32
+                    stamp = (poses / "w12-pose.json").stat().st_mtime_ns
+                    atomic_json(root / "spatial.json", {**spatial, "arrangeSeq": 1,
+                                                        "switcher": {"seq": 2, "open": False}})
+                    time.sleep(.3)
+                    assert (poses / "w12-pose.json").stat().st_mtime_ns == stamp, "the same count never repeats"
+                    releases = [json.loads(r.read_text()) for r in requests.glob("wall-*.json")]
+                    assert {r["key"] for r in releases} >= {"test.panel-w11", "test.panel-w13", "test.panel-w14",
+                                                            "test.panel-w15"}, releases
+                    process.terminate(); assert process.wait(5) == 0
+                    print("layout integration passed: placeholder before video and replaced by it, placeholder-only "
+                          "error spec and its live replacement, wall cells around a restored panel, poses without "
+                          "provenance moved aside, another app's pose ignored, Arrange re-tiles and saves user poses")
+                except Exception:
+                    log.seek(0); print(log.read()[-6000:], file=sys.stderr); raise
+                finally:
+                    if process.poll() is None: process.terminate(); process.wait(5)
+    finally:
+        for stream in streams.values(): stream.finish()
+
+
 def run_gaze_focus(binary):
     """Eyes highlight, an action commits (FW-15): a look lights the border and
     tells the helper; only a long stare, or the Mac itself, moves focus. A
@@ -1014,6 +1161,7 @@ def run_gaze_focus(binary):
 
 if __name__ == "__main__":
     binary = pathlib.Path(sys.argv[1]).resolve()
+    run_layout(binary)
     run_idle_auxiliary(binary)
     run(binary)
     run_surfaces(binary)

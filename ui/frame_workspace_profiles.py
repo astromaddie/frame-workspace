@@ -460,6 +460,14 @@ class SessionKeeper:
     def mode(self):
         return getattr(self.macview, "mode", "desktop")
 
+    @staticmethod
+    def user_pose(rule):
+        """A window's saved pose, only if its user placed it (FW-15). Snapshots
+        written before the provenance marker hold wall and test positions too;
+        those windows go back onto the wall instead."""
+        pose = rule.get("pose")
+        return pose if isinstance(pose, dict) and pose.get("userSet") is True else None
+
     def _workspace_lock(self):
         return getattr(self.macview, "workspace_lock", nullcontext())
 
@@ -555,7 +563,7 @@ class SessionKeeper:
                                for w in windows if isinstance(w, dict)]
                     for result in match_windows(profile, windows, max_rules=self.MAX_WINDOWS):
                         if result["status"] == "matched":
-                            pose = profile["windows"][result["rule"] - 1].get("pose")
+                            pose = self.user_pose(profile["windows"][result["rule"] - 1])
                             if pose is not None:
                                 source = "spatial:" + result["source"].split(":", 1)[1]
                                 self.macview._spatial_resume_poses[source] = pose
@@ -593,7 +601,7 @@ class SessionKeeper:
                     if any(prefix + source.split(":", 1)[1] in self.macview.native_panels
                            for prefix in ("window:", "separate:", "spatial:")):
                         continue
-                    pose = profile["windows"][result["rule"] - 1].get("pose")
+                    pose = self.user_pose(profile["windows"][result["rule"] - 1])
                     try:
                         self.macview.show(result["source"], quality=profile["workspace"]["quality"],
                                           **({"pose": pose} if pose is not None else {}))

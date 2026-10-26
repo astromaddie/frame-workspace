@@ -32,6 +32,8 @@ struct Picture {
   // GPU conversion pictures own compact copies of decoder planes. No pointer
   // into an AVFrame survives av_frame_unref() or a decoder-context reopen.
   std::vector<uint8_t> y, u, v, uv;
+  // A window's placeholder (wall.hpp, FW-15), drawn until its own picture arrives.
+  bool placeholder = false;
 };
 struct PacketTiming {
   uint32_t seq;

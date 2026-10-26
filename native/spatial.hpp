@@ -21,6 +21,8 @@ struct SpatialState {
   int64_t seq = 0;
   // Counts Recenter requests made from the dashboard in Spatial Mode.
   int64_t recenterSeq = 0;
+  // Counts Arrange Windows requests (the bar panel or the Mac page).
+  int64_t arrangeSeq = 0;
   std::string chosen;
   std::vector<SpatialApp> apps;
   std::vector<SpatialWindow> windows;
@@ -35,6 +37,8 @@ struct SpatialState {
     {
       auto r = field(j, "recenterSeq");
       if (r && json_object_is_type(r, json_type_int)) s.recenterSeq = std::max<int64_t>(0, json_object_get_int64(r));
+      auto a = field(j, "arrangeSeq");
+      if (a && json_object_is_type(a, json_type_int)) s.arrangeSeq = std::max<int64_t>(0, json_object_get_int64(a));
     }
     auto a = field(j, "apps");
     if (a && json_object_is_type(a, json_type_array))

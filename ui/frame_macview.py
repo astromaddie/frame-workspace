@@ -164,6 +164,24 @@ def spatial_decode_pixels():
     return int(pixels)
 
 
+def spatial_launch_parallel():
+    """How many Spatial window panels launch at once (FRAME_SPATIAL_LAUNCH_PARALLEL,
+    1-8, default 4). The focused window goes first; the rest show placeholders."""
+    try:
+        value = int(os.environ.get("FRAME_SPATIAL_LAUNCH_PARALLEL", "4"))
+    except ValueError:
+        value = 0
+    if not 1 <= value <= 8:
+        raise MacViewError("FRAME_SPATIAL_LAUNCH_PARALLEL Must Be A Whole Number From 1 To 8.")
+    return value
+
+
+# What a saved window pose records besides the placement itself (FW-15): set
+# by the user, for which window. Only userSet survives into Last Session.
+POSE_PROVENANCE = ("userSet", "bundleID", "title", "session", "savedAt")
+PLACEHOLDER_ERROR = "Couldn't open this window. Retrying…"
+
+
 def wifi_mbps():
     """Bitrate ceiling on the network route, in Mbit/s (0 = none)."""
     try:
@@ -292,9 +310,11 @@ def validate_pose(value):
     """Strict pose-file format; limits and row tolerance follow placement.hpp.
     The bend (each half, side to side or top to bottom) is optional."""
     base = {"version", "width", "distance", "curvature", "matrix"}
-    if not isinstance(value, dict) or set(value) not in (base, base | {"bend"}):
+    if not isinstance(value, dict) or set(value) - {"userSet"} not in (base, base | {"bend"}):
         raise MacViewError("Pose must contain exactly version, width, distance, curvature and matrix, "
                            "with an optional bend.")
+    if "userSet" in value and value["userSet"] is not True:
+        raise MacViewError("A pose's userSet marker can only be true.")
     if type(value["version"]) is not int or value["version"] != 1:
         raise MacViewError("Pose version must be 1.")
 
@@ -327,7 +347,15 @@ def validate_pose(value):
                 type(bend["vertical"]) is not bool):
             raise MacViewError("Pose bend must contain exactly vertical (true or false), a and b.")
         pose["bend"] = {"vertical": bend["vertical"], "a": number(bend["a"], 0, 1), "b": number(bend["b"], 0, 1)}
+    if value.get("userSet") is True:
+        pose["userSet"] = True
     return pose
+
+
+def launcher_pose(pose):
+    """The pose as the Frame launcher takes it: placement only (it records the
+    provenance itself)."""
+    return json.dumps({k: v for k, v in pose.items() if k != "userSet"}, allow_nan=False)
 
 
 def _pose_object(pairs):
@@ -680,6 +708,15 @@ class MacView:
         self._spatial_retry = {}
         self._spatial_resume_poses = {}
         self._spatial_reconcile_queued = False
+        # Parallel window launches (FW-15): sources in flight -> their mode
+        # generation, wall slots reserved before a window has its panel, and
+        # the placeholder list the Frame last confirmed.
+        self._spatial_launching = {}
+        self._spatial_slots = {}
+        self._placeholders_synced = None
+        self._placeholders_on_frame = False
+        self._placeholder_retry_after = 0
+        self._launch_run = self._launch_thread
         self.lock = threading.Lock()
         self.token = secrets.token_urlsafe(24)
         self.agent = None
@@ -1223,7 +1260,7 @@ class MacView:
         if self.mode == "spatial":
             label = "Spatial Mode"
         windows = [{"title": p.get("title") or "Mac Window", "key": p["key"]}
-                   for p in sorted(self.native_panels.values(), key=lambda p: p.get("slot") if p.get("slot") is not None else 1024)
+                   for p in sorted(list(self.native_panels.values()), key=lambda p: p.get("slot") if p.get("slot") is not None else 1024)
                    if p.get("role", "window") == "window"]
         stop_available = (workspace.get("state") != "stopped" or self.exit_pending or
                           bool(self.workspace_panel_key) or bool(self.native_panels) or
@@ -1311,7 +1348,7 @@ class MacView:
                 continue
             if action == "wall_release":
                 with self.workspace_lock:
-                    for panel in self.native_panels.values():
+                    for panel in list(self.native_panels.values()):
                         if panel.get("key") == key and panel.get("generation") == request.get("generation"):
                             panel["slot"] = None
             elif action == "close":
@@ -1473,11 +1510,17 @@ class MacView:
             if key == self.workspace_panel_key:
                 self.stop_workspace()
             return
-        src = next((s for s, p in self.native_panels.items() if p["key"] == key), None)
+        src = next((s for s, p in list(self.native_panels.items()) if p["key"] == key), None)
         if src:
             if self.mode == "spatial":
                 self._spatial_suppressed.add(src)
             self.stop(src)
+        elif self.mode == "spatial":
+            # A placeholder's Close: that window stops opening (and retrying).
+            match = re.fullmatch(r"com\.frame-workspace\.native\.\d+\.panel-w(\d{1,15})", key)
+            if match:
+                self._spatial_suppressed.add("spatial:" + match.group(1))
+                self._queue_spatial_reconcile()
 
     def _usb_reachable(self):
         """Whether the Frame's USB-C address still answers (cheap: no ssh)."""
@@ -1577,7 +1620,8 @@ class MacView:
             with self.viewer_lock:
                 self.launching -= 1
 
-    def _show(self, src, quality, width, height, panel_key=None, public_src=None, pose=None, role="window"):
+    def _show(self, src, quality, width, height, panel_key=None, public_src=None, pose=None, role="window",
+              wall_slot=None, reconciled=False):
         if self.exit_pending:
             raise MacViewError("Workspace Stop is in progress; the Frame viewer was not started.")
         auxiliary = self.mode == "spatial" and SPATIAL_AUX_ROLES.get(src) == role
@@ -1598,7 +1642,13 @@ class MacView:
         if src in self.shown or any(st.get("src") == src for st in state.get("streams", [])):
             # Showing it again replaces the old viewer, connected or not: this
             # revokes its keys so it can't come back alongside the new one.
-            self.stop(src)
+            if reconciled:
+                # The Spatial reconciler's own retry: a leftover capture, not
+                # the user closing the window, so the window is not suppressed.
+                self.call("/close", method="POST", src=src)
+                self.shown.discard(src)
+            else:
+                self.stop(src)
         # Viewers that lost the tunnel keep retrying its old port, even though
         # the agent no longer counts them, so only move when none are out there.
         others = self.shown - {src}
@@ -1631,7 +1681,7 @@ class MacView:
                 diagnostic = workspace_diagnostic_gaze(gaze=True)
                 if diagnostic:
                     flags.append(diagnostic)
-            pose_args = ["--pose", json.dumps(pose, allow_nan=False)] if pose is not None else []
+            pose_args = ["--pose", launcher_pose(pose)] if pose is not None else []
             session_args = ["--session", self.session_id] if self._exit_helper_frame == self.frame else []
             script_args = " ".join(_quote(str(a)) for a in (*session_args, *pose_args,
                                                                "start", url, w, h, tag, *flags))
@@ -1643,7 +1693,7 @@ class MacView:
             self.workspace_panel_key = match.group(1)
         elif self._native_windows() and q["codec"] == "h264" and \
                 (auxiliary or src.startswith(("window:", "separate:", "spatial:"))):
-            out = self._show_native_window(src, url, tag, width, height, pose=pose, role=role)
+            out = self._show_native_window(src, url, tag, width, height, pose=pose, role=role, wall_slot=wall_slot)
         else:
             w, h = fit(width or 1280, height or 720)
             args = " ".join(_quote(str(a)) for a in (appid, url, w, h, tag, *self.browser_flags))
@@ -1731,12 +1781,19 @@ print(json.dumps(poses))
                 if panel in data:
                     if not isinstance(data[panel], str) or len(data[panel]) > 4096:
                         raise MacViewError("Invalid saved panel pose response.")
-                    result[source] = validate_pose(json.loads(data[panel], object_pairs_hook=_pose_object))
+                    pose = json.loads(data[panel], object_pairs_hook=_pose_object)
+                    if panel != "workspace":
+                        # A window's pose counts only once its user placed it
+                        # (FW-15); the rest is where the wall or a test put it.
+                        if not isinstance(pose, dict) or pose.get("userSet") is not True:
+                            continue
+                        pose = {k: v for k, v in pose.items() if k not in POSE_PROVENANCE[1:]}
+                    result[source] = validate_pose(pose)
             return result
         except Exception as exc:
             raise MacViewError(f"Could not capture saved native panel poses: {exc}") from exc
 
-    def _show_native_window(self, src, url, tag, width, height, pose=None, role="window"):
+    def _show_native_window(self, src, url, tag, width, height, pose=None, role="window", wall_slot=None):
         if pose is not None:
             pose = validate_pose(pose)
         if role == "window":
@@ -1752,10 +1809,12 @@ print(json.dumps(poses))
         else:
             raise MacViewError("Invalid Spatial Panel Role.")
         title = re.sub(r"[\r\n\t]", " ", str(info.get("title") or info.get("app") or "Mac Window"))[:64]
-        used = {p["slot"] for s, p in self.native_panels.items()
-                if s != src and p.get("role", "window") == "window" and p.get("slot") is not None}
-        previous = self.native_panels.get(src, {}).get("slot")
-        slot = previous if previous is not None else next(i for i in range(len(used) + 1) if i not in used)
+        if wall_slot is not None:
+            slot = wall_slot  # reserved by the Spatial reconciler
+        else:
+            used = self._used_wall_slots(src)
+            previous = self.native_panels.get(src, {}).get("slot")
+            slot = previous if previous is not None else next(i for i in range(len(used) + 1) if i not in used)
         if self.mode == "spatial" and (role != "window" or pose is not None):
             slot = None
         initial_pose = ""
@@ -1765,13 +1824,22 @@ print(json.dumps(poses))
             initial_pose = beside_workspace_pose(placement["matrix"], placement["width"], placement["distance"],
                                                  logical, info.get("w") or width or 1280, slot)
         w, h = fit(width or info.get("w") or 1280, height or info.get("h") or 720)
-        pose_args = (["--pose", json.dumps(pose, allow_nan=False)] if pose is not None else
+        pose_args = (["--pose", launcher_pose(pose)] if pose is not None else
                      ["--initial-pose", initial_pose] if initial_pose else [])
+        # The window's app and size: its placeholder icon, its size on the wall.
+        identity_args = []
+        if role == "window":
+            bundle = info.get("bundleID")
+            if isinstance(bundle, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,255}", bundle):
+                identity_args += ["--bundle-id", bundle]
+            pw, ph = info.get("w"), info.get("h")
+            if type(pw) is int and type(ph) is int and 1 <= pw <= 100000 and 1 <= ph <= 100000:
+                identity_args += ["--points", f"{pw}x{ph}"]
         host = self.mode == "spatial" or os.environ.get("FRAME_NATIVE_HOST") == "1"
         role_args = ["--role", role] if role != "window" or self.mode == "spatial" else []
         slot_args = ["--slot", slot] if self.mode == "spatial" and slot is not None else []
         session_args = ["--session", self.session_id] if self._exit_helper_frame == self.frame else []
-        args = session_args + ["--panel", panel, "--name", title] + role_args + pose_args + slot_args + \
+        args = session_args + ["--panel", panel, "--name", title] + role_args + identity_args + pose_args + slot_args + \
                ["start", url, w, h, tag, native_window_decoder(), workspace_conversion()]
         remote_env = "FRAME_NATIVE_HOST=1 " if host else ""
         out = self.run(remote_env + "bash -s -- " + " ".join(_quote(str(a)) for a in args),
@@ -1783,6 +1851,13 @@ print(json.dumps(poses))
                                    "title": title, "host": host, "generation": tag,
                                    "bundleID": info.get("bundleID"), "role": role}
         return out
+
+    def _used_wall_slots(self, src=None):
+        """Wall slots held by other window panels and by Spatial windows still
+        waiting for (or launching) their panel."""
+        used = {p["slot"] for s, p in list(self.native_panels.items())
+                if s != src and p.get("role", "window") == "window" and p.get("slot") is not None}
+        return used | {slot for s, slot in list(self._spatial_slots.items()) if s != src and slot is not None}
 
     def _stop_native_panels(self, src=None):
         """Stop each native panel owner and remove its runtime files. Saved poses stay."""
@@ -2018,6 +2093,7 @@ print(json.dumps(poses))
                     errors.append(str(exc))
             self.shown.discard(source)
         self._stop_native_panels()
+        self._clear_spatial_placeholders()
         if self.native_panels:
             raise MacViewError("Window Panel Shutdown Is Unconfirmed. Retry Stop Before Switching Modes.")
         if errors:
@@ -2100,6 +2176,8 @@ print(json.dumps(poses))
         self._spatial_suppressed.clear()
         self._spatial_retry.clear()
         self._spatial_resume_poses.clear()
+        self._spatial_slots.clear()
+        spatial_launch_parallel()
         try:
             self._check_startup()
             home = self.call("/spatial/start", method="POST")
@@ -2149,10 +2227,11 @@ print(json.dumps(poses))
             raise MacViewError("Workspace Stop cancelled Spatial Mode startup.")
 
     def _reconcile_spatial_windows(self, generation):
-        # One new panel per job keeps Stop/mode requests responsive between
-        # launches. AX notifications update the helper's confirmed window list.
-        # Windows go first: Menu Bar, Status and the menu slots launch only
-        # when no window is waiting, so an idle or failing one never delays them.
+        # Window panels launch in parallel, a few at a time (focused first);
+        # every window still waiting shows a placeholder at its wall slot.
+        # AX notifications update the helper's confirmed window list. Menu
+        # Bar, Status and the menu slots launch only when no window is waiting
+        # or launching, so an idle or failing one never delays them.
         again = False
         with self.workspace_lock:
             try:
@@ -2179,38 +2258,42 @@ print(json.dumps(poses))
                     self._spatial_owned.discard(source)
                     self._spatial_retry.pop(source, None)
                     self._spatial_resume_poses.pop(source, None)
+                for source in list(self._spatial_slots):
+                    if source not in windows or source in self._spatial_suppressed:
+                        self._spatial_slots.pop(source, None)
+                        self._spatial_retry.pop(source, None)
                 # The helper supplies front-to-back order; focused window gets first refusal.
-                available = windows.keys() - self.native_panels.keys() - self._spatial_suppressed
+                available = (windows.keys() - set(list(self.native_panels)) - self._spatial_suppressed -
+                             self._spatial_launching.keys())
                 pending = [s for s in windows if s in available]
                 focused = state.get("focusedSrc")
                 if focused in pending:
                     pending.remove(focused)
                     pending.insert(0, focused)
+                # Each waiting window keeps one wall slot from first sight, so
+                # its placeholder and its panel open in the same place.
+                for source in pending:
+                    if source not in self._spatial_slots:
+                        used = self._used_wall_slots(source)
+                        self._spatial_slots[source] = next(i for i in range(len(used) + 1) if i not in used)
                 now = time.monotonic()
-                candidate = next((s for s in pending if self._spatial_retry.get(s, {}).get("after", 0) <= now), None)
-                if candidate:
-                    info = windows[candidate]
+                inflight = sum(1 for g in self._spatial_launching.values() if g == generation)
+                room = max(0, spatial_launch_parallel() - inflight)
+                for candidate in [s for s in pending if self._spatial_retry.get(s, {}).get("after", 0) <= now][:room]:
                     pose = self._spatial_resume_poses.get(candidate)
-                    try:
-                        self.show(candidate, quality=self.spatial_workspace["quality"],
-                                  width=info.get("w"), height=info.get("h"),
-                                  **({"pose": pose} if pose is not None else {}))
-                        self._spatial_owned.add(candidate)
-                        self._spatial_retry.pop(candidate, None)
-                        self._spatial_resume_poses.pop(candidate, None)
-                        pending.remove(candidate)
-                    except Exception as exc:
-                        self.call("/close", method="POST", src=candidate)
-                        self._stop_native_panels(candidate)
-                        self._spatial_retry[candidate] = {"after": now + 5, "error": str(exc)}
-                        self._record_error(f"Couldn't Show {info.get('app') or 'A Window'}: {exc}", kind="panel")
-                    again = True
-                elif not self._spatial_cancelled(generation):
+                    slot = None if pose is not None else self._spatial_slots.get(candidate)
+                    self._spatial_launching[candidate] = generation
+                    pending.remove(candidate)
+                    self._launch_run(self._launch_spatial_window, candidate, windows[candidate], pose, slot, generation)
+                launching = any(g == generation for g in self._spatial_launching.values())
+                if not pending and not launching and not self._spatial_cancelled(generation):
                     again = self._ensure_spatial_aux_panels()
                 if not self._spatial_cancelled(generation):
+                    self._sync_spatial_placeholders(windows)
                     self._update_spatial_cover()
                 self.spatial_workspace.update(home=state,
-                    panelsReady=not pending and SPATIAL_AUX_ROLES.keys() <= self.native_panels.keys(), windowCount=len(windows),
+                    panelsReady=not pending and not launching and SPATIAL_AUX_ROLES.keys() <= set(list(self.native_panels)),
+                    windowCount=len(windows),
                     panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows or s in SPATIAL_AUX_ROLES})
                 self.dash_wake.set()
             finally:
@@ -2219,13 +2302,127 @@ print(json.dumps(poses))
                 if again and not self._spatial_cancelled(generation):
                     self._queue_spatial_reconcile()
 
+    @staticmethod
+    def _launch_thread(fn, *args):
+        threading.Thread(target=fn, args=args, daemon=True).start()
+
+    def _launch_spatial_window(self, src, info, pose, slot, generation):
+        """One window's panel, on its own thread (the reconciler bounds how
+        many run at once). Its outcome is recorded under the Workspace lock."""
+        error = None
+        try:
+            if self._spatial_cancelled(generation) or self.closing or self.exit_pending:
+                raise MacViewError("Spatial Mode Stopped Before This Window Opened.")
+            with self.viewer_lock:
+                self.launching += 1
+            try:
+                self._show(src, self.spatial_workspace.get("quality", "balanced"), info.get("w"), info.get("h"),
+                           pose=validate_pose(pose) if pose is not None else None, wall_slot=slot, reconciled=True)
+            finally:
+                with self.viewer_lock:
+                    self.launching -= 1
+        except Exception as exc:  # noqa: BLE001 - shown on the placeholder, the bar and the Mac page
+            error = exc
+        with self.workspace_lock:
+            if self._spatial_launching.get(src) == generation:
+                self._spatial_launching.pop(src, None)
+            cancelled = self._spatial_cancelled(generation) or src in self._spatial_suppressed
+            if error is None and src in self.native_panels:
+                if cancelled:
+                    # Stop, a mode change or a Close came while it launched.
+                    try:
+                        self.call("/close", method="POST", src=src)
+                    except MacViewError:
+                        pass
+                    self._stop_native_panels(src)
+                    self.shown.discard(src)
+                else:
+                    self._spatial_owned.add(src)
+                    self._spatial_retry.pop(src, None)
+                    self._spatial_resume_poses.pop(src, None)
+                    self._spatial_slots.pop(src, None)
+            elif error is not None and not cancelled:
+                if src not in self.native_panels:
+                    try:
+                        self.call("/close", method="POST", src=src)
+                    except MacViewError:
+                        pass
+                self._spatial_retry[src] = {"after": time.monotonic() + 5, "error": str(error)}
+                self._record_error(f"Couldn't Show {info.get('app') or 'A Window'}: {error}", kind="panel")
+            self.dash_wake.set()
+        if not cancelled:
+            self._queue_spatial_reconcile()
+
+    def _placeholder_items(self, windows):
+        items = []
+        for source, info in windows.items():
+            if source in self.native_panels or source in self._spatial_suppressed:
+                continue
+            digits = source.split(":", 1)[1]
+            item = {"panel": "w" + digits,
+                    "name": re.sub(r"[\x00-\x1f\x7f]", " ", str(info.get("title") or info.get("app") or "Mac Window"))[:64]}
+            bundle = info.get("bundleID")
+            if isinstance(bundle, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,255}", bundle):
+                item["bundleID"] = bundle
+            pw, ph = info.get("w"), info.get("h")
+            if type(pw) is int and type(ph) is int and 1 <= pw <= 100000 and 1 <= ph <= 100000:
+                item["points"] = [pw, ph]
+            pose = self._spatial_resume_poses.get(source)
+            if pose is not None:
+                item["pose"] = json.loads(launcher_pose(pose))
+            elif self._spatial_slots.get(source) is not None:
+                item["slot"] = self._spatial_slots[source]
+            if source in self._spatial_retry:
+                item["error"] = PLACEHOLDER_ERROR
+            items.append(item)
+        return items[:128]
+
+    def _sync_spatial_placeholders(self, windows):
+        """Placeholder-only panels on the Frame for every window still without
+        its own panel: queued, launching (its own spec replaces it) or
+        retrying after a failure, with a short error. One call per change."""
+        items = self._placeholder_items(windows)
+        body = json.dumps({"panels": items, "session": self.session_id}, separators=(",", ":"), sort_keys=True)
+        if body == self._placeholders_synced or (not items and not self._placeholders_on_frame):
+            return
+        if time.monotonic() < self._placeholder_retry_after:
+            return
+        try:
+            self.run("FRAME_NATIVE_HOST=1 bash -s -- placeholders " + _quote(body),
+                     stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=20)
+        except Exception:  # noqa: BLE001 - the windows still open; placeholders retry shortly
+            self._placeholder_retry_after = time.monotonic() + 5
+            return
+        self._placeholders_synced = body
+        self._placeholders_on_frame = bool(items)
+
+    def _clear_spatial_placeholders(self):
+        if not self._placeholders_on_frame:
+            return
+        self._placeholders_synced = None
+        try:
+            self.run("FRAME_NATIVE_HOST=1 bash -s -- placeholders " + _quote(json.dumps({"panels": []})),
+                     stdin=WORKSPACE_NATIVE_SCRIPT.read_text(encoding="utf-8"), timeout=20)
+            self._placeholders_on_frame = False
+        except Exception:  # noqa: BLE001 - Stop on the Frame removes them with every other spec
+            pass
+
+    def arrange_windows(self):
+        """Arrange Windows (the Mac page; the bar's request comes through the
+        Spatial app state): every window panel back onto the wall in front of
+        the wearer, kept there as their own layout."""
+        if self.mode != "spatial" or self.spatial_workspace.get("state") != "running":
+            raise MacViewError("Arrange Windows Needs Spatial Mode Running.")
+        self.spatial_apps.arrange()
+        return {"arranged": True, "workspace": self.workspace_state()}
+
     def _update_spatial_cover(self):
         """Black out the laptop only while the headset shows a window panel.
 
         A window panel is in native_panels only after its launcher saw a
         submitted picture, so this is the first moment the user can see the
         Mac in the headset. If every window panel goes, the laptop shows again."""
-        want = any(p.get("role", "window") == "window" for p in self.native_panels.values())
+        want = any(p.get("role", "window") == "window" for p in list(self.native_panels.values()))
         if want == self._spatial_cover:
             return
         try:
@@ -2276,6 +2473,7 @@ print(json.dumps(poses))
             self._spatial_owned.clear()
             self._spatial_resume_poses.clear()
             self._spatial_retry.clear()
+            self._spatial_slots.clear()
             self._spatial_cover = False  # the helper took it down with the display
             self.dash_wake.set()
             return {**removal, "mode": "spatial", "workspace": self.workspace_state()}

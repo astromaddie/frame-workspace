@@ -239,6 +239,8 @@ class Overlay {
   HandleReveal handleReveal[handleCount];
 public:
   bool closeRequested = false; // the Close button was selected in the headset
+  int textureWidth() const { return width; }
+  int textureHeight() const { return height; }
 private:
   bool noVR = false;
   std::unique_ptr<GazeBridge> gazeBridge;

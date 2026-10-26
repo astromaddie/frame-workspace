@@ -1272,6 +1272,8 @@
             <option value="2">2× · HiDPI</option>
           </select></label>
           <button class="small action" id="mvWorkspaceStart" data-mv="workspace-start">Start Workspace</button>
+          <button class="small" id="mvArrange" data-mv="arrange-windows" hidden
+                  title="Every window panel back on the wall in front of you">Arrange Windows</button>
 
         </div>
         <div class="mv-placement-row" id="mvPlacementRow">
@@ -4401,6 +4403,8 @@ function renderMvWorkspace(s) {
     $(id).disabled = mvWorkspaceBusy || mvPlacementBusy || pending;
   }
   mvWorkspaceActivePreset = running && !spatial ? ws.preset : null;
+  $("mvArrange").hidden = !(spatial && running);
+  $("mvArrange").disabled = mvWorkspaceBusy || mvPlacementBusy || pending;
   if (spatial) {
     start.disabled = mvWorkspaceBusy || mvPlacementBusy || pending || running || !s.screen || !s.accessibility;
     start.textContent = mvWorkspaceBusy ? "Working…" : running ? "Running" : "Start Workspace";
@@ -4585,6 +4589,12 @@ $("macview").onclick = async e => {
       mvViewerBusy = false;
       await loadMacView();
     }
+  } else if (b.dataset.mv === "arrange-windows") {
+    if (mvWorkspaceBusy || mvPlacementBusy || b.disabled) return;
+    await act("Arrange Windows", async () => {
+      const result = await api("/api/macview", {action: "arrange_windows"});
+      return {...result, message: "Your windows are on the wall in front of you."};
+    }, b);
   } else if (b.dataset.mv === "workspace-stop") {
     if (mvWorkspaceBusy || mvPlacementBusy) return;
     mvWorkspaceBusy = true;

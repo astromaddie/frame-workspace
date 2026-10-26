@@ -48,6 +48,9 @@ class SpatialApps:
         # Counts dashboard Recenter requests made in Spatial Mode; the headset
         # brings the shelf back in front of the user when it grows.
         self.recenter_seq = 0
+        # Counts Arrange Windows requests (the bar panel and the Mac page); the
+        # headset re-tiles every window panel in front of the user when it grows.
+        self.arrange_seq = 0
         # Launcher A: the catalogue (helper's apps and starting layout, with the
         # user's saved arrangement), the open/close sequence, the search field
         # fed by the Mac keyboard lease, and the launcher icons the Frame lacks.
@@ -178,6 +181,8 @@ class SpatialApps:
         with self.lock:
             if self.recenter_seq:
                 state["recenterSeq"] = self.recenter_seq
+            if self.arrange_seq:
+                state["arrangeSeq"] = self.arrange_seq
             if self.catalog is not None:
                 state["launcher"] = self._launcher_locked()
         self._set_state(state)
@@ -486,8 +491,21 @@ class SpatialApps:
         if state is not None:
             self._set_state(state)
 
+    def arrange(self):
+        """Arrange Windows in Spatial Mode: publish a newer counter."""
+        with self.lock:
+            self.arrange_seq += 1
+            state = {**self.state, "arrangeSeq": self.arrange_seq} if self.state else None
+        if state is not None:
+            self._set_state(state)
+
     def handle_request(self, request):
         action = request.get("action")
+        if action == "arrange_windows":
+            # Only Spatial Mode has a wall; elsewhere the request does nothing.
+            if self.enabled:
+                self.arrange()
+            return True
         if action == "recenter":
             # Desktop Mode keeps its Workspace recenter (the caller's own path).
             if not self.enabled:

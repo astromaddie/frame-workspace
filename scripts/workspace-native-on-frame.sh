@@ -12,10 +12,15 @@ pose_file="${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/workspace-pose.j
 # runtime files, OpenVR key and saved pose); without it this is the Workspace.
 # `--name` is the panel title SteamVR shows; `--initial-pose JSON` places a new
 # panel (for example beside the Workspace) until it has a saved pose. `--pose`
-# replaces the saved pose for the next start, after the previous viewer stops.
+# replaces the saved pose for the next start, after the previous viewer stops;
+# a window panel's is stamped as set by the user, for this window (FW-15).
+# `--bundle-id ID` and `--points WxH` name the Mac window's app and its size in
+# points: the host draws the app icon on its placeholder and sizes the panel.
+# `placeholders JSON` (shared host only) keeps placeholder-only panels for
+# windows still waiting to launch or retrying after a failure.
 role="window"
 wall_slot="" wall_slot_set=0
-panel="" panel_name="" initial_pose="" pose_override="" expected_generation="" session=""
+panel="" panel_name="" initial_pose="" pose_override="" expected_generation="" session="" bundle_id="" points=""
 initial_pose_set=0 pose_override_set=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -27,6 +32,8 @@ while [ "$#" -gt 0 ]; do
     --session) [ "$#" -ge 2 ] || exit 2; session=$2; shift 2 ;;
     --initial-pose) [ "$#" -ge 2 ] || exit 2; initial_pose=$2; initial_pose_set=1; shift 2 ;;
     --pose) [ "$#" -ge 2 ] || exit 2; pose_override=$2; pose_override_set=1; shift 2 ;;
+    --bundle-id) [ "$#" -ge 2 ] || exit 2; bundle_id=$2; shift 2 ;;
+    --points) [ "$#" -ge 2 ] || exit 2; points=$2; shift 2 ;;
     *) break ;;
   esac
 done
@@ -47,6 +54,19 @@ if [ "$wall_slot_set" -eq 1 ]; then
     [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ "${1:-}" = start ] || {
       echo '--slot requires a shared host window start and a slot from 0 to 1023.' >&2; exit 2; }
 fi
+case "$bundle_id" in
+  "") ;;
+  *[!A-Za-z0-9._-]*) echo '--bundle-id must be a bundle identifier.' >&2; exit 2 ;;
+esac
+[ "${#bundle_id}" -le 255 ] || { echo '--bundle-id must be a bundle identifier.' >&2; exit 2; }
+case "$points" in
+  "") ;;
+  *[!0-9x]*|x*|*x|*x*x*) echo '--points must be WIDTHxHEIGHT in points.' >&2; exit 2 ;;
+  *x*) [ "${#points}" -le 13 ] && [ "$((10#${points%x*}))" -ge 1 ] && [ "$((10#${points%x*}))" -le 100000 ] &&
+         [ "$((10#${points#*x}))" -ge 1 ] && [ "$((10#${points#*x}))" -le 100000 ] ||
+         { echo '--points must be WIDTHxHEIGHT in points.' >&2; exit 2; } ;;
+  *) echo '--points must be WIDTHxHEIGHT in points.' >&2; exit 2 ;;
+esac
 case "$role" in
   window|menubar|status|menu) ;;
   *) echo '--role must be window, menubar, status or menu.' >&2; exit 2 ;;
@@ -57,6 +77,7 @@ if [ "$role" != window ]; then
     *) echo 'Auxiliary roles require their reserved panel ID.' >&2; exit 2 ;; esac
   [ "$pose_override_set" -eq 0 ] && [ "$initial_pose_set" -eq 0 ] || {
     echo 'Auxiliary panels have no saved or initial pose.' >&2; exit 2; }
+  [ -z "$bundle_id" ] && [ -z "$points" ] || { echo 'Auxiliary panels have no window identity.' >&2; exit 2; }
 fi
 if [ "$pose_override_set" -eq 1 ]; then
   [ "${1:-}" = start ] || { echo '--pose is only valid with start.' >&2; exit 2; }
@@ -194,6 +215,12 @@ def atomic_write(path, content):
             pass
         raise
 
+def stamp_pose(raw, bundle_id, title, session):
+    """A --pose restore is the user's own placement: record that, and whose."""
+    pose = json.loads(raw)
+    pose.update(userSet=True, bundleID=bundle_id, title=title, session=session, savedAt=int(time.time()))
+    return json.dumps(pose, separators=(',', ':'), allow_nan=False)
+
 def read_json(path):
     try:
         with open(path, encoding='utf-8') as source:
@@ -266,6 +293,14 @@ def remove_generation(generation):
             raise RuntimeError('The requested native panel generation has changed; leaving it running.')
         generation = actual
         spec_path.unlink(missing_ok=True)
+        if current.get('placeholderOnly') is True:
+            # A placeholder has no stream and no URL witness: wait only if the
+            # host created it, and leave its folder if it may be creating it.
+            state = read_json(state_path)
+            if state and state.get('hostGeneration') == generation:
+                wait_stopped(generation)
+                shutil.rmtree(panel_runtime, ignore_errors=True)
+            return
     elif spec_path.exists():
         raise RuntimeError('Could not read the native panel spec; leaving its runtime files in place.')
     elif generation is None:
@@ -371,9 +406,10 @@ def ensure_host(binary, runtime_dir, session=None, exit_helper=None):
         time.sleep(0.1)
     raise RuntimeError('The native host did not become active.')
 
-def start_panel():
+def start_panel(lock):
     (url, width, height, generation, decoder, conversion, title, initial_pose,
-     pose_override, foveation, diagnostic_gaze, binary, runtime_dir, wall_slot, session) = start_args
+     pose_override, foveation, diagnostic_gaze, binary, runtime_dir, wall_slot, session,
+     bundle_id, points) = start_args
     exit_helper = None
     if session:
         import importlib.util
@@ -387,13 +423,18 @@ def start_panel():
     old = current_spec()
     if old is None and spec_path.exists():
         raise RuntimeError('Could not read the existing native panel spec; leaving it in place.')
-    old_generation = old.get('generation') if old else None
-    old_url = old.get('urlFile') if old else None
+    # The window's placeholder (FW-15) is replaced in one step: the host swaps
+    # a spec for its next generation at the same path.
+    placeholder = old is not None and old.get('placeholderOnly') is True
+    old_generation = old.get('generation') if old and not placeholder else None
+    old_url = old.get('urlFile') if old and not placeholder else None
     # A host flag can change between launches. Retire any prior standalone
     # owner for this key before the shared host can claim it.
     stop_legacy_panel()
     if old_generation:
         remove_generation(old_generation)
+    elif placeholder:
+        pass
     elif state_path.exists():
         previous_state = read_json(state_path)
         if previous_state is None:
@@ -418,7 +459,8 @@ def start_panel():
     if pose_override:
         # Pose is shared by this panel across generations; both old owner
         # kinds have been confirmed stopped before replacing it.
-        atomic_write(pose_path, pose_override)
+        atomic_write(pose_path, stamp_pose(pose_override, bundle_id, title, session) if role == 'window'
+                     else pose_override)
     ensure_host(binary, runtime_dir, session=session, exit_helper=exit_helper)
     panel_runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(panel_runtime, 0o700)
@@ -446,6 +488,10 @@ def start_panel():
         spec['session'] = session
     if wall_slot:
         spec['slot'] = int(wall_slot)
+    if bundle_id:
+        spec['bundleID'] = bundle_id
+    if points:
+        spec['points'] = [int(v) for v in points.split('x')]
     if role == 'window' and foveation in ('1', 'gaze'):
         spec['foveation'] = foveation == '1'
         spec['gaze'] = foveation == 'gaze'
@@ -475,11 +521,21 @@ def start_panel():
         timeout = min(max(float(os.environ.get('FRAME_NATIVE_READY_SECONDS', '40')), 0.5), 120)
     except ValueError:
         timeout = 40
+    # The spec is written: other panels may start while this one waits for its
+    # first picture (the companion launches several at once). Any cleanup
+    # takes the lock again.
+    fcntl.flock(lock, fcntl.LOCK_UN)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
+        current = current_spec()
+        if current is None or current.get('generation') != generation:
+            # Stopped (or replaced) by another launcher call meanwhile; it
+            # owns the cleanup.
+            raise RuntimeError('The native panel was stopped or replaced during startup.')
         active, current_pid = service_status(host_unit)
         state = read_json(state_path)
         if active not in ('active', 'activating') or not current_pid or current_pid <= 0:
+            fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 remove_generation(generation)
             except Exception as exc:
@@ -487,6 +543,7 @@ def start_panel():
             raise RuntimeError('The native host exited during panel startup.')
         if state and state.get('hostGeneration') == generation:
             if state.get('state') == 'error' and state.get('ready') is False:
+                fcntl.flock(lock, fcntl.LOCK_EX)
                 try:
                     remove_generation(generation)
                 except Exception as exc:
@@ -514,6 +571,7 @@ def start_panel():
                     print(f'Native Workspace ready: registered OpenVR key {key} in {host_unit}{detail}')
                     return
         time.sleep(0.1)
+    fcntl.flock(lock, fcntl.LOCK_EX)
     try:
         remove_generation(generation)
     except Exception:
@@ -523,19 +581,109 @@ def start_panel():
         raise RuntimeError(f'The native host did not register this {role} panel within {timeout:g} seconds.')
     raise RuntimeError(f'The native host did not submit a decoded texture and register this panel within {timeout:g} seconds.')
 
+def sync_placeholders(raw):
+    """Placeholder-only panels for windows waiting to launch or retrying: the
+    listed ones are written (or kept), unlisted placeholder-only specs removed.
+    A window's own (streaming) spec is never touched."""
+    import re
+    import secrets
+    if len(raw.encode('utf-8')) > 262144:
+        raise RuntimeError('Placeholder list is too large.')
+    data = json.loads(raw)
+    items = data.get('panels') if isinstance(data, dict) else None
+    session = data.get('session') if isinstance(data, dict) else None
+    if not isinstance(items, list) or len(items) > 128 or (
+            session is not None and (not isinstance(session, str) or not re.fullmatch(r'[0-9a-f]{32}', session))):
+        raise RuntimeError('Invalid placeholder list.')
+    def text(value, limit):
+        if value is None:
+            return ''
+        if not isinstance(value, str) or len(value) > limit or re.search(r'[\x00-\x1f\x7f]', value):
+            raise RuntimeError('Invalid placeholder text.')
+        return value
+    data_home = pathlib.Path(os.environ.get('XDG_DATA_HOME') or pathlib.Path.home() / '.local/share')
+    runtime_root = pathlib.Path(start_args[0]) / 'frame-workspace'
+    request_dir = runtime_root / 'requests'
+    request_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    desired = {}
+    for item in items:
+        if not isinstance(item, dict) or not isinstance(item.get('panel'), str) or \
+                not re.fullmatch(r'w[0-9]{1,15}', item['panel']) or item['panel'] in desired:
+            raise RuntimeError('Invalid placeholder panel.')
+        panel_id = item['panel']
+        folder = runtime_root / f'panel-{panel_id}'
+        spec = {'version': 1, 'role': 'window', 'urlFile': '',
+                'overlayKey': f'com.frame-workspace.native.{uid}.panel-{panel_id}',
+                'overlayName': text(item.get('name'), 64) or 'Mac Window',
+                'controlFile': str(folder / 'control.json'), 'stateFile': str(folder / 'state.json'),
+                'poseFile': str(data_home / 'frame-workspace' / 'panels' / f'{panel_id}-pose.json'),
+                'requestDir': str(request_dir), 'decoder': 'software', 'conversion': 'cpu',
+                'placeholderOnly': True}
+        bundle = text(item.get('bundleID'), 255)
+        if bundle:
+            if not re.fullmatch(r'[A-Za-z0-9._-]+', bundle):
+                raise RuntimeError('Invalid placeholder bundle ID.')
+            spec['bundleID'] = bundle
+        size = item.get('points')
+        if size is not None:
+            if (not isinstance(size, list) or len(size) != 2 or
+                    any(type(v) is not int or not 1 <= v <= 100000 for v in size)):
+                raise RuntimeError('Invalid placeholder size.')
+            spec['points'] = size
+        slot = item.get('slot')
+        if slot is not None:
+            if type(slot) is not int or not 0 <= slot <= 1023:
+                raise RuntimeError('Invalid placeholder slot.')
+            spec['slot'] = slot
+        pose = item.get('pose')
+        if pose is not None:
+            encoded = json.dumps(pose, separators=(',', ':'), allow_nan=False)
+            if not isinstance(pose, dict) or len(encoded) > 1024:
+                raise RuntimeError('Invalid placeholder pose.')
+            spec['initialPose'] = encoded
+        error = text(item.get('error'), 160)
+        if error:
+            spec['placeholderError'] = error
+        if session:
+            spec['session'] = session
+        desired[panel_id] = spec
+    for path in spec_dir.glob('*.json'):
+        current = read_json(path)
+        if current and current.get('placeholderOnly') is True and path.stem not in desired:
+            path.unlink(missing_ok=True)
+    shown = 0
+    for panel_id, spec in desired.items():
+        path = spec_dir / f'{panel_id}.json'
+        current = read_json(path)
+        if path.exists() and (current is None or current.get('placeholderOnly') is not True):
+            continue  # the window's own panel, starting or streaming
+        shown += 1
+        if current and {k: v for k, v in current.items() if k != 'generation'} == spec:
+            continue
+        folder = pathlib.Path(spec['stateFile']).parent
+        folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(folder, 0o700)
+        spec['generation'] = 'ph' + secrets.token_hex(6)
+        atomic_write(path, json.dumps(spec, separators=(',', ':'), allow_nan=False) + '\n')
+    print(f'Placeholders: {shown}')
+
 host_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-with lock_host():
-    try:
-        if mode == 'stop':
-            remove_generation(expected_generation or None)
-            print(f'Stopped native panel {panel}; shared host remains running.')
-        elif mode == 'start':
-            start_panel()
-        else:
-            raise RuntimeError('Invalid native host launcher operation.')
-    except Exception as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
+lock = lock_host()
+try:
+    if mode == 'stop':
+        remove_generation(expected_generation or None)
+        print(f'Stopped native panel {panel}; shared host remains running.')
+    elif mode == 'start':
+        start_panel(lock)
+    elif mode == 'placeholders':
+        sync_placeholders(start_args[1])
+    else:
+        raise RuntimeError('Invalid native host launcher operation.')
+except Exception as exc:
+    print(str(exc), file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    lock.close()
 PYHOST
 }
 
@@ -868,6 +1016,14 @@ with os.fdopen(lock_fd, 'r+') as lock:
 PY
     exit $?
     ;;
+  placeholders)
+    # FW-15: placeholder-only panels for the windows still waiting to launch.
+    [ "$#" -eq 2 ] && [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -z "$panel" ] || {
+      echo 'placeholders takes one JSON list and needs FRAME_NATIVE_HOST=1 without --panel.' >&2; exit 2; }
+    host_panel placeholders "" "$uid" "" "$runtime_base/host" "" "" "" "" window \
+      "${XDG_RUNTIME_DIR:-/run/user/$uid}" "$2"
+    exit $?
+    ;;
   start) ;;
   *) echo 'usage: workspace-native-on-frame.sh [--panel ID [--name TITLE] [--initial-pose JSON] [--pose JSON]] start URL WIDTH HEIGHT TAG [software|v4l2] [cpu|gpu] [0|1|gaze foveation] [U,V|scan diagnostic gaze] | focus | adjust WIDTH DISTANCE | pose RIGHT UP CLOSER YAW PITCH ROLL | curvature VALUE | stop' >&2; exit 2 ;;
 esac
@@ -925,7 +1081,8 @@ if [ "${FRAME_NATIVE_HOST:-}" = 1 ] && [ -n "$panel" ]; then
   fi
   host_panel start "$panel" "$uid" "$legacy_unit" "$runtime_base/host" "$runtime" "$pose_file" "$key" "" "$role" \
     "$url" "$w" "$h" "$tag" "$decoder" "$conversion" "$panel_name" "$initial_pose" \
-    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}" "$wall_slot" "$session"
+    "$pose_override" "$foveation" "$diagnostic_gaze" "$binary" "${XDG_RUNTIME_DIR:-/run/user/$uid}" "$wall_slot" "$session" \
+    "$bundle_id" "$points"
   exit $?
 fi
 
@@ -958,9 +1115,14 @@ umask 077
 if [ "$pose_override_set" -eq 1 ]; then
   # mkstemp creates a private same-directory file; os.replace makes the
   # replacement atomic. This happens only after shutdown has been confirmed.
-  python3 - "$pose_file" "$pose_override" <<'PYWRITEPOSE'
-import os, pathlib, sys, tempfile
+  python3 - "$pose_file" "$pose_override" "$panel" "$bundle_id" "$panel_name" "$session" <<'PYWRITEPOSE'
+import json, os, pathlib, sys, tempfile, time
 target = pathlib.Path(sys.argv[1])
+if sys.argv[3]:
+    # A window panel's restored pose is its user's own placement (FW-15).
+    pose = json.loads(sys.argv[2])
+    pose.update(userSet=True, bundleID=sys.argv[4], title=sys.argv[5], session=sys.argv[6], savedAt=int(time.time()))
+    sys.argv[2] = json.dumps(pose, separators=(',', ':'), allow_nan=False)
 target.parent.mkdir(parents=True, exist_ok=True)
 fd, temporary = tempfile.mkstemp(prefix=target.name + '.', suffix='.tmp', dir=target.parent)
 try:
@@ -999,6 +1161,10 @@ mkdir -p "$requests"
 chmod 700 "$requests"
 panel_args=(--request-dir "$requests")
 if [ -n "$panel_name" ]; then panel_args+=(--overlay-name "$panel_name"); fi
+# An installed viewer from before window identities (FW-15) rejects the flag.
+if [ -n "$bundle_id" ] && "$binary" --capabilities 2>/dev/null | grep -q '"window-layout"'; then
+  panel_args+=(--bundle-id "$bundle_id")
+fi
 if [ -n "$initial_pose" ]; then panel_args+=(--initial-pose "$initial_pose"); fi
 vrcmd=/opt/steamvr/bin/linuxarm64/vrcmd
 native_start=(--user --unit="$unit" --description='Frame Workspace native viewer' --collect \

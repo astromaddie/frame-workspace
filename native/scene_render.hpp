@@ -65,6 +65,34 @@ class SceneRenderer {
     raster.surfaceDestroy(s);
     return {t, w, h};
   }
+  // A window placeholder as the host draws it (LauncherPainter::placeholder),
+  // at the window's aspect from its points.
+  Image placeholder(const Json &p) {
+    auto spec = object(field(p, "placeholder"));
+    float ratio = 16.f / 9;
+    if (auto points = field(p, "points"))
+      if (json_object_is_type(points, json_type_array) && json_object_array_length(points) == 2) {
+        const double w = json_object_get_double(json_object_array_get_idx(points, 0));
+        const double h = json_object_get_double(json_object_array_get_idx(points, 1));
+        if (w > 0 && h > 0) ratio = std::clamp(float(w / h), .25f, 4.f);
+      }
+    if (!painter) painter = std::make_unique<LauncherPainter>();
+    const int w = 640, h = std::clamp(int(std::lround(w / ratio)), 160, 2560);
+    const auto icon = str(spec, "icon");
+    // The icon cache rechecks files once a second; draw after it has loaded.
+    painter->iconVersion(icon.empty() ? "" : (root / icon).string(), 1e9);
+    auto pixels = painter->placeholder(str(spec, "title"), icon.empty() ? "" : (root / icon).string(),
+                                       str(spec, "app"), str(spec, "error"), w, h, 1e9);
+    GLuint t = texture();
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    return {t, w, h};
+  }
+  std::unique_ptr<LauncherPainter> painter;
   static Json object(json_object *o) {
     if (!o || !json_object_is_type(o, json_type_object))
       throw std::runtime_error("scene object required");
@@ -140,19 +168,52 @@ public:
     PanelSurface focused;
     int focusedPixels = 0;
     HmdMatrix34_t tip{};
-    for (size_t i = 0; i < json_object_array_length(panels); ++i) {
+    // Pictures first (a texture, or a "placeholder" drawn as the host draws
+    // it), then places: "placement" panels as given, then "slot" panels. With
+    // "allocate": true the slots are only preferences, and cells are handed
+    // out as the host does: around the placed panels, never shared. "points"
+    // sizes a slot panel for its Mac window.
+    const bool allocate = flag(scene, "allocate");
+    const size_t count = json_object_array_length(panels);
+    std::vector<Image> pictures;
+    std::vector<int> cells(count, -1), taken;
+    std::vector<WallBounds> occupied;
+    for (size_t i = 0; i < count; ++i) {
+      auto p = object(json_object_array_get_idx(panels, i));
+      pictures.push_back(field(p, "placeholder") ? placeholder(p) : load(str(p, "texture")));
+      cells[i] = wallSlot(p);
+      if (auto pose = field(p, "placement")) {
+        Placement placed;
+        if (!parsePlacement(json_object_to_json_string(pose), placed)) throw std::runtime_error("invalid scene placement");
+        const float height = float(num(p, "height", placed.width * pictures[i].height / pictures[i].width));
+        occupied.push_back(panelWallBounds(placed, height, spatialIdentity()));
+        cells[i] = -1;
+      }
+    }
+    for (size_t i = 0; i < count; ++i)
+      if (cells[i] >= 0) {
+        if (allocate) cells[i] = wallAllocate(cells[i], occupied, taken);
+        taken.push_back(cells[i]);
+      }
+    for (size_t i = 0; i < count; ++i) {
       auto p = object(json_object_array_get_idx(panels, i));
       PanelSurface s;
       s.key = str(p, "id");
       if (str(p, "role") != "window") throw std::runtime_error("panel role must be window");
       auto pose = field(p, "placement");
-      Image pic = load(str(p, "texture"));
-      const int slot = wallSlot(p);
+      Image pic = pictures[i];
+      const int slot = cells[i];
+      float pointsWidth = 0, pointsHeight = 0;
+      if (auto points = field(p, "points"))
+        if (json_object_is_type(points, json_type_array) && json_object_array_length(points) == 2) {
+          pointsWidth = float(json_object_get_double(json_object_array_get_idx(points, 0)));
+          pointsHeight = float(json_object_get_double(json_object_array_get_idx(points, 1)));
+        }
       if (pose) {
         if (!parsePlacement(json_object_to_json_string(pose), s.placement))
           throw std::runtime_error("invalid scene placement");
       } else if (slot >= 0)
-        s.placement = wallPlacement(slot, float(pic.width) / pic.height, spatialIdentity());
+        s.placement = wallPlacement(slot, float(pic.width) / pic.height, spatialIdentity(), pointsWidth, pointsHeight);
       else throw std::runtime_error("scene needs placement or slot");
       s.height = slot >= 0 && !pose ? s.placement.width * pic.height / pic.width :
           float(num(p, "height", s.placement.width * pic.height / pic.width));

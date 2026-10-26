@@ -60,6 +60,56 @@ that window, and only there. Type a little, then stare at another window for two
 must not switch until a second after you stop typing plus the stare. Scroll a video in the active
 window and look elsewhere: it keeps its full frame rate.
 
+## Window layout and a faster start (2026-10-26)
+
+After the first usable run: windows appeared slowly one by one, it wasn't clear
+where they were, and they stacked instead of tiling across the view. On the
+Frame, saved pose files in `~/.local/share/frame-workspace/panels/w<ID>-pose.json`
+won over the wall. Many were left by automated runs on earlier days under Mac
+window IDs the user's real windows still had, so two windows came up at the same
+pose about 100 degrees to the left, one about 3 m up. Panels launched one at a
+time, each taking seconds. Checked locally (macOS host build, fake Frame for the
+companion and launcher); not yet run on the device.
+
+- **No stacking.** Windows without a position their user set get a free wall
+  cell: never one another panel holds or a hand-placed panel covers. The L2 wall
+  grows a top row and far columns, then rings further out. Panels share one
+  scale from their Mac size in points, so text reads the same everywhere.
+  Details in [native/README.md](../../native/README.md#spatial-wall-l2).
+- **Only positions the user set are remembered.** A pose is saved only when the
+  user moves, resizes, curves, recenters or arranges a panel, and records that
+  (`userSet`) with the window's bundle ID and title. Every older pose file is
+  ignored and moved into a dated `set-aside-YYYY-MM-DD` folder beside it on first
+  run. Last Session and Profile Save keep only user-set window poses; a Last
+  Session snapshot from before this puts its windows on the wall.
+- **Arrange Windows**, on the bar's Workspace card and the Mac page in Spatial
+  Mode, re-tiles every window panel in front of the user (focused one in the
+  centre) and keeps that as the user's layout.
+- **Fast start.** Window panels launch four at a time, focused first
+  (`FRAME_SPATIAL_LAUNCH_PARALLEL`, 1–8); Menu Bar, Status and the menu slots
+  still wait for the windows. The Frame launcher no longer holds the host lock
+  while a panel waits for its picture. Every waiting window shows a placeholder
+  straight away at its wall slot: the app icon and title on the Palladium face.
+  The picture replaces it when it arrives. A failed launch shows "Couldn't open
+  this window. Retrying…" on its placeholder until the retry 5 s later; Close on
+  a placeholder stops that window opening.
+- **The viewer must have it.** Spatial Mode now also asks for the `window-layout`
+  capability, so an older headset viewer is updated first rather than stacking
+  windows at stale poses.
+
+Repeat the local checks: build as in [native/README.md](../../native/README.md)
+(on macOS with a `gl.pc` giving `-framework OpenGL`), then
+`python3 native/tests_host.py BUILD/frame-workspace-native`,
+`PYTHONPATH=tests python3 -m unittest test_macview test_spatial_apps test_native_pose_launcher test_native_update test_workspace_profiles`
+and `node tests/page/spatial_mode.mjs`. Renders: `native/evidence/spatial-wall-6.png`,
+`-9`, `-12`, `-opening` and `-occupied`.
+
+On the headset, still to check: a fresh Spatial start with 6 and with 12+ windows
+(placeholders at once, no two panels overlapping, all in front), that the old
+pose files went to `set-aside-2026-10-26/`, a window moved by hand coming back
+there next session, a failed window's error placeholder, and Arrange Windows
+from the bar and from the Mac page.
+
 ## Launcher A: the Applications grid (2026-10-26)
 
 The approved launcher (FW-15 decision, `evidence/launcher-mockup.png` option A). Checked

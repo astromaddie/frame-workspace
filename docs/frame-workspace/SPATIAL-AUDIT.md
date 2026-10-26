@@ -68,7 +68,7 @@ built-in only afterwards.
 | S1 switcher, Cmd-Tab lease, V1 stills | Implemented |
 | Gaze dwell, glow, cursor memory | Implemented; focus isn't confirmed by the Mac |
 | M1 menu strip, I1 status | Capture and render implemented; no content clicks |
-| L2 wall, new windows getting panels, restore on Stop | Implemented; saved poses override the wall |
+| L2 wall, new windows getting panels, restore on Stop | Implemented; saved poses override the wall (fixed after the first usable run: [SPATIAL.md](SPATIAL.md#window-layout-and-a-faster-start-2026-10-26)) |
 | Move, curve and scale panels with controllers | Implemented; resize scales the panel, not the Mac window |
 | Pointer, scroll and keys into window content from the native host | **Missing** (the browser viewer has it) |
 | Drag between windows | Partial; blocked by the missing input and the cursor fence |

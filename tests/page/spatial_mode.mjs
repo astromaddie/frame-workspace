@@ -25,7 +25,7 @@ const context = vm.createContext({
   api: async (path, body) => {
     if (body) {
       requests.push(body);
-      current.workspace.mode = body.action.slice(5);
+      if (body.action.startsWith("mode_")) current.workspace.mode = body.action.slice(5);
     }
     return structuredClone(current);
   },
@@ -39,6 +39,7 @@ function render(state) {
 }
 render(desktop);
 assert.equal(element("mvModeDesktop")["aria-pressed"], "true");
+assert.equal(element("mvArrange").hidden, true);
 assert.equal(element("mvWorkspacePreset").parentElement.hidden, false);
 assert.equal(element("mvWorkspaceStart").textContent, "Start Workspace");
 
@@ -52,8 +53,15 @@ assert.equal(element("mvPlacementStatus").hidden, true);
 assert.equal(element("mvWorkspaceStart").disabled, true);
 assert.equal(element("mvWorkspaceStop").hidden, false);
 assert.match(element("mvWorkspaceStatus").textContent, /2 Window Panels/);
+// Arrange Windows: on the Workspace card while Spatial Mode runs.
+assert.equal(element("mvArrange").hidden, false);
+assert.equal(element("mvArrange").disabled, false);
+element("mvArrange").dataset = {mv: "arrange-windows"};
+await element("macview").onclick({target: {closest: () => element("mvArrange")}});
+assert.equal(JSON.stringify(requests.pop()), JSON.stringify({action: "arrange_windows"}));
 
 render({...desktop, workspace: {mode: "spatial", state: "error", removed: false, error: "Removal Pending"}});
+assert.equal(element("mvArrange").hidden, true, "nothing to arrange unless Spatial Mode runs");
 assert.equal(element("mvModeDesktop").disabled, true);
 assert.equal(element("mvWorkspaceStop").disabled, false);
 assert.equal(element("mvWorkspaceStatus").textContent, "Removal Pending");
