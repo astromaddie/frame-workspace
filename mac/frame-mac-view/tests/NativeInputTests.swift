@@ -22,7 +22,22 @@ struct NativeInputTests {
         trackpadTakesPriority()
         releaseOwnership()
         focusObservation()
+        gazeHighlight()
         print("NativeInputTests: \(checks) protocol, ordering, geometry, fence, physical takeover and release checks passed")
+    }
+
+    static func gazeHighlight() {
+        require(message(#"{"t":"gaze-highlight","v":1,"on":true,"epoch":"e1","q":3}"#) == .highlight(on: true),
+                "a highlight lights")
+        require(message(#"{"t":"gaze-highlight","v":1,"on":false,"epoch":"e1","q":4}"#) == .highlight(on: false),
+                "and goes out")
+        require(failure(#"{"t":"gaze-highlight","v":2,"on":true,"epoch":"e1","q":5}"#) == .malformed, "unknown version")
+        require(failure(#"{"t":"gaze-highlight","on":true,"epoch":"e1","q":5}"#) == .malformed, "version required")
+        require(failure(#"{"t":"gaze-highlight","v":1,"on":1,"epoch":"e1","q":5}"#) == .malformed, "on is a boolean")
+        require(failure(#"{"t":"gaze-highlight","v":1,"on":true,"epoch":"old","q":5}"#) == .epoch, "bound to the connection")
+        require(failure(#"{"t":"gaze-highlight","v":1,"on":true,"epoch":"e1"}"#) == .malformed, "sequenced")
+        require(message(#"{"t":"gaze-highlight","v":1,"on":true,"src":"spatial:9","epoch":"e1","q":6}"#) == .highlight(on: true),
+                "a src field names nothing: the stream's own source is the one highlighted")
     }
 
     static func parse(_ json: String, epoch: String = "e1") -> Result<NativeInputEnvelope, NativeInputRejection> {

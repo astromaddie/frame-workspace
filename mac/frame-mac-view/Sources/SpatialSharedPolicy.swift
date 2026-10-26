@@ -74,3 +74,19 @@ enum SpatialSharedPolicy {
         [Double(rect.minX), Double(rect.minY), Double(rect.width), Double(rect.height)]
     }
 }
+
+/// One cursor (FW-15): every window sits on one shared display, so each
+/// capture that draws the Mac cursor shows it wherever it is over that window.
+/// Only the active window's capture draws it, and not while the cursor is on
+/// the menu bar or an open menu; those surfaces draw it while it is on them.
+enum SpatialCursorPolicy {
+    static func window(_ source: String, focused: String?, cursorOnSurface: Bool) -> Bool {
+        source == focused && !cursorOnSurface
+    }
+    static func surface(rect: CGRect, visible: Bool, cursor: CGPoint) -> Bool {
+        visible && !rect.isEmpty && rect.contains(cursor)
+    }
+    static func onSurface(cursor: CGPoint, menuBar: CGRect, surfaces: [CGRect]) -> Bool {
+        ([menuBar] + surfaces).contains { !$0.isEmpty && $0.contains(cursor) }
+    }
+}

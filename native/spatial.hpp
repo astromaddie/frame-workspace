@@ -143,37 +143,65 @@ inline PanelPick spatialPanelPick(const EyeRay &ray,
   for (const auto &s : surfaces) if (focusSurface(s)) windows.push_back(s);
   return pickPanel(ray, windows, active);
 }
-// Keep a visual fade independently of the uninterrupted confirmation timer.
+// The gaze highlight the helper is told about (`gaze-highlight`, v1): sent on
+// the looked-at window's stream when it lights and goes out, and refreshed
+// while it lasts; the helper forgets one not refreshed within inputExpiryMs.
+struct GazeHighlight { static constexpr double refreshMs = 500; };
+// Typing on the Mac's own keyboard, as the helper reports it: a long stare
+// never moves focus away from the window being typed into.
+struct TypingWatch {
+  static constexpr double guardMs = 1000;  // after the last physical key
+  double last = -1e12;
+  void typed(double now) { last = now; }
+  bool recent(double now) const { return now - last < guardMs; }
+};
+// What holds a long stare back from committing focus. While any of these is
+// true the stare does not count; once they all clear it starts from zero.
+struct StareGuards {
+  bool eyes = true;          // only the eyes stare; a resting laser (the gaze fallback) never commits
+  bool typing = false;       // a physical key in the last TypingWatch::guardMs
+  bool physicalHeld = false; // a trackpad or mouse button is down
+  bool controllerHeld = false, pointerOwned = false;
+  bool menuOpen = false, launcherOpen = false, switcherOpen = false;
+  bool placing = false;      // a window or the shelf is being moved
+  bool allow() const {
+    return eyes && !typing && !physicalHeld && !controllerHeld && !pointerOwned && !menuOpen && !launcherOpen &&
+        !switcherOpen && !placing;
+  }
+};
+// Eyes highlight, an action commits (FW-15). The looked-at window is
+// highlighted after FocusFeedback::dwellSeconds of uninterrupted look; it
+// becomes active only through the host's activate() (controller, trackpad
+// click, switcher), or when update() reports a long stare: `commitSeconds` of
+// uninterrupted, unguarded look. Desktop Mode passes dwellSeconds there and
+// keeps the original quick gaze focus.
 struct HostFocus {
   std::map<std::string, FocusFeedback> feedback;
-  std::string active, pending, source;
-  float elapsed = 0;
-  bool update(const PanelPick &hit, float dt, const std::string &input) {
+  std::string active, pending, source, highlighted;
+  float elapsed = 0, stare = 0;
+  bool committed = false;  // this stare's commit went out
+  bool update(const PanelPick &hit, float dt, const std::string &input,
+              float commitSeconds = FocusFeedback::stareCommitSeconds, bool commitAllowed = true) {
     if (!hit || hit.key != pending || input != source) {
       pending = hit.key;
       source = input;
-      elapsed = 0;
+      elapsed = stare = 0;
+      committed = false;
     }
     dt = std::clamp(dt, 0.f, .05f);
-    if (hit)
-      elapsed += dt;
-    bool confirmed = false;
+    const bool other = hit && hit.key != active;
+    if (hit) elapsed += dt;
+    if (other && commitAllowed) stare += dt;
+    else { stare = 0; if (!commitAllowed) committed = false; }
+    highlighted = other && elapsed >= FocusFeedback::dwellSeconds ? hit.key : std::string();
+    bool commit = false;
+    if (other && commitAllowed && !committed && stare >= commitSeconds) commit = committed = true;
     for (auto &[key, f] : feedback) {
-      bool looking = hit && hit.key == key;
-      // Visual glow may survive a glance, but it cannot shorten the next dwell.
-      float saved = f.glow;
-      bool snap = f.update(dt, looking);
-      if (snap && elapsed < FocusFeedback::dwellSeconds) {
-        f.focused = false;
-        f.glow = std::min(.99f, saved + dt / FocusFeedback::dwellSeconds);
-      }
-      if (looking && key != active && elapsed >= FocusFeedback::dwellSeconds) {
-        confirmed = true;
-        f.focused = false;
-        f.glow = 1;
-      }
+      const bool looking = other && hit.key == key;
+      f.update(dt, looking, looking ? stare * FocusFeedback::stareCommitSeconds / std::max(commitSeconds, 1e-3f) : 0,
+               looking && committed);
     }
-    return confirmed;
+    return commit;
   }
   void activate(const std::string &key) {
     for (auto &[k, f] : feedback)
@@ -183,15 +211,19 @@ struct HostFocus {
     f.focused = true;
     f.glow = 0;
     f.snap = 0;
+    f.progress = 0;
     active = key;
+    if (highlighted == key) highlighted.clear();
   }
   void remove(const std::string &key) {
     feedback.erase(key);
     if (active == key)
       active.clear();
+    if (highlighted == key) highlighted.clear();
     if (pending == key) {
       pending.clear();
-      elapsed = 0;
+      elapsed = stare = 0;
+      committed = false;
     }
   }
 };

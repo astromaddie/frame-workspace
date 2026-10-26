@@ -21,6 +21,15 @@ final class SpatialFocus: NSObject {
     private var menuRect = CGRect.zero
     private var menuRects: [CGRect] = []
     private var contentRect: CGRect?
+    /// The Mac cursor is on the menu bar or an open menu: those surfaces draw
+    /// it, the active window's capture does not (SpatialCursorPolicy).
+    private(set) var cursorOnSurface = false
+
+    func setCursorOnSurface(_ on: Bool) {
+        guard on != cursorOnSurface else { return }
+        cursorOnSurface = on
+        NotificationCenter.default.post(name: spatialFocusChanged, object: self)
+    }
 
     @discardableResult
     func focus(windowID: CGWindowID, u: Double = 0.5, v: Double = 0.5) -> Bool {
@@ -69,6 +78,7 @@ final class SpatialFocus: NSObject {
         case .drag:
             memory.noteFocus(key)
         }
+        fence.setActive(memory.focusedSource)
         NotificationCenter.default.post(name: spatialFocusChanged, object: self)
         return true
     }
@@ -80,7 +90,8 @@ final class SpatialFocus: NSObject {
     func removeWindow(_ windowID: CGWindowID) {
         let wasFocused = focusedSource == "spatial:\(windowID)"
         memory.remove("spatial:\(windowID)")
-        if wasFocused { windowRect = .zero; contentRect = nil; updateFence() }
+        fence.highlight("spatial:\(windowID)", on: false, ttlMs: 0)
+        if wasFocused { windowRect = .zero; contentRect = nil; fence.setActive(nil); updateFence() }
     }
 
     func updateMenus(rect: CGRect, surfaces: [CGRect]) {
@@ -95,6 +106,7 @@ final class SpatialFocus: NSObject {
     }
     func clear() {
         memory.clear(); fence.stop(); windowRect = .zero; menuRect = .zero; menuRects.removeAll(); contentRect = nil
+        cursorOnSurface = false
     }
 }
 
@@ -122,6 +134,11 @@ final class SharedWindowSource: CaptureSource, CaptureStopAwaitable {
     var inputIdentity: String { "spatial:\(windowID)" }
     var inputFrameRect: CGRect { inner.frameRect }
     var focusCap: Int { coordinator.focus.focusedSource == "spatial:\(windowID)" ? 60 : 30 }
+    /// Only the active window draws the Mac cursor (FW-15: one cursor).
+    var showsCursor: Bool {
+        SpatialCursorPolicy.window("spatial:\(windowID)", focused: coordinator.focus.focusedSource,
+                                   cursorOnSurface: coordinator.focus.cursorOnSurface)
+    }
 
     init(windowID: CGWindowID, coordinator: SpatialCoordinator) {
         self.windowID = windowID; self.coordinator = coordinator
@@ -137,10 +154,13 @@ final class SharedWindowSource: CaptureSource, CaptureStopAwaitable {
             self.requestedFps = fps
             self.focusObserver = NotificationCenter.default.addObserver(forName: spatialFocusChanged,
                 object: self.coordinator.focus, queue: .main) { [weak self] _ in
-                guard let self, !self.still else { return }
-                spatialDiagnostic("window \(self.windowID) focus fps=\(min(self.requestedFps, self.focusCap))")
+                guard let self else { return }
+                self.inner.setShowsCursor(self.showsCursor)  // kept for stills too, which draw none
+                guard !self.still else { return }
+                spatialDiagnostic("window \(self.windowID) focus fps=\(min(self.requestedFps, self.focusCap)) cursor=\(self.showsCursor)")
                 self.inner.setMaxFps(min(self.requestedFps, self.focusCap))
             }
+            self.inner.setShowsCursor(self.showsCursor)
             self.inner.start(maxLong: maxLong, fps: min(fps, self.focusCap), completion: completion)
         }
     }
@@ -193,6 +213,8 @@ final class MenuSurfaceWatcher {
     private weak var coordinator: SpatialCoordinator?
     private var timer: DispatchSourceTimer?
     private var listeners: [UUID: (Source, (SpatialSurface) -> Void)] = [:]
+    /// Whether the Mac cursor is on each subscriber's surface, on every refresh.
+    private var cursorListeners: [UUID: (Source, (Bool) -> Void)] = [:]
     private var values: [String: SpatialSurface] = [:]
     private var busy = false
     private var generation = 0
@@ -221,14 +243,16 @@ final class MenuSurfaceWatcher {
             publish(key, value)
         }
     }
-    func subscribe(_ source: Source, callback: @escaping (SpatialSurface) -> Void) -> UUID {
+    func subscribe(_ source: Source, cursor: ((Bool) -> Void)? = nil,
+                   callback: @escaping (SpatialSurface) -> Void) -> UUID {
         let id = UUID(); listeners[id] = (source, callback)
+        if let cursor { cursorListeners[id] = (source, cursor) }
         spatialDiagnostic("subscribe \(source.key) visible=\(values[source.key]?.visible ?? false)")
         callback(values[source.key] ?? SpatialSurface())
         refresh()
         return id
     }
-    func unsubscribe(_ id: UUID) { listeners[id] = nil }
+    func unsubscribe(_ id: UUID) { listeners[id] = nil; cursorListeners[id] = nil }
 
     private func publish(_ key: String, _ next: SpatialSurface) {
         var value = next
@@ -300,7 +324,15 @@ final class MenuSurfaceWatcher {
                 windowRect: info.bounds, anchor: anchor, anchorRect: anchor == "status" ? status : menus,
                 menusWidth: menus.width, hot: hot, visible: true, displayID: displayID))
         }
-        coordinator.focus.updateMenus(rect: bar, surfaces: (0..<4).compactMap { values["menu:\($0)"].flatMap { $0.visible ? $0.rect : nil } })
+        let menuRects = (0..<4).compactMap { values["menu:\($0)"].flatMap { $0.visible ? $0.rect : nil } }
+        coordinator.focus.updateMenus(rect: bar, surfaces: menuRects)
+        // One cursor: the surface it is on draws it, and the active window not.
+        let cursor = Input.cursorLocation
+        coordinator.focus.setCursorOnSurface(SpatialCursorPolicy.onSurface(cursor: cursor, menuBar: bar, surfaces: menuRects))
+        for (source, callback) in Array(cursorListeners.values) {
+            let value = values[source.key] ?? SpatialSurface()
+            callback(SpatialCursorPolicy.surface(rect: value.rect, visible: value.visible, cursor: cursor))
+        }
         alphaRects = alphaRects.filter { used.contains($0.key) }
         guard let padded = candidates.first(where: { $0.layer == 22 && alphaRects[$0.id]?.0 != $0.bounds }) else { return }
         busy = true
@@ -353,6 +385,8 @@ final class SpatialSurfaceSource: CaptureSource, CaptureStopAwaitable {
     private var maxLong = 1920
     private var fps = 30
     private var startCompletion: ((String?) -> Void)?
+    /// The Mac cursor is on this surface: only then does its capture draw it.
+    private var cursorInside = false
     var onSurface: (([String: Any]) -> Void)?
     var onFrame: ((CVPixelBuffer, CMTime, Int64) -> Void)?
     var onEnded: ((String) -> Void)?
@@ -377,10 +411,20 @@ final class SpatialSurfaceSource: CaptureSource, CaptureStopAwaitable {
         DispatchQueue.main.async {
             guard self.coordinator.isRunning else { return completion("Spatial Mode Is Not Running") }
             self.maxLong = maxLong; self.fps = min(fps, 30); self.startCompletion = completion
-            self.subscription = self.coordinator.surfaces.subscribe(self.source) { [weak self] in self?.apply($0) }
+            self.subscription = self.coordinator.surfaces.subscribe(self.source, cursor: { [weak self] inside in
+                self?.setCursorInside(inside)
+            }) { [weak self] in self?.apply($0) }
             // An idle slot starts successfully without manufacturing a picture.
             self.finishStart(nil)
         }
+    }
+    private func setCursorInside(_ inside: Bool) {
+        lock.lock()
+        guard inside != cursorInside else { lock.unlock(); return }
+        cursorInside = inside
+        let capture = inner
+        lock.unlock()
+        capture?.setShowsCursor(inside)
     }
     private func finishStart(_ error: String?) { let callback = startCompletion; startCompletion = nil; callback?(error) }
     private func apply(_ value: SpatialSurface) {
@@ -427,7 +471,8 @@ final class SpatialSurfaceSource: CaptureSource, CaptureStopAwaitable {
         let origin = window ? value.windowRect.origin : CGDisplayBounds(value.displayID).origin
         capture.crop = value.rect.offsetBy(dx: -origin.x, dy: -origin.y)
         if !window, let cover = coordinator.coverWindowID { capture.excludedWindowIDs = [cover] }
-        lock.lock(); inner = capture; innerUsesDisplay = !window; lock.unlock()
+        lock.lock(); inner = capture; innerUsesDisplay = !window; let cursor = cursorInside; lock.unlock()
+        capture.setShowsCursor(cursor)
         var receivedPicture = false
         var retargeted = false
         let useDisplayCrop: () -> Void = { [weak self, weak capture] in

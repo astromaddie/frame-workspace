@@ -488,12 +488,16 @@ struct Pipeline {
     }
   };
   struct InputEvent {
-    enum Kind { Ack, Refused, Physical, Remote, Focused, Unfocused, Released, Reset } kind = Ack;
+    // Typing: a physical Mac key went down or up. PhysicalHeld: a trackpad
+    // or mouse button is (ok) or is no longer held.
+    enum Kind { Ack, Refused, Physical, Remote, Focused, Unfocused, Released, Reset, Typing, PhysicalHeld } kind = Ack;
     uint64_t token = 0;
     bool ok = false;
   };
   static constexpr size_t maxInputQueue = 64, maxInputEvents = 64;
   std::atomic<bool> inputNegotiated{false};
+  // The helper takes `gaze-highlight` on this stream (hello `gazeHighlight`).
+  std::atomic<bool> highlightNegotiated{false};
   std::atomic<uint64_t> inputConnection{0};  // increases before each connection
   std::atomic<uint64_t> inputSent{0}, inputCoalesced{0}, inputOverflows{0}, inputRefusals{0}, inputGeometries{0};
   struct InputItem { std::string body; bool move = false; uint64_t token = 0; };
@@ -556,6 +560,7 @@ struct Pipeline {
   // A new or lost connection starts neutral; nothing queued is replayed.
   void resetInput() {
     inputNegotiated = false;
+    highlightNegotiated = false;
     ++inputConnection;
     {
       std::lock_guard<std::mutex> l(outMutex);
@@ -732,6 +737,12 @@ struct Pipeline {
                 auto focused = field(j, "focused");
                 if (focused && json_object_is_type(focused, json_type_boolean))
                   inputEvent({json_object_get_boolean(focused) ? InputEvent::Focused : InputEvent::Unfocused});
+                auto typed = field(j, "typing");
+                if (typed && json_object_is_type(typed, json_type_boolean) && json_object_get_boolean(typed))
+                  inputEvent({InputEvent::Typing});
+                auto held = field(j, "physicalHeld");
+                if (held && json_object_is_type(held, json_type_boolean))
+                  inputEvent({InputEvent::PhysicalHeld, 0, bool(json_object_get_boolean(held))});
               } else if (t == "input-released") {
                 inputEvent({InputEvent::Released});
               } else {
@@ -763,6 +774,9 @@ struct Pipeline {
                     inputEpoch = epoch;
                   }
                   inputNegotiated = true;
+                  auto highlight = field(j, "gazeHighlight");
+                  highlightNegotiated = highlight && json_object_is_type(highlight, json_type_int) &&
+                      num(j, "gazeHighlight") == 1;
                   // Input goes out promptly, even while a picture is arriving.
                   ws.idlePollMs = std::min(ws.idlePollMs, 8);
                   ws.serviceIdleWhileReading = true;

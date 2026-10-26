@@ -139,8 +139,9 @@ public:
     *this = ContentInput{};
     return result;
   }
-  // Gaze dwell focus over the native path: raise and restore that window's
-  // remembered cursor. Ignored while the controller owns the pointer.
+  // A long stare's focus over the native path (gaze only highlights until
+  // then): raise and restore that window's remembered cursor. Ignored while
+  // the controller owns the pointer.
   bool gazeFocus(const std::string &key, float u, float v, double now) {
     if (suppressGaze() || key == ready || (key == failedKey && now - failedAt < failureBackoffMs)) return false;
     lastKey = key; lastU = u; lastV = v; hasPoint = true;
@@ -148,8 +149,9 @@ public:
     return true;
   }
 
-  // Gaze dwell waits while the controller points, a button is held, a target
-  // change is in flight or a Mac menu is open; it resumes afterwards.
+  // The gaze highlight and stare wait while the controller points, a button is
+  // held, a target change is in flight or a Mac menu is open; they start again
+  // from nothing afterwards.
   bool suppressGaze() const { return owner >= 0 || held >= 0 || phase != Phase::Idle || menuOpen; }
   bool pointerOwned() const { return owner >= 0; }
   int pointerHand() const { return owner; }

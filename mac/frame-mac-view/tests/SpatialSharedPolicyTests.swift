@@ -58,5 +58,22 @@ private enum SpatialSharedPolicyTests {
         expect(SpatialSharedPolicy.selectedMenuItem(items: unselected, dropdowns: [CGRect(x: 800, y: 36, width: 80, height: 80)], menuBar: physicalBar) == nil,
             "unmatched dropdown has no invented title")
         print("SpatialSharedPolicy: 24 geometry, menu, alpha, mapping and separate-Spaces checks passed")
+        // One cursor: only the active window's capture draws it; strips and menus while it is on them.
+        let windows = ["spatial:1", "spatial:2", "spatial:3"]
+        func drawing(focused: String?, onSurface: Bool = false) -> [String] {
+            windows.filter { SpatialCursorPolicy.window($0, focused: focused, cursorOnSurface: onSurface) }
+        }
+        expect(drawing(focused: "spatial:1") == ["spatial:1"], "only the active window draws the cursor")
+        expect(drawing(focused: "spatial:2") == ["spatial:2"], "it moves with focus")
+        expect(drawing(focused: nil).isEmpty, "nothing active, no window cursor")
+        expect(drawing(focused: "spatial:2", onSurface: true).isEmpty, "on a strip or menu, the window does not")
+        let strip = CGRect(x: 0, y: 0, width: 3600, height: 36), menu = CGRect(x: 100, y: 36, width: 200, height: 300)
+        expect(SpatialCursorPolicy.onSurface(cursor: CGPoint(x: 150, y: 100), menuBar: strip, surfaces: [menu]), "in a menu")
+        expect(SpatialCursorPolicy.onSurface(cursor: CGPoint(x: 900, y: 10), menuBar: strip, surfaces: []), "on the bar")
+        expect(!SpatialCursorPolicy.onSurface(cursor: CGPoint(x: 900, y: 400), menuBar: strip, surfaces: [menu]), "in a window")
+        expect(SpatialCursorPolicy.surface(rect: menu, visible: true, cursor: CGPoint(x: 150, y: 100)), "the menu draws it")
+        expect(!SpatialCursorPolicy.surface(rect: menu, visible: false, cursor: CGPoint(x: 150, y: 100)), "a hidden one does not")
+        expect(!SpatialCursorPolicy.surface(rect: menu, visible: true, cursor: CGPoint(x: 900, y: 400)), "nor off it")
+        print("SpatialSharedPolicy: 10 cursor visibility checks passed")
     }
 }

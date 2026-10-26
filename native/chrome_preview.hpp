@@ -34,9 +34,12 @@ inline bool renderChromePreview(const std::string &scene, float windowWidth, con
     s.tipX = l.closeX() + 0.004f;
     s.tipY = l.rowY() + 0.006f;
     if (scene == "close-held") s.held[handleIndex(Handle::Close)] = 1;
-  } else if (scene == "focus-glow" || scene == "focus-snap" || scene == "focused") {
-    frame.focusGlow = scene == "focus-glow" ? 0.7f : 0.f;
-    frame.focused = scene != "focus-glow";
+  } else if (scene == "focus-glow" || scene == "focus-stare" || scene == "focus-snap" || scene == "focused") {
+    // Highlight (eyes), a long stare on its way to committing, the snap, the active window.
+    const bool lit = scene == "focus-glow" || scene == "focus-stare";
+    frame.focusGlow = scene == "focus-glow" ? 0.7f : scene == "focus-stare" ? 1.f : 0.f;
+    frame.focusProgress = scene == "focus-stare" ? 0.6f : 0.f;
+    frame.focused = !lit;
     frame.focusSnap = scene == "focus-snap" ? 0.4f : 1.f;
   } else if (scene != "rest") {
     return false;

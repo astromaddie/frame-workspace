@@ -149,6 +149,9 @@ public:
   // OpenVR, at the same per-frame boundary, so the production routing and
   // content arbiter run unchanged (native/tests_host.py).
   std::function<void(Hand (&)[2])> testHands;
+  // Test-only as well: a combined eye ray in place of eye tracking (false:
+  // the eyes are not tracked this frame).
+  std::function<bool(EyeRay &)> testEyes;
   const char *exitReason = "running";
   // Counts SteamVR recenters (seated or standing zero pose resets), which move
   // the room under anything pinned in it.

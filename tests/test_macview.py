@@ -1482,6 +1482,51 @@ class SpatialPolicy(unittest.TestCase):
         self.assertEqual(len(self.calls), 1, "direct focus never posts /focus")
         self.assertEqual(self.mv._spatial_focused, "spatial:2")
 
+    def test_active_window_is_live_first_and_looked_at_windows_never_displace_it(self):
+        # FW-15: the eyes only highlight. Busy windows the user looks at (they
+        # change, so they want to be live) compete for what is left after the
+        # active window, never for its place.
+        self.stream("display:1", 8)
+        active = self.stream("spatial:1", 6, age=30)
+        busy = [self.stream(f"spatial:{n}", 6) for n in (2, 3)]
+        self.status["focusedSrc"] = active["src"]
+        for second in range(8):
+            for b in busy:
+                b["lastChanged"] = self.now + 900
+            self.tick(100 + second)
+            self.assertIn(active["src"], self.live(), f"active window live at {second}s")
+        self.assertEqual(len(self.live() & {b["src"] for b in busy}), 0, "no room beside it in 18 MP")
+        order = [c for c in self.calls if c[0] == "/streams/live"]
+        self.assertTrue(all(active["src"] in q["src"].split(",") for _, _, q in order))
+
+    def test_active_window_stays_live_while_its_size_is_unknown(self):
+        active = self.stream("spatial:1", 0, width=None, height=None)
+        other = self.stream("spatial:2", 2)
+        self.status["focusedSrc"] = active["src"]
+        self.tick()
+        self.tick(101)
+        self.assertEqual(self.live(), {active["src"]}, "the active window first, nothing optional beside an unknown size")
+        active.update(width=4000, height=1000)
+        self.tick(102)
+        self.assertEqual(self.live(), {active["src"], other["src"]})
+
+    def test_only_the_macs_focus_orders_the_live_set(self):
+        # A focus the helper has not confirmed (a stale direct request) does not
+        # put another window first: the helper's focusedSrc does.
+        a, b = self.panel("spatial:1", 1), self.panel("spatial:2", 2)
+        self.stream("display:1", 8)
+        self.stream("spatial:1", 6, age=30)
+        self.stream("spatial:2", 6, age=30)
+        self.status["focusedSrc"] = "spatial:1"
+        self.mv._handle_frame_requests(json.dumps({"action": "focus", "key": b, "u": .5, "v": .5, "direct": True}))
+        self.tick()
+        self.assertEqual(self.live() & {"spatial:1", "spatial:2"}, {"spatial:1"})
+        self.status["focusedSrc"] = "spatial:2"  # the Mac moved focus (a click, the switcher, a long stare)
+        self.tick(101)
+        self.assertEqual(self.live() & {"spatial:1", "spatial:2"}, {"spatial:2"})
+        self.assertFalse([c for c in self.calls if c[0] == "/focus"], "nothing replays a raise")
+        del a
+
     def test_focus_rejects_unknown_stale_keys_bad_coordinates_and_disabled_mode(self):
         key = self.panel("separate:42", 42)
         for u, v in ((None, 0), (True, 0), ("0.2", 0), (-.1, 0), (1.1, 0), (math.nan, 0), (0, math.inf)):
