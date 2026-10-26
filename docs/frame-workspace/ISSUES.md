@@ -658,8 +658,9 @@ toggle between the two, because Spatial Mode won't suit every task.
 - **Focus: eyes highlight, an action commits** (chosen 2026-10-26 after the first usable run, option
   A; replaces "eyes pick the active window"). Looking at a window lights its border but doesn't
   move focus. A window becomes active on a deliberate action: the controller laser moved onto it
-  or its trigger pressed there, or a trackpad click while looking at it (that first click only
-  focuses). Only the active window shows the Mac cursor and runs at full rate; the others dim a
+  or its trigger pressed there, a trackpad click while looking at it (that first click only
+  focuses), or a long stare (about 1.2 s, added the same day so typing can resume without a click;
+  not while typing, holding a button, pointing or with a menu open). Only the active window shows the Mac cursor and runs at full rate; the others dim a
   little. In the run, glance focus put the cursor in several overlapping windows at once and left
   the typed-in window at the background rate.
 - **Launcher** (chosen 2026-10-26): build **A**, the Applications grid opened from a button at the
