@@ -48,7 +48,7 @@ static int printCapabilities() {
   std::cout << "{\"name\":\"frame-workspace-native\",\"protocol\":2,\"sourceIdentity\":"
             << jsonString(FRAME_WORKSPACE_SOURCE_ID)
             << ",\"capabilities\":[\"host\",\"roles\",\"surfaces\",\"wall-slots\","
-               "\"idle-auxiliary\",\"content-input\",\"capabilities\"],"
+               "\"idle-auxiliary\",\"content-input\",\"gaze-highlight\",\"capabilities\"],"
                "\"roles\":[\"window\",\"menubar\",\"status\",\"menu\"]}\n";
   return 0;
 }

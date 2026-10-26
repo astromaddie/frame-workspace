@@ -1597,7 +1597,7 @@ class SpatialMode(unittest.TestCase):
         # What the Frame's viewer reports (scripts/workspace-native-update-on-frame.py status).
         self.viewer = {"installed": {"present": True, "identity": self.mv.headset_viewer.expected(), "protocol": 2,
                                      "capabilities": ["host", "roles", "surfaces", "wall-slots", "idle-auxiliary",
-                                                      "capabilities"]},
+                                                      "content-input", "gaze-highlight", "capabilities"]},
                        "sessionActive": False, "job": None}
 
     @staticmethod

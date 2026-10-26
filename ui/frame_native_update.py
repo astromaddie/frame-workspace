@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 UPDATER = ROOT / "scripts" / "workspace-native-update-on-frame.py"
 IDENTITY = ROOT / "scripts" / "native_source_identity.py"
-SPATIAL_CAPABILITIES = {"roles", "surfaces", "wall-slots", "idle-auxiliary"}
+SPATIAL_CAPABILITIES = {"roles", "surfaces", "wall-slots", "idle-auxiliary", "content-input", "gaze-highlight"}
 PROTOCOL = 2
 BASE = '"${XDG_CACHE_HOME:-$HOME/.cache}/frame-workspace/native-update"'
 RUNNING = ("sending", "queued", "building", "testing", "installing")
