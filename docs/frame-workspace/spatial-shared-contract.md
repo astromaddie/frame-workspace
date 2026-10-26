@@ -54,6 +54,8 @@ changed by any of this.
   "focusedSrc"}`. `w`/`h` are the window's actual frame on the shared display; `skipped` lists
   windows that can't move (full screen, other Spaces).
 - `POST /spatial/stop`: unchanged.
+- `POST /spatial/cover?show=1|0`: show or hide the laptop cover; 409 outside Spatial Mode.
+  `/spatial` reports `"cover"`.
 - `/ticket` and `/stream` accept the new keys; spatial admission is blocked outside Spatial Mode.
 - `POST /focus?src=spatial:<wid>&u=&v=`: raise the window (AXRaise plus activating its app),
   restore its remembered cursor position, and move the cursor fence to it. Unknown source: 409.
@@ -110,8 +112,11 @@ changed by any of this.
 ## Companion
 
 - Spatial windows are keyed `spatial:<wid>` (Desktop's `separate:` stays as it is).
-- Before reconciling windows, it launches the auxiliary panels (`menubar`, `status`, `menu:0..3`)
-  with their roles, and stops them with the mode.
+- It launches window panels first and the auxiliary panels (`menubar`, `status`, `menu:0..3`)
+  with their roles once no window is waiting, and stops them with the mode. An auxiliary panel
+  counts as registered without a picture (an idle menu slot has none).
+- It calls `POST /spatial/cover?show=1` once the first window panel has registered, and
+  `show=0` when the last one goes; the helper keeps the cover off screen until then.
 - The decoder budget counts auxiliary streams at their actual pixels; an idle menu slot with no
   picture costs nothing (today an unknown size reserves the whole budget).
 - Auxiliary panels never appear in the switcher, dock, Last Session or profiles.

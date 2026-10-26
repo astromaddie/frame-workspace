@@ -101,7 +101,11 @@ after a viewer restart); older pose files without it stay flat. The current Fram
 this does not establish worn optical behavior.
 
 `ready` becomes true only after a successful texture submission and overlay
-show. The state contains texture size, received/decoded/uploaded counts, measured
+show. Menu Bar, Status and menu panels also report `registered: true` (state
+`idle`) once their stream is connected and the first surface message arrived,
+since an idle menu has no picture; windows register with `ready`.
+`--capabilities` prints the build's source identity, protocol and capabilities
+as JSON (see `docs/frame-workspace/NATIVE.md`). The state contains texture size, received/decoded/uploaded counts, measured
 decode/upload rates, last decode/conversion/upload/sync/submit durations, dropped
 frames, errors, pending recenter and the saved transform. A held static picture
 adds no frame count. These are desktop-update rates, **not compositor FPS**.
