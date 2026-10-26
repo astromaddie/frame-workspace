@@ -95,6 +95,13 @@ struct PanelSpec {
   PanelRole role = PanelRole::Window;
   int slot = -1;
   bool foveation = false, gaze = false;
+  // Window identity and size (FW-15): the app's bundle ID (its shelf icon and
+  // the owner of a remembered pose), the Mac window's size in points (its
+  // size on the wall) and the companion session. A placeholder-only spec has
+  // no stream: it holds the window's place, with an optional short error.
+  std::string bundleID, session, placeholderError;
+  int pointsWidth = 0, pointsHeight = 0;
+  bool placeholderOnly = false;
   static PanelSpec parse(const std::string &raw) {
     auto j = json(raw);
     if (!j || !json_object_is_type(j.get(), json_type_object) ||
@@ -125,9 +132,37 @@ struct PanelSpec {
       if (field(j, name) && !json_object_is_type(field(j, name), json_type_boolean))
         throw std::runtime_error("invalid host stream option");
     s.foveation = flag(j, "foveation"); s.gaze = flag(j, "gaze");
+    auto text = [&](const char *name, size_t limit, std::string &out) {
+      json_object *v = nullptr;
+      if (!json_object_object_get_ex(j.get(), name, &v)) return;
+      if (!json_object_is_type(v, json_type_string)) throw std::runtime_error("invalid host panel text");
+      out = json_object_get_string(v);
+      if (out.size() > limit) throw std::runtime_error("invalid host panel text");
+      for (unsigned char c : out) if (c < 32 || c == 127) throw std::runtime_error("invalid host panel text");
+    };
+    text("bundleID", 255, s.bundleID); text("session", 64, s.session); text("placeholderError", 160, s.placeholderError);
+    if (s.bundleID.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_") != std::string::npos)
+      throw std::runtime_error("invalid host panel bundle ID");
+    if (auto points = field(j, "points")) {
+      if (!json_object_is_type(points, json_type_array) || json_object_array_length(points) != 2)
+        throw std::runtime_error("invalid host panel size");
+      int values[2];
+      for (int i = 0; i < 2; ++i) {
+        auto v = json_object_array_get_idx(points, i);
+        if (!json_object_is_type(v, json_type_int) || json_object_get_int64(v) < 1 || json_object_get_int64(v) > 100000)
+          throw std::runtime_error("invalid host panel size");
+        values[i] = int(json_object_get_int64(v));
+      }
+      s.pointsWidth = values[0]; s.pointsHeight = values[1];
+    }
+    if (field(j, "placeholderOnly") && !json_object_is_type(field(j, "placeholderOnly"), json_type_boolean))
+      throw std::runtime_error("invalid placeholder flag");
+    s.placeholderOnly = flag(j, "placeholderOnly");
+    if (s.role != PanelRole::Window && (s.placeholderOnly || !s.bundleID.empty() || s.pointsWidth))
+      throw std::runtime_error("auxiliary panels have no window identity");
     if (s.generation.empty() || s.generation.size() > 64 ||
         s.generation.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") != std::string::npos ||
-        !validOverlayKey(s.key) || s.urlFile.empty() || s.stateFile.empty() ||
+        !validOverlayKey(s.key) || s.urlFile.empty() != s.placeholderOnly || s.stateFile.empty() ||
         s.controlFile.empty() || (s.role == PanelRole::Window && s.poseFile.empty()) || s.requestDir.empty() ||
         s.name.size() > 64 || s.name.find_first_of("\r\n\t") != std::string::npos ||
         (s.decoder != "software" && s.decoder != "v4l2") ||

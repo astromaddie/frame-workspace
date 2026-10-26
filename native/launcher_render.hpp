@@ -347,6 +347,43 @@ public:
     auto it = icons.find(path);
     return it == icons.end() ? nullptr : it->second.surface;
   }
+  // The icon file's version ("" until it can be read): a placeholder redraws
+  // when its icon arrives.
+  std::string iconVersion(const std::string &path, double now) {
+    if (!iconSurface(path, now)) return "";
+    auto it = icons.find(path);
+    return it == icons.end() ? "" : it->second.stamp;
+  }
+  // A window still opening (FW-15), or one that failed to: the Palladium face
+  // with the app's icon (a lettered tile until it arrives), the window title
+  // and a short status or error line. Opaque RGBA, top row first, for the
+  // window's own panel and chrome until its picture arrives.
+  std::vector<uint8_t> placeholder(const std::string &title, const std::string &icon, const std::string &app,
+                                   const std::string &error, int w, int h, double now) {
+    P surface = imageSurface(0, w, h);
+    P c = create(surface);
+    // Laid out on the shorter side (200 units), so text reads the same on a
+    // portrait window as on a landscape one.
+    const double k = std::min(w, h) / 200.0, units = w / k, high = h / k;
+    scale(c, k, k);
+    palladium(c, 0, 0, units, high, 0);
+    const double size = std::min(96.0, high * .42);
+    const double top = high / 2 - size / 2 - 18;
+    drawIcon(c, icon, app.empty() ? title : app, (units - size) / 2, top, size, 1, now);
+    text(c, title.empty() ? (app.empty() ? "Mac Window" : app) : title, units / 2, top + size + 24, 15, 0x3a2f47,
+         true, 0, units - 36);
+    text(c, error.empty() ? "Opening…" : error, units / 2, top + size + 44, 11.5, error.empty() ? 0x6e6182 : 0xb3402a,
+         false, 0, units - 36);
+    destroy(c);
+    flush(surface);
+    const unsigned char *bgra = data(surface);
+    std::vector<uint8_t> rgba(size_t(w) * h * 4);
+    for (size_t i = 0; i < rgba.size(); i += 4) {
+      rgba[i] = bgra[i + 2]; rgba[i + 1] = bgra[i + 1]; rgba[i + 2] = bgra[i]; rgba[i + 3] = bgra[i + 3];
+    }
+    surfaceDestroy(surface);
+    return rgba;
+  }
   // A cheap signature of the visible icons' files: a changed one redraws.
   std::string iconStamp(const LauncherPicture &p, double now) {
     std::string out;

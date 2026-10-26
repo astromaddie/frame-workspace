@@ -607,6 +607,16 @@ struct PanelOptions {
   PanelRole role = PanelRole::Window;
   int slot = -1;
   std::shared_ptr<WallAnchor> wall;
+  // A Mac window's panel (not the Workspace): its pose is remembered only
+  // once the user places it, with the window's identity (wall.hpp).
+  bool windowPose = false;
+  PoseIdentity identity;
+  int pointsWidth = 0, pointsHeight = 0;
+  // Host window panels draw a placeholder (icon, title, status) until their
+  // first picture; a placeholder-only panel has no stream at all.
+  LauncherPainter *placeholderPainter = nullptr;
+  bool placeholderOnly = false;
+  std::string placeholderError;
   bool test = false, noVR = false, testYuvOracle = false, foveation = false, gaze = false,
       diagnosticGaze = false, diagnosticScan = false, pocRewrite = true;
   double diagnosticU = 0, diagnosticV = 0, seconds = 0;
@@ -620,8 +630,30 @@ public:
   Pipeline pipe;
   GazeProducer gazeProducer;
   bool pendingRecenter = false, stopped = false;
+  // The startup recenter (no remembered pose, no wall) is not the user's.
+  bool recenterByUser = false;
   bool inWall = false, wallPlaced = false;
+  // The wall cell the host gave this panel (wall.hpp); -1 until allocated.
+  int cell = -1;
+  // The placeholder's icon and app name, from the shelf's app list.
+  std::string placeholderIcon, placeholderApp, placeholderShown, placeholderStaged;
+  bool placeholderVisible = false;
+  double lastPlaceholder = -1000;
+  void savePose() {
+    atomicWrite(poseFile, windowPose ? userPoseJSON(overlay.placement, identity) : placementJSON(overlay.placement));
+  }
+  // The picture's aspect, before a picture the Mac window's.
+  float aspect() const {
+    if (w > 0 && h > 0) return float(w) / h;
+    if (overlay.textureWidth() > 0 && overlay.textureHeight() > 0)
+      return float(overlay.textureWidth()) / overlay.textureHeight();
+    if (pointsWidth > 0 && pointsHeight > 0) return float(pointsWidth) / pointsHeight;
+    return 16.f / 9.f;
+  }
+  // The height this panel covers, for wall allocation.
+  float footprintHeight() const { return overlay.placement.width / aspect(); }
   void leaveWall() {
+    cell = -1;
     if (slot < 0) return;
     inWall = false;
     if (!requestDir.empty())
@@ -686,7 +718,7 @@ public:
   Overlay::CurvatureResult curvatureResult;
   std::shared_ptr<Picture> retryPicture;
   explicit PanelRunner(const PanelOptions &options, std::shared_ptr<OverlaySession> session = {})
-      : PanelOptions(options), endpoint(test ? Endpoint{} : parseURL(readFile(urlFile))),
+      : PanelOptions(options), endpoint(test || options.placeholderOnly ? Endpoint{} : parseURL(readFile(urlFile))),
         overlay(noVR, key, (foveation || gaze) && !diagnosticGaze, overlayName, actionManifest, std::move(session), role),
         pipe(decoderMode, conversionMode) {
     overlay.handoff = handoffMode;
@@ -694,7 +726,17 @@ public:
     endpoint.foveation = foveation; endpoint.gaze = gaze;
     pipe.acceptsSurfaces = auxiliary();
     if (!auxiliary()) {
-      bool persisted = loadPlacement(poseFile, overlay.placement);
+      bool persisted = false;
+      if (windowPose) {
+        // Only a pose the user set for this window; one without provenance
+        // (written before FW-15 provenance, or by an automated run) is moved
+        // aside, and one for another window under a reused ID is ignored.
+        const auto check = loadUserPose(poseFile, identity, overlay.placement);
+        if (check == PoseCheck::Unverified && setAsidePose(poseFile))
+          fprintf(stderr, "[native] moved a window pose without provenance aside\n");
+        persisted = check == PoseCheck::Restored;
+      } else
+        persisted = loadPlacement(poseFile, overlay.placement);
       // A new panel's first position (for example beside the Workspace) when
       // it has no saved pose of its own.
       if (!persisted && !initialPose.empty()) {
@@ -715,11 +757,13 @@ public:
         if (!overlay.setCurvature(saved).applied)
           overlay.placement.curvature = saved; // keep the user's choice for a later runtime
       }
-      if (!pendingRecenter && !inWall)
-        atomicWrite(poseFile, placementJSON(overlay.placement));
+      // Only the Workspace rewrites its pose at once; a window's starting
+      // place (restored, beside the Workspace, recentered) is not saved.
+      if (!pendingRecenter && !inWall && !windowPose)
+        savePose();
     }
     pipe.pocRewrite = pocRewrite;
-    if (!test)
+    if (!test && !placeholderOnly)
       pipe.start(endpoint);
     start = nowMs(); lastState = lastLog = previousState = start;
     // Destruction order is producer, pipeline, overlay, including exceptions.
@@ -753,6 +797,10 @@ public:
            "\",\"hostGeneration\":" + jsonString(hostGeneration) +
            ",\"hostPid\":" + std::to_string(hostGeneration.empty() ? 0 : getpid()) +
            ",\"wallSlot\":" + std::to_string(inWall ? slot : -1) +
+           ",\"wallCell\":" + std::to_string(inWall ? cell : -1) +
+           ",\"placeholder\":" + (placeholderVisible && !ready ? "true" : "false") +
+           ",\"placeholderOnly\":" + (placeholderOnly ? "true" : "false") +
+           ",\"placeholderError\":" + jsonString(placeholderError) +
            ",\"role\":" + jsonString(roleName(role)) +
            ",\"surfaceVisible\":" + (overlay.surfaceVisible ? "true" : "false") +
            ",\"surfaceSeq\":" + std::to_string(surface.seq) +
@@ -901,7 +949,7 @@ public:
     }
     if (overlay.updatePlacementInput(allowedHands, consumeSqueeze, revealHands)) {
       leaveWall();
-      atomicWrite(poseFile, placementJSON(overlay.placement));
+      savePose();
     }
     if (overlay.closeRequested) {
       overlay.closeRequested = false;
@@ -1000,10 +1048,10 @@ public:
                 spatial = overlay.move(float(delta[0]), float(delta[1]), float(delta[2])) || spatial;
               if (spatial || bent || placementChanged || (requestedCurvature && curvatureResult.applied)) {
                 leaveWall();
-                atomicWrite(poseFile, placementJSON(overlay.placement));
+                savePose();
               }
               if (flag(j, "recenter")) {
-                leaveWall(); pendingRecenter = true;
+                leaveWall(); pendingRecenter = true; recenterByUser = true;
               }
               if (auto requested = field(j, "present"))
                 if (json_object_is_type(requested, json_type_string)) {
@@ -1016,7 +1064,7 @@ public:
                 overlay.focus();
               }
               if (placementChanged)
-                atomicWrite(poseFile, placementJSON(overlay.placement));
+                savePose();
               revision = controlResultRevision = r;
               if (flag(j, "stop")) {
                 exitReason = "control-stop";
@@ -1031,7 +1079,8 @@ public:
       if (pendingRecenter && overlay.recenter()) {
         pendingRecenter = false;
         overlay.apply();
-        atomicWrite(poseFile, placementJSON(overlay.placement));
+        if (recenterByUser || !windowPose) savePose();
+        recenterByUser = false;
       }
     }
     auto picture = pipe.take();
@@ -1050,6 +1099,24 @@ public:
       picture = retryPicture;
       lastPattern = now;
     }
+    // Until its first picture, a window shows its placeholder: the app icon
+    // and title on the Palladium face, redrawn when the icon, title or error
+    // changes (at most four times a second).
+    if (!picture && !ready && placeholderPainter && !auxiliary() && now - lastPlaceholder >= 250) {
+      const std::string signature = overlayName + "\n" + placeholderApp + "\n" + placeholderIcon + "\n" +
+          placeholderPainter->iconVersion(placeholderIcon, now) + "\n" + placeholderError;
+      if (signature != placeholderShown) {
+        lastPlaceholder = now;
+        const float ratio = std::clamp(aspect(), .25f, 4.f);
+        const int pw = 640, ph = std::clamp(int(std::lround(pw / ratio)), 160, 2560);
+        auto p = std::make_shared<Picture>();
+        p->width = pw; p->height = ph; p->placeholder = true;
+        p->rgba = placeholderPainter->placeholder(overlayName, placeholderIcon, placeholderApp, placeholderError, pw, ph, now);
+        p->received = p->decoded = now;
+        picture = p;
+        placeholderStaged = signature;
+      }
+    }
     // The bend turned to (or from) top-to-bottom: redraw the still picture
     // turned to match, rather than waiting for the desktop to change.
     if (!picture)
@@ -1060,7 +1127,12 @@ public:
         const auto &picture = c.picture;
         if (c.dropped)
           continue;
-        if (c.submitted) {
+        if (c.submitted && picture->placeholder) {
+          // Shown, but not the window: readiness waits for its own picture.
+          placeholderVisible = true;
+          placeholderShown = placeholderStaged;
+          retryPicture.reset();
+        } else if (c.submitted) {
           ready = true;
           uploadedSeq = picture->seq; uploadedReceived = picture->received;
           refreshSurface();
@@ -1087,11 +1159,11 @@ public:
       done.clear();
     };
     if (inWall) {
-      // Wait for valid tracking; all later windows use the same session anchor.
-      if (!wall->ready) return true;
-      const float aspect = picture ? float(picture->outputWidth()) / picture->outputHeight() :
-          (w > 0 && h > 0 ? float(w) / h : 16.f / 9.f);
-      auto placed = wallPlacement(slot, aspect, wall->matrix);
+      // Wait for valid tracking (all later windows use the same session
+      // anchor) and for the host to hand this panel a free cell.
+      if (!wall->ready || cell < 0) return true;
+      const float ratio = picture ? float(picture->outputWidth()) / picture->outputHeight() : aspect();
+      auto placed = wallPlacement(cell, ratio, wall->matrix, float(pointsWidth), float(pointsHeight));
       if (!wallPlaced || std::abs(placed.width - overlay.placement.width) > 1e-6f) {
         overlay.placement = placed;
         overlay.apply(); wallPlaced = true;
@@ -1228,6 +1300,11 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     };
   }
   if (!defaults.actionManifest.empty()) session->initInput(defaults.actionManifest);
+  // Draws window placeholders; declared before the panels that use it.
+  std::unique_ptr<LauncherPainter> placeholderPainter;
+  try { placeholderPainter = std::make_unique<LauncherPainter>(); }
+  catch (...) { fprintf(stderr, "[native-host] Cairo unavailable: windows show no placeholder\n"); }
+  std::set<std::string> sweptPoseFolders;
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;
   PanelBook book;
@@ -1355,6 +1432,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       fprintf(stderr, "[native-host] shelf pose could not be saved\n");
   };
   bool anchored = false, buttonWas = false;
+  // Arrange Windows: a newer request count re-tiles every window panel.
+  int64_t arrangeSeq = 0;
+  bool arrangeSeen = false, arrangeWanted = false;
   SpatialPress press;
   std::string menuID;
   SpatialNavigation navigation;
@@ -1392,7 +1472,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         focusRecency[key] = ++focusClock;
         refreshWallBudget();
         o.apply();
-        atomicWrite(e.spec.poseFile, placementJSON(o.placement));
+        e.panel->savePose();
         emit("{\"action\":\"switch\",\"key\":" + jsonString(key) + "}");
         e.panel->pipe.sendFocus(.5f, .5f);
         for (auto &[otherPath, other] : entries) if (other.panel && other.spec.role == PanelRole::Window)
@@ -1522,7 +1602,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             const auto &s = entry.spec;
             duplicateState |= spec.stateFile == s.stateFile;
             duplicate |= spec.key == s.key || spec.stateFile == s.stateFile || spec.controlFile == s.controlFile ||
-                         (!spec.poseFile.empty() && spec.poseFile == s.poseFile) || spec.urlFile == s.urlFile;
+                         (!spec.poseFile.empty() && spec.poseFile == s.poseFile) ||
+                         (!spec.urlFile.empty() && spec.urlFile == s.urlFile);
           }
           Entry entry{spec, {}};
           try {
@@ -1534,6 +1615,19 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             options.decoderMode = spec.decoder; options.conversionMode = spec.conversion;
             options.foveation = spec.foveation; options.gaze = spec.gaze; options.role = spec.role;
             options.slot = spec.slot; options.wall = wall;
+            options.windowPose = spec.role == PanelRole::Window;
+            options.identity = {spec.bundleID, spec.name, spec.session};
+            options.pointsWidth = spec.pointsWidth; options.pointsHeight = spec.pointsHeight;
+            options.placeholderOnly = spec.placeholderOnly; options.placeholderError = spec.placeholderError;
+            options.placeholderPainter = spec.role == PanelRole::Window ? placeholderPainter.get() : nullptr;
+            // First sight of a pose folder: window poses without provenance
+            // move aside before any panel reads them.
+            if (options.windowPose && !spec.poseFile.empty()) {
+              const auto folder = std::filesystem::path(spec.poseFile).parent_path().string();
+              if (sweptPoseFolders.insert(folder).second)
+                if (int moved = sweepUnverifiedPoses(folder))
+                  fprintf(stderr, "[native-host] moved %d window poses without provenance aside\n", moved);
+            }
             // The host duration limits the process, rather than each later panel.
             options.seconds = 0;
             entry.panel = std::make_unique<PanelRunner>(options, session);
@@ -1564,6 +1658,11 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
           spatial = std::move(next);
           if (spatial.spatial)
             shelfPin.observeSequence(spatial.recenterSeq);
+          if (spatial.spatial) {
+            if (arrangeSeen && spatial.arrangeSeq > arrangeSeq) arrangeWanted = true;
+            arrangeSeq = spatial.arrangeSeq;
+            arrangeSeen = true;
+          }
           if (!spatial.spatial)
             menuID.clear();
           if (spatial.spatial && !spatial.chosen.empty() &&
@@ -1603,6 +1702,67 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       }
     } else
       anchored = false;
+    // Arrange Windows: every window panel onto a wall in front of the user,
+    // focused window in the centre, kept there as the user's own placement.
+    if (arrangeWanted && spatial.spatial && headValid) {
+      arrangeWanted = false;
+      wall->recapture(headPose);
+      std::vector<PanelRunner *> panels;
+      std::vector<WallArrangeItem> items;
+      for (auto &[path, e] : entries)
+        if (e.panel && e.spec.role == PanelRole::Window) {
+          auto *panel = e.panel.get();
+          const int previous = panel->inWall && panel->cell >= 0 ? panel->cell
+                               : panel->slot >= 0 ? panel->slot : 1024 + int(items.size());
+          panels.push_back(panel);
+          items.push_back({e.spec.key == focus.active, focusRecency[e.spec.key], previous});
+        }
+      const auto order = wallArrangeOrder(items);
+      for (size_t i = 0; i < order.size(); ++i) {
+        auto *panel = panels[order[i]];
+        auto &o = panel->overlay;
+        const auto before = o.placement;
+        o.placement = wallPlacement(int(std::min<size_t>(i, 1023)), panel->aspect(), wall->matrix,
+                                    float(panel->pointsWidth), float(panel->pointsHeight));
+        o.apply();
+        if (before.bendA > 0 || before.bendB > 0) o.setBend(before.bendVertical, before.bendA, before.bendB);
+        panel->pendingRecenter = false;
+        panel->leaveWall();
+        panel->inWall = false;
+        try { panel->savePose(); } catch (...) { fprintf(stderr, "[native-host] arranged pose could not be saved\n"); }
+      }
+      refreshWallBudget();
+      fprintf(stderr, "[native-host] arranged %zu windows\n", order.size());
+    }
+    // Free wall cells for windows waiting on the wall, against what is
+    // actually there: cells other wall panels hold and whatever hand-placed
+    // (or restored) panels cover. Lowest companion slot first.
+    if (wall->ready) {
+      std::vector<int> taken;
+      std::vector<WallBounds> occupied;
+      std::vector<PanelRunner *> waiting;
+      for (auto &[path, e] : entries) {
+        if (!e.panel || e.spec.role != PanelRole::Window) continue;
+        auto *panel = e.panel.get();
+        if (panel->inWall && panel->cell >= 0) taken.push_back(panel->cell);
+        else if (panel->inWall) waiting.push_back(panel);
+        else if (!panel->pendingRecenter)
+          occupied.push_back(panelWallBounds(panel->overlay.placement, panel->footprintHeight(), wall->matrix));
+      }
+      std::stable_sort(waiting.begin(), waiting.end(), [](auto *a, auto *b) { return a->slot < b->slot; });
+      for (auto *panel : waiting) {
+        panel->cell = wallAllocate(panel->slot, occupied, taken);
+        taken.push_back(panel->cell);
+      }
+    }
+    // Placeholders show the app's shelf icon and name.
+    for (auto &[path, e] : entries)
+      if (e.panel && e.spec.role == PanelRole::Window && !e.panel->ready && !e.spec.bundleID.empty()) {
+        const int app = spatialAppIndex(spatial, e.spec.bundleID);
+        e.panel->placeholderIcon = app >= 0 && !spatial.apps[app].icon.empty()
+            ? spatialFolder + "/icons/" + spatial.apps[app].icon : "";
+        e.panel->placeholderApp = app >= 0 ? spatial.apps[app].name : "";
+      }
     auto setLauncher = [&](bool open) {
       if (launcherView.open == open && spatial.launcher.open == open) return;
       launcherView.request(spatial.launcher, open);
@@ -2166,7 +2326,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
 }
 int main(int argc, char **argv) {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
-      requestDir, hostDir, spatialStateFile, testHandsFile,
+      requestDir, hostDir, spatialStateFile, testHandsFile, bundleID,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -2219,6 +2379,8 @@ int main(int argc, char **argv) {
         key = value();
       else if (a == "--overlay-name")
         overlayName = value();
+      else if (a == "--bundle-id")
+        bundleID = value();
       else if (a == "--initial-pose")
         initialPose = value();
       else if (a == "--action-manifest")
@@ -2518,6 +2680,10 @@ int main(int argc, char **argv) {
     options.spatialStateFile = spatialStateFile;
     options.testHandsFile = testHandsFile;
     options.key = key;
+    // A standalone window panel (Desktop Mode) remembers only poses its user
+    // set, like the shared host's; the Workspace keeps its own pose file.
+    options.windowPose = key.find(".panel-") != std::string::npos;
+    options.identity = {bundleID, overlayName, ""};
     options.decoderMode = decoderMode;
     options.conversionMode = conversionMode;
     options.presentMode = presentMode;

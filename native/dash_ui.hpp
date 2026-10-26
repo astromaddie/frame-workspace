@@ -28,7 +28,7 @@ struct DashState {
 };
 struct DashButton {
   double x = 0, y = 0, w = 0, h = 0;
-  std::string action, key; // workspace_start, workspace_stop, recenter, close
+  std::string action, key; // workspace_start, workspace_stop, recenter, arrange_windows, close
   bool enabled = true;
   bool contains(double px, double py) const { return px >= x && px <= x + w && py >= y && py <= y + h; }
 };
@@ -75,6 +75,10 @@ public:
       button(372, 198, 120, 50, "Stop", "workspace_stop", "", hover, false, !s.locked);
       button(508, 198, 160, 50, "Recenter", "recenter", "", hover, false,
              s.macConnected && s.workspaceRunning && !s.workspaceBusy && !s.locked);
+      // Spatial Mode: every window back onto the wall in front of the user.
+      if (s.spatial)
+        button(684, 198, 240, 50, "Arrange Windows", "arrange_windows", "", hover, false,
+               s.macConnected && s.workspaceRunning && !s.workspaceBusy && !s.locked && !s.windows.empty());
     } else {
       button(372, 198, 260, 50, "Start Workspace", "workspace_start", "", hover, true, canStart);
     }

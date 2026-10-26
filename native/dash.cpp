@@ -1,8 +1,8 @@
 // frame-workspace-dash: the single "Frame Workspace" entry on the SteamVR bar
 // (FW-08). It owns a dashboard overlay with SteamVR's laser input, shows the
 // Workspace and every floating window, and turns presses into fixed requests
-// the Mac companion carries out (start/stop the Workspace, recenter, close a
-// window). The companion rewrites the state file every couple of seconds; an
+// the Mac companion carries out (start/stop the Workspace, recenter, arrange
+// the Spatial Mode windows, close a window). The companion rewrites the state file every couple of seconds; an
 // old file means the Mac is not connected.
 //
 //   frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]
