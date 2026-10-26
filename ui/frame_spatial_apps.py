@@ -1,4 +1,4 @@
-"""FW-15 app/switcher data. No Mac page UI and no device work until sync()."""
+"""FW-15 app/switcher and launcher data. No Mac page UI and no device work until sync()."""
 import base64
 import json
 from pathlib import Path
@@ -8,12 +8,21 @@ import struct
 import threading
 import time
 
+import frame_spatial_launcher as launcher
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "workspace-spatial-on-frame.py"
 BUNDLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 KEY = re.compile(r"com\.frame-workspace\.native\.\d{1,15}\.panel-w\d{1,15}\Z")
 SOURCE = re.compile(r"(?:window|separate|spatial):(\d{1,15})\Z")
 VERBS = {"open", "hide", "unhide", "quit", "show_windows"}
 VERB_NAMES = {"open": "Open", "hide": "Hide", "unhide": "Show", "quit": "Quit", "show_windows": "Show"}
+CATALOG_REFRESH = 60      # seconds between launcher catalogue reads while Spatial Mode runs
+ICON_BATCH = 90000        # base64 bytes of icons per Frame write (one SSH command line)
+
+
+def default_layout_path():
+    import frame_host  # the Mac app's data folder; imported late so tests can redirect it
+    return frame_host.data_dir("spatial-launcher-layout.json")
 
 
 def clean(value, limit):
@@ -21,7 +30,7 @@ def clean(value, limit):
 
 
 class SpatialApps:
-    def __init__(self, macview):
+    def __init__(self, macview, layout_path=None):
         self.macview = macview
         self.wake = threading.Event()
         self.lock = threading.Lock()
@@ -39,6 +48,24 @@ class SpatialApps:
         # Counts dashboard Recenter requests made in Spatial Mode; the headset
         # brings the shelf back in front of the user when it grows.
         self.recenter_seq = 0
+        # Launcher A: the catalogue (helper's apps and starting layout, with the
+        # user's saved arrangement), the open/close sequence, the search field
+        # fed by the Mac keyboard lease, and the launcher icons the Frame lacks.
+        self.layout_path = Path(layout_path) if layout_path else None
+        self.catalog = None
+        # Catalogue numbers start from the clock, so a restarted companion never
+        # mistakes the Frame's older launcher.json for its own.
+        self.catalog_seq = int(time.time() * 1000)
+        self._catalog_at = None
+        self._catalog_key = None
+        self.launcher_open = False
+        self.launcher_seq = 0
+        self.search = launcher.SearchField()
+        self.results = []
+        self._lease = False
+        self._keys_after = 0
+        self._published_catalog = None
+        self._launcher_icons = []
 
     @property
     def enabled(self):
@@ -91,9 +118,18 @@ class SpatialApps:
         active = self.enabled if active is None else active
         if not active:
             # Never start a helper just to turn off a tap it never installed.
+            # Desktop mode also ends the launcher's keyboard lease in the helper.
+            with self.lock:
+                self._close_launcher_locked()
             if self._configured and self.macview.agent is self._agent:
                 if self._agent is not None and self._agent.poll() is None:
-                    self.macview.call("/switcher", method="POST", mode="desktop")
+                    try:
+                        if self._lease:
+                            self.macview.call("/launcher/keys", method="POST", verb="close")
+                    finally:
+                        self._lease = False
+                        self.macview.call("/switcher", method="POST", mode="desktop")
+            self._lease = False
             self._configured = False
             self._set_state(None)
             return
@@ -128,14 +164,22 @@ class SpatialApps:
         if len(result) > 128 or sum(len(a["windows"]) for a in result) > 256:
             raise ValueError("Spatial app/window limit exceeded")
         entries = [{"key": w["key"], "bundleID": a["bundleID"]} for a in result for w in a["windows"]]
+        self._refresh_catalog()
         switcher = self.macview.call("/switcher", method="POST", mode="spatial",
                                     entries=json.dumps(entries, separators=(",", ":")))
+        if self.macview.agent is not self._agent:
+            self._lease = False  # a restarted helper has no lease
         self._agent = self.macview.agent
         self._configured = True
         self._entries = entries
+        if self.launcher_open and not self._lease:
+            self._take_keyboard()
         state = {"mode": "spatial", "apps": result, "switcher": self._switcher(switcher, entries)}
-        if self.recenter_seq:
-            state["recenterSeq"] = self.recenter_seq
+        with self.lock:
+            if self.recenter_seq:
+                state["recenterSeq"] = self.recenter_seq
+            if self.catalog is not None:
+                state["launcher"] = self._launcher_locked()
         self._set_state(state)
 
     @staticmethod
@@ -168,6 +212,203 @@ class SpatialApps:
             with self.lock:
                 state = {**self.state, "switcher": switcher} if self.state else None
             self._set_state(state)
+        self.poll_launcher()
+
+    # Launcher A ------------------------------------------------------------
+
+    def _layout_path(self):
+        if self.layout_path is None:
+            self.layout_path = Path(default_layout_path())
+        return self.layout_path
+
+    def _refresh_catalog(self, force=False):
+        """Reads GET /launcher every CATALOG_REFRESH seconds (or when forced) and
+        merges the saved arrangement. An older helper without it leaves the
+        launcher unavailable rather than failing the shelf."""
+        now = time.monotonic()
+        if not force and self._catalog_at is not None and now - self._catalog_at < CATALOG_REFRESH:
+            return
+        self._catalog_at = now
+        try:
+            raw = launcher.sanitize_catalog(self.macview.call("/launcher"))
+        except Exception as exc:
+            self.error = str(exc)
+            return
+        if not raw["apps"]:
+            return  # nothing to launch: the shelf shows no Applications button
+        known = {a["bundleID"] for a in raw["apps"]}
+        items = launcher.merge_layout(raw["items"], launcher.load_layout(self._layout_path()), known)
+        with self.lock:
+            self._set_catalog_locked({**raw, "items": items})
+
+    def _set_catalog_locked(self, catalog):
+        key = json.dumps([catalog["apps"], catalog["items"], catalog["recent"]], sort_keys=True)
+        self.catalog = catalog
+        if key != self._catalog_key:
+            self._catalog_key = key
+            self.catalog_seq += 1
+            self._search_locked()
+
+    def _search_locked(self):
+        apps = [(a["bundleID"], a["name"]) for a in self.catalog["apps"]] if self.catalog else []
+        recent = self.catalog["recent"] if self.catalog else []
+        self.results = launcher.search(apps, self.search.query, recent)[:launcher.MAX_APPS]
+        self.search.selected = min(self.search.selected, max(len(self.results) - 1, 0))
+
+    def _launcher_locked(self):
+        state = {"available": True, "open": self.launcher_open, "seq": self.launcher_seq,
+                 "catalog": self.catalog_seq, "query": self.search.query,
+                 "selected": self.search.selected, "pageStep": self.search.page_step,
+                 "keyboard": self._lease}
+        if self.search.query.strip():
+            state["results"] = self.results
+        return state
+
+    def _publish_launcher(self):
+        with self.lock:
+            if self.state is None or self.catalog is None:
+                return
+            state = {**self.state, "launcher": self._launcher_locked()}
+        self._set_state(state)
+
+    def _close_launcher_locked(self):
+        if self.launcher_open:
+            self.launcher_open = False
+            self.launcher_seq += 1
+        self.search.reset()
+        self.results = []
+
+    def _take_keyboard(self):
+        """The Mac keyboard types into the search field while the launcher is open."""
+        result = self.macview.call("/launcher/keys", method="POST", verb="open")
+        self._lease = isinstance(result, dict) and result.get("active") is True
+        if self._lease:
+            snapshot = self.macview.call("/launcher/keys", after=0)
+            last = snapshot.get("last") if isinstance(snapshot, dict) else None
+            self._keys_after = last if type(last) is int and last >= 0 else 0
+
+    def _launcher_open(self):
+        with self.helper_lock:
+            if not self.enabled or self.catalog is None:
+                return
+            with self.lock:
+                if not self.launcher_open:
+                    self.launcher_open = True
+                    self.launcher_seq += 1
+                self.search.reset()
+                self._search_locked()
+            self._publish_launcher()
+            try:
+                self._take_keyboard()
+            finally:
+                self._publish_launcher()
+            self._refresh_catalog(force=time.monotonic() - (self._catalog_at or 0) > 10)
+            self._publish_launcher()
+
+    def _launcher_close(self):
+        with self.helper_lock:
+            with self.lock:
+                self._close_launcher_locked()
+            self._publish_launcher()
+            if self._lease:
+                self._lease = False
+                if self._configured and self.macview.agent is self._agent:
+                    self.macview.call("/launcher/keys", method="POST", verb="close")
+            self._publish_launcher()
+
+    def poll_launcher(self):
+        """Typed keys from the helper's lease (polling also renews it)."""
+        submit = None
+        with self.helper_lock:
+            if (not self.enabled or not self._configured or not self.launcher_open or not self._lease or
+                    self.macview.agent is not self._agent):
+                return
+            snapshot = self.macview.call("/launcher/keys", after=self._keys_after)
+            if not isinstance(snapshot, dict):
+                return
+            if snapshot.get("active") is not True:
+                self._lease = False  # the next refresh asks again
+            close = False
+            with self.lock:
+                for event in snapshot.get("events") or []:
+                    n = event.get("n") if isinstance(event, dict) else None
+                    if type(n) is not int or n <= self._keys_after:
+                        continue
+                    self._keys_after = n
+                    query = self.search.query
+                    action = self.search.apply(event, len(self.results))
+                    if self.search.query != query:
+                        self._search_locked()
+                    if action == "close":
+                        close = True
+                        break
+                    if action == "submit" and self.search.query.strip() and self.results:
+                        submit = self.results[min(self.search.selected, len(self.results) - 1)]
+                        close = True
+                        break
+            if close:
+                self._launcher_close()
+            else:
+                self._publish_launcher()
+        if submit:
+            self._lane(self._app_action, submit, "open")
+
+    def _launcher_move(self, moved, before, folder):
+        with self.helper_lock:
+            with self.lock:
+                if self.catalog is None:
+                    return
+                items = launcher.move(self.catalog["items"], moved, before, folder)
+                if items is None:
+                    return
+                launcher.save_layout(self._layout_path(), items)
+                self._set_catalog_locked({**self.catalog, "items": items})
+            self._publish_launcher()
+
+    def _catalog_json(self):
+        catalog = self.catalog
+        return json.dumps({"catalog": self.catalog_seq,
+                           "apps": [{"id": a["bundleID"], "name": a["name"], "v": a["version"]} for a in catalog["apps"]],
+                           "items": catalog["items"], "recent": catalog["recent"]},
+                          ensure_ascii=True, separators=(",", ":"))
+
+    def _sync_launcher(self, reported):
+        """Publish the catalogue when the Frame's copy differs, then send a batch
+        of the icons it lacks: recent apps first, then the grid's order."""
+        with self.lock:
+            catalog = self.catalog
+            raw = self._catalog_json() if catalog is not None else None
+            seq = self.catalog_seq
+        if raw is None:
+            return
+        if reported != seq:
+            if len(raw.encode()) > 100000:
+                raise ValueError("Launcher catalogue is too large")
+            out = self._run("launcher", raw)
+            for line in out.splitlines():
+                if line.startswith("LAUNCHER_ICONS_MISSING "):
+                    missing = set(json.loads(line.split(" ", 1)[1]))
+                    order = list(dict.fromkeys(catalog["recent"] + list(launcher.flatten(catalog["items"]))))
+                    self._launcher_icons = [b for b in order if b in missing]
+            self._published_catalog = seq
+        versions = {a["bundleID"]: a["version"] for a in catalog["apps"]}
+        batch, size = [], 0
+        while self._launcher_icons and len(batch) < 3 * 8:
+            bundle = self._launcher_icons[0]
+            try:
+                encoded, version = self._icon(bundle)
+            except Exception as exc:
+                self.error = str(exc)
+                self._launcher_icons.pop(0)  # retried when the catalogue is next published
+                continue
+            if batch and size + len(encoded) > ICON_BATCH:
+                break
+            self._launcher_icons.pop(0)
+            batch += [bundle, version or versions.get(bundle, ""), encoded]
+            size += len(encoded)
+        if batch:
+            self._run("icons", *batch)
+            self._sent_icons.update(batch[0::3])
 
     def _run(self, *args):
         return self.macview.run("python3 - " + " ".join(shlex.quote(a) for a in args),
@@ -194,28 +435,48 @@ class SpatialApps:
         if not self.enabled and self._published:
             self._run("clear")
             self._published = False
+        reported = None
         for line in out.splitlines():
             if line.startswith("SPATIAL_ICONS_MISSING "):
                 missing = json.loads(line.split(" ", 1)[1])
                 if isinstance(missing, list):
                     self._sent_icons.difference_update(b for b in missing if isinstance(b, str))
+            elif line.startswith("LAUNCHER_CATALOG "):
+                value = json.loads(line.split(" ", 1)[1])
+                reported = value if type(value) is int else None
+        if self.enabled and state.get("launcher"):
+            try:
+                self._sync_launcher(reported)
+            except Exception as exc:
+                self.error = str(exc)
         # Limit initial icon work so large Docks do not delay subsequent switcher updates.
         pending = [a["bundleID"] for a in state["apps"] if a["bundleID"] not in self._sent_icons]
         for bundle in pending[:4]:
             try:
-                if bundle not in self._icons:
-                    encoded = self.macview.call("/apps/icon", bundleID=bundle)["png"]
-                    if not isinstance(encoded, str) or len(encoded) > 100000:
-                        raise ValueError("Invalid app icon")
-                    data = base64.b64decode(encoded, validate=True)
-                    if (len(data) < 33 or data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" or
-                            struct.unpack(">II", data[16:24]) != (128, 128)):
-                        raise ValueError("Expected a 128x128 PNG")
-                    self._icons[bundle] = encoded
-                self._run("icon", bundle, self._icons[bundle])
+                self._run("icon", bundle, self._icon(bundle)[0])
                 self._sent_icons.add(bundle)
             except Exception as exc:
                 self.error = str(exc)  # retry failed icons, without blocking the state
+
+    def _icon(self, bundle):
+        """A checked 128 px PNG (base64) and its version, cached by both."""
+        cached = self._icons.get(bundle)
+        version = None
+        if self.catalog is not None:
+            version = next((a["version"] for a in self.catalog["apps"] if a["bundleID"] == bundle), None)
+        if cached is None or (version is not None and cached[1] not in (None, version)):
+            reply = self.macview.call("/apps/icon", bundleID=bundle)
+            encoded = reply["png"]
+            if not isinstance(encoded, str) or len(encoded) > 100000:
+                raise ValueError("Invalid app icon")
+            data = base64.b64decode(encoded, validate=True)
+            if (len(data) < 33 or data[:16] != b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" or
+                    struct.unpack(">II", data[16:24]) != (128, 128)):
+                raise ValueError("Expected a 128x128 PNG")
+            served = reply.get("version")
+            cached = (encoded, launcher.clean(served, 96) if isinstance(served, str) else version)
+            self._icons[bundle] = cached
+        return cached
 
     def recenter(self):
         """Dashboard Recenter in Spatial Mode: publish a newer counter."""
@@ -233,7 +494,7 @@ class SpatialApps:
                 return False
             self.recenter()
             return True
-        if action not in ("app", "switch", "switcher"):
+        if action not in ("app", "switch", "switcher", "launcher"):
             return False
         if not self.enabled:
             return True
@@ -241,8 +502,23 @@ class SpatialApps:
             bundle, verb = request.get("bundleID"), request.get("verb")
             with self.lock:
                 known = {a["bundleID"] for a in self.state["apps"]} if self.state else set()
+                if self.catalog is not None and verb == "open":
+                    known |= {a["bundleID"] for a in self.catalog["apps"]}
             if isinstance(bundle, str) and bundle in known and isinstance(verb, str) and verb in VERBS:
                 self._lane(self._app_action, bundle, verb)
+        elif action == "launcher":
+            verb = request.get("verb")
+            if verb == "open":
+                self._lane(self._launcher_open)
+            elif verb == "close":
+                self._lane(self._launcher_close)
+            elif verb == "move":
+                moved, before, folder = request.get("id"), request.get("before"), request.get("folder")
+                ids = re.compile(r"(?:folder:[A-Za-z0-9_-]{1,40}|[A-Za-z0-9][A-Za-z0-9._-]{0,199})\Z")
+                if (isinstance(moved, str) and ids.fullmatch(moved) and
+                        (before is None or (isinstance(before, str) and ids.fullmatch(before))) and
+                        (folder is None or (isinstance(folder, str) and launcher.FOLDER.fullmatch(folder)))):
+                    self._lane(self._launcher_move, moved, before, folder)
         elif action == "switch":
             key = request.get("key")
             if isinstance(key, str) and KEY.fullmatch(key) and self._source(key):
@@ -262,7 +538,7 @@ class SpatialApps:
 
     def _app_name(self, bundle):
         with self.lock:
-            apps = self.state["apps"] if self.state else []
+            apps = (self.state["apps"] if self.state else []) + (self.catalog["apps"] if self.catalog else [])
         return next((a["name"] for a in apps if a["bundleID"] == bundle and a.get("name")), bundle)
 
     def _app_windows(self, bundle):
