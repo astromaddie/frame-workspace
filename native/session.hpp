@@ -9,7 +9,10 @@
 #include <SDL.h>
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL_opengl.h>
+#include <algorithm>
+#include <cmath>
 #include <dlfcn.h>
+#include <functional>
 #include <memory>
 #include <map>
 #include <cstdio>
@@ -125,10 +128,13 @@ public:
   VR_IVRSystem_FnTable *system = nullptr;
   VR_IVRInput_FnTable *input = nullptr;
   VRActionSetHandle_t actionSet = 0;
-  VRActionHandle_t aim = 0, grab = 0, squeeze = 0, switcher = 0, haptic = 0;
+  VRActionHandle_t aim = 0, grab = 0, squeeze = 0, switcher = 0, haptic = 0, secondary = 0, scroll = 0;
   VRInputValueHandle_t hands[2]{};
   struct Hand {
     bool valid = false, grab = false, squeeze = false, switcher = false;
+    // Content input: a right click (right B) and the thumbstick's scroll.
+    bool secondary = false;
+    float scroll[2]{};
     HmdMatrix34_t pose{};
     EyeRay ray() const {
       EyeRay r;
@@ -139,6 +145,10 @@ public:
     }
   } hand[2];
   std::unique_ptr<GazeBridge> eyes;
+  // Test-only, with --no-vr: supplies both hands' samples in place of
+  // OpenVR, at the same per-frame boundary, so the production routing and
+  // content arbiter run unchanged (native/tests_host.py).
+  std::function<void(Hand (&)[2])> testHands;
   const char *exitReason = "running";
   // Counts SteamVR recenters (seated or standing zero pose resets), which move
   // the room under anything pinned in it.
@@ -197,6 +207,9 @@ public:
         table->GetInputSourceHandle((char *)"/user/hand/left", &hands[0]) ||
         table->GetInputSourceHandle((char *)"/user/hand/right", &hands[1])) return false;
     table->GetActionHandle((char *)"/actions/workspace/in/switcher", &switcher);
+    // Older manifests lack these; content clicks still work with the trigger.
+    table->GetActionHandle((char *)"/actions/workspace/in/secondary", &secondary);
+    table->GetActionHandle((char *)"/actions/workspace/in/scroll", &scroll);
     input = table; manifestPath = manifest;
     return true;
   }
@@ -205,7 +218,10 @@ public:
   bool events() {
     SDL_Event s;
     while (SDL_PollEvent(&s)) if (s.type == SDL_QUIT) { exitReason = "sdl-quit"; return false; }
-    if (noVR) return true;
+    if (noVR) {
+      if (testHands) { for (auto &h : hand) h = {}; testHands(hand); }
+      return true;
+    }
     VREvent_t event{};
     while (system->PollNextEvent(&event, sizeof event))
       if (event.eventType == EVREventType_VREvent_Quit) {
@@ -223,12 +239,18 @@ public:
     if (input->UpdateActionState(&active, sizeof active, 1)) return true;
     for (int i = 0; i < 2; ++i) {
       InputPoseActionData_t pose{};
-      InputDigitalActionData_t g{}, s{}, sw{};
+      InputDigitalActionData_t g{}, s{}, sw{}, b{};
+      InputAnalogActionData_t stick{};
       input->GetPoseActionDataForNextFrame(aim, ETrackingUniverseOrigin_TrackingUniverseStanding,
                                          &pose, sizeof pose, hands[i]);
       input->GetDigitalActionData(grab, &g, sizeof g, hands[i]);
       input->GetDigitalActionData(squeeze, &s, sizeof s, hands[i]);
       if(switcher) input->GetDigitalActionData(switcher, &sw, sizeof sw, hands[i]);
+      if (secondary) input->GetDigitalActionData(secondary, &b, sizeof b, hands[i]);
+      if (scroll) input->GetAnalogActionData(scroll, &stick, sizeof stick, hands[i]);
+      hand[i].secondary = b.bActive && b.bState;
+      hand[i].scroll[0] = stick.bActive && std::isfinite(stick.x) ? std::clamp(stick.x, -1.f, 1.f) : 0.f;
+      hand[i].scroll[1] = stick.bActive && std::isfinite(stick.y) ? std::clamp(stick.y, -1.f, 1.f) : 0.f;
       hand[i].switcher = sw.bActive && sw.bState;
       hand[i].valid = pose.bActive && pose.pose.bPoseIsValid && pose.pose.bDeviceIsConnected;
       hand[i].pose = pose.pose.mDeviceToAbsoluteTracking;

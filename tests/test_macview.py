@@ -1467,6 +1467,21 @@ class SpatialPolicy(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
         self.assertEqual(self.calls[-1][2]["src"], "separate:2")
 
+    def test_direct_native_focus_steers_live_set_without_replaying_focus(self):
+        a, b = self.panel("spatial:1", 1), self.panel("spatial:2", 2)
+        self.focus(a)
+        self.assertEqual(len(self.calls), 1)
+        self.now += .05
+        self.focus(b)  # queued behind the four-per-second cap
+        self.mv._handle_frame_requests(json.dumps({"action": "focus", "key": a, "u": .5, "v": .5, "direct": True}))
+        self.now += .3
+        self.mv._flush_frame_focus()
+        self.assertEqual(len(self.calls), 1, "an acknowledged direct focus drops the older queued one")
+        self.assertEqual(self.mv._spatial_focused, "spatial:1")
+        self.mv._handle_frame_requests(json.dumps({"action": "focus", "key": b, "u": .5, "v": .5, "direct": True}))
+        self.assertEqual(len(self.calls), 1, "direct focus never posts /focus")
+        self.assertEqual(self.mv._spatial_focused, "spatial:2")
+
     def test_focus_rejects_unknown_stale_keys_bad_coordinates_and_disabled_mode(self):
         key = self.panel("separate:42", 42)
         for u, v in ((None, 0), (True, 0), ("0.2", 0), (-.1, 0), (1.1, 0), (math.nan, 0), (0, math.inf)):

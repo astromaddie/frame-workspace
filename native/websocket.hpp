@@ -42,13 +42,23 @@ class WebSocket {
         lastReadService = nowMs();
         idle();
       }
-      pollfd f{fd, POLLIN, 0};
-      int r = poll(&f, 1, idlePollMs);
+      pollfd f[2]{{fd, POLLIN, 0}, {wakeFd, POLLIN, 0}};
+      int r = poll(f, wakeFd >= 0 ? 2 : 1, idlePollMs);
       if (r < 0 && errno == EINTR)
         continue;
       if (r < 0)
         throw std::runtime_error("socket poll failed");
-      if (!r) {
+      if (wakeFd >= 0 && (f[1].revents & POLLIN)) {
+        // Queued input goes out now rather than at the next poll timeout.
+        char drain[64];
+        while (::read(wakeFd, drain, sizeof drain) > 0) {
+        }
+        if (idle) idle();
+        lastReadService = nowMs();
+        if (!(f[0].revents & (POLLIN | POLLHUP | POLLERR)))
+          continue;
+      }
+      if (!(f[0].revents & (POLLIN | POLLHUP | POLLERR))) {
         if (idle)
           idle();
         lastReadService = nowMs();
@@ -88,6 +98,8 @@ class WebSocket {
 public:
   int idlePollMs = 100; // legacy cadence; foveated gaze opts into 8 ms
   bool serviceIdleWhileReading = false;
+  // Readable when the owner has queued input to send (non-blocking pipe).
+  int wakeFd = -1;
   std::function<void()> idle;
   explicit WebSocket(std::atomic<bool> &stopped) : stop(stopped) {}
   ~WebSocket() {

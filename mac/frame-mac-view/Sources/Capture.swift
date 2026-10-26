@@ -128,6 +128,16 @@ protocol CaptureSource: AnyObject {
     func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void)
     func stop()
     func pointer(x: Double, y: Double, text: String?)  // for the test pattern
+    /// Where the newest complete frame's content sits (ScreenCaptureKit frame
+    /// info), read on the capture callback that delivers that frame. Native
+    /// input geometry uses it; nil means the whole picture.
+    var frameGeometry: CaptureFrameGeometry? { get }
+    /// Changes when the picture starts showing something else (a menu slot
+    /// retargeted, even to a reused window ID).
+    var inputIdentity: String { get }
+    var inputVisible: Bool { get }
+    /// `frameRect` without a fresh window-list query, for per-frame geometry.
+    var inputFrameRect: CGRect { get }
 }
 
 /// Sources that own a moved window or display can signal only after shutdown
@@ -138,6 +148,10 @@ protocol CaptureStopAwaitable: AnyObject {
 
 extension CaptureSource {
     var pixelSize: (Int, Int)? { nil }
+    var frameGeometry: CaptureFrameGeometry? { nil }
+    var inputIdentity: String { "" }
+    var inputVisible: Bool { true }
+    var inputFrameRect: CGRect { frameRect }
     func pointer(x: Double, y: Double, text: String?) {}
     func setMaxFps(_ fps: Int) {}
     func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void) {
@@ -161,6 +175,11 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
     var frameRect: CGRect {
         geometryLock.lock(); defer { geometryLock.unlock() }
         return configuredFrameRect
+    }
+    private var lastFrameGeometry: CaptureFrameGeometry?
+    var frameGeometry: CaptureFrameGeometry? {
+        geometryLock.lock(); defer { geometryLock.unlock() }
+        return lastFrameGeometry
     }
     private(set) var title = ""
     private(set) var app = ""
@@ -561,6 +580,16 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
         // When WindowServer composited it: the moment it showed on the Mac.
         let shown = (info?[.displayTime] as? UInt64).map(hostUs) ?? hostUs(pts)
         guard keep(shown: shown) else { return }
+        func rect(_ key: SCStreamFrameInfo) -> CGRect? {
+            guard let value = info?[key], CFGetTypeID(value as CFTypeRef) == CFDictionaryGetTypeID() else { return nil }
+            return CGRect(dictionaryRepresentation: value as! CFDictionary)
+        }
+        let geometry = CaptureFrameGeometry(contentRect: rect(.contentRect),
+            scaleFactor: (info?[.scaleFactor] as? NSNumber)?.doubleValue,
+            contentScale: (info?[.contentScale] as? NSNumber)?.doubleValue,
+            screenRect: rect(.screenRect),
+            bufferWidth: CVPixelBufferGetWidth(pb), bufferHeight: CVPixelBufferGetHeight(pb))
+        geometryLock.lock(); lastFrameGeometry = geometry; geometryLock.unlock()
         onFrame?(pb, pts, shown)
     }
 

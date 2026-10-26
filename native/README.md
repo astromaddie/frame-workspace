@@ -423,6 +423,43 @@ These are the Mac-side foundation and shared viewer contract. Integration still
 needs device verification of decoder release/recreation, gaze, cursor memory,
 and cross-panel drags; see [SPATIAL.md](../docs/frame-workspace/SPATIAL.md).
 
+### Content input (FW-15)
+
+In Spatial Mode the controllers drive the Mac cursor in window pictures, the
+menu bar strip (M1), the status band (I1) and open menus. Point the laser and
+move it a little: a laser resting on something (a controller put down) never
+takes the pointer. The window under it comes forward and the Mac cursor follows
+the laser. Trigger is the left button (hold it to drag), right B is a right
+click, and either thumbstick scrolls (forward scrolls up; there's a dead zone,
+and speed grows with the push). The right hand wins if both point at once, and
+only one hand can hold a button at a time.
+
+A press belongs to whatever it started on. Handles, the shelf, the switcher
+cards and auxiliary chrome keep their presses, and a held trigger that wanders
+onto a window never clicks it. The bezel, frame walls, M1's rim and lip, and
+capture padding are not content. While the controller points, a button is held
+or a Mac menu is open, gaze dwell waits, and it starts again afterwards. With a
+menu open, hovering another window doesn't raise it (a press still does).
+
+Everything goes over the panel's own stream once the helper's `hello` offers
+`nativeInput`; the protocol is in
+[spatial-shared-contract.md](../docs/frame-workspace/spatial-shared-contract.md).
+`native/content_input.hpp` is the one arbiter, called once per host frame; the
+host turns its commands into ordered stream messages. Moving to another stream
+barriers the old one, focuses the new one and only then moves or presses there.
+A drag keeps the button held across windows and lets go once at the drop. A
+reconnect starts neutral and never replays a held press; tracking loss lets go
+at the last point. Without `nativeInput` (an older helper) nothing is sent and
+gaze focus uses the old `{"t":"focus"}` path.
+
+The B and thumbstick paths in `input/bindings_frame_controller.json` haven't
+been checked against the Frame's controller profile yet.
+
+`--test-hands FILE` (with `--no-vr`, tests only) reads both hands from
+`{"hands":[left,right]}`, each `{"valid","origin","direction","trigger",
+"secondary","stick"}`, in place of OpenVR. `tests_host.py` uses it to drive the
+production routing and arbiter against loopback streams.
+
 ## SteamVR bar panel (FW-08)
 
 `frame-workspace-dash` (`dash.cpp`, drawn by `dash_ui.hpp` with cairo/Pango)

@@ -64,7 +64,8 @@ changed by any of this.
 
 - When the native host's focus confirmation snaps onto a panel it does both: writes the existing
   request file (the companion still uses it for the live set), and sends WebSocket text
-  `{"t":"focus","u":0.31,"v":0.12}` on that panel's stream. The helper's `Session` handles
+  `{"t":"focus","u":0.31,"v":0.12}` on that panel's stream. With native content input (below)
+  the dwell sends `focus` with `intent:"gaze"` instead and snaps only on the acknowledgement. The helper's `Session` handles
   `"focus"` by raising, without waiting for the companion's poll. As a safety net a key-down or
   mouse-down on a `spatial:` session raises its window first if it isn't frontmost.
 - Panel `(u, v)` maps to the window's current global frame on the shared display:
@@ -75,6 +76,64 @@ changed by any of this.
   trackpad can't wander into the overlapping windows underneath. It re-enables itself after
   `tapDisabledByTimeout`. Windows sit right under the menu bar, so moving the cursor up out of a
   window reaches the menus.
+
+## Native content input (WebSocket text on `spatial:`, `menubar`, `status`, `menu:*`)
+
+The helper's `hello` on a Spatial source adds `"nativeInput":1`, a fresh random
+`"inputEpoch"` per connection and `"inputExpiryMs":1500`. The headset host then
+sends its pointer over that same stream (there's no `src` field; the stream's
+ticket already names its source). Every native message carries the `epoch` and
+an increasing `q`; anything with a stale epoch or an old `q` is refused. JSON
+without `epoch` (the browser viewer) keeps working as before.
+
+```json
+{"t":"focus","u":0.31,"v":0.12,"intent":"pointer","deliberate":true,"epoch":"e","q":20}
+{"t":"m","e":"move","x":0.31,"y":0.12,"geometry":9,"epoch":"e","q":21}
+{"t":"m","e":"down","b":0,"x":0.31,"y":0.12,"geometry":9,"epoch":"e","q":22}
+{"t":"wheel","dx":0,"dy":-16,"x":0.31,"y":0.12,"geometry":9,"epoch":"e","q":23}
+{"t":"input-barrier","epoch":"e","q":24}
+{"t":"input-keepalive","epoch":"e","q":25}
+{"t":"release","epoch":"e","q":26}
+```
+
+- `intent`: `gaze` raises and restores the window's remembered cursor (dwell);
+  `pointer` raises and puts the cursor at the laser point; `drag` raises the drop
+  window and moves the fence, with no cursor memory and no button edges.
+  `deliberate` says a press, a wheel or clear laser motion led to it.
+- Focus, barriers and releases are answered with
+  `{"t":"input-ack","q":24,"ok":true,"epoch":"e"}`; focus also reports
+  `focusedSrc` and `observed` (`confirmed`, `modal` for a sheet in front, or
+  `pending`). Focus is acknowledged once macOS shows the window (or its modal
+  child) in front, at most 0.4 s after the raise; a barrier is answered from the
+  main queue after everything the stream sent before it. A refused press is
+  answered `ok:false` with a `reason` (`geometry`, `padding`, `hidden`, `focus`,
+  `physical`, `permission`).
+- Before each picture whose mapping changed, the helper sends
+  `{"t":"input-geometry","v":1,"revision":9,"pictureSeq":44,"rect":[x,y,w,h],
+  "contentUV":[u,v,w,h],"visible":true}`: `rect` is the global-point rectangle
+  shown by `contentUV` of the picture (from SCStreamFrameInfo's content rect and
+  scale; padding lies outside it). The host applies it from the first uploaded
+  picture with that sequence on, and echoes `revision` in `geometry`. A hidden or
+  retargeted menu slot sends `visible:false` with `pictureSeq:0`, which applies
+  at once. Presses on padding, hidden surfaces or stale revisions are refused; a
+  move of the same window keeps its revision; an up always goes through.
+- `{"t":"input-state","owner":"physical"}`: the trackpad moved or clicked (the
+  helper tags its own events in `eventSourceUserData`, so the fence tap can tell).
+  The headset stops hovering and takes the pointer back only with a press, a
+  wheel or clear laser motion. `{"t":"input-state","focused":false}` on a window
+  stream means it lost Mac focus some other way; moves and presses there wait for
+  a new focus, since windows overlap on the shared display.
+- A connection holding a button sends `input-keepalive` at least every 0.5 s (to
+  the stream where the button went down); after `inputExpiryMs` of silence the
+  helper lets go and sends `{"t":"input-released","reason":"expired"}`.
+  Disconnect, Stop and a new connection release too. Remote cleanup never lets go
+  of a button held on the trackpad.
+- A drag across windows: the button goes down on A, A gets `input-barrier`, B
+  gets `focus` with `intent:"drag"`, moves continue on B and the one `up` goes to
+  B. The fence follows the input target, its child content past the frame, the
+  menu bar and visible menus.
+- The companion gets the usual focus request with `"direct":true` once a focus
+  is acknowledged; it only steers the live set and never replays `/focus`.
 
 ## Surface messages (helper to native, WebSocket text on `menubar`, `status`, `menu:*`)
 

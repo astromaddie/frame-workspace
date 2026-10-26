@@ -411,6 +411,17 @@ inline void launcherTiles(std::vector<SpatialTile> &tiles, const LauncherView &v
     tiles.push_back(carried);
   }
 }
+// Metres per Mac point on the focused window, for its menu strip and menus.
+// The helper's input geometry gives the window's logical width (and how much
+// of the picture is that window), which holds when capture is capped; a
+// helper without it leaves the old estimate of an uncapped 2x picture.
+inline float windowMetresPerPoint(float panelWidth, int decodedWidth, float logicalWidth = 0,
+                                  float contentFraction = 1) {
+  if (std::isfinite(logicalWidth) && logicalWidth > 0 && std::isfinite(contentFraction) && contentFraction > 0 &&
+      contentFraction <= 1 && std::isfinite(panelWidth) && panelWidth > 0)
+    return panelWidth * contentFraction / logicalWidth;
+  return decodedWidth > 0 ? panelWidth * 2 / decodedWidth : .001f;
+}
 // Auxiliary poses and their window-layer regions are host-owned; UV stays top-left.
 inline PanelSurface menuStripPlacement(const PanelSurface &window, const SurfaceMessage &m,
                                         float metresPerPoint, float wide) {

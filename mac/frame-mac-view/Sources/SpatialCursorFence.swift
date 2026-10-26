@@ -2,8 +2,37 @@ import ApplicationServices
 import Foundation
 
 /// Pointer filtering has its own run loop: slow Accessibility calls on main
-/// must not cause WindowServer to disable the event tap.
+/// must not cause WindowServer to disable the event tap. The same tap watches
+/// for pointer activity the helper did not post (the physical trackpad): it
+/// only reports it, never suppresses it.
 final class SpatialCursorFence {
+    enum External: Equatable {
+        case motion
+        case button(Int, down: Bool)
+    }
+
+    /// Untagged events are physical (or another program's); tagged ones are ours.
+    static func external(type: CGEventType, userData: Int64) -> External? {
+        guard userData != InjectedEvent.tag else { return nil }
+        switch type {
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged, .scrollWheel: return .motion
+        case .leftMouseDown: return .button(0, down: true)
+        case .leftMouseUp: return .button(0, down: false)
+        case .rightMouseDown: return .button(2, down: true)
+        case .rightMouseUp: return .button(2, down: false)
+        case .otherMouseDown: return .button(1, down: true)
+        case .otherMouseUp: return .button(1, down: false)
+        default: return nil
+        }
+    }
+
+    /// Called on main. Motion is reported at most every 50 ms.
+    var onExternal: ((External) -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return externalHandler }
+        set { lock.lock(); externalHandler = newValue; lock.unlock() }
+    }
+    private var externalHandler: ((External) -> Void)?
+    private var lastExternalMotion: CFAbsoluteTime = 0
     private let lock = NSLock()
     private let correctionQueue = DispatchQueue(label: "frame-mac-view.cursor-fence")
     private var tap: CFMachPort?
@@ -34,7 +63,9 @@ final class SpatialCursorFence {
     func start() -> Bool {
         lock.lock(); let active = tap != nil; lock.unlock()
         if active { return true }
-        let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged]
+        let types: [CGEventType] = [.mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged,
+                                    .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+                                    .otherMouseDown, .otherMouseUp, .scrollWheel]
         let mask = types.reduce(CGEventMask(0)) { $0 | (CGEventMask(1) << $1.rawValue) }
         let callback: CGEventTapCallBack = { _, type, event, context in
             guard let context else { return Unmanaged.passUnretained(event) }
@@ -43,6 +74,21 @@ final class SpatialCursorFence {
                 fence.lock.lock(); let tap = fence.tap; fence.lock.unlock()
                 if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             } else {
+                if let external = SpatialCursorFence.external(type: type,
+                        userData: event.getIntegerValueField(.eventSourceUserData)) {
+                    fence.lock.lock()
+                    let now = CFAbsoluteTimeGetCurrent()
+                    var handler = fence.externalHandler
+                    if external == .motion {
+                        if now - fence.lastExternalMotion < 0.05 { handler = nil } else { fence.lastExternalMotion = now }
+                    }
+                    fence.lock.unlock()
+                    if let handler { DispatchQueue.main.async { handler(external) } }
+                }
+                switch type {
+                case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: break
+                default: return Unmanaged.passUnretained(event)  // buttons and wheels are only observed
+                }
                 fence.lock.lock()
                 fence.events += 1
                 let rects = fence.allowedRects, epoch = fence.generation

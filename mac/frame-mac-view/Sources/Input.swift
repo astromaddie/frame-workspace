@@ -9,7 +9,15 @@ import Foundation
 private func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
 
 enum Input {
-    static let source = CGEventSource(stateID: .hidSystemState)
+    /// Tagged, so the Spatial fence can tell these events from the trackpad.
+    static let source: CGEventSource? = {
+        let source = CGEventSource(stateID: .hidSystemState)
+        source?.userData = InjectedEvent.tag
+        return source
+    }()
+    /// Buttons the physical trackpad is holding (from the fence tap). Remote
+    /// cleanup never posts an up for one of them. Main thread.
+    static var physicallyHeld = Set<Int>()
     /// What each viewer (session id) is holding down, so one panel closing
     /// lets go of its own keys and buttons and nobody else's. Main thread.
     private static var buttonsHeld: [Int: Set<Int>] = [:]
@@ -21,6 +29,15 @@ enum Input {
     private static var lastDown: (time: TimeInterval, point: CGPoint, button: Int, count: Int)?
 
     static var allowed: Bool { AXIsProcessTrusted() }
+
+    /// Every button a viewer holds, shared or per viewer. Main thread.
+    static var heldButtons: Set<Int> {
+        pointerShared ? sharedButtons.held : buttonsHeld.values.reduce(into: Set<Int>()) { $0.formUnion($1) }
+    }
+
+    static func holds(owner: Int) -> Bool {
+        (buttonsHeld[owner]?.isEmpty == false) || (pointerShared && sharedButtons.holds(owner: owner))
+    }
 
     static var pointerShared: Bool {
         pointerModeLock.lock(); defer { pointerModeLock.unlock() }
@@ -38,7 +55,7 @@ enum Input {
             buttonsHeld.removeAll()
         } else {
             let p = CGEvent(source: nil)?.location ?? .zero
-            for button in sharedButtons.releaseAll() {
+            for button in sharedButtons.releaseAll() where !physicallyHeld.contains(button) {
                 let type: CGEventType = button == 2 ? .rightMouseUp : button == 1 ? .otherMouseUp : .leftMouseUp
                 CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p,
                         mouseButton: button == 2 ? .right : button == 1 ? .center : .left)?.post(tap: .cghidEventTap)
@@ -149,7 +166,7 @@ enum Input {
         let keys = keysHeld.removeValue(forKey: owner) ?? []
         // Only what no other viewer is still holding.
         for b in buttons where !buttonsHeld.values.contains(where: { $0.contains(b) }) &&
-            !(pointerShared && sharedButtons.held.contains(b)) {
+            !(pointerShared && sharedButtons.held.contains(b)) && !physicallyHeld.contains(b) {
             let type: CGEventType = b == 2 ? .rightMouseUp : b == 1 ? .otherMouseUp : .leftMouseUp
             CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: p,
                     mouseButton: b == 2 ? .right : b == 1 ? .center : .left)?.post(tap: .cghidEventTap)
