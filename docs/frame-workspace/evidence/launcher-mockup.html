@@ -1,0 +1,420 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Launching Apps and System UI in Spatial Mode</title>
+<style>
+:root{--top:#fbfafd;--face:#e3dfea;--bottom:#cbc4d6;--border:#8d82a0;--ink:#776a8a;--light:#fff;--shade:#a296b3;--blue:#1a9fff;--text:#3a2f47}
+*{box-sizing:border-box}
+body{margin:0;background:#15131a;color:#e9e4ee;font:14px/1.45 "Inter","Helvetica Neue",Helvetica,Arial,sans-serif;padding:40px 44px 48px;width:1720px}
+h1{font-size:30px;margin:0 0 6px;font-weight:700}
+h2{font-size:21px;margin:40px 0 4px;font-weight:650}
+.sub{color:#a59cae;margin:0 0 18px;max-width:1280px}
+.row{display:flex;gap:22px}
+.row+.row{margin-top:22px}
+.card{background:linear-gradient(#1f1c26,#18161d);border:1px solid #2c2834;border-radius:16px;padding:0 0 16px;overflow:hidden;flex:1;min-width:0}
+.label{padding:0 20px;margin-top:12px;font-weight:650;font-size:16px}
+.note{padding:0 20px;color:#a59cae;font-size:13px;margin-top:2px}
+.note p{margin:5px 0 0}.note b{color:#d8d0e2;font-weight:600}
+.tag{display:inline-block;font-size:11px;font-weight:700;letter-spacing:.08em;color:#6cc0ff;margin-left:8px;vertical-align:2px}
+/* room */
+.scene{position:relative;overflow:hidden;perspective:1100px;perspective-origin:50% 38%;
+  background:radial-gradient(120% 90% at 50% 0%,#3a3646 0%,#24212c 45%,#141218 100%)}
+.scene::after{content:"";position:absolute;left:0;right:0;bottom:0;height:80px;background:linear-gradient(transparent,#0d0c11aa);pointer-events:none}
+.world{position:absolute;left:50%;top:40%;transform-style:preserve-3d}
+.world *{transform-style:preserve-3d}
+.world.dim{filter:brightness(.55) saturate(.8)}
+.ov{position:absolute;inset:0;z-index:2}
+.floor{position:absolute;left:10%;right:10%;bottom:16px;height:60px;border-radius:50%;background:radial-gradient(closest-side,#0008,transparent);filter:blur(8px)}
+.win{position:absolute;border-radius:6px;background:#1d1f27;box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 18px 30px #0008;overflow:hidden}
+.win .bar{height:12px;background:#2a2d37;display:flex;gap:4px;align-items:center;padding-left:6px;font-size:8px;color:#9aa}
+.win .bar i{width:5px;height:5px;border-radius:50%;background:#ff5f57}.win .bar i:nth-child(2){background:#febc2e}.win .bar i:nth-child(3){background:#28c840}
+.win .body{padding:8px;display:grid;gap:4px}
+.win .body b{display:block;height:4px;border-radius:2px;background:#5d6a85}
+.win.light{background:#f4f2f7}.win.light .bar{background:#e4e0ea}.win.light .body b{background:#c9c3d4}
+.win.focus{box-shadow:0 0 0 5px #e3dfea,0 0 0 6px #8d82a0,0 0 0 9px #1a9fff55,0 18px 30px #0008}
+.cursor{position:absolute;width:0;height:0;border-left:6px solid #fff;border-right:4px solid transparent;border-bottom:11px solid transparent;filter:drop-shadow(0 1px 1px #000)}
+/* Palladium */
+.pal{background:linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);border:1px solid var(--border);
+  box-shadow:inset 1px 1px 0 var(--light),inset -1px -1px 0 var(--shade),inset 2px 2px 0 #ffffff70,0 2px 3px #0005,0 8px 18px #0007}
+.pal.hover{background:radial-gradient(circle 26px at 50% 55%,#c4e4ffe6 0%,#6fbcffa0 26%,#3a9dff38 60%,transparent 100%),linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%)}
+.pal.pressed{background:radial-gradient(80% 130% at 50% 50%,#6fbcff47 0%,#6fbcff30 60%,transparent 100%),linear-gradient(115deg,#d9d3e3 0%,#cdc6d9 48%,#bdb5cb 100%);
+  border-color:#5b8fc4;box-shadow:inset 0 0 0 1px #d4ecffd0,inset 0 0 4px 2px #2f9dffe6,inset 0 0 10px 3px #2f9dff70,inset 1px 1px 0 #8f84a3,inset -1px -1px 0 #fff,0 1px 0 #ffffff40}
+.sheen{position:absolute;inset:0;border-radius:inherit;background:linear-gradient(160deg,#ffffff38 0%,#ffffff00 38%);pointer-events:none}
+.groove{height:3px;background:linear-gradient(#a296b3 0 1px,#cbc4d6 1px 2px,#fff 2px 3px)}
+.vgroove{width:3px;align-self:stretch;margin:6px 4px;background:linear-gradient(90deg,#a296b3 0 1px,#cbc4d6 1px 2px,#fff 2px 3px);flex:none}
+.well{background:linear-gradient(#ebe8f0,#f8f7fa);border:1px solid #9d92ae;border-radius:7px;
+  box-shadow:inset 1px 1px 0 #b7aec5,inset 2px 2px 3px #a296b333,inset -1px -1px 0 #fff;display:flex;align-items:center;gap:8px;padding:0 11px;color:var(--text)}
+.ph{color:#958aa6}
+.caret{display:inline-block;width:2px;height:1.05em;background:var(--blue);vertical-align:-2px;margin-left:1px}
+.sec{font-size:10.5px;font-weight:650;color:#6e6182;letter-spacing:.02em;white-space:nowrap}
+.icon{border-radius:23%;display:flex;align-items:center;justify-content:center;position:relative;flex:none;
+  box-shadow:inset 0 1px 0 #ffffff66,inset 0 -1px 0 #0000001f,0 0 0 .5px #00000026,0 2px 4px #0005}
+.icon svg{width:76%;height:76%}
+.icon.hot{box-shadow:inset 0 1px 0 #ffffff55,0 0 0 2px #fff,0 0 12px 3px #1a9fffaa}
+.icon .dot{position:absolute;left:50%;width:4px;height:4px;margin-left:-2px;border-radius:50%;background:#5d5170}
+.btn{display:flex;align-items:center;justify-content:center;flex:none;color:#5d5170;position:relative}
+.btn svg{width:62%;height:62%}
+.mark{position:absolute;right:-3px;top:-3px;width:9px;height:9px;border-radius:50%;background:var(--blue);box-shadow:0 0 0 1.5px #fff,0 0 6px #1a9fff}
+.st{display:flex;align-items:center;color:#4a3e5a;white-space:nowrap;flex:none}
+.name{font-size:9.5px;color:var(--text);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tip{position:absolute;font-size:11px;color:#d7e9ff;background:#1a2a3dcc;border:1px solid #3c6a99;padding:3px 8px;border-radius:7px;white-space:nowrap;z-index:5}
+.grip{position:absolute;left:50%;height:8px;border-radius:4px;display:flex;align-items:center;justify-content:center;gap:2px}
+.grip i{display:block;width:1px;height:4px;background:#8d82a0;box-shadow:1px 0 0 #fff}
+.laser{position:absolute;inset:0;z-index:6;pointer-events:none;overflow:visible}
+/* results rows */
+.res{display:flex;align-items:center;gap:10px;height:27px;padding:0 10px;border-radius:7px;font-size:12.5px;color:#2d2438}
+.res .k{margin-left:auto;font-size:11px;color:#776a8a}
+.res.sel{background:linear-gradient(#cfe8ffcc,#b9ddffcc);box-shadow:inset 0 0 0 1px #1a9fff66}
+.res.sel .k{color:#1a4f86}
+/* macOS content captured into panels */
+.mac{background:#ecebef;border-radius:6px;color:#1d1d1f;font-family:-apple-system,"Helvetica Neue",Helvetica,Arial,sans-serif}
+.mbtn{display:inline-flex;align-items:center;justify-content:center;height:22px;padding:0 12px;border-radius:6px;background:#fff;box-shadow:0 0 0 .5px #0003,0 1px 1px #0002;font-size:11px;color:#1d1d1f}
+.mbtn.def{background:linear-gradient(#3aa1ff,#0a7cf0);color:#fff}
+.hdr{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:650;color:#4a3e5a;height:20px;padding:0 6px}
+.live{width:6px;height:6px;border-radius:50%;background:var(--blue);box-shadow:0 0 5px #1a9fff}
+table{border-collapse:collapse;width:100%;font-size:13px}
+td,th{padding:9px 12px;border-bottom:1px solid #2c2834;text-align:left;vertical-align:top}
+th{color:#a59cae;font-weight:600}
+th small{font-weight:400;color:#8a8194}
+.good{color:#7fd08a}.mid{color:#e8c46a}.bad{color:#ef8a8a}
+.tcard{padding:8px 10px}
+</style></head><body>
+
+<h1>Spatial Mode: Launching Apps and System UI</h1>
+<p class="sub">Mockups only, for choosing before anything is built. Today the shelf opens pinned and running apps, but there's no way to start anything else, and Spotlight, permission prompts, open and save panels and notifications open on the covered laptop screen, where the headset can't see them. Same Palladium chrome as the approved sheets. Typing always happens on the Mac's own keyboard; the controllers point, the eyes pick.</p>
+
+<h2>1 · The Shelf: Placed by You, Magnified When You Reach for It</h2>
+<p class="sub">As decided today: you put the shelf where you want it and it stays pinned there. It's small at rest; when the laser or your eyes land on it, it grows smoothly, with the Mac Dock's magnification around the point you're at, and shrinks back a moment after you move on.</p>
+<div class="row">
+  <div class="card"><div class="scene" style="height:360px" id="sh1"></div>
+    <div class="label">At Rest</div>
+    <div class="note">Small and low, where you left it, with running apps marked and the status items at its right end. It doesn't follow your head; Recenter brings it back in front of you.</div></div>
+  <div class="card"><div class="scene" style="height:360px" id="sh2"></div>
+    <div class="label">Laser or Eyes on It</div>
+    <div class="note">The shelf grows to full size and the icons nearest the laser grow most, rising above it as on the Mac. With the eyes it's the same, centred where you look. It eases back to rest about half a second after you look or point away.</div></div>
+  <div class="card"><div class="scene" style="height:360px" id="sh3"></div>
+    <div class="label">Moving It</div>
+    <div class="note">While the laser is on the shelf, its grip slides out underneath, the same grip the windows use. Drag it to place the shelf anywhere in the room; it stays pinned there until you move it again.</div></div>
+</div>
+
+<h2>2 · Launching Apps</h2>
+<p class="sub">Starting an app that isn't on the shelf. Each option can open from the shelf, from a controller button, or from Cmd-Space on the Mac keyboard (taken over from Spotlight while Spatial Mode runs). The panel opens at eye level in front of you; the windows behind it dim a little until it closes. Picking an app opens it and brings its window in front of you.</p>
+<div class="row">
+  <div class="card"><div class="scene" style="height:500px" id="la"></div>
+    <div class="label">A · Applications Grid</div>
+    <div class="note">
+      <p><b>Opens:</b> the Applications button at the shelf's left end (laser click, or look at it and press a controller button), or Cmd-Space. A curved Launchpad-style grid with every app, pages swiped with the thumbstick, Recent Apps across the top.</p>
+      <p><b>Typing:</b> the search field takes the Mac keyboard as soon as the grid opens; the grid narrows to matching apps as you type and Return opens the first.</p>
+      <p><b>Trade-offs:</b> the best one for browsing and for controller-only use. It's a big panel over your work, and it shows apps only, no documents or folders.</p></div></div>
+  <div class="card"><div class="scene" style="height:500px" id="lb"></div>
+    <div class="label">B · Floating Search</div>
+    <div class="note">
+      <p><b>Opens:</b> Cmd-Space on the Mac keyboard, as on the Mac, or the Search button at the shelf's left end. A single field at eye level; results appear under it as you type.</p>
+      <p><b>Typing:</b> keyboard first. Live results from the Mac's own Spotlight index: apps, then recent documents and folders. Arrow keys move, Return opens, Cmd-Return shows the file in Finder, Esc closes.</p>
+      <p><b>Trade-offs:</b> the smallest and fastest, and it finds files too. Awkward with only the controllers, and you have to know what you're looking for.</p></div></div>
+</div>
+<div class="row">
+  <div class="card"><div class="scene" style="height:500px" id="lc1"></div>
+    <div class="label">C · Search That Grows Into the Grid: Opened</div>
+    <div class="note">
+      <p><b>Opens:</b> Cmd-Space or the shelf's Search button, as in B. It starts small: the field, then your Recent Apps underneath, ready for a laser click.</p>
+      <p><b>Typing:</b> as in B: type and the recent apps give way to live results (apps, documents, folders); Return opens the top one.</p></div></div>
+  <div class="card"><div class="scene" style="height:500px" id="lc2"></div>
+    <div class="label">C · Search That Grows Into the Grid: All Applications</div>
+    <div class="note">
+      <p><b>Grows:</b> Show All Applications (or the Down arrow on an empty field) unfolds the curved grid from A below the field, which stays where it was. Typing again narrows the grid.</p>
+      <p><b>Trade-offs:</b> fast for the keyboard and complete for the controllers, with one button on the shelf. Two sizes of panel to build and get right, and the jump between them has to stay smooth.</p></div></div>
+</div>
+
+<div class="card tcard" style="margin-top:22px">
+<table>
+<tr><th></th><th>A · Applications Grid</th><th>B · Floating Search</th><th>C · Search That Grows Into the Grid</th></tr>
+<tr><td>Opens with</td><td>Applications button, controller button, Cmd-Space</td><td>Cmd-Space, Search button, controller button</td><td>Cmd-Space, Search button, controller button</td></tr>
+<tr><td>Controllers only (no keyboard)</td><td class="good">yes: browse, page, click</td><td class="bad">barely: recent results only</td><td class="good">yes, through Show All Applications</td></tr>
+<tr><td>Find an app you can't name</td><td class="good">yes, by browsing</td><td class="bad">no</td><td class="good">yes, in the grid</td></tr>
+<tr><td>Documents and folders</td><td class="bad">no</td><td class="good">yes, from the Spotlight index</td><td class="good">yes, when typing</td></tr>
+<tr><td>Space it takes in front of you</td><td class="mid">large, every time</td><td class="good">small</td><td class="good">small, large only when asked</td></tr>
+<tr><td>New work</td><td>app list and icons from the Mac, grid panel, paging</td><td>Spotlight query on the Mac, results panel</td><td class="mid">both, plus the grow between them</td></tr>
+</table></div>
+
+<h2>3 · System UI</h2>
+<p class="sub">Spotlight, privacy and permission prompts, password prompts, open and save panels when they run outside the app, notifications and Control Center live outside any app window, so they open on the covered laptop screen. Two ways to bring them into the room, and the two together.</p>
+<div class="row">
+  <div class="card"><div class="scene" style="height:430px" id="s1"></div>
+    <div class="label">S1 · Each Surface Comes to You</div>
+    <div class="note">
+      <p><b>How:</b> whenever macOS shows a system surface, it appears on its own as a transient panel in front of you, takes focus, and goes away when it closes. Notifications sit small at the top right of your view and fade.</p>
+      <p><b>Trade-offs:</b> nothing to learn. Each kind of surface has to be recognised and captured one by one; anything we miss stays invisible.</p></div></div>
+  <div class="card"><div class="scene" style="height:430px" id="s2"></div>
+    <div class="label">S2 · Laptop Screen Panel</div>
+    <div class="note">
+      <p><b>How:</b> a Laptop Screen button beside the status items (or a controller button) summons a panel showing the built-in display live, as it is under the black cover. Click and type into it like any window; press the button again to send it away.</p>
+      <p><b>Trade-offs:</b> catches everything, including what we don't know about. You have to think to open it, and it's a whole screen for one small dialog.</p></div></div>
+  <div class="card"><div class="scene" style="height:430px" id="s3"></div>
+    <div class="label">S3 · Both: S1 First, S2 as the Safety Net<span class="tag">RECOMMENDED</span></div>
+    <div class="note">
+      <p><b>How:</b> known surfaces come to you as in S1. If anything else opens on the laptop screen, the Laptop Screen button lights with a blue mark, so you know to look.</p>
+      <p><b>Trade-offs:</b> nothing can hide; the work of S1 and S2 together, though S2 is small.</p></div></div>
+</div>
+
+<div class="card tcard" style="margin-top:22px">
+<table>
+<tr><th></th><th>S1 · Each Surface Comes to You</th><th>S2 · Laptop Screen Panel</th><th>S3 · Both</th></tr>
+<tr><td>You see it without asking</td><td class="good">yes</td><td class="bad">no: you open the panel</td><td class="good">yes, or a blue mark tells you</td></tr>
+<tr><td>Surfaces we haven't met</td><td class="bad">invisible</td><td class="good">shown</td><td class="good">shown, and marked</td></tr>
+<tr><td>Clicks and typing</td><td class="mid">raised on the Mac like a window; needs each surface's process found and captured</td><td class="mid">the cursor fence and the cover must let go of the built-in display while the panel has focus</td><td class="mid">both</td></tr>
+<tr><td>Password prompts</td><td class="mid">may not be capturable (macOS can hide them from screen capture); to check</td><td class="mid">same question</td><td class="mid">same question; fallback: Touch ID, or lift the headset</td></tr>
+<tr><td>Spotlight</td><td>Apple's own Spotlight in the room (instead of, or as, launcher B)</td><td>visible on the panel</td><td>as S1</td></tr>
+</table></div>
+
+<script>
+/* ---------- icons: generic, real-looking ---------- */
+const G = {
+ finder:['linear-gradient(90deg,#9ad6ff 0 50%,#2f86f0 50%)','<path d="M12.5 3.5c-1.2 3-1.6 6-1.2 9.2h2.2c-.2 2.6.1 5 .9 7.3" stroke="#12345f" stroke-width="1.3" fill="none" stroke-linejoin="round"/><path d="M7.6 7.6v2.4M16.4 7.6v2.4" stroke="#12345f" stroke-width="1.5" stroke-linecap="round"/><path d="M6.8 15.4c3.1 2.2 7.3 2.2 10.4 0" stroke="#12345f" stroke-width="1.3" fill="none" stroke-linecap="round"/>'],
+ safari:['linear-gradient(#f4f7fb,#cfd6e0)','<circle cx="12" cy="12" r="9" fill="#2a8cf5"/><circle cx="12" cy="12" r="7.6" fill="#52b3ff"/><path d="M16.2 7.8 12.9 12.9 7.8 16.2 11.1 11.1z" fill="#fff"/><path d="M16.2 7.8 11.1 11.1 12.9 12.9z" fill="#ff3b30"/>'],
+ terminal:['linear-gradient(#40434c,#15161a)','<path d="M6 8l4 4-4 4" stroke="#f2f2f2" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M12 16.5h6" stroke="#f2f2f2" stroke-width="1.8" stroke-linecap="round"/>'],
+ code:['linear-gradient(#36aaf7,#1262c2)','<path d="M9 7l-5 5 5 5M15 7l5 5-5 5" stroke="#fff" stroke-width="1.9" fill="none" stroke-linecap="round" stroke-linejoin="round"/>'],
+ mail:['linear-gradient(#66bdff,#1676ee)','<rect x="4" y="6.8" width="16" height="11" rx="1.6" fill="#fff"/><path d="M4.6 7.6l7.4 5.8 7.4-5.8" stroke="#1676ee" stroke-width="1.3" fill="none"/>'],
+ messages:['linear-gradient(#72ea7e,#1fb33a)','<path d="M12 5c-4.7 0-8 2.8-8 6.3 0 2 1.1 3.7 2.9 4.9L6 19.5l3.6-2c.8.2 1.6.3 2.4.3 4.7 0 8-2.8 8-6.3S16.7 5 12 5z" fill="#fff"/>'],
+ music:['linear-gradient(#ff6f86,#ee2546)','<path d="M10 16.5V7l8-1.8v9.3" stroke="#fff" stroke-width="1.7" fill="none" stroke-linejoin="round"/><circle cx="8.3" cy="16.6" r="2.1" fill="#fff"/><circle cx="16.3" cy="14.7" r="2.1" fill="#fff"/>'],
+ notes:['linear-gradient(#ffd84d 0 30%,#fdfcf7 30%)','<path d="M5 11.5h14M5 15h14M5 18.5h9" stroke="#cdc6b4" stroke-width="1.1"/>'],
+ calendar:['#fff','<text x="12" y="8.4" font-size="4.6" text-anchor="middle" fill="#ff3b30" font-weight="700" font-family="Helvetica,Arial">OCT</text><text x="12" y="19.6" font-size="11" text-anchor="middle" fill="#222" font-family="Helvetica,Arial">26</text>'],
+ photos:['#fff', Array.from({length:8},(_,k)=>`<ellipse cx="12" cy="7.4" rx="2.3" ry="4.2" fill="${['#ff9500','#ffcc00','#a4d65e','#34c759','#30b0c7','#5e8bff','#af52de','#ff2d55'][k]}" opacity=".82" transform="rotate(${k*45} 12 12)"/>`).join('')],
+ maps:['linear-gradient(#d4f3c9,#8fd98a)','<path d="M3 17l7-5 4 3 7-6" stroke="#fff" stroke-width="2.8" fill="none"/><path d="M3 17l7-5 4 3 7-6" stroke="#4d9bf5" stroke-width="1.2" fill="none"/><path d="M15.5 4.3a2.6 2.6 0 0 1 2.6 2.6c0 2-2.6 4.4-2.6 4.4s-2.6-2.4-2.6-4.4a2.6 2.6 0 0 1 2.6-2.6z" fill="#ff3b30"/>'],
+ settings:['linear-gradient(#c0c4cb,#6b7079)','<circle cx="12" cy="12" r="6.6" fill="none" stroke="#3d4148" stroke-width="2.8" stroke-dasharray="2.2 2.3"/><circle cx="12" cy="12" r="5" fill="#d7dade"/><circle cx="12" cy="12" r="2" fill="#6b7079"/>'],
+ calculator:['linear-gradient(#55555b,#232326)', [0,1,2,3].map(r=>[0,1,2].map(c=>`<rect x="${5+c*5}" y="${4.6+r*4}" width="3.8" height="3.1" rx="1" fill="${c==2?'#ff9f0a':(r==0?'#a5a5aa':'#6a6a70')}"/>`).join('')).join('')],
+ preview:['linear-gradient(#f2f6fb,#c9d9ee)','<rect x="4.5" y="6" width="15" height="12" rx="1" fill="#fff" stroke="#8aa4c4"/><path d="M5.5 17l4-5 3 3 2-2 4 4z" fill="#5aa05a"/><circle cx="15.5" cy="9.3" r="1.4" fill="#f4b400"/>'],
+ xcode:['linear-gradient(#6fc6ff,#1a5fd0)','<rect x="10.9" y="8.5" width="2.4" height="12" rx="1" fill="#eef2f7" transform="rotate(-35 12 14)"/><rect x="7" y="5" width="10" height="4.2" rx="1" fill="#c9d3df" transform="rotate(-35 12 7)"/>'],
+ weather:['linear-gradient(#5dbaff,#2274e0)','<circle cx="9.5" cy="9.5" r="3.6" fill="#ffd23f"/><path d="M8 18h9.5a3 3 0 0 0 .2-6 4.2 4.2 0 0 0-8-.2A3.1 3.1 0 0 0 8 18z" fill="#fff"/>'],
+ podcasts:['linear-gradient(#d390ff,#8a3cf0)','<circle cx="12" cy="10.5" r="2" fill="#fff"/><path d="M8.3 14.2a5.2 5.2 0 1 1 7.4 0M6 16.4a8.4 8.4 0 1 1 12 0" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M12 14v5" stroke="#fff" stroke-width="2" stroke-linecap="round"/>'],
+ books:['linear-gradient(#ffb850,#f07a0a)','<path d="M4 7c3-1 6-1 8 1 2-2 5-2 8-1v11c-3-1-6-1-8 1-2-2-5-2-8-1z" fill="#fff"/><path d="M12 8v11" stroke="#f07a0a" stroke-width="1"/>'],
+ appstore:['linear-gradient(#62c2ff,#1570ea)','<path d="M9.4 17.2l5-9M14.6 17.2l-5-9M6.8 14h10.4" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/>'],
+ reminders:['#fff','<circle cx="6.5" cy="7.5" r="1.7" fill="#0a84ff"/><circle cx="6.5" cy="12" r="1.7" fill="#ff3b30"/><circle cx="6.5" cy="16.5" r="1.7" fill="#ff9500"/><path d="M10 7.5h9M10 12h9M10 16.5h9" stroke="#c9c9ce" stroke-width="1.2"/>'],
+ claude:['linear-gradient(#eba67f,#c9643a)','<g stroke="#fff" stroke-width="1.9" stroke-linecap="round">'+[0,40,85,130,175,220,265,310].map((a,k)=>{const r=[6.5,5,6.8,5.4,6.4,5.2,6.9,5.6][k],t=a*Math.PI/180;return `<path d="M12 12L${(12+r*Math.cos(t)).toFixed(1)} ${(12+r*Math.sin(t)).toFixed(1)}"/>`}).join('')+'</g>'],
+ anydesk:['linear-gradient(#f45d5d,#c21d29)','<rect x="6" y="8.2" width="6.2" height="6.2" transform="rotate(45 9.1 11.3)" fill="#fff"/><rect x="12" y="8.2" width="6.2" height="6.2" transform="rotate(45 15.1 11.3)" fill="#fff" opacity=".7"/>'],
+ numbers:['linear-gradient(#66d982,#22a246)','<rect x="6" y="12" width="3" height="6" rx=".6" fill="#fff"/><rect x="10.5" y="8" width="3" height="10" rx=".6" fill="#fff"/><rect x="15" y="5.5" width="3" height="12.5" rx=".6" fill="#fff"/>'],
+ keynote:['linear-gradient(#62adff,#1f60d6)','<path d="M6.5 8.5h11l-1.6 3.2H8.1z" fill="#fff"/><rect x="11" y="11.7" width="2" height="6" fill="#fff"/><path d="M8.5 18.2h7" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/>'],
+ booth:['linear-gradient(#ff6a5c,#c8202a)','<rect x="5" y="7.5" width="14" height="10" rx="2" fill="#fff"/><circle cx="12" cy="12.5" r="3.2" fill="#c8202a"/><circle cx="12" cy="12.5" r="1.6" fill="#fff"/><rect x="9" y="5.6" width="6" height="2.4" rx=".8" fill="#fff"/>'],
+};
+const NAMES={finder:'Finder',safari:'Safari',terminal:'Terminal',code:'Code',mail:'Mail',messages:'Messages',music:'Music',notes:'Notes',calendar:'Calendar',photos:'Photos',maps:'Maps',settings:'System Settings',calculator:'Calculator',preview:'Preview',xcode:'Xcode',weather:'Weather',podcasts:'Podcasts',books:'Books',appstore:'App Store',reminders:'Reminders',claude:'Claude',anydesk:'AnyDesk',numbers:'Numbers',keynote:'Keynote',booth:'Photo Booth'};
+const icon=(k,s,extra='',cls='')=>`<div class="icon ${cls}" style="width:${s}px;height:${s}px;background:${G[k][0]};${extra}"><svg viewBox="0 0 24 24">${G[k][1]}</svg></div>`;
+const doc=(s,pdf=false)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24"><path d="M6 2.5h8.5l4 4V21.5H6z" fill="#fff" stroke="#b9b3c4"/><path d="M14.5 2.5v4h4" fill="#e9e6ee" stroke="#b9b3c4"/>${pdf?'<rect x="7.5" y="14" width="9" height="4.5" rx="1" fill="#e5483d"/><text x="12" y="17.6" font-size="3.6" text-anchor="middle" fill="#fff" font-weight="700" font-family="Helvetica,Arial">PDF</text>':'<path d="M8.5 10h7M8.5 13h7M8.5 16h5" stroke="#c4bfcf" stroke-width="1"/>'}</svg>`;
+const folder=s=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24"><path d="M2.5 6.5a1.5 1.5 0 0 1 1.5-1.5h5l2 2h9a1.5 1.5 0 0 1 1.5 1.5v10a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5z" fill="#5ab4f5"/><path d="M2.5 9.5h19v9a1.5 1.5 0 0 1-1.5 1.5H4a1.5 1.5 0 0 1-1.5-1.5z" fill="#7ec8fb"/></svg>`;
+/* Palladium control glyphs, ink #5d5170 */
+const GL={
+ apps:'<g fill="currentColor">'+[0,1,2].map(r=>[0,1,2].map(c=>`<rect x="${4+c*6}" y="${4+r*6}" width="4" height="4" rx="1"/>`).join('')).join('')+'</g>',
+ search:'<circle cx="10.5" cy="10.5" r="5.6" fill="none" stroke="currentColor" stroke-width="2.1"/><path d="M14.8 14.8l4.6 4.6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>',
+ laptop:'<rect x="5" y="6" width="14" height="9.5" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.9"/><path d="M2.8 18.2h18.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+ wifi:'<path d="M3.5 9.5a12 12 0 0 1 17 0M6.6 12.7a7.6 7.6 0 0 1 10.8 0M9.6 15.8a3.3 3.3 0 0 1 4.8 0" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="12" cy="18.6" r="1.4" fill="currentColor"/>',
+ battery:'<rect x="2.5" y="7.5" width="17" height="9" rx="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="4.3" y="9.3" width="10.5" height="5.4" rx="1" fill="currentColor"/><path d="M21 10.5v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>',
+ cc:'<rect x="3" y="5.5" width="18" height="5.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="16.8" cy="8.25" r="1.6" fill="currentColor"/><rect x="3" y="13" width="18" height="5.5" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="7.2" cy="15.75" r="1.6" fill="currentColor"/>',
+};
+const glyph=(k,s)=>`<svg viewBox="0 0 24 24" style="width:${s}px;height:${s}px">${GL[k]}</svg>`;
+
+/* ---------- room ---------- */
+const lines=(n,light)=>`<div class="body">${Array.from({length:n},(_,i)=>`<b style="width:${30+((i*37)%60)}%;${light?'':`background:${['#c792ea','#82aaff','#9ccc65','#5d6a85'][i%4]}`}"></b>`).join('')}</div>`;
+function win({x,y,z=0,ry=0,w=180,h=120,title='Window',light=false,focus=false,cursor=false}){
+  return `<div class="win ${light?'light':''} ${focus?'focus':''}" style="width:${w}px;height:${h}px;transform:translate3d(${x-w/2}px,${y-h/2}px,${z}px) rotateY(${ry}deg)">
+    <div class="bar"><i></i><i></i><i></i>&nbsp;${title}</div>${lines(Math.floor(h/12),light)}
+    ${cursor?`<div class="cursor" style="left:${w*.55}px;top:${h*.6}px"></div>`:''}</div>`;
+}
+function room(focus=true){
+  return win({x:-290,y:-10,z:-60,ry:32,w:170,h:120,title:'Safari',light:true})+
+         win({x:0,y:-20,z:-140,w:240,h:150,title:'Terminal',focus,cursor:focus})+
+         win({x:290,y:-10,z:-60,ry:-32,w:170,h:120,title:'Code'});
+}
+function scene(id,{dim=false,scale=1,top='40%',focus=true}={}){
+  const el=document.getElementById(id);
+  el.innerHTML=`<div class="world ${dim?'dim':''}" style="top:${top};transform:scale(${scale})">${room(focus)}</div><div class="floor"></div><div class="ov"></div>`;
+  return el.querySelector('.ov');
+}
+
+/* ---------- the shelf ---------- */
+// items: 'apps' | 'search' | 'laptop' | '|' | 'status' | app key; suffixes: '*' running, '!' pressed, '^' laser-lit, '#' marked
+function shelf({cx,by,hover=false,mag=null,items,size='m',grip=null,clock='Mon 26 Oct 14:32'}){
+  const S = size==='m' ? (hover?30:20) : (hover?26:17);
+  const gap = hover?7:5, pad = hover?8:5, M = .75, R = 2.6*(S+gap);
+  // base slot centres, for the magnification falloff
+  let x=0; const base=items.map(it=>{const w=it==='|'?11:(it==='status'?0:S);const c=x+w/2;x+=w+gap;return c;});
+  const px = mag==null?null:base[mag];
+  const f = i => { if(px==null) return 1; const d=Math.abs(base[i]-px); return d<R?1+M*(Math.cos(d/R*Math.PI)+1)/2:1; };
+  const H = S + 2*pad + 2;
+  const parts = items.map((raw,i)=>{
+    const k=raw.replace(/[*!^#]/g,''), run=raw.includes('*'), pr=raw.includes('!'), lit=raw.includes('^'), mk=raw.includes('#');
+    const s=Math.round(S*f(i)), laser = (lit||pr) && hover ? 'data-laser="1"' : '';
+    if(k==='|') return `<div class="vgroove"></div>`;
+    if(k==='status'){const g=Math.round(S*.5);return `<div class="st" style="gap:${Math.round(S*.32)}px;font-size:${hover?(size==='m'?12:11):(size==='m'?8.5:7.5)}px;padding:0 ${Math.round(S*.15)}px;margin-bottom:${Math.round(S*.25)}px">${glyph('wifi',g)}${glyph('battery',g+3)}${glyph('cc',g)}<span>${clock}</span></div>`;}
+    if(k==='apps'||k==='search'||k==='laptop') return `<div class="btn pal ${pr?'pressed':lit?'hover':''}" ${laser} style="width:${s}px;height:${s}px;border-radius:${Math.max(5,Math.round(s*.23))}px">${glyph(k,Math.round(s*.6))}${mk?'<span class="mark"></span>':''}</div>`;
+    return `<div ${laser} style="position:relative;flex:none">${icon(k,s,'',lit?'hot':'')}${run?`<span class="dot" style="position:absolute;left:50%;margin-left:-2px;bottom:-${pad-2}px;width:4px;height:4px;border-radius:50%;background:#5d5170"></span>`:''}</div>`;
+  }).join('');
+  const g = grip ? `<div class="grip pal ${grip==='held'?'pressed':''}" ${grip==='held'?'data-laser="1"':''} style="top:${H+7}px;width:${grip==='held'?78:64}px;margin-left:-${grip==='held'?39:32}px;${grip==='held'?'height:10px;border-radius:5px':''}"><i></i><i></i><i></i></div>` : '';
+  return `<div style="position:absolute;left:${cx}px;top:${by-H}px;transform:translateX(-50%)">
+    <div class="pal" style="position:relative;height:${H}px;border-radius:${hover?10:8}px;display:flex;align-items:flex-end;gap:${gap}px;padding:0 ${pad+2}px ${pad}px">${parts}<span class="sheen"></span></div>${g}</div>`;
+}
+
+/* ---------- laser: a faint beam from the right controller, a white-hot core where it lands ---------- */
+function drawLasers(){
+  document.querySelectorAll('.scene').forEach(sc=>{
+    const t=sc.querySelector('[data-laser]'); if(!t) return;
+    const r=sc.getBoundingClientRect(), b=t.getBoundingClientRect();
+    const [fx,fy]=(t.dataset.laser.includes(',')?t.dataset.laser:'.55,.55').split(',').map(Number);
+    const x=b.left-r.left+b.width*fx, y=b.top-r.top+b.height*fy, ox=Math.min(r.width-10,x+150), oy=r.height+30;
+    const id='lg'+Math.random().toString(36).slice(2,7);
+    sc.insertAdjacentHTML('beforeend',`<svg class="laser" width="${r.width}" height="${r.height}">
+      <defs><linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${ox}" y1="${oy}" x2="${x}" y2="${y}">
+        <stop offset="0" stop-color="#1a9fff" stop-opacity=".05"/><stop offset=".6" stop-color="#6fbcff" stop-opacity=".5"/><stop offset="1" stop-color="#d2ebff" stop-opacity=".9"/></linearGradient></defs>
+      <path d="M${ox} ${oy}L${x} ${y}" stroke="url(#${id})" stroke-width="2.4" stroke-linecap="round"/>
+      <circle cx="${x}" cy="${y}" r="3.4" fill="#4aa8ff" opacity=".55"/><circle cx="${x}" cy="${y}" r="1.9" fill="#fff"/></svg>`);
+  });
+}
+
+/* ---------- curved Palladium panel (a section of a cylinder around you) ---------- */
+function curved({left,top,W,H,s=12,body,id='c'}){
+  const N=48, yt=x=>s*(1-((x-W/2)/(W/2))**2), r=10;
+  const pts=(fy,from,to)=>Array.from({length:N+1},(_,i)=>{const x=from+(to-from)*i/N;return `${x.toFixed(1)},${fy(x).toFixed(1)}`;});
+  const top_=pts(x=>yt(x),r,W-r), bot=pts(x=>H-yt(x),W-r,r);
+  const d=`M0,${yt(0)+r} Q0,${yt(0)} ${top_[0]} L${top_.join(' L')} Q${W},${yt(W)} ${W},${yt(W)+r} L${W},${H-yt(W)-r} Q${W},${H-yt(W)} ${bot[0]} L${bot.join(' L')} Q0,${H-yt(0)} 0,${H-yt(0)-r}Z`;
+  const hl=pts(x=>yt(x)+1.6,r,W-r).join(' '), sh=pts(x=>H-yt(x)-1.6,r,W-r).join(' ');
+  return `<div style="position:absolute;left:${left}px;top:${top}px;width:${W}px;height:${H}px">
+   <svg width="${W}" height="${H}" style="position:absolute;inset:0;overflow:visible;filter:drop-shadow(0 2px 3px #0005) drop-shadow(0 10px 22px #0008)">
+    <defs><linearGradient id="${id}f" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fbfafd"/><stop offset=".48" stop-color="#e3dfea"/><stop offset="1" stop-color="#cbc4d6"/></linearGradient>
+    <linearGradient id="${id}s" x1="0" y1="0" x2=".6" y2=".8"><stop offset="0" stop-color="#fff" stop-opacity=".3"/><stop offset=".4" stop-color="#fff" stop-opacity="0"/></linearGradient></defs>
+    <path d="${d}" fill="url(#${id}f)" stroke="#8d82a0" stroke-width="1"/>
+    <path d="${d}" fill="url(#${id}s)"/>
+    <polyline points="${hl}" fill="none" stroke="#fff" stroke-width="1.2"/>
+    <path d="M1.6,${yt(0)+r} L1.6,${H-yt(0)-r}" stroke="#fff" stroke-width="1.2"/>
+    <polyline points="${sh}" fill="none" stroke="#a296b3" stroke-width="1.2"/>
+    <path d="M${W-1.6},${yt(W)+r} L${W-1.6},${H-yt(W)-r}" stroke="#a296b3" stroke-width="1.2"/>
+   </svg>${body({W,H,s})}</div>`;
+}
+// place content on the curve: things away from the middle sit further out, and a touch bigger
+const onCurve=({W,H,s})=>(x,y,html,{anchor='center'}={})=>{
+  const u=(x-W/2)/(W/2), dy=((y-H/2)/(H/2))*s*u*u, sc=1+.05*u*u;
+  const tx=anchor==='center'?'-50%':'0';
+  return `<div style="position:absolute;left:${x}px;top:${y+dy}px;transform:translateX(${tx}) scale(${sc});transform-origin:${anchor==='center'?'50%':'0'} 0">${html}</div>`;
+};
+const curvedGroove=({W,H,s},y,inset=22)=>{
+  const pts=o=>Array.from({length:41},(_,i)=>{const x=inset+(W-2*inset)*i/40,u=(x-W/2)/(W/2);return `${x.toFixed(1)},${(y+o+((y-H/2)/(H/2))*s*u*u).toFixed(1)}`;}).join(' ');
+  return `<svg width="${W}" height="${H}" style="position:absolute;inset:0;overflow:visible"><polyline points="${pts(.5)}" fill="none" stroke="#a296b3"/><polyline points="${pts(1.5)}" fill="none" stroke="#cbc4d6"/><polyline points="${pts(2.5)}" fill="none" stroke="#fff"/></svg>`;
+};
+const appTile=(k,s,w=66)=>`<div style="width:${w}px;display:flex;flex-direction:column;align-items:center;gap:4px">${icon(k,s)}<div class="name" style="width:${w}px">${NAMES[k]}</div></div>`;
+
+function gridPanel({cx,top,W=600,H=318,field,toggle=false,id}){
+  const recent=['terminal','code','claude','xcode','anydesk','numbers','keynote'];
+  const all=['finder','safari','mail','messages','calendar','photos','maps','music','notes','reminders','podcasts','books','weather','calculator','preview','appstore'];
+  return curved({left:cx-W/2,top,W,H,id,body:(g)=>{
+    const P=onCurve(g); const mid=W/2;
+    let h='';
+    h+=P(mid,16,`<div class="well" style="width:290px;height:32px;font-size:13px">${glyph('search',15)}${field}${toggle?`<span style="flex:1"></span><div class="btn pal pressed" style="width:22px;height:22px;border-radius:6px;margin-right:-6px">${glyph('apps',13)}</div>`:''}</div>`);
+    h+=P(30,60,`<div class="sec">Recent Apps</div>`,{anchor:'left'});
+    recent.forEach((k,i)=>h+=P(mid+(i-3)*68,78,appTile(k,30)));
+    h+=curvedGroove(g,136);
+    h+=P(30,148,`<div class="sec">All Applications</div>`,{anchor:'left'});
+    all.forEach((k,i)=>{const c=i%8,r=Math.floor(i/8);h+=P(mid+(c-3.5)*66,168+r*60,appTile(k,34))});
+    h+=P(mid,H-24,`<div style="display:flex;gap:7px">${[1,0,0].map(o=>`<span style="width:6px;height:6px;border-radius:50%;background:${o?'#1a9fff':'#a296b3'};box-shadow:${o?'0 0 4px #1a9fff':'inset 1px 1px 0 #8d82a0'}"></span>`).join('')}</div>`);
+    return h;}});
+}
+
+/* ===== 1 · the shelf ===== */
+{
+  const items=['apps','|','finder*','safari*','terminal*','code*','mail','music','|','claude*','|','status'];
+  let o=scene('sh1',{scale:.66,top:'36%'});
+  o.innerHTML=shelf({cx:250,by:318,items,size:'s',clock:'14:32'});
+  o=scene('sh2',{scale:.66,top:'36%'});
+  const it2=items.slice(); it2[5]='code*^';
+  o.innerHTML=shelf({cx:264,by:300,hover:true,mag:5,items:it2,size:'s',grip:'out',clock:'14:32'});
+  o=scene('sh3',{scale:.66,top:'36%'});
+  o.innerHTML=`<div style="position:absolute;left:95px;top:291px;width:310px;height:28px;border:1.5px dashed #6fbcff88;border-radius:8px"></div>`+
+    `<div class="tip" style="left:95px;top:326px;font-size:10.5px">Where It Was</div>`+
+    shelf({cx:296,by:256,hover:true,items,size:'s',grip:'held',clock:'14:32'});
+}
+
+/* ===== 2 · launching ===== */
+const shelfA=['apps!','|','finder*','safari*','terminal*','code*','mail','messages','music','notes','|','claude*','|','status'];
+const shelfB=['search','|','finder*','safari*','terminal*','code*','mail','messages','music','notes','|','claude*','|','status'];
+{
+  let o=scene('la',{dim:true,focus:false,top:'36%'});
+  o.innerHTML=gridPanel({cx:402,top:56,field:`<span class="ph">Search Applications</span><span class="caret" style="margin-left:-6px"></span>`,id:'ga'})+
+    shelf({cx:402,by:470,hover:true,mag:0,items:shelfA});
+}
+{
+  let o=scene('lb',{dim:true,focus:false,top:'36%'});
+  const hdr=t=>`<div class="sec" style="padding:7px 10px 3px">${t}</div>`;
+  o.innerHTML=`<div class="tip" style="left:520px;top:44px">Typed on the Mac Keyboard</div>
+  <div class="pal" style="position:absolute;left:167px;top:76px;width:470px;border-radius:10px;padding:8px">
+    <div class="well" style="height:44px;font-size:19px;gap:10px">${glyph('search',20)}<span>pho<span class="caret"></span><span class="ph">tos</span></span><span style="margin-left:auto;font-size:11px;color:#776a8a">Photos · Application</span></div>
+    <div class="groove" style="margin:9px 2px 2px"></div>
+    ${hdr('Top Hit')}<div class="res sel">${icon('photos',22)}Photos<span class="k">Application</span></div>
+    ${hdr('Applications')}<div class="res">${icon('booth',22)}Photo Booth<span class="k">Application</span></div>
+    ${hdr('Documents')}<div class="res">${doc(22,true)}Photo Release Form.pdf<span class="k">Documents › Contracts</span></div>
+    <div class="res">${doc(22)}Phone Numbers.txt<span class="k">Desktop</span></div>
+    ${hdr('Folders')}<div class="res">${folder(22)}Photos Export<span class="k">Pictures</span></div>
+    <span class="sheen"></span></div>`+
+    shelf({cx:402,by:470,items:shelfB});
+}
+{
+  let o=scene('lc1',{dim:true,focus:false,top:'36%'});
+  const rec=['terminal','code','claude','xcode','anydesk','numbers'];
+  o.innerHTML=`<div class="pal" style="position:absolute;left:167px;top:76px;width:470px;border-radius:10px;padding:8px 8px 10px">
+    <div class="well" style="height:44px;font-size:17px;gap:10px">${glyph('search',20)}<span class="ph">Search Apps and Documents</span><span class="caret" style="margin-left:-6px"></span></div>
+    <div class="groove" style="margin:9px 2px 8px"></div>
+    <div class="sec" style="padding:0 8px 6px">Recent Apps</div>
+    <div style="display:flex;justify-content:space-around;padding:0 4px">${rec.map(k=>appTile(k,32,68)).join('')}</div>
+    <div class="groove" style="margin:10px 2px 9px"></div>
+    <div style="display:flex;justify-content:flex-end;padding:0 2px">
+      <div class="pal hover" data-laser=".1,.55" style="background:radial-gradient(circle 26px at 10% 55%,#c4e4ffe6 0%,#6fbcffa0 26%,#3a9dff38 60%,transparent 100%),linear-gradient(115deg,var(--top) 0%,var(--face) 48%,var(--bottom) 100%);height:30px;border-radius:7px;display:flex;align-items:center;gap:8px;padding:0 12px;font-size:12px;font-weight:600;color:#3a2f47">${glyph('apps',15)}Show All Applications</div></div>
+    <span class="sheen"></span></div>`+
+    shelf({cx:402,by:470,items:shelfB});
+}
+{
+  let o=scene('lc2',{dim:true,focus:false,top:'36%'});
+  o.innerHTML=gridPanel({cx:402,top:70,field:`<span class="ph">Search Apps and Documents</span><span class="caret" style="margin-left:-6px"></span>`,toggle:true,id:'gc'})+
+    `<div class="tip" style="left:560px;top:46px">The Field Stays Where It Was</div>`+
+    shelf({cx:402,by:470,items:shelfB});
+}
+
+/* ===== 3 · system UI ===== */
+const shelfS=['search','|','finder*','safari*','terminal*','code*','mail','|','claude*','|','laptop','status'];
+{
+  let o=scene('s1',{dim:true,focus:false,scale:.66,top:'34%'});
+  o.innerHTML=`<div class="pal" style="position:absolute;left:104px;top:88px;width:306px;border-radius:10px;padding:4px 7px 7px;box-shadow:inset 1px 1px 0 #fff,inset -1px -1px 0 #a296b3,0 0 0 3px #1a9fff55,0 10px 22px #0008">
+      <div class="hdr">Privacy Prompt</div>
+      <div class="mac" style="padding:14px 16px 12px;text-align:center;position:relative">
+        <div style="display:flex;justify-content:center;margin-bottom:8px">${icon('terminal',38)}</div>
+        <div style="font-size:12px;font-weight:700;line-height:1.3">“Terminal” would like to access files in your Documents folder.</div>
+        <div style="font-size:10.5px;color:#555;margin:5px 0 11px;line-height:1.35">Keeping app data separate makes it easier to manage your privacy and security.</div>
+        <div style="display:flex;gap:8px;justify-content:center"><span class="mbtn" style="flex:1">Don’t Allow</span><span class="mbtn def" style="flex:1">Allow</span></div>
+        <div class="cursor" style="left:246px;top:152px"></div></div><span class="sheen"></span></div>
+    <div class="pal" style="position:absolute;left:352px;top:12px;width:164px;border-radius:9px;padding:3px 5px 5px;opacity:.97">
+      <div class="hdr" style="height:16px;font-size:9.5px">Notification</div>
+      <div class="mac" style="display:flex;gap:7px;padding:6px 7px;align-items:center">${icon('calendar',20)}<div style="font-size:9.5px;line-height:1.25"><b>Design Review</b><br><span style="color:#555">In 10 minutes</span></div></div></div>`+
+    shelf({cx:264,by:396,items:shelfS,size:'s',clock:'14:32'});
+}
+{
+  let o=scene('s2',{dim:true,focus:false,scale:.66,top:'34%'});
+  o.innerHTML=`<div class="pal" style="position:absolute;left:92px;top:36px;width:346px;border-radius:10px;padding:3px 7px 7px">
+      <div class="hdr">Laptop Screen<span class="live" style="margin-left:6px"></span><span style="font-weight:500;color:#776a8a">Live</span></div>
+      <div style="position:relative;height:208px;border-radius:5px;overflow:hidden;background:radial-gradient(120% 90% at 30% 110%,#7a4bd6 0%,#3a3a9a 40%,#151838 100%);box-shadow:inset 0 0 0 1px #0007">
+        <div style="height:12px;background:#0007;display:flex;align-items:center;gap:8px;padding:0 6px;font-size:7px;color:#eee"><b>Finder</b><span>File</span><span>Edit</span><span>View</span><span style="margin-left:auto">Mon 26 Oct 14:32</span></div>
+        <div class="mac" style="position:absolute;left:52px;top:46px;width:226px;border-radius:9px;background:#f1f0f4f2;box-shadow:0 8px 20px #0007">
+          <div style="display:flex;align-items:center;gap:8px;height:32px;padding:0 10px;font-size:14px;color:#1d1d1f">${glyph('search',14)}Disk Ut<span class="caret" style="background:#0a7cf0"></span></div>
+          <div style="height:1px;background:#0001"></div>
+          <div style="display:flex;align-items:center;gap:8px;margin:4px;padding:3px 6px;border-radius:5px;background:#0a7cf0;color:#fff;font-size:10.5px">${icon('settings',16)}Disk Utility</div></div>
+        <div class="cursor" style="left:170px;top:112px"></div>
+      </div><span class="sheen"></span></div>`+
+    shelf({cx:264,by:396,hover:true,mag:10,items:shelfS.map(x=>x==='laptop'?'laptop!':x),size:'s',clock:'14:32'});
+}
+{
+  let o=scene('s3',{dim:true,focus:false,scale:.66,top:'34%'});
+  o.innerHTML=`<div class="pal" style="position:absolute;left:112px;top:52px;width:306px;border-radius:10px;padding:4px 7px 7px;box-shadow:inset 1px 1px 0 #fff,inset -1px -1px 0 #a296b3,0 0 0 3px #1a9fff55,0 10px 22px #0008">
+      <div class="hdr">Save Panel · TextEdit</div>
+      <div class="mac" style="padding:12px 14px 11px;font-size:11px">
+        <div style="display:grid;grid-template-columns:58px 1fr;gap:7px 8px;align-items:center">
+          <span style="text-align:right">Save As:</span><span style="background:#fff;border-radius:5px;box-shadow:0 0 0 2.5px #0a7cf066,0 0 0 1px #0a7cf0 inset;padding:3px 7px">Meeting Notes<span class="caret" style="background:#0a7cf0;height:11px"></span></span>
+          <span style="text-align:right">Tags:</span><span style="background:#fff;border-radius:5px;box-shadow:0 0 0 .5px #0003;padding:3px 7px;color:#999">&nbsp;</span>
+          <span style="text-align:right">Where:</span><span style="background:#fff;border-radius:5px;box-shadow:0 0 0 .5px #0003,0 1px 1px #0002;padding:3px 7px;display:flex;align-items:center;gap:6px">${folder(13)}Documents<span style="margin-left:auto;color:#888">⌄</span></span></div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px"><span class="mbtn">Cancel</span><span class="mbtn def">Save</span></div></div><span class="sheen"></span></div>
+    <div class="tip" style="left:256px;top:336px">New on the Laptop Screen</div>`+
+    shelf({cx:264,by:396,items:shelfS.map(x=>x==='laptop'?'laptop#':x),size:'s',clock:'14:32'});
+}
+drawLasers();
+</script>
+</body></html>
