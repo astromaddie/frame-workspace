@@ -38,6 +38,12 @@ changed by any of this.
   and show.
 - Frame rate: the focused `spatial:` window is captured at up to **60 fps**; other live windows at
   up to 30. Unchanging windows produce no frames.
+- One cursor (FW-15): only the focused `spatial:` window's capture draws the Mac cursor
+  (`showsCursor`, switched with `updateConfiguration` when focus moves); every other window
+  capture has it off, since they all overlap on one display. While the cursor is on the menu bar
+  or an open menu, that strip or menu draws it and the window doesn't. Stills never draw it.
+- A newly focused `spatial:` window goes live at once; the companion's next live-set pass then
+  budgets the others around it.
 - The split point between app menus and status items comes from the leftmost status item
   (layer 25); `SCKSource.updateCrop` moves it when it changes.
 - A menu surface is: layer 101 with its top touching the menu bar, or Control Center at layer 22
@@ -62,10 +68,14 @@ changed by any of this.
 
 ## Focus and input
 
-- When the native host's focus confirmation snaps onto a panel it does both: writes the existing
-  request file (the companion still uses it for the live set), and sends WebSocket text
-  `{"t":"focus","u":0.31,"v":0.12}` on that panel's stream. With native content input (below)
-  the dwell sends `focus` with `intent:"gaze"` instead and snaps only on the acknowledgement. The helper's `Session` handles
+- Eyes highlight, an action commits (chosen 2026-10-26). Looking at a window only lights its
+  border. Focus moves on a deliberate laser move or trigger press there, a trackpad click while it
+  is highlighted (that first click only focuses), the switcher, or a 1.2 s stare (not while
+  typing, holding a button, pointing, in a menu, launcher or switcher, or moving a window). When
+  the native host commits a focus it does both: writes the existing request file (the companion
+  still uses it for the live set), and sends WebSocket text `{"t":"focus","u":0.31,"v":0.12}` on
+  that panel's stream. With native content input (below) a stare sends `focus` with
+  `intent:"gaze"` instead and snaps only on the acknowledgement. The helper's `Session` handles
   `"focus"` by raising, without waiting for the companion's poll. As a safety net a key-down or
   mouse-down on a `spatial:` session raises its window first if it isn't frontmost.
 - Panel `(u, v)` maps to the window's current global frame on the shared display:
@@ -134,6 +144,34 @@ without `epoch` (the browser viewer) keeps working as before.
   menu bar and visible menus.
 - The companion gets the usual focus request with `"direct":true` once a focus
   is acknowledged; it only steers the live set and never replays `/focus`.
+- `{"t":"input-state","focused":true}` on a window stream (the Mac focused it by
+  itself: a gaze click, Cmd-Tab): the host makes that window active too.
+
+### Gaze highlight and typing (FW-15)
+
+The helper's `hello` adds `"gazeHighlight":1`. The host then tells it which
+window the eyes highlight, on that window's own stream, numbered like the other
+native messages and not acknowledged:
+
+```json
+{"t":"gaze-highlight","v":1,"on":true,"epoch":"e","q":40}
+{"t":"gaze-highlight","v":1,"on":false,"epoch":"e","q":41}
+```
+
+- Only the eyes send it (not the gaze-fallback laser), and only for a window
+  that isn't the active one. `on:true` is resent every 500 ms while it lasts;
+  the helper forgets a highlight not refreshed within `inputExpiryMs`, and one
+  whose stream closes. Any other `v` is refused as malformed.
+- The cursor fence's tap does the rest: the first physical button down while
+  another window is highlighted is swallowed, with its drags and its up, and the
+  helper focuses that window with its remembered cursor (gaze intent). The
+  helper's own tagged events pass untouched; a lost up never wedges the next
+  click.
+- The helper broadcasts `{"t":"input-state","typing":true}` at most every
+  250 ms while physical keys (and modifiers) go down and up, and
+  `{"t":"input-state","physicalHeld":true|false}` when a trackpad button goes
+  down or the last one comes up. The host holds a stare back for 1 s after
+  typing and while a button is held.
 
 ## Surface messages (helper to native, WebSocket text on `menubar`, `status`, `menu:*`)
 

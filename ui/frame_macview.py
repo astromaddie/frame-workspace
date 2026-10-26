@@ -1020,7 +1020,10 @@ class MacView:
         A changed window stays eligible for five seconds. Optional additions
         need one second of observation; admitted windows get three seconds
         before a newer contender can replace them. Focus and the pixel cap
-        override this residency. No remote calls or panel launches here.
+        override this residency. Focus is the helper's (`focusedSrc`): the
+        window the Mac actually has active, which the headset's eyes only
+        highlight and never move (FW-15), so it is always first and the rest
+        fit around it. No remote calls or panel launches here.
         """
         self._spatial_mode_tick()
         enabled = self._window_displays()
@@ -1089,7 +1092,12 @@ class MacView:
         selected = set()
         for src in order:
             pixels = windows[src]["pixels"]
-            if pixels is not None and pixels <= remaining:
+            if src == focus and pixels is None:
+                # The active window stays live (FW-15) while its size is still
+                # unknown; nothing optional fits beside it until it is known.
+                selected.add(src)
+                remaining = 0
+            elif pixels is not None and pixels <= remaining:
                 selected.add(src)
                 remaining -= pixels
         key = (id(self.agent), tuple(sorted((s, identities[s]) for s in selected)))

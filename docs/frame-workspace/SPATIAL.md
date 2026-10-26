@@ -28,6 +28,38 @@ Fixes for the first installed launch ([SPATIAL-AUDIT.md](SPATIAL-AUDIT.md)). Che
   slots or idle auxiliary panels are missing. A capable viewer built from other sources still
   starts; the Mac page offers **Update Headset Viewer** (see [NATIVE.md](NATIVE.md)).
 
+## Focus: eyes highlight, an action commits (2026-10-26)
+
+After the first usable run (the cursor in several windows at once, no telling which window was
+active, the typed-in window sometimes at the background rate). Checked locally on macOS (native
+self-tests and host integration with a test eye ray, helper unit tests, companion tests, offline
+chrome renders); **not yet run on the device or worn**.
+
+- **Eyes only highlight.** A look lights the window's border, soft and pale, after a quarter
+  second. Nothing moves on the Mac and the live set doesn't change.
+- **An action makes a window active:** the laser moved onto it or its trigger pressed; a
+  trackpad click while it's highlighted (the helper swallows that click, focuses the window and
+  puts its cursor back); the switcher; or a 1.2 s stare. As a stare goes on, the soft glow
+  gathers towards the active line, then snaps into it. No stare commits while the user typed in
+  the last second, holds a button, points with the controller, has a menu, the launcher or the
+  switcher open, or moves a window; it starts from zero afterwards. Typing never moves focus.
+- **One cursor.** Only the active window's capture draws the Mac cursor; the menu bar strip and
+  menus draw it while it's on them.
+- **Clear active window.** A steady, crisp #1a9fff line round the active window; the others are
+  dimmed to 85% (not under the launcher's own dim).
+- **Full rate where you type.** The active window is first in the live set, stays live even
+  before its size is known, and the helper makes it live at once when focus moves.
+
+Protocol additions are in [spatial-shared-contract.md](spatial-shared-contract.md) ("Gaze
+highlight and typing"); the host side is in [native/README.md](../../native/README.md).
+
+To check it on the device: wear it with two overlapping windows. Look at the inactive one: its
+border goes pale, nothing else changes, and typing still goes to the active one. Click the
+trackpad while looking at it: that click only switches, the cursor appears where it last was in
+that window, and only there. Type a little, then stare at another window for two seconds: it
+must not switch until a second after you stop typing plus the stare. Scroll a video in the active
+window and look elsewhere: it keeps its full frame rate.
+
 ## Launcher A: the Applications grid (2026-10-26)
 
 The approved launcher (FW-15 decision, `evidence/launcher-mockup.png` option A). Checked
