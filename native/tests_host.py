@@ -106,7 +106,7 @@ class Stream:
                     hello = {"t": "hello", "r": "test-reconnect"}
                     if self.native:
                         self.epoch = f"epoch-{self.connections}"
-                        hello.update(nativeInput=1, inputEpoch=self.epoch, inputExpiryMs=1500)
+                        hello.update(nativeInput=1, inputEpoch=self.epoch, inputExpiryMs=1500, gazeHighlight=1)
                     send(connection, json.dumps(hello).encode())
                     live, seq, last = not self.idle, 0, 0
                     if self.native and not self.idle:
@@ -598,7 +598,7 @@ def run_idle_auxiliary(binary):
         for stream in streams.values(): stream.finish()
 
 
-INPUT_TYPES = ("focus", "m", "wheel", "input-barrier", "input-keepalive", "release")
+INPUT_TYPES = ("focus", "m", "wheel", "input-barrier", "input-keepalive", "release", "gaze-highlight")
 
 
 def run_content_input(binary):
@@ -629,6 +629,8 @@ def run_content_input(binary):
                 out.append(m["e"] + ("" if m["e"] == "move" else str(m.get("b", 0))))
             elif m["t"] == "focus":
                 out.append("focus:" + m.get("intent", "gaze"))
+            elif m["t"] == "gaze-highlight":
+                pass  # run_gaze_focus checks these
             elif m["t"] != "input-keepalive":
                 out.append(m["t"])
         return out
@@ -703,14 +705,15 @@ def run_content_input(binary):
                     wait(lambda: state("status").get("ready"), "status ready")
                     assert all(streams[n].connections == 1 for n in streams)
 
-                    # A resting laser over a window never moves the cursor. With no
-                    # eye tracking it is the gaze fallback: one dwell focus that
-                    # restores the window's own cursor.
+                    # A resting laser over a window never moves the cursor or the
+                    # focus. With no eye tracking it is the gaze fallback, which
+                    # only lights the border: no focus, however long it rests.
                     marked = mark()
                     aim(point("a", .3, .4), sweep=False)
-                    time.sleep(.6)
-                    assert summary(since(marked, "a")) == ["focus:gaze"], since(marked, "a")
-                    assert since(marked, "a")[0]["deliberate"] is False
+                    time.sleep(1.8)
+                    assert summary(since(marked, "a")) == [], since(marked, "a")
+                    assert not [m for m in since(marked, "a") if m["t"] == "gaze-highlight"], "the laser is not a look"
+                    assert not list(requests.glob("focus-*.json")), "no live-set request either"
                     # Deliberate pointing then hovers there.
                     aim(point("a", .3, .4))
                     wait(lambda: "move" in summary(since(marked, "a")), "hover on A")
@@ -872,9 +875,147 @@ def run_content_input(binary):
         for stream in streams.values(): stream.finish()
 
 
+def run_gaze_focus(binary):
+    """Eyes highlight, an action commits (FW-15): a look lights the border and
+    tells the helper; only a long stare, or the Mac itself, moves focus. A
+    test-only eye ray stands in for eye tracking (--test-hands "eyes")."""
+    streams = {"a": Stream(encode("red", 320, 180), native=True),
+               "b": Stream(encode("blue", 320, 180), native=True, rect=(0, 30, 800, 450))}
+    seen = {name: [] for name in streams}
+
+    def collect(name):
+        while not streams[name].messages.empty():
+            m = streams[name].messages.get_nowait()
+            if m.get("t") in INPUT_TYPES and "epoch" in m:
+                seen[name].append(m)
+        return seen[name]
+
+    def focuses(name, start=0):
+        return [m for m in collect(name)[start:] if m["t"] == "focus"]
+
+    def highlights(name, start=0):
+        return [m["on"] for m in collect(name)[start:] if m["t"] == "gaze-highlight"]
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-gaze-focus-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests = root / "specs", root / "requests"
+            specs.mkdir(); requests.mkdir()
+            hands_file = root / "hands.json"
+            atomic_json(hands_file, {"hands": []})
+            for slot, (name, stream) in enumerate(streams.items()):
+                folder = root / name; folder.mkdir()
+                (folder / "url").write_text(f"http://127.0.0.1:{stream.port}/view?src=spatial%3A1&t=local")
+                atomic_json(specs / (name + ".json"), {"version": 1, "generation": "gaze", "urlFile": str(folder / "url"),
+                    "overlayKey": "test.panel." + name, "overlayName": name, "slot": slot,
+                    "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
+                    "poseFile": str(folder / "pose.json"), "requestDir": str(requests)})
+            atomic_json(root / "spatial.json", {"mode": "spatial", "apps": [], "switcher": {"seq": 1, "open": False}})
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--no-vr", "--action-manifest", "none",
+                    "--state-file", str(root / "host.json"), "--spatial-state", str(root / "spatial.json"),
+                    "--test-hands", str(hands_file), "--seconds", "60"], stdout=log, stderr=log)
+
+                def state(name):
+                    try: return json.loads((root / name / "state.json").read_text())
+                    except (OSError, ValueError): return {}
+
+                def host():
+                    try: return json.loads((root / "host.json").read_text())
+                    except (OSError, ValueError): return {}
+
+                def wait(predicate, label, timeout=8):
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited: " + label
+                        result = predicate()
+                        if result: return result
+                        time.sleep(.02)
+                    raise AssertionError("timed out: " + label)
+
+                def look(name, u=.5, v=.5):
+                    st = state(name)
+                    m, w, h = st["placement"]["matrix"], st["placement"]["width"], st["surfaceHeight"]
+                    x, y, z = (u - .5) * w, (.5 - v) * h, .03
+                    target = [m[r * 4] * x + m[r * 4 + 1] * y + m[r * 4 + 2] * z + m[r * 4 + 3] for r in range(3)]
+                    atomic_json(hands_file, {"hands": [{"valid": False}, {"valid": False}],
+                                             "eyes": {"origin": [0, 0, 0], "direction": target}})
+
+                def away():
+                    atomic_json(hands_file, {"hands": [{"valid": False}, {"valid": False}],
+                                             "eyes": {"origin": [0, 0, 0], "direction": [0, 1, 0]}})
+
+                def typing(name, seconds):
+                    end = time.monotonic() + seconds
+                    while time.monotonic() < end:
+                        streams[name].commands.put({"t": "input-state", "typing": True, "epoch": streams[name].epoch})
+                        time.sleep(.25)
+
+                try:
+                    wait(lambda: all(state(n).get("ready") for n in streams), "windows ready")
+                    away()
+                    time.sleep(.3)
+                    # A look highlights B: the helper hears it on B's stream, and
+                    # nothing focuses or asks the companion for the live set.
+                    look("b")
+                    wait(lambda: highlights("b") == [True], "highlight reaches B's stream")
+                    wait(lambda: host().get("highlightKey") == "test.panel.b", "host shows the highlight")
+                    time.sleep(.45)
+                    assert not focuses("b") and not focuses("a"), (collect("a"), collect("b"))
+                    assert not list(requests.glob("focus-*.json")), "a look asks for no live-set change"
+                    # A long stare commits exactly once, restoring B's own cursor.
+                    wait(lambda: focuses("b"), "a long stare focuses B", timeout=3)
+                    time.sleep(1)
+                    assert [m["intent"] for m in focuses("b")] == ["gaze"], focuses("b")
+                    assert focuses("b")[0]["deliberate"] is False
+                    assert not focuses("a")
+                    wait(lambda: host().get("activeKey") == "test.panel.b", "B is active on the acknowledgement")
+                    assert host().get("highlightKey") == "", "the active window is not highlighted"
+                    assert highlights("b")[-1] is False, "the helper hears the highlight go"
+                    assert len(list(requests.glob("focus-*-d*.json"))) == 1, "one direct live-set request"
+                    wait(lambda: state("a").get("contentDimmed") and not state("b").get("contentDimmed"),
+                         "the other window dims")
+                    assert state("b").get("spatialForeground") and not state("a").get("spatialForeground")
+                    # A stare while the user types on the Mac commits nothing.
+                    mark_a = len(collect("a"))
+                    look("a")
+                    typing("a", 2.5)
+                    assert not focuses("a", mark_a), focuses("a", mark_a)
+                    assert True in highlights("a", mark_a), "the eyes still highlight while typing"
+                    # Typing stops: the stare starts from zero after the guard.
+                    stopped = time.monotonic()
+                    wait(lambda: focuses("a", mark_a), "the stare commits after typing", timeout=4)
+                    assert time.monotonic() - stopped > 1.6, "no instant commit when the guard clears"
+                    wait(lambda: host().get("activeKey") == "test.panel.a", "A is active")
+                    # The Mac moved focus itself (the first trackpad click on the
+                    # highlighted window): the host follows, sending no focus.
+                    mark_b = len(collect("b"))
+                    look("b")
+                    wait(lambda: host().get("highlightKey") == "test.panel.b", "B highlighted again")
+                    streams["a"].commands.put({"t": "input-state", "focused": False, "epoch": streams["a"].epoch})
+                    streams["b"].commands.put({"t": "input-state", "focused": True, "epoch": streams["b"].epoch})
+                    wait(lambda: host().get("activeKey") == "test.panel.b", "the host follows the Mac's focus")
+                    away()
+                    time.sleep(.3)
+                    assert not focuses("b", mark_b), "following the Mac sends no focus back"
+                    process.terminate(); assert process.wait(5) == 0
+                    print("gaze focus integration passed: a look highlights over the window's stream with no focus or "
+                          "live-set request; a long stare commits one gaze focus; the other window dims; no stare "
+                          "commit while typing and a fresh stare after; the host follows a focus the Mac made")
+                except Exception:
+                    log.seek(0); print(log.read()[-4000:], file=sys.stderr)
+                    for name in streams: print(name, collect(name), file=sys.stderr)
+                    raise
+                finally:
+                    if process.poll() is None: process.terminate(); process.wait(5)
+    finally:
+        for stream in streams.values(): stream.finish()
+
+
 if __name__ == "__main__":
     binary = pathlib.Path(sys.argv[1]).resolve()
     run_idle_auxiliary(binary)
     run(binary)
     run_surfaces(binary)
     run_content_input(binary)
+    run_gaze_focus(binary)

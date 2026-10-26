@@ -53,36 +53,52 @@ struct ChromeState {
   float held[handleCount] = {};   // 1 while dragged (or pressed, for the disc)
   bool tip = false;               // the laser's tip is on this layer
   float tipX = 0, tipY = 0;       // window coordinates (m)
-  // Gaze focus (FW-15, bezel): the glow building while the window is looked
-  // at, the snap when it takes focus (0 -> 1), and whether it has focus.
-  float focusGlow = 0, focusSnap = 0;
+  // Gaze and focus (FW-15, bezel): the highlight building while the window
+  // is looked at, how far a long stare is towards committing focus (0 -> 1),
+  // the snap when it takes focus (0 -> 1), and whether it is the active window.
+  float focusGlow = 0, focusSnap = 0, focusProgress = 0;
   bool focused = false;
 };
 
-// Focus confirmation, as the user asked: looking at a window builds a quick
-// glow along its border, then it snaps into focus; fast, but enough that a
-// passing glance doesn't select every window it crosses.
+// Eyes highlight, an action commits (FW-15, chosen 2026-10-26). Looking at a
+// window builds a soft, pale glow along its border within a quarter second:
+// that is the highlight, nothing more. Holding the look on it for
+// `stareCommitSeconds` commits focus too; from the highlight on, the soft glow
+// gathers towards the active window's crisp blue line (`progress`), so the
+// user sees the commit coming. Focus itself is only ever set by the host
+// (`focused`), which plays the snap.
 struct FocusFeedback {
   static constexpr float dwellSeconds = 0.25f, snapSeconds = 0.15f;
-  float glow = 0, snap = 0;
+  // A long stare commits focus (total uninterrupted look, highlight included).
+  static constexpr float stareCommitSeconds = 1.2f;
+  float glow = 0, snap = 0, progress = 0;
   bool focused = false;
-  // Advances by dt; returns true at the moment focus is confirmed.
-  bool update(float dt, bool lookedAt) {
-    bool confirmed = false;
+  // `stare`: seconds of uninterrupted look that may commit (0 while a guard
+  // holds it back), `committing`: the commit went out and waits for the Mac.
+  void update(float dt, bool lookedAt, float stare = 0, bool committing = false) {
     if (focused) {
       snap = std::min(1.f, snap + dt / snapSeconds);
-      glow = 0;
-    } else if (lookedAt) {
-      glow = std::min(1.f, glow + dt / dwellSeconds);
-      if (glow >= 1) { focused = confirmed = true; snap = 0; }
-    } else {
-      glow = std::max(0.f, glow - dt / (dwellSeconds * 0.6f));  // fades a little faster than it builds
+      glow = 0; progress = 0;
+      return;
     }
-    return confirmed;
+    if (lookedAt) glow = std::min(1.f, glow + dt / dwellSeconds);
+    else glow = std::max(0.f, glow - dt / (dwellSeconds * 0.6f));  // fades a little faster than it builds
+    progress = !lookedAt ? 0.f : committing ? 1.f
+        : std::clamp((stare - dwellSeconds) / (stareCommitSeconds - dwellSeconds), 0.f, 1.f);
   }
-  void lose() { focused = false; snap = 0; glow = 0; }
-  void apply(ChromeState &s) const { s.focusGlow = glow; s.focusSnap = snap; s.focused = focused; }
+  void lose() { focused = false; snap = 0; glow = 0; progress = 0; }
+  void apply(ChromeState &s) const {
+    s.focusGlow = glow; s.focusSnap = snap; s.focused = focused; s.focusProgress = progress;
+  }
 };
+
+// One active window (FW-15): it shows at full brightness and the other
+// windows a little dimmer, in Spatial Mode and while something is active. Not
+// while the launcher is open: its backdrop already dims everything behind it.
+constexpr float spatialInactiveTint = .85f;
+inline bool spatialDimmed(bool spatial, const std::string &key, const std::string &active, bool launcherOpen) {
+  return spatial && !launcherOpen && !active.empty() && key != active;
+}
 
 class ChromeRenderer {
 public:
@@ -149,7 +165,7 @@ public:
     glUniform1fv(u("uWideAmt"), handleCount, s.wide);
     glUniform1fv(u("uHeld"), handleCount, s.held);
     glUniform3f(u("uTip"), s.tipX, s.tipY, s.tip ? 1.f : 0.f);
-    glUniform3f(u("uFocus"), s.focusGlow, s.focusSnap, s.focused ? 1.f : 0.f);
+    glUniform4f(u("uFocus"), s.focusGlow, s.focusSnap, s.focused ? 1.f : 0.f, s.focusProgress);
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0); glVertex2f(-1, -1);
     glTexCoord2f(1, 0); glVertex2f(1, -1);
@@ -233,12 +249,14 @@ uniform float uReveal[10];
 uniform float uWideAmt[10];
 uniform float uHeld[10];
 uniform vec3 uTip;       // x, y, on
-uniform vec3 uFocus;     // gaze glow building, snap 0-1, focused
+uniform vec4 uFocus;     // gaze highlight building, snap 0-1, focused, stare commit progress
 
 // Palladium silver-lavender
 const vec3 TOP = vec3(.984, .980, .992), FACE = vec3(.890, .875, .918), BOTTOM = vec3(.796, .769, .839);
 const vec3 TOP_IN = vec3(.851, .827, .890), FACE_IN = vec3(.804, .776, .851), BOTTOM_IN = vec3(.725, .690, .788);
 const vec3 BORDER = vec3(.553, .510, .627);
+const vec3 ACTIVE = vec3(.102, .624, 1.);           // #1a9fff, the chrome's blue: the active window
+const vec3 HIGHLIGHT = vec3(.66, .84, 1.);          // pale: only looked at
 const vec3 LIGHT = vec3(-.4511, .5514, .7018);     // from the upper left, in front
 const vec3 HALFWAY = vec3(-.2497, .3052, .9190);   // normalize(LIGHT + view)
 const vec2 SHEEN = vec2(.9063, -.4226);            // Palladium's 115 degree gradient
@@ -300,15 +318,17 @@ vec4 bezel(vec2 p) {
     float a = .40 * exp(dI / .010) * (.55 + .45 * dot(gI, SHADOW));
     return vec4(0., 0., 0., a);
   }
-  // Gaze focus halo just outside the bezel: soft and wide while the window is
-  // looked at, tightening at the snap, a thin line of light while focused.
-  float focused = uFocus.z, snap = uFocus.y;
-  float haloWidth = focused > .5 ? mix(.007, .003, smoothstep(0., 1., snap)) : .007;
-  float haloAmt = focused > .5 ? mix(.75, .45, smoothstep(0., 1., snap)) + (snap < 1. ? .3 * sin(snap * 3.14159) : 0.)
-                               : .6 * uFocus.x;
+  // Halo just outside the bezel. Highlight (eyes): soft, wide and pale.
+  // Active window: a steady, tight line of chrome blue (#1a9fff), flaring
+  // once at the snap. A long stare tightens the highlight towards it.
+  float focused = uFocus.z, snap = uFocus.y, progress = uFocus.w;
+  float settle = smoothstep(0., 1., snap), flare = focused > .5 && snap < 1. ? .3 * sin(snap * 3.14159) : 0.;
+  float haloWidth = focused > .5 ? mix(.007, .0055, settle) : mix(.010, .006, progress);
+  float haloAmt = focused > .5 ? mix(1., .85, settle) + flare : uFocus.x * mix(.45, .75, progress);
+  vec3 haloColor = focused > .5 ? ACTIVE : mix(HIGHLIGHT, ACTIVE, progress);
   if (dO > uPx) {
     float h = haloAmt * exp(-(dO - uPx) / haloWidth);
-    return h > .002 ? vec4(vec3(.36, .70, 1.) * h, h) : vec4(0.);
+    return h > .002 ? vec4(haloColor * h, h) : vec4(0.);
   }
   float s = dI, ich = .26 * b, ch = .16 * b;
   vec3 n = vec3(0., 0., 1.);
@@ -321,16 +341,18 @@ vec4 bezel(vec2 p) {
   if (-dO < uPx * 1.2) c = mix(c, BORDER, .6);
   if (s < uPx * 1.2) c = mix(c, BORDER, .5);
   c = tipLight(c, p, n);
-  // Gaze focus: a soft blue glow builds across the bezel while the window is
-  // looked at; at the snap it tightens into a crisp line along the window's
-  // edge, flaring once, and stays while the window has focus.
-  c = mix(c, vec3(.42, .72, 1.), .55 * uFocus.x);
+  // Highlight: a pale wash builds across the bezel while the window is
+  // looked at; a long stare gathers it into the edge line. The active window
+  // keeps a crisp, saturated line along its edge (no wash), after one flare.
+  c = mix(c, HIGHLIGHT, .45 * uFocus.x * (1. - .6 * progress));
+  if (focused < .5 && progress > 0.) {
+    float width = mix(.45 * b, .3 * b, progress);
+    c = mix(c, mix(HIGHLIGHT, ACTIVE, progress), .9 * uFocus.x * progress * exp(-s / max(width, 1e-4)));
+  }
   if (focused > .5) {
-    // the light gathers into a crisp line along the window's edge
-    float width = mix(.45 * b, .1 * b, smoothstep(0., 1., snap));
-    float flare = snap < 1. ? .3 * sin(snap * 3.14159) : 0.;
-    c = mix(c, vec3(.42, .74, 1.), min(1., .85 + flare) * exp(-s / max(width, 1e-4)));
-    c = mix(c, vec3(.42, .72, 1.), .18 * (1. - smoothstep(0., 1., snap)));
+    float width = mix(.45 * b, .3 * b, settle);
+    c = mix(c, ACTIVE, min(1., .95 + flare) * exp(-s / max(width, 1e-4)));
+    c = mix(c, ACTIVE, .18 * (1. - settle));
   }
   float a = clamp(.5 - dO / uPx, 0., 1.) * clamp(.5 + s / uPx, 0., 1.);
   return vec4(c * a, a);

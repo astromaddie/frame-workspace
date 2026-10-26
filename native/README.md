@@ -413,8 +413,13 @@ The companion's one-second supervisor selects live windows within
 streams. Focus takes first admission, then recent changes, newest first, with
 one second before optional admission, three seconds of residency, and five
 seconds of eligibility after a change. Focus and capacity override residency.
-Missing dimensions are not admitted; an oversized focused window remains still
-until the stream size or budget permits it. Existing display streams are not
+Focus is the helper's `focusedSrc`, the window the Mac really has active; in
+Spatial Mode the eyes never move it, so a looked-at window can't push it out.
+Missing dimensions are not admitted, except for the focused window, which
+stays live and leaves no room beside it until its size is known; an oversized
+focused window remains still until the stream size or budget permits it. The
+helper also makes a newly focused Spatial window live at once, before the
+companion's next pass. Existing display streams are not
 stopped if they alone exceed the budget. Disabling window displays restores all
 windows to live. `POST /pointer?shared=1|0` synchronizes shared pointer mode:
 mouse buttons carry across viewer sessions, while keys retain session ownership.
@@ -438,8 +443,8 @@ A press belongs to whatever it started on. Handles, the shelf, the switcher
 cards and auxiliary chrome keep their presses, and a held trigger that wanders
 onto a window never clicks it. The bezel, frame walls, M1's rim and lip, and
 capture padding are not content. While the controller points, a button is held
-or a Mac menu is open, gaze dwell waits, and it starts again afterwards. With a
-menu open, hovering another window doesn't raise it (a press still does).
+or a Mac menu is open, the gaze highlight waits, and it starts again afterwards.
+With a menu open, hovering another window doesn't raise it (a press still does).
 
 Everything goes over the panel's own stream once the helper's `hello` offers
 `nativeInput`; the protocol is in
@@ -450,15 +455,50 @@ barriers the old one, focuses the new one and only then moves or presses there.
 A drag keeps the button held across windows and lets go once at the drop. A
 reconnect starts neutral and never replays a held press; tracking loss lets go
 at the last point. Without `nativeInput` (an older helper) nothing is sent and
-gaze focus uses the old `{"t":"focus"}` path.
+a long stare uses the old `{"t":"focus"}` path.
+
+### Focus: eyes highlight, an action commits (FW-15)
+
+In Spatial Mode looking at a window doesn't move focus. After a quarter second
+its border lights up: a soft, pale glow. That's the highlight. The active window
+has a steady, crisp line in the chrome's blue (#1a9fff), and every other window
+is dimmed a little (`spatialInactiveTint`, 85%, through `SetOverlayColor` on the
+picture overlays, so stills need no redraw; not while the launcher's own dim is
+up). A window becomes active when:
+
+- the laser moves onto it deliberately or its trigger is pressed there (the
+  content arbiter's `focus` with `intent:"pointer"`);
+- the trackpad clicks while the eyes highlight it. The host tells the helper
+  which window is highlighted (`gaze-highlight` on that window's stream,
+  refreshed every 500 ms); the helper swallows that first click, focuses the
+  window and puts its cursor back where it was. The helper reports the new
+  focus (`input-state` `focused:true`) and the host follows;
+- the switcher picks it (Cmd-Tab or the headset switcher);
+- the eyes stay on it for `FocusFeedback::stareCommitSeconds` (1.2 s, the
+  highlight included). From the highlight on, the soft glow gathers towards the
+  active line, so the commit can be seen coming; at the commit it snaps into
+  it. A stare restores that window's own cursor (`intent:"gaze"`).
+
+A stare never commits while the Mac's keyboard was used in the last
+`TypingWatch::guardMs` (1 s, from the helper's `input-state` `typing`), while a
+trackpad or controller button is held, while the controller owns the pointer,
+while a menu, the launcher or the switcher is open, or while a window or the
+shelf is being moved. When the guard clears the stare starts again from zero.
+Only the eyes stare: without eye tracking the resting laser (the gaze fallback)
+lights the border and nothing else. Typing never changes focus. Desktop Mode
+keeps its quarter-second gaze focus.
+
+`--render-chrome focus-glow|focus-stare|focused` draws the highlight, a stare on
+its way and the active window; scene panels take `dimmed` and `focusProgress`.
 
 The B and thumbstick paths in `input/bindings_frame_controller.json` haven't
 been checked against the Frame's controller profile yet.
 
 `--test-hands FILE` (with `--no-vr`, tests only) reads both hands from
 `{"hands":[left,right]}`, each `{"valid","origin","direction","trigger",
-"secondary","stick"}`, in place of OpenVR. `tests_host.py` uses it to drive the
-production routing and arbiter against loopback streams.
+"secondary","stick"}`, in place of OpenVR, and optionally a tracked eye ray from
+`"eyes":{"origin","direction"}`. `tests_host.py` uses it to drive the
+production routing, arbiter and gaze focus against loopback streams.
 
 ## SteamVR bar panel (FW-08)
 
@@ -793,10 +833,10 @@ Requests use the existing atomic mode-0600 file writer:
 
 The visible foreground window receives gaze feedback, otherwise the nearest
 bent window, with controller fallback when eye input is unavailable. An
-uninterrupted 250 ms builds the existing bezel
-halo; successful atomic focus delivery triggers its snap and clears the prior
-focused bezel. Short glances fade without selection; residual glow cannot shorten
-a later dwell. Spatial UI consumes gaze and controller hits so windows behind it
+uninterrupted 250 ms builds the highlight; in Spatial Mode only a long stare or
+a deliberate action then makes the window active (see Focus above), and in
+Desktop Mode the 250 ms commits. Successful focus delivery triggers the snap and
+clears the prior focused bezel. Short glances fade without selection. Spatial UI consumes gaze and controller hits so windows behind it
 do not focus or start handle interactions. Still windows keep their usual picture.
 
 Spatial rendering is capped at 30 Hz. Static shelf/menu content is cached until

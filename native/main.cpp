@@ -480,7 +480,7 @@ static int selfTest() {
   selfTestDepth();
   selfTestContent();
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout, launcher (catalogue, paging, curved picking, folders, filter, reorder), overlay budget ordering/hysteresis/nine-window fit, trigger gestures and content input (picture picking on every bend, press latching, foreground priority, two hands, drag handoff, gaze suppression, scroll, tracking loss, trackpad takeover)\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, eyes-highlight focus (stare commit, guards, dim), spatial layout, launcher (catalogue, paging, curved picking, folders, filter, reorder), overlay budget ordering/hysteresis/nine-window fit, trigger gestures and content input (picture picking on every bend, press latching, foreground priority, two hands, drag handoff, gaze suppression, scroll, tracking loss, trackpad takeover)\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -860,6 +860,9 @@ public:
            ",\"decoderColorRange\":" +
                std::to_string(pipe.decoderColorRange) +
            ",\"streamStill\":" + (pipe.streamStill ? "true" : "false") +
+           ",\"contentDimmed\":" + (overlay.contentDimmed ? "true" : "false") +
+           ",\"spatialForeground\":" + (overlay.spatialForeground ? "true" : "false") +
+           ",\"focusProgress\":" + std::to_string(overlay.focusFeedback.progress) +
            ",\"decoderSessionOpen\":" + (pipe.decoderSessionOpen ? "true" : "false") +
            ",\"decoderStillReleases\":" + std::to_string(pipe.decoderStillReleases) +
            ",\"decoderLiveOpens\":" + std::to_string(pipe.decoderLiveOpens) +
@@ -1183,10 +1186,12 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   session->sharedHost = true;
   if (defaults.noVR && !defaults.testHandsFile.empty()) {
     // Test-only hand samples (native/tests_host.py): {"hands": [left, right]},
-    // each {"valid", "origin", "direction", "trigger", "secondary", "squeeze", "stick"}.
+    // each {"valid", "origin", "direction", "trigger", "secondary", "squeeze", "stick"},
+    // and optionally "eyes": {"origin", "direction"}, a tracked combined eye ray.
     auto raw = std::make_shared<std::string>();
     auto cached = std::make_shared<std::array<OverlaySession::Hand, 2>>();
-    session->testHands = [file = defaults.testHandsFile, raw, cached](OverlaySession::Hand (&hands)[2]) {
+    auto eyes = std::make_shared<std::pair<bool, EyeRay>>();
+    session->testHands = [file = defaults.testHandsFile, raw, cached, eyes](OverlaySession::Hand (&hands)[2]) {
       try {
         auto text = readFile(file, 65536);
         if (text != *raw) {
@@ -1222,9 +1227,30 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             }
           }
           *cached = next;
+          EyeRay look{};
+          bool tracked = false;
+          if (auto e = field(j, "eyes"); e && json_object_is_type(e, json_type_object)) {
+            auto vec = [&](const char *name, float *out) {
+              json_object *v = nullptr;
+              if (!json_object_object_get_ex(e, name, &v) || !json_object_is_type(v, json_type_array)) return false;
+              for (int k = 0; k < 3 && k < int(json_object_array_length(v)); ++k)
+                out[k] = float(json_object_get_double(json_object_array_get_idx(v, k)));
+              return true;
+            };
+            tracked = vec("origin", look.origin) && vec("direction", look.direction);
+            const float n = std::sqrt(look.direction[0] * look.direction[0] + look.direction[1] * look.direction[1] +
+                                      look.direction[2] * look.direction[2]);
+            if (tracked && n > 1e-6f) for (auto &c : look.direction) c /= n;
+            else tracked = false;
+          }
+          eyes->first = tracked; eyes->second = look;
         }
       } catch (...) {}  // atomic replacement may be briefly absent
       hands[0] = (*cached)[0]; hands[1] = (*cached)[1];
+    };
+    session->testEyes = [eyes](EyeRay &ray) {
+      if (eyes->first) ray = eyes->second;
+      return eyes->first;
     };
   }
   if (!defaults.actionManifest.empty()) session->initInput(defaults.actionManifest);
@@ -1260,6 +1286,12 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   };
   MenuStripReveal menuReveal;
   ContentInput content;
+  // FW-15 focus: the Mac keyboard's last key, a trackpad button held, and
+  // the window whose gaze highlight the helper was last told about.
+  TypingWatch typing;
+  bool physicalHeld = false;
+  std::string physicalHeldKey, highlightSent;
+  double highlightAt = 0;
   // A focus the helper confirmed over a panel's stream: snap the host's focus
   // and tell the companion (live set only; it must not replay a raise).
   auto confirmFocus = [&](const std::string &key) {
@@ -1415,6 +1447,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         ",\"ready\":" + (std::string(status) == "hosting" ? "true" : "false") +
         ",\"hostPid\":" + std::to_string(getpid()) + ",\"panels\":" + std::to_string(entries.size()) +
         ",\"runningPanels\":" + std::to_string(running) + ",\"activeKey\":" + jsonString(focus.active) +
+        ",\"highlightKey\":" + jsonString(focus.highlighted) +
         ",\"wallSession\":" + jsonString(wallSession) +
         ",\"wallAnchored\":" + (wall->ready ? std::string("true") : "false") +
         ",\"spatialMode\":" + (spatial.spatial ? std::string("true") : "false") +
@@ -1456,6 +1489,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     EyeRay eyes[2];
     gazeStatus = session->eyes ? session->eyes->sample(eyes) : "unavailable";
     wallPriorityIsEye = gazeStatus == "valid" && binocularRay(eyes, wallPriorityRay);
+    if (session->testEyes && session->testEyes(wallPriorityRay)) { gazeStatus = "valid"; wallPriorityIsEye = true; }
     if (gazeStatus == "valid" && !wallPriorityIsEye) gazeStatus = "eye-invalid";
     hasWallPriorityRay = wallPriorityIsEye;
     if (!hasWallPriorityRay) {
@@ -2019,8 +2053,20 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         case Pipeline::InputEvent::Refused: content.refused(e.spec.key); break;
         case Pipeline::InputEvent::Physical: content.yieldToPhysical(); break;
         case Pipeline::InputEvent::Unfocused: content.focusLost(e.spec.key); break;
+        // The Mac moved focus here by itself (a trackpad click on the
+        // highlighted window, Cmd-Tab): this window is the active one now.
+        case Pipeline::InputEvent::Focused:
+          if (spatial.spatial && e.spec.role == PanelRole::Window && focus.active != e.spec.key)
+            confirmFocus(e.spec.key);
+          break;
+        case Pipeline::InputEvent::Typing: typing.typed(now); break;
+        case Pipeline::InputEvent::PhysicalHeld: physicalHeld = event.ok; physicalHeldKey = e.spec.key; break;
         case Pipeline::InputEvent::Released: case Pipeline::InputEvent::Reset:
           content.streamReset(e.spec.key);
+          if (event.kind == Pipeline::InputEvent::Reset) {
+            if (physicalHeldKey == e.spec.key) physicalHeld = false;
+            if (highlightSent == e.spec.key) highlightSent.clear();  // the new connection starts unlit
+          }
           break;
         default: break;
       }
@@ -2097,18 +2143,36 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     if (eye && (auxiliaryHit(ray) || spatialPick(ray, tiles) >= 0 || launcherView.open))
       hit = {};
     // The controller owns the pointer, a button is held or a Mac menu is
-    // open: dwell waits, and starts again from nothing afterwards.
+    // open: no highlight, and a stare starts again from nothing afterwards.
     if (spatial.spatial && content.suppressGaze())
       hit = {};
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window)
         focus.feedback.try_emplace(e.spec.key);
-    if (focus.update(hit, float((now - lastFrame) / 1000), source) &&
-        now - lastFocusAttempt >= 100) {
+    // Spatial Mode (FW-15): eyes only highlight; a long, unguarded stare
+    // commits. Desktop Mode keeps its quick gaze focus.
+    StareGuards guards;
+    guards.eyes = eye;
+    guards.typing = typing.recent(now);
+    guards.physicalHeld = physicalHeld;
+    guards.controllerHeld = content.buttonHeld();
+    guards.pointerOwned = content.pointerOwned();
+    guards.launcherOpen = launcherView.open;
+    guards.switcherOpen = spatial.open;
+    guards.placing = shelfMover.dragging();
+    for (auto &[path, e] : entries) if (e.panel) {
+      if (e.spec.role == PanelRole::Window && e.panel->overlay.draggingHand() >= 0) guards.placing = true;
+      if (e.spec.role == PanelRole::Menu && e.panel->surfaceConfigured && e.panel->surface.visible) guards.menuOpen = true;
+    }
+    const bool commit = focus.update(hit, float((now - lastFrame) / 1000), source,
+        spatial.spatial ? FocusFeedback::stareCommitSeconds : FocusFeedback::dwellSeconds,
+        !spatial.spatial || guards.allow());
+    if (commit && now - lastFocusAttempt >= 100) {
       lastFocusAttempt = now;
       for (auto &[path, e] : entries)
         if (e.panel && e.spec.key == hit.key && spatial.spatial && e.panel->pipe.inputNegotiated) {
-          // Snapped on the helper's acknowledgement (confirmFocus).
+          // A stare restores the window's own cursor (gaze intent); the
+          // host snaps on the helper's acknowledgement (confirmFocus).
           if (content.gazeFocus(hit.key, hit.u, hit.v, now)) dispatchContent(content.drain());
         } else if (e.panel && e.spec.key == hit.key)
           try {
@@ -2124,6 +2188,28 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
             focus.feedback[hit.key].lose();
           }
     }
+    // The helper hears which window the eyes highlight (only the eyes: a
+    // resting laser is not a look), on that window's own stream: its first
+    // trackpad click there only focuses it. Refreshed while it lasts.
+    {
+      const std::string lit = spatial.spatial && eye ? focus.highlighted : std::string();
+      auto sendHighlight = [&](const std::string &key, bool on) {
+        for (auto &[path, e] : entries)
+          if (e.panel && e.spec.key == key && e.spec.role == PanelRole::Window && e.panel->pipe.highlightNegotiated)
+            e.panel->pipe.sendInput(std::string("{\"t\":\"gaze-highlight\",\"v\":1,\"on\":") + (on ? "true" : "false"));
+      };
+      if (lit != highlightSent) {
+        if (!highlightSent.empty()) sendHighlight(highlightSent, false);
+        if (!lit.empty()) sendHighlight(lit, true);
+        highlightSent = lit; highlightAt = now;
+      } else if (!lit.empty() && now - highlightAt >= GazeHighlight::refreshMs) {
+        sendHighlight(lit, true);
+        highlightAt = now;
+      }
+    }
+    for (auto &[path, e] : entries)
+      if (e.panel && e.spec.role == PanelRole::Window)
+        e.panel->overlay.setContentDim(spatialDimmed(spatial.spatial, e.spec.key, focus.active, launcherView.open));
     refreshWallBudget();
     session->reconcileOptionalWalls();
     session->flushWallTransitionLogs();

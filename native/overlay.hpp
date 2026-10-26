@@ -181,6 +181,7 @@ class Overlay {
   // The window's second half, shown only while its halves bend differently.
   VROverlayHandle_t handle2 = 0;
   bool showingHalf = false;
+  VROverlayHandle_t tintedHalf = 0;
   // The last picture shown, kept to redraw it when the bend changes direction.
   std::shared_ptr<Picture> shownPicture;
   bool shownTransposed = false;
@@ -623,6 +624,20 @@ public:
     for(auto h:wallHandles)if(h)overlay->SetOverlaySortOrder(h,base+1);
     if(!selected)session->hideCursor(this);
   }
+  // A non-active window's picture is a little dimmer (SetOverlayColor on its
+  // picture overlays: stills need no redraw, chrome keeps its own light).
+  bool contentDimmed = false;
+  void setContentDim(bool dim) {
+    if (dim == contentDimmed) return;
+    contentDimmed = dim;
+    applyContentTint();
+  }
+  void applyContentTint() {
+    if (noVR || auxiliary()) return;
+    const float t = contentDimmed ? spatialInactiveTint : 1.f;
+    for (auto h : {handle, handle2}) if (h) overlay->SetOverlayColor(h, t, t, t);
+    tintedHalf = handle2;
+  }
   FocusFeedback focusFeedback;
   GLuint spatialTexture() const { return texture; }
   bool spatialTransposed() const { return shownTransposed; }
@@ -851,7 +866,7 @@ public:
       if (std::fabs(a.reveal[i] - b.reveal[i]) > 1e-3f || std::fabs(a.wide[i] - b.wide[i]) > 1e-3f ||
           a.held[i] != b.held[i])
         return false;
-    return std::fabs(a.focusGlow-b.focusGlow)<1e-3f && std::fabs(a.focusSnap-b.focusSnap)<1e-3f && a.focused==b.focused && a.tip == b.tip && (!a.tip || (std::fabs(a.tipX - b.tipX) < 5e-4f && std::fabs(a.tipY - b.tipY) < 5e-4f));
+    return std::fabs(a.focusGlow-b.focusGlow)<1e-3f && std::fabs(a.focusSnap-b.focusSnap)<1e-3f && std::fabs(a.focusProgress-b.focusProgress)<1e-3f && a.focused==b.focused && a.tip == b.tip && (!a.tip || (std::fabs(a.tipX - b.tipX) < 5e-4f && std::fabs(a.tipY - b.tipY) < 5e-4f));
   }
   // Draws whichever layers changed and hands them to SteamVR.
   void drawChrome(const HandleLayout &l, const ChromeState &frameState) {
@@ -1184,6 +1199,7 @@ public:
       return;
     const bool split = surfaceGeometry.region.attached ? surfaceGeometry.region.segments(placement.width,surfaceHeight)==2 : shape().split();
     syncHalf(handle2,split,".half",auxiliary()?(role==PanelRole::Menubar?51:104):(spatialForeground?51:1),texture);
+    if (handle2 != tintedHalf) applyContentTint();  // a new second half starts undimmed
     if(!split)showingHalf=false;
     if (surfaceGeometry.region.attached) {
       const auto &region = surfaceGeometry.region;

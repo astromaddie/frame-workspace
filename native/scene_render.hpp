@@ -37,6 +37,7 @@ class SceneRenderer {
     float width, height, depth;
     int order;
     float extentU = 1, extentV = 1; // the part of the texture that is drawn on
+    float tint = 1;                 // SetOverlayColor: a non-active window is dimmed
   };
   std::vector<Layer> layers;
   std::filesystem::path root;
@@ -87,6 +88,7 @@ class SceneRenderer {
   static void draw(const Layer &l) {
     const auto &b = l.surface.region.attached ? l.surface.region.shape : l.bend;
     glBindTexture(GL_TEXTURE_2D, l.texture);
+    glColor4f(l.tint, l.tint, l.tint, 1);
     const int count = l.surface.region.attached ? l.surface.region.segments(l.width,l.height) : b.segments();
     for (int half = 0; half < count; ++half) {
       const auto seg = l.surface.region.attached ? l.surface.region.segment(half,l.width,l.height) :
@@ -160,11 +162,13 @@ public:
       if (selected && focusedPixels) throw std::runtime_error("only one focused scene panel allowed");
       int order = selected ? 50 : 0;
       add(s, pic.texture, order + 1, pictureDepth);
+      if (flag(p, "dimmed")) layers.back().tint = spatialInactiveTint;
       HandleLayout layout; layout.width = s.placement.width; layout.height = s.height;
       ChromeState frame, controls;
       frame.focused = selected;
       frame.focusGlow = float(num(p, "focusGlow", 0));
       frame.focusSnap = float(num(p, "focusSnap", 1));
+      frame.focusProgress = float(num(p, "focusProgress", 0));
       if (flag(p, "pillLaser")) {
         controls.tip = true; controls.tipX = layout.pillX(); controls.tipY = layout.rowY();
         const unsigned shown = layout.revealed(controls.tipX, controls.tipY);

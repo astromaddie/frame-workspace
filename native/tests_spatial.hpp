@@ -662,6 +662,99 @@ inline void selfTestLauncher() {
         spatialSortOrder(SpatialTile::Launcher) < spatialSortOrder(SpatialTile::Carry),
         "the backdrop dims the windows, not the shelf or the launcher");
 }
+// Eyes highlight, an action commits (FW-15 Spatial Mode).
+inline void selfTestSpatialFocus() {
+  auto check = [](bool ok, const char *why) {
+    if (!ok) throw std::runtime_error(why);
+  };
+  PanelPick a{"a", .5, .5, 1}, b{"b", .5, .5, 1};
+  auto fresh = [] {
+    HostFocus f;
+    f.feedback["a"] = {}; f.feedback["b"] = {};
+    f.activate("a");
+    return f;
+  };
+  // Look for `seconds` at 20 ms frames; how many commits came out.
+  auto look = [](HostFocus &f, const PanelPick &hit, double seconds, bool allowed = true,
+                 const char *input = "eye") {
+    int commits = 0;
+    for (int i = 0; i < int(seconds / .02 + .5); ++i)
+      commits += f.update(hit, .02f, input, FocusFeedback::stareCommitSeconds, allowed) ? 1 : 0;
+    return commits;
+  };
+  {
+    auto f = fresh();
+    check(look(f, b, .2) == 0 && f.highlighted.empty(), "a glance neither highlights nor commits");
+    check(f.feedback["b"].glow > 0 && !f.feedback["b"].focused, "the glow builds while looking");
+    check(look(f, b, .1) == 0 && f.highlighted == "b", "a quarter second highlights");
+    check(f.active == "a" && f.feedback["a"].focused && !f.feedback["b"].focused, "a highlight is not focus");
+    check(f.feedback["b"].progress > 0 && f.feedback["b"].progress < 1, "the stare's progress shows");
+    check(look(f, b, .8) == 0, "short of the stare time: nothing");
+    check(look(f, b, .2) == 1, "a long stare commits once");
+    check(f.feedback["b"].progress == 1, "the highlight is complete while the commit is out");
+    check(look(f, b, 2) == 0, "and only once");
+    f.activate("b");
+    check(f.highlighted.empty() && f.feedback["b"].focused && !f.feedback["a"].focused, "the commit snaps on activate");
+    check(look(f, b, 2) == 0 && f.highlighted.empty(), "the active window is never highlighted");
+  }
+  {
+    auto f = fresh();
+    check(look(f, b, 1.1) == 0, "nearly a stare");
+    f.update({}, .02f, "eye");
+    check(f.highlighted.empty(), "looking away ends the highlight");
+    check(look(f, b, 1.1) == 0, "looking back starts from nothing");
+    check(look(f, b, .12) == 1, "then the full stare commits");
+  }
+  {
+    auto f = fresh();
+    check(look(f, b, 3, true, "controller") == 1, "HostFocus itself counts any source");
+    StareGuards g; g.eyes = false;
+    check(!g.allow(), "a resting laser (gaze fallback) never stares focus over");
+  }
+  // Each guard holds the stare back and restarts it from zero once it clears.
+  for (int guard = 0; guard < 8; ++guard) {
+    StareGuards g;
+    switch (guard) {
+    case 0: g.typing = true; break;
+    case 1: g.physicalHeld = true; break;
+    case 2: g.controllerHeld = true; break;
+    case 3: g.pointerOwned = true; break;
+    case 4: g.menuOpen = true; break;
+    case 5: g.launcherOpen = true; break;
+    case 6: g.switcherOpen = true; break;
+    default: g.placing = true; break;
+    }
+    check(!g.allow(), "every guard holds a stare back");
+    auto f = fresh();
+    check(look(f, b, 1, true) == 0, "a stare under way");
+    check(look(f, b, 3, g.allow()) == 0, "no commit while a guard holds");
+    check(f.highlighted == "b", "the eyes still highlight under a guard");
+    check(f.feedback["b"].progress == 0, "no commit cue under a guard");
+    check(look(f, b, 1.1, true) == 0, "no instant commit once the guard clears");
+    check(look(f, b, .12, true) == 1, "the stare restarts from zero");
+  }
+  {
+    TypingWatch t;
+    check(!t.recent(0), "no typing yet");
+    t.typed(1000);
+    check(t.recent(1000) && t.recent(1999) && !t.recent(2000), "typing guards a second after the last key");
+  }
+  // One active window: the others dim slightly, except under the launcher's own dim.
+  check(!spatialDimmed(true, "a", "a", false) && spatialDimmed(true, "b", "a", false), "non-active windows dim");
+  check(!spatialDimmed(true, "b", "a", true), "not while the launcher dims everything");
+  check(!spatialDimmed(true, "b", "", false), "nothing active: nothing dims");
+  check(!spatialDimmed(false, "b", "a", false), "Desktop Mode does not dim");
+  check(spatialInactiveTint > .8f && spatialInactiveTint < .9f, "a modest dim");
+  // Highlight and active are distinct chrome states.
+  {
+    ChromeState lit, active;
+    FocusFeedback h; h.update(.3f, true, .3f); h.apply(lit);
+    FocusFeedback act; act.focused = true; act.update(.3f, false); act.apply(active);
+    check(lit.focusGlow == 1 && !lit.focused && active.focused && active.focusGlow == 0 && active.focusSnap == 1,
+          "highlight and active window are separate states");
+  }
+}
+
 inline void selfTestSpatial() {
   auto check = [](bool ok, const char *why) {
     if (!ok)
@@ -1042,30 +1135,32 @@ inline void selfTestSpatial() {
         "outside trigger dismisses menu");
   selfTestShelf();
   selfTestLauncher();
-  HostFocus f;
-  f.feedback["one"] = {};
-  f.feedback["two"] = {};
-  PanelPick one{"one", .5, .5, 1}, two{"two", .5, .5, 1};
-  check(!f.update(one, .05, "eye") && !f.update(one, .05, "eye"),
-        "early gaze does not select");
-  auto glow = f.feedback["one"].glow;
-  f.update({}, .02, "eye");
-  check(f.feedback["one"].glow < glow, "early gaze fades");
-  for (int i = 0; i < 4; ++i)
-    check(!f.update(one, .05, "eye"), "residual glow cannot shorten dwell");
-  check(f.update(one, .05, "eye"), "quarter second gaze confirms");
-  f.activate("one");
-  for (int i = 0; i < 4; ++i)
-    check(!f.update(two, .05, "eye"), "second target waits");
-  check(!f.update(two, .05, "controller"),
-        "input source transition restarts dwell");
-  for (int i = 0; i < 3; ++i)
-    f.update(two, .05, "controller");
-  check(f.update(two, .05, "controller"), "controller fallback confirms");
-  f.activate("two");
-  check(!f.feedback["one"].focused && f.feedback["two"].focused,
-        "one focused bezel only");
-  f.remove("two");
-  check(f.active.empty(), "removed focused panel clears state");
+  // Desktop Mode keeps the quick gaze focus: a quarter-second dwell commits.
+  {
+    HostFocus f;
+    f.feedback["one"] = {};
+    f.feedback["two"] = {};
+    PanelPick one{"one", .5, .5, 1}, two{"two", .5, .5, 1};
+    const float quick = FocusFeedback::dwellSeconds;
+    check(!f.update(one, .05, "eye", quick) && !f.update(one, .05, "eye", quick), "early gaze does not select");
+    auto glow = f.feedback["one"].glow;
+    f.update({}, .02, "eye", quick);
+    check(f.feedback["one"].glow < glow, "early gaze fades");
+    for (int i = 0; i < 4; ++i)
+      check(!f.update(one, .05, "eye", quick), "residual glow cannot shorten dwell");
+    check(f.update(one, .05, "eye", quick), "quarter second gaze confirms (Desktop Mode)");
+    f.activate("one");
+    for (int i = 0; i < 4; ++i)
+      check(!f.update(two, .05, "eye", quick), "second target waits");
+    check(!f.update(two, .05, "controller", quick), "input source transition restarts dwell");
+    for (int i = 0; i < 3; ++i)
+      f.update(two, .05, "controller", quick);
+    check(f.update(two, .05, "controller", quick), "controller fallback confirms");
+    f.activate("two");
+    check(!f.feedback["one"].focused && f.feedback["two"].focused, "one focused bezel only");
+    f.remove("two");
+    check(f.active.empty(), "removed focused panel clears state");
+  }
+  selfTestSpatialFocus();
 }
 } // namespace fw
