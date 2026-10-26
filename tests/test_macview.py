@@ -1534,6 +1534,11 @@ class SpatialMode(unittest.TestCase):
         self.failed_panels = set()
         self.windows = [self.window(42)]
         self.streams = []
+        # What the Frame's viewer reports (scripts/workspace-native-update-on-frame.py status).
+        self.viewer = {"installed": {"present": True, "identity": self.mv.headset_viewer.expected(), "protocol": 2,
+                                     "capabilities": ["host", "roles", "surfaces", "wall-slots", "idle-auxiliary",
+                                                      "capabilities"]},
+                       "sessionActive": False, "job": None}
 
     @staticmethod
     def window(wid):
@@ -1573,6 +1578,8 @@ class SpatialMode(unittest.TestCase):
 
     def remote_run(self, command, **kwargs):
         self.events.append(("remote", command))
+        if command == "python3 - status":
+            return json.dumps(self.viewer) + "\n"
         if "'start'" in command:
             args = shlex.split(command)
             panel = args[args.index("--panel") + 1]
@@ -1778,6 +1785,42 @@ class SpatialMode(unittest.TestCase):
             self.mv.start_workspace()
         self.drain()
         self.assertEqual(self.covers(), [])
+
+    def test_viewer_without_spatial_capabilities_is_refused_before_the_mac_changes(self):
+        for installed, message in (({"present": True, "capabilities": None}, "too old for Spatial Mode"),
+                                   ({"present": True, "identity": "a" * 64, "protocol": 2,
+                                     "capabilities": ["host", "roles"]}, "too old for Spatial Mode"),
+                                   ({"present": False}, "Install the native window host")):
+            with self.subTest(installed=installed):
+                self.events.clear()
+                self.viewer["installed"] = installed
+                self.mv.set_mode("spatial")
+                with self.assertRaisesRegex(frame_macview.MacViewError, message):
+                    self.mv.start_workspace(quality="balanced")
+                self.assertNotIn("/spatial/start", [e[0] for e in self.events])
+                self.assertNotIn("/spatial/cover", [e[0] for e in self.events])
+                self.assertFalse(self.launches)
+                self.assertEqual(self.mv.workspace_state()["state"], "stopped")
+        self.assertEqual(self.mv.headset_viewer.state()["state"], "missing")
+
+    def test_capable_viewer_from_other_sources_starts_and_offers_the_update(self):
+        self.viewer["installed"]["identity"] = "b" * 64
+        self.start()
+        self.assertIn("spatial:42", self.mv.native_panels)
+        viewer = self.mv.headset_viewer.state()
+        self.assertEqual((viewer["state"], viewer["label"], viewer["canUpdate"]),
+                         ("outdated", "Different From This Mac App", True))
+
+    def test_no_workspace_starts_while_the_viewer_updates_and_no_update_while_running(self):
+        self.mv.headset_viewer.update = {"state": "building"}
+        self.mv.set_mode("spatial")
+        with self.assertRaisesRegex(frame_macview.MacViewError, "headset viewer is updating"):
+            self.mv.start_workspace(quality="balanced")
+        self.assertFalse([e for e in self.events if e[0] == "/spatial/start"])
+        self.mv.headset_viewer.update = {"state": "idle"}
+        self.start()
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Stop the Workspace before updating"):
+            self.mv.update_headset_viewer()
 
     def test_mac_page_stop_preempts_startup_between_stages(self):
         self.mv.set_mode("spatial")

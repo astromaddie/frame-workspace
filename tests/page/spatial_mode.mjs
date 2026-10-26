@@ -74,6 +74,27 @@ assert.doesNotMatch(element("mvErrors").innerHTML, /Old Problem/);
 
 render(desktop);
 assert.equal(element("mvErrors").hidden, true);
+assert.equal(element("mvViewerStatus").textContent, "Headset Viewer · Not Checked");
+
+// The Frame's viewer is too old: offer the update only while nothing runs.
+const old = {state: "incompatible", label: "Too Old For Spatial Mode", canUpdate: true, sessionActive: false, update: {state: "idle"}};
+render({...desktop, viewer: old});
+assert.equal(element("mvViewerStatus").textContent, "Headset Viewer · Too Old For Spatial Mode");
+assert.equal(element("mvViewerUpdate").hidden, false);
+assert.equal(element("mvViewerUpdate").disabled, false);
+render({...desktop, workspace: {mode: "spatial", state: "running"}, viewer: old});
+assert.equal(element("mvViewerUpdate").disabled, true);
+render({...desktop, viewer: {...old, state: "updating", label: "Updating · Building…", canUpdate: false,
+  update: {state: "building", message: "Building the headset viewer."}}});
+assert.equal(element("mvViewerUpdate").hidden, true);
+assert.equal(element("mvViewerCheck").disabled, true);
+assert.match(element("mvViewerStatus").textContent, /Updating · Building…/);
+render({...desktop, viewer: {...old, update: {state: "failed", message: "The build failed: no gl"}}});
+assert.match(element("mvViewerStatus").textContent, /Update Failed: The build failed: no gl/);
+render({...desktop, viewer: {state: "current", label: "Up To Date", canUpdate: false, update: {state: "installed"}}});
+assert.equal(element("mvViewerStatus").textContent, "Headset Viewer · Up To Date · Updated");
+assert.equal(element("mvViewerUpdate").hidden, true);
+render(desktop);
 element("mvModeSpatial").dataset = {mv: "workspace-mode", mode: "spatial"};
 await element("macview").onclick({target: {closest: () => element("mvModeSpatial")}});
 assert.equal(requests.length, 1);

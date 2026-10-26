@@ -36,6 +36,20 @@ static float angularGazeDistance(const EyeRay &ray, const HmdMatrix34_t &placeme
     dot += (ray.direction[i] / directionLength) * (target[i] / targetLength);
   return std::acos(std::clamp(dot, -1.f, 1.f));
 }
+#ifndef FRAME_WORKSPACE_SOURCE_ID
+#define FRAME_WORKSPACE_SOURCE_ID "unknown"
+#endif
+// What this build can do, for the companion's compatibility check before a
+// Workspace starts. An older build rejects the flag, which reads as "none".
+// Bump `protocol` when a companion must not use an older viewer.
+static int printCapabilities() {
+  std::cout << "{\"name\":\"frame-workspace-native\",\"protocol\":2,\"sourceIdentity\":"
+            << jsonString(FRAME_WORKSPACE_SOURCE_ID)
+            << ",\"capabilities\":[\"host\",\"roles\",\"surfaces\",\"wall-slots\","
+               "\"idle-auxiliary\",\"capabilities\"],"
+               "\"roles\":[\"window\",\"menubar\",\"status\",\"menu\"]}\n";
+  return 0;
+}
 static int selfTest() {
   auto e = parseURL(
       "http://127.0.0.1:9123/"
@@ -1707,6 +1721,8 @@ int main(int argc, char **argv) {
       };
       if (a == "--self-test")
         return selfTest();
+      else if (a == "--capabilities")
+        return printCapabilities();
       else if (a == "--host-dir")
         hostDir = value();
       else if (a == "--spatial-state")
@@ -1932,7 +1948,7 @@ int main(int argc, char **argv) {
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | --render-scene SCENE.json OUT.png [--eye x,y,z] [--look yaw,pitch] [--fov deg] [--size WxH] | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --capabilities | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | --render-scene SCENE.json OUT.png [--eye x,y,z] [--look yaw,pitch] [--fov deg] [--size WxH] | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "

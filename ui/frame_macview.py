@@ -37,6 +37,7 @@ import zlib
 from pathlib import Path
 from urllib.parse import quote, urlencode  # %20, not +: the agent's URLComponents keeps +
 
+from frame_native_update import HeadsetViewer, ViewerError
 from frame_spatial_apps import SpatialApps
 
 HERE = Path(__file__).resolve().parent
@@ -729,6 +730,8 @@ class MacView:
         self.recent_errors = collections.deque(maxlen=8)
         self._stop_requested = 0  # Mac-page Stops waiting for the Workspace lock
         self._spatial_cover = False  # the helper's laptop cover is showing
+        # The Frame's native viewer: checked on connect and before each start.
+        self.headset_viewer = HeadsetViewer(lambda *args, **kwargs: self.run(*args, **kwargs))
         self.spatial_apps = SpatialApps(self)
         self.dash_wake = self.spatial_apps.wake  # one waker for the bar and the spatial state
         self.last_workspace_file = last_workspace_file
@@ -1148,6 +1151,7 @@ class MacView:
                     continue
                 try:
                     self._install_frame_exit_helper()
+                    self.headset_viewer.check(self.frame)  # once per connected Frame
                     self._frame_stop_available = self._probe_frame_stop_available()
                     self.spatial_apps.sync()
                 except Exception as exc:  # retry the spatial state independently of bar availability
@@ -2007,6 +2011,8 @@ print(json.dumps(poses))
                 raise MacViewError("The Companion Is Shutting Down.")
             if self.exit_pending:
                 raise MacViewError(self.exit_error or "Workspace Stop is still being confirmed. Retry Stop before starting again.")
+            if self.headset_viewer.updating():
+                raise MacViewError("The headset viewer is updating. Start again when it finishes.")
             WorkspaceDisplayManager._validate_request(preset, scale, quality)
             if pose is not None:
                 pose = validate_pose(pose)
@@ -2060,11 +2066,12 @@ print(json.dumps(poses))
         # even for an empty desktop where no window launcher would run yet.
         self.ensure_tunnel(allow_new_port=not self.shown)
         self._check_startup()
+        # The viewer must understand roles, surfaces and wall slots; an older one
+        # ignores them. Refuse before the helper moves windows or covers the laptop.
         try:
-            self.run('test -x "${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/frame-workspace-native"',
-                     timeout=8)
-        except Exception as exc:
-            raise MacViewError("Install The Native Window Host On The Frame Before Starting Spatial Mode.") from exc
+            self.headset_viewer.require_spatial(self.frame)
+        except ViewerError as exc:
+            raise MacViewError(str(exc)) from exc
         self._check_startup()
         self._close_window_panels()
         self._spatial_cover = False
@@ -2319,6 +2326,9 @@ print(json.dumps(poses))
             if workspace_viewer_backend() != "native":
                 raise MacViewError("Saved Workspace poses require the native viewer.")
         self._remember_workspace(request["preset"], request["scale"], request["quality"])
+        if workspace_viewer_backend() == "native":
+            # Desktop Mode works with an older viewer; the Mac page offers the update.
+            self.headset_viewer.check(self.frame, force=True)
         with self.workspace_lock:
             if self.workspace_removal_pending:
                 # The last Stop could not confirm WindowServer removal. Retry
@@ -2554,7 +2564,24 @@ print(json.dumps(poses))
         return {"available": True, "screen": status.get("screen", False),
                 "accessibility": status.get("accessibility", False), "streams": status.get("streams", []),
                 "windows": windows, "displays": displays, "workspace": workspace, "tunnel": self.tunnel_up(),
-                "route": self.route, "recentErrors": self.errors_state()}
+                "route": self.route, "recentErrors": self.errors_state(), "viewer": self.headset_viewer.state()}
+
+    # ---- the Frame's native viewer (frame_native_update.py) ----
+
+    def check_headset_viewer(self):
+        if self.headset_viewer.check(self.frame, force=True) is None:
+            raise MacViewError("Could not check the headset viewer. Is the Frame connected?")
+        return self.headset_viewer.state()
+
+    def update_headset_viewer(self):
+        """Update Headset Viewer: rebuild it on the Frame from this app's sources."""
+        with self.workspace_lock:
+            idle = (self.workspace_state().get("state") == "stopped" and not self.native_panels and
+                    not self.workspace_panel_key and not self.exit_pending and not self.closing)
+            try:
+                return self.headset_viewer.start_update(self.frame, idle)
+            except ViewerError as exc:
+                raise MacViewError(str(exc)) from exc
 
     def restart_agent(self):
         """Only if it's missing a permission: a running stream would stop."""

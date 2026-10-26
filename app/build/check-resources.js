@@ -43,6 +43,15 @@ const WORKSPACE_REQUIRED = [
   "scripts/workspace-spatial-on-frame.py",
   "scripts/workspace-viewer-on-frame.sh",
   "mac/bin/frame-mac-view",
+  // Update Headset Viewer builds the native viewer on the Frame from these.
+  "scripts/build-workspace-native.sh",
+  "scripts/native_source_identity.py",
+  "scripts/workspace-native-update-on-frame.py",
+  "native/main.cpp",
+  "native/dash.cpp",
+  "native/gaze_bridge.cpp",
+  "native/input/actions.json",
+  "native/vendor/openvr/openvr_capi.h",
 ];
 
 // Required files that are missing or empty.
