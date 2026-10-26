@@ -273,11 +273,13 @@ private:
     l = {};
     if (!content || held != button || heldHand != h) return;
     if (!heldDead && hasPoint) {
-      ContentCommand up{ContentCommand::Up, phase == Phase::Idle ? ready : to};
+      ContentCommand up{ContentCommand::Up, {}};
       up.button = button; up.u = lastU; up.v = lastV;
-      if (phase != Phase::Idle) pending.push_back(up);
-      else if (!ready.empty()) { up.key = ready; push(up); }
-      else { up.key = downKey; push(up); }  // focus lost mid-drag: let go where it went down
+      auto down = std::find_if(pending.begin(), pending.end(),
+                               [](const ContentCommand &c) { return c.kind == ContentCommand::Down; });
+      if (down != pending.end()) { up.key = down->key; pending.push_back(up); }  // waits behind its down
+      else if (phase != Phase::Idle) { up.key = to; pending.push_back(up); }     // the drop window is coming
+      else { up.key = ready.empty() ? downKey : ready; push(up); }  // focus lost mid-drag: where it went down
     }
     held = heldHand = -1; heldDead = false; downKey.clear(); dragKey.clear();
     ownerActive = now;

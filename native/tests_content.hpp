@@ -284,6 +284,19 @@ inline void selfTestContentArbiter() {
     check(f.count(ContentCommand::Down) == 0 && f.count(ContentCommand::Up) == 0, "an unanswered focus never clicks");
   }
   {
+    // A press on another window while a hover change is in flight: its down
+    // and up both wait for that window, in order.
+    ContentSim s;
+    s.aim(1, "a", .5f, .5f); s.sweep(1); s.ackAll();
+    s.aim(1, "c", .5f, .5f); s.step();  // barrier a, then focus c (unanswered yet)
+    s.clear();
+    s.aim(1, "d", .4f, .4f); s.step();
+    s.frame.hand[1].trigger = true; s.step(); s.frame.hand[1].trigger = false; s.step();
+    s.ackAll();
+    check(s.count(ContentCommand::Down, "d") == 1 && s.count(ContentCommand::Up, "d") == 1 &&
+          s.count(ContentCommand::Up, "c") == 0, "a quick click on a third window lands there");
+  }
+  {
     // Barrier timeout: a silent old stream cannot block the new target.
     ContentSim s;
     s.aim(1, "a", .5f, .5f); s.sweep(1); s.ackAll(); s.clear();
