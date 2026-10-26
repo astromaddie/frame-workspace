@@ -131,15 +131,25 @@ final class MacApps {
                                     launchpad: launchpad.label)
     }
 
+    /// One line for a hop of a shelf click, in the helper's log (mac-helper.log beside the
+    /// app's server.log; stderr, so it is never held back in a buffer).
+    static func dockLog(_ text: String) {
+        FileHandle.standardError.write(Data("frame-mac-view: dock: \(text)\n".utf8))
+    }
+
     func actionResponse(_ request: Request, _ connection: HTTPConnection) {
-        guard let bundleID = request.query["bundleID"], SwitcherPanel.validBundleID(bundleID) else {
+        switch DockAction.parse(bundleID: request.query["bundleID"], verb: request.query["verb"], id: request.query["id"]) {
+        case .failure(.bundleID):
+            MacApps.dockLog("action rejected id=\(request.query["id"] ?? "-"): bundleID is required")
             return connection.respond(400, text: "bundleID is required")
-        }
-        guard let verb = request.query["verb"], ["open", "hide", "unhide", "quit", "show_windows"].contains(verb) else {
+        case .failure(.verb):
+            MacApps.dockLog("action rejected id=\(request.query["id"] ?? "-"): verb=open|hide|unhide|quit|show_windows")
             return connection.respond(400, text: "verb=open|hide|unhide|quit|show_windows")
-        }
-        DispatchQueue.main.async {
-            self.perform(verb, bundleID: bundleID, connection: connection)
+        case .success(let action):
+            MacApps.dockLog("action received \(action.label)")
+            DispatchQueue.main.async {
+                self.perform(action, connection: connection)
+            }
         }
     }
 
@@ -274,34 +284,58 @@ final class MacApps {
         return (png, version)
     }
 
-    private func perform(_ verb: String, bundleID: String, connection: HTTPConnection) {
+    private func perform(_ action: DockAction, connection: HTTPConnection) {
+        let (verb, bundleID) = (action.verb, action.bundleID)
         let running = regularApps().first { $0.bundleIdentifier == bundleID }
+        let log = { (text: String) in MacApps.dockLog("\(text) \(action.label)") }
+        /// Answers and says how it went.
+        func finish(_ json: [String: Any], status: Int = 200) {
+            log("answered \(status) \(json)")
+            connection.respond(status, json: json)
+        }
+        /// Asks Launch Services to open or bring forward the app, the way `open -a` does.
+        /// That works from a background process, which NSRunningApplication.activate
+        /// (cooperative since macOS 14) does not.
+        func launch(_ url: URL) {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            workspace.openApplication(at: url, configuration: configuration) { app, error in
+                if let error {
+                    log("openApplication failed: \(String(describing: error))")
+                    finish(["ok": false, "error": String(describing: error)], status: 409)
+                } else {
+                    log("openApplication ok pid=\(app.map { String($0.processIdentifier) } ?? "nil") active=\(app?.isActive ?? false)")
+                    finish(["ok": app != nil])
+                }
+            }
+        }
         switch verb {
         case "open":
             let pinned = pinnedApps()
             guard let url = applicationURL(bundleID: bundleID, pinned: pinned) else {
+                log("application not found")
                 return connection.respond(404, text: "application not found")
             }
-            workspace.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration()) { app, error in
-                if let error {
-                    connection.respond(409, json: ["ok": false, "error": String(describing: error)])
-                } else {
-                    connection.respond(json: ["ok": app != nil])
-                }
-            }
+            log("resolved \(url.path) running=\(running != nil)")
+            launch(url)
         case "hide":
-            guard let running else { return connection.respond(409, json: ["ok": false, "error": "application is not running"]) }
-            connection.respond(json: ["ok": running.hide()])
+            guard let running else { return finish(["ok": false, "error": "application is not running"], status: 409) }
+            finish(["ok": running.hide()])
         case "unhide":
-            guard let running else { return connection.respond(409, json: ["ok": false, "error": "application is not running"]) }
-            connection.respond(json: ["ok": running.unhide()])
+            guard let running else { return finish(["ok": false, "error": "application is not running"], status: 409) }
+            finish(["ok": running.unhide()])
         case "quit":
-            guard let running else { return connection.respond(409, json: ["ok": false, "error": "application is not running"]) }
-            connection.respond(json: ["ok": running.terminate()])
+            guard let running else { return finish(["ok": false, "error": "application is not running"], status: 409) }
+            finish(["ok": running.terminate()])
         case "show_windows":
-            guard let running else { return connection.respond(409, json: ["ok": false, "error": "application is not running"]) }
+            guard let running else { return finish(["ok": false, "error": "application is not running"], status: 409) }
             _ = running.unhide()
-            connection.respond(json: ["ok": running.activate(options: [])])
+            if let url = running.bundleURL {
+                log("resolved \(url.path) running=true")
+                launch(url)
+            } else {
+                finish(["ok": running.activate(options: [])])
+            }
         default:
             connection.respond(400, text: "unknown app action")
         }

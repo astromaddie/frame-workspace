@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "ui"))
 from frame_spatial_apps import SpatialApps, SCRIPT
 import frame_macview
+import frame_spatial_apps
 import frame_spatial_launcher as launcher
 
 TERMINAL = "com.apple.Terminal"
@@ -121,6 +122,9 @@ class Companion(unittest.TestCase):
     def setUp(self):
         self.mv = FakeMacView()
         self.apps = SpatialApps(self.mv)
+        self.log = []
+        frame_spatial_apps.sink = self.log.append
+        self.addCleanup(setattr, frame_spatial_apps, "sink", None)
 
     def test_dock_order_and_window_panel_mapping(self):
         self.apps.refresh()
@@ -304,6 +308,94 @@ class Companion(unittest.TestCase):
             self.apps._app_action(PINNED, "open")
         self.assertFalse([c for c in self.mv.calls if c[2].get("verb") == "choose"])
 
+    def logged(self, text):
+        return [line for line in self.log if text in line]
+
+    def test_a_shelf_click_is_logged_at_every_hop_and_acknowledged_to_the_headset(self):
+        self.apps.refresh()
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": PINNED, "id": "d42-7"})
+        # The helper gets the request id too, so its own log lines can be matched.
+        self.assertIn(("/apps/action", "POST", {"bundleID": PINNED, "verb": "open", "id": "d42-7"}), self.mv.calls)
+        for hop in ("companion received id=d42-7 verb='open' bundle='com.example.Pinned'",
+                    "companion queued id=d42-7 on the action lane",
+                    "companion asking the helper id=d42-7 open com.example.Pinned",
+                    "companion helper answered id=d42-7",
+                    "com.example.Pinned has no panel yet"):
+            self.assertTrue(self.logged(hop), (hop, self.log))
+        self.assertTrue(all(" dock: " in line for line in self.log))
+        self.assertEqual(self.apps.state["acks"], [{"id": "d42-7", "ok": True}])
+        self.assertEqual(self.mv.lane, ["_app_action"])
+
+    def test_acknowledgements_pass_the_frame_writer_and_are_bounded(self):
+        self.apps.refresh()
+        for n in range(12):
+            self.apps.handle_request({"action": "app", "verb": "open", "bundleID": PINNED, "id": f"d1-{n}"})
+        acks = self.apps.state["acks"]
+        self.assertEqual([a["id"] for a in acks], [f"d1-{n}" for n in range(4, 12)])
+        self.mv.action_error = "application not found"
+        with self.assertRaises(RuntimeError):
+            self.apps._app_action(PINNED, "open", "d1-99")
+        self.assertEqual(self.apps.state["acks"][-1],
+                         {"id": "d1-99", "ok": False, "error": "Couldn't Open Pinned: application not found"})
+        self.assertTrue(self.logged("companion helper refused id=d1-99: Couldn't Open Pinned: application not found"))
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "XDG_RUNTIME_DIR": tmp}
+            def write(state):
+                return subprocess.run([sys.executable, str(SCRIPT), "sync", json.dumps(state)], env=env,
+                                      capture_output=True, text=True, timeout=10)
+            self.assertEqual(write(self.apps.state).returncode, 0)
+            for bad in ([{"id": "../x", "ok": True}], [{"id": "d1-1"}], [{"id": "d1-1", "ok": 1}],
+                        [{"id": "d1-1", "ok": False, "error": "x" * 200}], "no", [{"id": "d1-1", "ok": True}] * 17):
+                self.assertEqual(write({**self.apps.state, "acks": bad}).returncode, 2, bad)
+
+    def test_rejected_requests_say_why_and_answer_the_headset(self):
+        self.apps.refresh()
+        errors = []
+        self.mv._record_error = errors.append
+        count = len(self.mv.calls)
+        for request, why in (({"action": "app", "bundleID": "../../bad", "verb": "open", "id": "r1"}, "the bundle ID is not valid"),
+                             ({"action": "app", "bundleID": TERMINAL, "verb": "force_quit", "id": "r2"}, "the verb is not one of"),
+                             ({"action": "app", "bundleID": "com.unknown.App", "verb": "open", "id": "r3"},
+                              "com.unknown.App is not on the shelf or in the catalogue"),
+                             ({"action": "app", "bundleID": "com.unknown.App", "verb": "hide", "id": "r4"},
+                              "com.unknown.App is not on the shelf")):
+            self.assertTrue(self.apps.handle_request(request))
+            self.assertTrue(self.logged(f"companion rejected id={request['id']}: {why}"), (why, self.log))
+        self.assertEqual(len(self.mv.calls), count, "a rejected request never reaches the helper")
+        acks = {a["id"]: a for a in self.apps.state["acks"]}
+        self.assertEqual(set(acks), {"r1", "r2", "r3", "r4"})
+        self.assertFalse(any(a["ok"] for a in acks.values()))
+        self.assertEqual(errors, ["Couldn't Open com.unknown.App: it isn't on the shelf",
+                                  "Couldn't Hide com.unknown.App: it isn't on the shelf"])
+        self.apps.handle_request({"action": "switch", "key": KEY1.replace("w1", "w99")})
+        self.assertTrue(self.logged("companion rejected switch key="))
+        # Not in Spatial Mode: dropped, and the reason says which condition failed.
+        self.mv.spatial_workspace["state"] = "starting"
+        self.assertTrue(self.apps.handle_request({"action": "app", "bundleID": TERMINAL, "verb": "open", "id": "r5"}))
+        self.assertTrue(self.logged("companion rejected id=r5: app request dropped: Spatial Mode is not running "
+                                    "(mode spatial, workspace starting, stopping False)"), self.log)
+        self.assertEqual(len(self.mv.calls), count)
+
+    def test_opening_an_app_chooses_its_panel_unless_the_headset_already_did(self):
+        self.mv.switcher["windows"] = [KEY2, KEY1]
+        self.apps.refresh()
+        choose = lambda: [c for c in self.mv.calls if c[2].get("verb") == "choose"]
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": TERMINAL, "id": "c1"})
+        self.assertEqual(choose(), [("/switcher", "POST", {"mode": "spatial", "verb": "choose", "key": KEY1})])
+        self.assertTrue(self.logged(f"companion id=c1: choosing {KEY1} for the headset"))
+        self.mv.calls.clear()
+        # The headset brought the panel forward itself: no second selection to jump it again.
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": TERMINAL, "id": "c2", "selected": KEY1})
+        self.assertEqual(choose(), [])
+        self.assertTrue(self.logged(f"companion id=c2: the headset already brought {KEY1} forward"))
+        # A panel it names that is not this app's is not trusted.
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": TERMINAL, "id": "c3", "selected": KEY2})
+        self.assertEqual(len(choose()), 1)
+        # And one that is not a panel key at all is dropped before it reaches anything.
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": TERMINAL, "id": "c4", "selected": "../x"})
+        self.assertEqual(len(choose()), 2)
+        self.assertEqual([a["id"] for a in self.apps.state["acks"]], ["c1", "c2", "c3", "c4"])
+
     def test_real_macview_action_lane_skips_a_blocked_workspace_queue_and_records_failures(self):
         mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
         mv.mode = "spatial"
@@ -325,6 +417,36 @@ class Companion(unittest.TestCase):
         self.assertEqual(mv.dash_state()["errors"], ["Couldn't Open Pinned: application not found"])
         release.set()
         mv.dash_jobs.join()
+
+    def test_real_macview_logs_a_truncated_request_and_a_failed_poll_once(self):
+        mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
+        mv._handle_frame_requests('{"action":"app","verb":"open","bundleID":"com.apple.Termi')
+        self.assertTrue(self.logged("companion could not read a request line from the headset"))
+        for _ in range(3):
+            mv._log_poll_failure("request poll", RuntimeError("ssh timed out"))
+        self.assertEqual(len(self.logged("companion request poll failed: ssh timed out")), 1)
+        mv._log_poll_failure("request poll", RuntimeError("no route"))
+        self.assertEqual(len(self.logged("companion request poll failed")), 2)
+
+    def test_real_macview_shelf_click_runs_the_whole_companion_path_with_its_id(self):
+        mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
+        mv.mode = "spatial"
+        mv.spatial_workspace["state"] = "running"
+        mv.native_panels = self.mv.native_panels
+        mv.call = self.mv.call
+        mv.agent = self.mv.agent
+        mv.spatial_apps.refresh()
+        mv._handle_frame_requests(json.dumps({"action": "app", "verb": "open", "bundleID": TERMINAL, "id": "d9-1"}))
+        mv.action_jobs.join()
+        self.assertIn(("/apps/action", "POST", {"bundleID": TERMINAL, "verb": "open", "id": "d9-1"}), self.mv.calls)
+        self.assertEqual(mv.spatial_apps.state["acks"], [{"id": "d9-1", "ok": True}])
+        self.assertEqual(mv.errors_state(), [])
+        # A refusal comes back as the amber notice and as a failed acknowledgement.
+        self.mv.action_error = "application not found"
+        mv._handle_frame_requests(json.dumps({"action": "app", "verb": "open", "bundleID": PINNED, "id": "d9-2"}))
+        mv.action_jobs.join()
+        self.assertEqual([e["message"] for e in mv.errors_state()], ["Couldn't Open Pinned: application not found"])
+        self.assertEqual(mv.spatial_apps.state["acks"][-1]["ok"], False)
 
     def test_real_macview_dispatch_hook_uses_the_action_queue(self):
         mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
@@ -522,6 +644,9 @@ class LauncherData(unittest.TestCase):
 
 class Launcher(unittest.TestCase):
     def setUp(self):
+        self.log = []
+        frame_spatial_apps.sink = self.log.append
+        self.addCleanup(setattr, frame_spatial_apps, "sink", None)
         self.mv = FakeMacView()
         self.mv.catalog = catalog()
         self.temp = tempfile.TemporaryDirectory()

@@ -57,7 +57,20 @@ def validate_state(raw):
     require("error" not in switcher or text(switcher["error"], 512))
     if "launcher" in state:
         validate_launcher_state(state["launcher"])
+    if "acks" in state:
+        validate_acks(state["acks"])
     return state
+
+
+REQUEST_ID = re.compile(r"[A-Za-z0-9._-]{1,48}\Z")
+
+
+def validate_acks(acks):
+    """What became of recent shelf clicks, so an icon can stop hopping."""
+    require(isinstance(acks, list) and len(acks) <= 16)
+    for ack in acks:
+        require(isinstance(ack, dict) and isinstance(ack.get("id"), str) and REQUEST_ID.fullmatch(ack["id"]))
+        require(type(ack.get("ok")) is bool and ("error" not in ack or text(ack["error"], 160)))
 
 
 def counter(value):

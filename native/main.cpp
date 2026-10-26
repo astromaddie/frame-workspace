@@ -1945,10 +1945,12 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       if (starts(gesture.click, "launcher:recent:", id) ||
           (starts(gesture.click, "launcher:cell:", id) && id.compare(0, 7, "folder:") != 0)) {
         if (launcherCatalog.app(id) >= 0) {
-          try {
-            emit("{\"action\":\"app\",\"verb\":\"open\",\"bundleID\":" + jsonString(id) + "}");
-          } catch (...) {
-          }
+          const std::string request = dockIds.next();
+          const bool written = emit(dockRequest("open", id, request));
+          dockLog("click tile=%s verb=open bundle=%s id=%s request %s", gesture.click.c_str(), id.c_str(), request.c_str(),
+                  written ? "written" : "NOT written");
+          // The same hop on the shelf, when the app has an icon there and no panel yet.
+          if (written && spatialPanelCount(spatial, id) == 0) dockFeedback.launch(request, id, now, 0);
           setLauncher(false);
         }
       } else if (starts(gesture.click, "launcher:cell:folder:", id)) {

@@ -1254,6 +1254,39 @@ fi
         self.assertEqual(mv.route, "network")
 
 
+class HelperLog(unittest.TestCase):
+    """The helper's log must survive restarts and sit beside the app's server.log."""
+
+    def test_the_log_is_beside_server_log_for_the_workspace_app_and_frame_control(self):
+        with mock.patch.dict(os.environ, {"FRAME_CONTROL_LOG": "/x/Library/Logs/Frame Workspace/server.log"}):
+            self.assertEqual(frame_macview.MacView.helper_log_path(),
+                             Path("/x/Library/Logs/Frame Workspace/mac-helper.log"))
+        env = {k: v for k, v in os.environ.items() if k != "FRAME_CONTROL_LOG"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            self.assertEqual(frame_macview.MacView.helper_log_path(),
+                             Path.home() / "Library" / "Logs" / "Frame Control" / "mac-helper.log")
+
+    def test_each_helper_adds_to_the_log_and_a_big_log_rolls_over(self):
+        class Helper:
+            def __init__(self, pid, lines):
+                self.pid, self.stdout = pid, iter(lines)
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_CONTROL_LOG": f"{tmp}/Frame Workspace/server.log"}):
+            mv = frame_macview.MacView([], mock.Mock(), "fake")
+            log = Path(tmp) / "Frame Workspace" / "mac-helper.log"
+            mv._keep_helper_log(Helper(11, ["frame-mac-view: dock action id=d1-1 open com.apple.Terminal\n"]))
+            mv._keep_helper_log(Helper(12, ["frame-mac-view: dock action id=d1-2 open com.apple.Notes\n"]))
+            text = log.read_text()
+            self.assertIn("---- helper pid 11 started ----", text)
+            self.assertIn("---- helper pid 12 started ----", text)
+            self.assertIn("dock action id=d1-1", text)
+            self.assertIn("dock action id=d1-2", text)
+            mv.HELPER_LOG_LIMIT = 10
+            mv._keep_helper_log(Helper(13, ["third\n"]))
+            self.assertIn("dock action id=d1-1", (log.parent / "mac-helper.log.1").read_text())
+            self.assertNotIn("dock action id=d1-1", log.read_text())
+            self.assertIn("third", log.read_text())
+
+
 class SpatialPolicy(unittest.TestCase):
     def setUp(self):
         self.env = mock.patch.dict(os.environ, {"FRAME_WINDOW_DISPLAYS": "1", "FRAME_SPATIAL_DECODE_MP": "18"})

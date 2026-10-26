@@ -122,6 +122,10 @@ if [ "$mode" = show ]; then
   exit 1
 fi
 
+dock_log() {
+  if command -v logger >/dev/null 2>&1; then logger -t frame-workspace -- "dock: $*" >/dev/null 2>&1 || true; fi
+}
+
 # A library request can outlive the companion connection that authorized it.
 # Drop only our launcher-owned requests after ten seconds; headset panel
 # requests retain their established behavior.
@@ -135,7 +139,16 @@ for f in "$requests"/*.json; do
       if [ "$((now - modified))" -gt 10 ]; then rm -f -- "$f"; continue; fi
       ;;
   esac
+  case "${f##*/}" in
+    spatial-*)
+      # A shelf click on its way to the companion: one line in the journal
+      # (journalctl --user -t frame-workspace | grep dock:).
+      body=$(head -c 512 "$f" | tr -d '\n')
+      dock_log "poller picked up ${f##*/} $body"
+      ;;
+  esac
   head -c 512 "$f"
   echo
   rm -f -- "$f"
+  case "${f##*/}" in spatial-*) dock_log "poller forwarded ${f##*/} to the companion" ;; esac
 done

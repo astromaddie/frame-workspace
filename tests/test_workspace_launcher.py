@@ -48,6 +48,10 @@ if [ "$1" = --overlays ]; then
 fi
 printf '%s\\n' "$*" >> "$FRAME_TEST_VRCMD_LOG"
 ''')
+        self.logger_log = self.root / "logger.log"
+        self._write("logger", '''#!/bin/sh
+printf '%s\\n' "$*" >> "$FRAME_TEST_LOGGER_LOG"
+''')
         self._write(self.data / "frame-workspace" / "native" / "frame-workspace-dash", "#!/bin/sh\nexit 0\n")
         self.env = {
             **os.environ,
@@ -57,6 +61,7 @@ printf '%s\\n' "$*" >> "$FRAME_TEST_VRCMD_LOG"
             "XDG_RUNTIME_DIR": str(self.runtime),
             "FRAME_TEST_SERVICE": str(self.service),
             "FRAME_TEST_VRCMD_LOG": str(self.vrcmd_log),
+            "FRAME_TEST_LOGGER_LOG": str(self.logger_log),
             "FRAME_WORKSPACE_VRCMD": str(self.bin / "vrcmd"),
             "FRAME_WORKSPACE_CONNECT_TIMEOUT": "2",
         }
@@ -192,6 +197,21 @@ printf '%s\\n' "$*" >> "$FRAME_TEST_VRCMD_LOG"
         self.assertIn('{"action":"recenter"}', result.stdout)
         self.assertNotIn("workspace_start", result.stdout)
         self.assertFalse(unrelated.exists())
+
+    def test_sync_logs_and_forwards_a_shelf_click(self):
+        requests = self.runtime / "frame-workspace" / "requests"
+        requests.mkdir(parents=True)
+        click = '{"action":"app","verb":"open","bundleID":"com.apple.Terminal","id":"d7-3","selected":"k"}'
+        (requests / "spatial-7-3.json").write_text(click + "\n", encoding="utf-8")
+        (requests / "dash-1-1.json").write_text('{"action":"recenter"}\n', encoding="utf-8")
+
+        result = self._companion_sync({"connected": True, "workspace": {"running": True}})
+
+        self.assertIn(click, result.stdout.splitlines())
+        self.assertFalse(list(requests.glob("*.json")), "taken requests are removed")
+        lines = self.logger_log.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines, ["-t frame-workspace -- dock: poller picked up spatial-7-3.json " + click,
+                                 "-t frame-workspace -- dock: poller forwarded spatial-7-3.json to the companion"])
 
 
 if __name__ == "__main__":

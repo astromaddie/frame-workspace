@@ -1017,6 +1017,7 @@ def run_dock_click(binary):
     the expected JSON, the panel of an app that has one brought forward, and a bounce
     that stops when the panel arrives or an error comes back (--test-hands)."""
     stream = Stream(encode("red", 320, 180), native=True)
+    late = Stream(encode("blue", 320, 180), native=True)
     try:
         with tempfile.TemporaryDirectory(prefix="fw-dock-click-") as temporary:
             root = pathlib.Path(temporary)
@@ -1125,17 +1126,31 @@ def run_dock_click(binary):
                                  "dock: launch ended id=" + second["id"] + " bundle=test.empty by=error",
                                  "dock: release hand=1 tile=dock:test.empty no click", "dock: hold tile=dock:test.empty"):
                         assert line in text, (line, text[-3000:])
+                    # A panel the companion chose before its picture exists is kept and taken when it
+                    # appears, not consumed and lost.
+                    folder_b = root / "b"; folder_b.mkdir()
+                    (folder_b / "url").write_text(f"http://127.0.0.1:{late.port}/view?src=spatial%3A2&t=local")
+                    spatial["switcher"].update(seq=3, chosen="test.panel.b")
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: "dock: chosen panel not ready key=test.panel.b seq=3" in log_text(), "the early choice is kept")
+                    assert not [r for r in written() if r.get("key") == "test.panel.b"], "nothing to select yet"
+                    atomic_json(specs / "b.json", {"version": 1, "generation": "dock-b", "urlFile": str(folder_b / "url"),
+                        "overlayKey": "test.panel.b", "overlayName": "b", "controlFile": str(folder_b / "control.json"),
+                        "stateFile": str(folder_b / "state.json"), "poseFile": str(folder_b / "pose.json"),
+                        "requestDir": str(requests), "slot": 1})
+                    wait(lambda: {"action": "switch", "key": "test.panel.b"} in written(), "the chosen panel is taken once it is ready")
+                    assert "dock: chosen panel taken key=test.panel.b seq=3" in log_text()
                     process.terminate(); assert process.wait(5) == 0
                     print("dock click integration passed: one request with an id and the expected JSON, the panel of an "
                           "app that has one is selected, the bounce clears on an error or the panel's arrival, a press "
-                          "that leaves the icon or is held writes nothing, every hop is logged")
+                          "that leaves the icon or is held writes nothing, a panel chosen before it is ready is kept, every hop is logged")
                 except Exception:
                     log.seek(0); print(log.read()[-4000:], file=sys.stderr)
                     raise
                 finally:
                     if process.poll() is None: process.terminate(); process.wait(5)
     finally:
-        stream.finish()
+        stream.finish(); late.finish()
 
 
 if __name__ == "__main__":
