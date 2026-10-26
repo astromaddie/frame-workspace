@@ -28,6 +28,48 @@ Fixes for the first installed launch ([SPATIAL-AUDIT.md](SPATIAL-AUDIT.md)). Che
   slots or idle auxiliary panels are missing. A capable viewer built from other sources still
   starts; the Mac page offers **Update Headset Viewer** (see [NATIVE.md](NATIVE.md)).
 
+## The shelf: one row, and what a click does (2026-10-26)
+
+After the first usable run: "it felt too tall ... just a big gray slab" and "clicking an app
+on the dock didn't seem to do anything". Checked locally on macOS (native self-tests and
+host integration, companion and helper tests, offline renders in `native/evidence/shelf-*.png`);
+**not yet run on the device or worn**.
+
+- **One row.** The Applications button, the app icons, a groove, then the status items (clock,
+  Wi-Fi, battery, Control Center) at the right end. The backing hugs the icons (about 103 mm
+  tall at full size, down from 167 mm); magnified icons rise past its top like the macOS Dock.
+- **A click shows at once.** The icon shrinks while the trigger is held. An app that already has
+  a panel has its most recently used panel brought in front of the user, as the switcher does,
+  and its focus commits. An app with no panel yet hops until its panel appears or an error comes
+  back (the amber notice also shows it); it gives up after 20 s, or 12 s once the Mac has opened
+  it.
+- **Where a click goes, and what each hop logs.** Every shelf request carries an id
+  (`d<pid>-<n>`); grep it, or `dock:`, at each place:
+
+  | Hop | Where | Look for |
+  |---|---|---|
+  | Headset host | the Frame's journal: `journalctl --user -b \| grep 'dock:'` | `dock: press`, `dock: click ... id=...`, `dock: ack id=... ok=...`, `dock: launch ended ...`, `dock: request not written` |
+  | Request poller | the same journal, tag `frame-workspace` | `dock: poller picked up spatial-<pid>-<n>.json {...}`, `dock: poller forwarded ...` |
+  | Companion | `~/Library/Logs/Frame Workspace/server.log` | `dock: companion received id=...`, `companion rejected id=...: <reason>`, `companion queued id=...`, `companion asking the helper`, `companion helper answered` / `refused`, `companion request poll failed` |
+  | Mac helper | `~/Library/Logs/Frame Workspace/mac-helper.log` | `dock: action received id=... verb=... bundle=...`, `resolved <path> running=...`, `openApplication ok pid=... active=...` / `failed: ...`, `answered 200 ...` |
+
+  The first line that is missing is where the click died. The helper's log used to be
+  `~/Library/Logs/Frame Control/mac-helper.log`, truncated by every helper start; it now sits
+  beside `server.log`, adds to the file under a header per helper start, and rolls over at 4 MB.
+- **Found while tracing the path** (all fixed, each with a test): the poll for headset requests
+  failed as a whole when the window list made the sync state too big (long titles written as
+  escapes), so no click got through and nothing was logged; a panel the companion chose before
+  its picture or the head pose was ready was consumed and lost; a request the host could not
+  write, or one the companion dropped (Spatial Mode not running, a bundle not on the shelf), was
+  silent; and `show_windows` used `NSRunningApplication.activate`, which macOS 14+ may refuse
+  from a background process, where `open` goes through Launch Services.
+
+To check it on the device: wear it, point at the shelf (it grows), click an app that has a
+window: that window comes in front of you and gets the cursor. Click an app that is not
+running: its icon hops until the window appears; quit it from the Mac and click it again with
+the Mac asleep or the app missing to see the amber notice and the icon stop. After any click that
+did nothing, read the four logs above for its id.
+
 ## Focus: eyes highlight, an action commits (2026-10-26)
 
 After the first usable run (the cursor in several windows at once, no telling which window was
@@ -781,7 +823,7 @@ windows as above moved).
 
 Changes from this run: Stop always undoes its own mirror; per-window startup steps and display
 mode failures are logged; the companion keeps the helper's log in
-`~/Library/Logs/Frame Control/mac-helper.log`; spare pool displays are off
+`mac-helper.log` beside the app's `server.log` (`~/Library/Logs/Frame Workspace/` in the Workspace app); spare pool displays are off
 (`FRAME_SPATIAL_WARM_SPARES=0` from the companion). Next: rerun on an unloaded Mac, one window at a time, then
 several; check whether display changes overlap (the second window started within a second of the
 first) and serialize them if so.

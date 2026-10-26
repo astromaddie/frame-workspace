@@ -1,6 +1,7 @@
 """Exercise the real Frame Workspace library launcher and dashboard script."""
 import json
 import os
+import sys
 from pathlib import Path
 import subprocess
 import tempfile
@@ -212,6 +213,28 @@ printf '%s\\n' "$*" >> "$FRAME_TEST_LOGGER_LOG"
         lines = self.logger_log.read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines, ["-t frame-workspace -- dock: poller picked up spatial-7-3.json " + click,
                                  "-t frame-workspace -- dock: poller forwarded spatial-7-3.json to the companion"])
+
+    def test_sync_accepts_a_state_with_many_long_window_titles_written_as_escapes(self):
+        # Titles are written as \\u escapes, six bytes a character and twelve for an emoji: 32 titles
+        # of 64 made a state the script refused, and the refusal took the poll for shelf clicks with it.
+        sys.path.insert(0, str(ROOT / "ui"))
+        import frame_macview
+        mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
+        mv.mode = "spatial"
+        mv.native_panels = {f"window:{n}": {"slot": n, "key": f"com.frame-workspace.native.1000.panel-w{n}",
+                                            "title": "\U0001F600" * 64, "role": "window"} for n in range(40)}
+        raw = json.dumps(mv.dash_state(), separators=(",", ":"), allow_nan=False)
+        self.assertGreater(len(raw), 16384, "the old limit would have refused this")
+        text = mv.dash_state_text()
+        state = json.loads(text)
+        self.assertLessEqual(len(text), mv.DASH_STATE_LIMIT)
+        self.assertTrue(state["windows"] and state["workspace"]["mode"] == "spatial")
+        requests = self.runtime / "frame-workspace" / "requests"
+        requests.mkdir(parents=True)
+        (requests / "spatial-1-1.json").write_text('{"action":"app","verb":"open","bundleID":"a.b","id":"d1-1"}\n')
+        result = subprocess.run(["bash", str(DASH), "sync", text], env=self.env, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('"id":"d1-1"', result.stdout)
 
 
 if __name__ == "__main__":

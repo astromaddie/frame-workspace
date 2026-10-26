@@ -1188,8 +1188,7 @@ class MacView:
                 if failures and tick % 5:
                     continue
                 try:
-                    out = self.run("bash -s -- sync " + _quote(json.dumps(self.dash_state(), separators=(",", ":"),
-                                                                           allow_nan=False)),
+                    out = self.run("bash -s -- sync " + _quote(self.dash_state_text()),
                                    stdin=WORKSPACE_DASH_SCRIPT.read_text(encoding="utf-8"), timeout=8)
                     failures = 0
                 except Exception as exc:  # noqa: BLE001 - asleep or out of reach; try again shortly
@@ -1265,6 +1264,20 @@ class MacView:
             workspace["notice"] = notice
         return {"connected": True, "workspace": workspace, "windows": windows[:32],
                 "errors": [e["message"] for e in list(self.recent_errors)[-4:]]}
+
+    DASH_STATE_LIMIT = 24000  # bytes; the Frame's sync script refuses more than 32768 characters
+
+    def dash_state_text(self):
+        """dash_state() as the Frame's sync script takes it. One that is too big makes the
+        script refuse the whole call, and with it the poll for headset requests (a shelf
+        click would wait for nothing), so the window list is cut to fit. Titles written
+        out as \\u escapes are six bytes a character, which 32 long Japanese titles fill."""
+        state = self.dash_state()
+        text = json.dumps(state, separators=(",", ":"), allow_nan=False)
+        while len(text) > self.DASH_STATE_LIMIT and state["windows"]:
+            state["windows"] = state["windows"][:-1]
+            text = json.dumps(state, separators=(",", ":"), allow_nan=False)
+        return text
 
     def _install_frame_exit_helper(self):
         """Install the bounded local Stop helper before the dashboard is shown."""

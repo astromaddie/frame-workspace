@@ -26,7 +26,7 @@ mode=${1:-}
 case "$mode" in
   stop) [ "$#" -eq 1 ] || usage ;;
   show) [ "$#" -eq 1 ] || usage ;;
-  sync) [ "$#" -eq 2 ] && [ "${#2}" -le 16384 ] || usage ;;
+  sync) [ "$#" -eq 2 ] && [ "${#2}" -le 32768 ] || usage ;;
   *) usage ;;
 esac
 
