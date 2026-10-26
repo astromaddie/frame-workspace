@@ -23,6 +23,15 @@ OLD_POSE = '{"version":1,"width":2.4,"distance":2,"curvature":0,"matrix":[1,0,0,
 
 
 class NativePoseLauncherTests(unittest.TestCase):
+    def assertRestoredPose(self, text, title="Window p1", bundle="", expected=VALID_POSE):
+        """A window's --pose restore is written as the user's own (FW-15)."""
+        pose = json.loads(text)
+        provenance = {k: pose.pop(k) for k in ("userSet", "bundleID", "title", "session", "savedAt")}
+        self.assertEqual(pose, expected)
+        self.assertIs(provenance["userSet"], True)
+        self.assertEqual((provenance["bundleID"], provenance["title"]), (bundle, title))
+        self.assertIsInstance(provenance["savedAt"], int)
+
     def fixture(self, panel=False):
         context = tempfile.TemporaryDirectory(prefix=".native-pose-", dir=os.environ.get("FRAME_NATIVE_TEST_TMP", ROOT / "tests"))
         root = Path(context.name)
@@ -331,8 +340,12 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
                     self.assertIn("exited during startup", run.stderr)
                     self.assertEqual((root / "pose-at-stop").read_text(encoding="utf-8"), OLD_POSE)
                     self.assertEqual((root / "pose-at-confirm").read_text(encoding="utf-8"), OLD_POSE)
-                    self.assertEqual((root / "pose-at-systemd-run").read_text(encoding="utf-8"), VALID_RAW)
-                    self.assertEqual(pose_file.read_text(encoding="utf-8"), VALID_RAW)
+                    if panel:
+                        self.assertRestoredPose((root / "pose-at-systemd-run").read_text(encoding="utf-8"), title="")
+                        self.assertRestoredPose(pose_file.read_text(encoding="utf-8"), title="")
+                    else:  # the Workspace's pose is written as given
+                        self.assertEqual((root / "pose-at-systemd-run").read_text(encoding="utf-8"), VALID_RAW)
+                        self.assertEqual(pose_file.read_text(encoding="utf-8"), VALID_RAW)
                     self.assertEqual(pose_file.stat().st_mode & 0o777, 0o600)
                     self.assertTrue((root / "confirmed-at-run").exists())
                     ordered = events.read_text(encoding="utf-8").splitlines()
@@ -557,6 +570,125 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
         finally:
             context.cleanup()
 
+    def test_window_identity_and_size_reach_the_spec_and_stamp_the_restored_pose(self):
+        context, _, env, _, runtime, _, _, _ = self.host_fixture()
+        try:
+            run = self.run_launcher(env, self.host_start_args("w42", "fc10101010", "--slot", "3", "--bundle-id",
+                                                             "com.apple.Terminal", "--points", "900x600",
+                                                             "--pose", VALID_RAW))
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            spec = json.loads((runtime / "frame-workspace/host/panels/w42.json").read_text())
+            self.assertEqual((spec["bundleID"], spec["points"], spec["slot"]), ("com.apple.Terminal", [900, 600], 3))
+            self.assertRestoredPose(Path(spec["poseFile"]).read_text(), title="Window w42", bundle="com.apple.Terminal")
+        finally:
+            context.cleanup()
+
+    def test_invalid_window_identity_rejected_before_service_mutation(self):
+        for option in (("--bundle-id", "com.apple/Terminal"), ("--bundle-id", "a" * 256), ("--points", "900"),
+                       ("--points", "0x600"), ("--points", "900x600x2"), ("--points", "x600"),
+                       ("--points", "100001x5")):
+            with self.subTest(option=option):
+                context, _, env, _, runtime, calls, _, count = self.host_fixture()
+                try:
+                    run = self.run_launcher(env, self.host_start_args("w42", "fc10101010", *option))
+                    self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+                    self.assertFalse(calls.exists())
+                    self.assertFalse((runtime / "frame-workspace").exists())
+                finally:
+                    context.cleanup()
+        context, _, env, _, _, calls, _, _ = self.host_fixture()
+        try:
+            run = self.run_launcher(env, ["--role", "menu", "--panel", "menu0", "--bundle-id", "com.apple.Terminal",
+                                          "start", "http://127.0.0.1:48888/view?ticket=m", "800", "600",
+                                          "fc10101010", "v4l2", "gpu"])
+            self.assertEqual(run.returncode, 2, run.stdout + run.stderr)
+            self.assertIn("no window identity", run.stderr)
+        finally:
+            context.cleanup()
+
+    def test_a_panel_waiting_for_its_picture_does_not_hold_up_the_next(self):
+        context, root, env, _, runtime, _, _, _ = self.host_fixture()
+        try:
+            slow_env = {**env, "TEST_WINDOW_IDLE": "1", "FRAME_NATIVE_READY_SECONDS": "6"}
+            slow = subprocess.Popen(["bash", str(SCRIPT), *self.host_start_args("w1", "fc11111111")],
+                                    env=slow_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            spec = runtime / "frame-workspace/host/panels/w1.json"
+            deadline = time.monotonic() + 5
+            while not spec.exists() and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(spec.exists(), "the first panel's spec was written")
+            started = time.monotonic()
+            quick = self.run_launcher({**env, "TEST_WINDOW_IDLE": "1", "FRAME_NATIVE_READY_SECONDS": "0.5"},
+                                      self.host_start_args("w2", "fc22222222"))
+            self.assertEqual(quick.returncode, 1, quick.stdout + quick.stderr)
+            self.assertLess(time.monotonic() - started, 4, "the second launch did not wait behind the first")
+            self.assertIsNone(slow.poll(), "the first is still waiting for its picture")
+            self.assertTrue(spec.exists())
+            # Stop while it waits: the start gives up at once, the stop cleans up.
+            stop = self.run_launcher(env, ["--panel", "w1", "stop"])
+            self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+            out, err = slow.communicate(timeout=4)
+            self.assertEqual(slow.returncode, 1, out + err)
+            self.assertIn("stopped or replaced during startup", err)
+            self.assertFalse(spec.exists())
+        finally:
+            if slow.poll() is None:
+                slow.kill(); slow.wait(2)
+            context.cleanup()
+
+    def test_placeholders_keep_waiting_windows_and_never_touch_a_live_panel(self):
+        context, root, env, _, runtime, _, _, _ = self.host_fixture()
+        specs = runtime / "frame-workspace/host/panels"
+        def sync(items, session=None):
+            body = {"panels": items, **({"session": session} if session else {})}
+            return self.run_launcher(env, ["placeholders", json.dumps(body)])
+        try:
+            live = self.run_launcher(env, self.host_start_args("w7", "fc77777777"))
+            self.assertEqual(live.returncode, 0, live.stdout + live.stderr)
+            pose = {**VALID_POSE, "width": 1.0}
+            run = sync([{"panel": "w5", "name": "Meeting Notes", "bundleID": "com.apple.Notes", "points": [760, 475],
+                         "slot": 4, "error": "Couldn't open this window. Retrying…"},
+                        {"panel": "w6", "name": "Downloads", "pose": pose},
+                        {"panel": "w7", "name": "Already Live", "slot": 0}], session="e" * 32)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            w5, w6 = (json.loads((specs / n).read_text()) for n in ("w5.json", "w6.json"))
+            self.assertTrue(w5["placeholderOnly"] and w5["urlFile"] == "" and w5["generation"].startswith("ph"))
+            self.assertEqual((w5["placeholderError"], w5["bundleID"], w5["points"], w5["slot"], w5["session"]),
+                             ("Couldn't open this window. Retrying…", "com.apple.Notes", [760, 475], 4, "e" * 32))
+            self.assertEqual(w5["overlayKey"], "com.frame-workspace.native.%d.panel-w5" % os.getuid())
+            self.assertTrue(Path(w5["stateFile"]).parent.is_dir())
+            self.assertEqual(json.loads(w6["initialPose"]), pose)
+            self.assertEqual(json.loads((specs / "w7.json").read_text())["generation"], "fc77777777")
+            # A placeholder the host has not picked up yet stops without waiting.
+            started = time.monotonic()
+            stop = self.run_launcher(env, ["--panel", "w5", "stop"])
+            self.assertEqual(stop.returncode, 0, stop.stdout + stop.stderr)
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertFalse((specs / "w5.json").exists())
+            # Unchanged entries keep their generation; unlisted placeholders go.
+            generation = w6["generation"]
+            run = sync([{"panel": "w6", "name": "Downloads", "pose": pose}], session="e" * 32)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertFalse((specs / "w5.json").exists())
+            self.assertEqual(json.loads((specs / "w6.json").read_text())["generation"], generation)
+            self.assertTrue((specs / "w7.json").exists(), "a live panel is never removed by the placeholder list")
+            # The window's own launch replaces its placeholder.
+            run = self.run_launcher(env, self.host_start_args("w6", "fc66666666"))
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            spec = json.loads((specs / "w6.json").read_text())
+            self.assertEqual(spec["generation"], "fc66666666")
+            self.assertNotIn("placeholderOnly", spec)
+            run = sync([])
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertEqual(sorted(p.name for p in specs.glob("*.json")), ["w6.json", "w7.json"])
+            for bad in ([{"panel": "menubar"}], [{"panel": "w1", "name": "a\nb"}], [{"panel": "w1", "slot": 1024}],
+                        [{"panel": "w1", "points": [0, 5]}], [{"panel": "w1", "bundleID": "a/b"}]):
+                with self.subTest(bad=bad):
+                    self.assertEqual(sync(bad).returncode, 1)
+            self.assertEqual(self.run_launcher({**env, "FRAME_NATIVE_HOST": "0"}, ["placeholders", "{}"]).returncode, 2)
+        finally:
+            context.cleanup()
+
     def test_invalid_wall_slots_rejected_before_service_mutation(self):
         for slot in ("", "-1", "1.5", "true", "1024", "999999999999"):
             with self.subTest(slot=slot):
@@ -625,7 +757,7 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
             self.assertIn("--no-block stop frame-workspace-panel-%d-p1.service" % os.getuid(),
                           calls.read_text(encoding="utf-8"))
             self.assertIn("spec:fc15151515:control:False", observed)
-            self.assertEqual((Path(env["XDG_DATA_HOME"]) / "frame-workspace" / "panels" / "p1-pose.json").read_text(), VALID_RAW)
+            self.assertRestoredPose((Path(env["XDG_DATA_HOME"]) / "frame-workspace" / "panels" / "p1-pose.json").read_text())
         finally:
             context.cleanup()
 
@@ -761,7 +893,7 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
                            if line.startswith("stopped:")]
             self.assertIn("stopped:" + OLD_POSE, stop_events[0])
             self.assertIn("stop-url-present:True", events.read_text(encoding="utf-8"))
-            self.assertEqual(pose_path.read_text(encoding="utf-8"), VALID_RAW)
+            self.assertRestoredPose(pose_path.read_text(encoding="utf-8"))
             self.assertEqual(pose_path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(json.loads((runtime / "frame-workspace" / "host" / "panels" / "p1.json").read_text())["generation"],
                              "fc44444444")
