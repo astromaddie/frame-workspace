@@ -1,6 +1,7 @@
 #pragma once
 #include "chrome.hpp"
 #include "host.hpp"
+#include "shelf.hpp"
 #include <functional>
 namespace fw {
 inline HmdMatrix34_t spatialIdentity() {
@@ -17,6 +18,8 @@ struct SpatialState {
   bool spatial = false, open = false;
   int index = 0;
   int64_t seq = 0;
+  // Counts Recenter requests made from the dashboard in Spatial Mode.
+  int64_t recenterSeq = 0;
   std::string chosen;
   std::vector<SpatialApp> apps;
   std::vector<SpatialWindow> windows;
@@ -26,6 +29,10 @@ struct SpatialState {
       throw std::runtime_error("spatial state object required");
     SpatialState s;
     s.spatial = str(j, "mode") == "spatial";
+    {
+      auto r = field(j, "recenterSeq");
+      if (r && json_object_is_type(r, json_type_int)) s.recenterSeq = std::max<int64_t>(0, json_object_get_int64(r));
+    }
     auto a = field(j, "apps");
     if (a && json_object_is_type(a, json_type_array))
       for (size_t i = 0; i < json_object_array_length(a) && i < 256; ++i) {
@@ -185,10 +192,19 @@ struct HostFocus {
   }
 };
 struct SpatialTile {
-  enum Kind { Dock, Window, Menu, Shelf } kind = Dock;
+  enum Kind { Dock, Window, Menu, Shelf, Move } kind = Dock;
   int index = 0;
   PanelSurface surface;
   std::string label;
+  SpatialTile() = default;
+  SpatialTile(Kind k, int i, PanelSurface s, std::string l)
+      : kind(k), index(i), surface(std::move(s)), label(std::move(l)) {}
+  // Shelf: layout is the full-size shelf. Move: the pill's virtual window and
+  // what it shows; it is not pickable, because its texture is mostly
+  // transparent, so the shelf mover tests the pill itself.
+  bool pickable = true, shown = true;
+  HandleLayout layout;
+  ChromeState chrome;
 };
 inline HmdMatrix34_t spatialAnchor(const HmdMatrix34_t &head, float distance,
                                    float down) {
@@ -205,38 +221,65 @@ inline HmdMatrix34_t spatialAnchor(const HmdMatrix34_t &head, float distance,
            {-x, 0, z, head.m[2][3] - z * distance}}};
 }
 inline constexpr float shelfStatusBand = .052f, shelfInset = .006f;
+// The dock shelf, then its icons, the app menu, the switcher cards and last the
+// move pill. The shelf and its icons hang from `view.pose` once pinned (else
+// from `anchor`, as before) and are drawn view.scale times full size about the
+// middle of the icon row. Icons near view.pointer are enlarged while the row
+// stretches around them, so each tile here is where the overlay is drawn.
 inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
                                               const HmdMatrix34_t &anchor,
                                               const std::string &menuID = "",
-                                              const SurfaceMessage *status = nullptr) {
+                                              const SurfaceMessage *status = nullptr,
+                                              const ShelfView &view = {}) {
   const int menu = spatialAppIndex(s, menuID);
   std::vector<SpatialTile> tiles;
   if (!s.spatial)
     return tiles;
+  const HmdMatrix34_t &base = view.pinned ? view.pose : anchor;
+  const float k = std::clamp(view.scale, .05f, 1.5f);
   // Scale the whole ordered shelf to fit 1.35 m; no app silently disappears.
-  float step = std::min(.105f, 1.35f / std::max(size_t(1), s.apps.size()));
-  if (!s.apps.empty()) {
-    Placement p;
-    p.width = step * s.apps.size() + .022f;
-    const float scale = status && status->rect.w > 0 ? std::min(.001f, (p.width - 2*shelfInset) / status->rect.w) : .001f;
-    const float band = status ? std::max(shelfStatusBand, status->rect.h * scale + 2*shelfInset) : shelfStatusBand;
+  const float step0 = std::min(.105f, 1.35f / std::max(size_t(1), s.apps.size()));
+  const float step = step0 * k, n = float(s.apps.size());
+  const float reach = shelfIconReach * step, boost = shelfIconBoost * std::clamp(view.magnify, 0.f, 1.f);
+  auto stretch = [&](float u) { return shelfMagnifiedX(u, view.pointer, boost, reach); };
+  auto place = [&](float x, float y, float z) {
     auto t = spatialIdentity();
-    t.m[1][3] = -.48f - band / 2;
-    t.m[2][3] = -.002f;
-    p.matrix = multiply(anchor, t);
-    tiles.push_back({SpatialTile::Shelf, 0, {"shelf", p, .115f + band, PanelRole::Menu}, ""});
+    t.m[0][3] = x;
+    t.m[1][3] = y;
+    t.m[2][3] = z;
+    return multiply(base, t);
+  };
+  // Icon i spans [stretch(a), stretch(b)] along the row; bottoms stay level.
+  const float rowBottom = -shelfRowDrop - shelfIconHeight * k / 2;
+  float menuX = 0, menuTop = 0, shelfX = 0, shelfY = 0;
+  if (!s.apps.empty()) {
+    const float fullWidth = step0 * n + .022f;
+    Placement p;
+    const float scale = status && status->rect.w > 0 ? std::min(.001f, (fullWidth - 2*shelfInset) / status->rect.w) : .001f;
+    const float band = status ? std::max(shelfStatusBand, status->rect.h * scale + 2*shelfInset) : shelfStatusBand;
+    const float left = stretch(-n * step / 2), right = stretch(n * step / 2);
+    p.width = right - left + .022f * k;
+    shelfX = (left + right) / 2;
+    shelfY = -shelfRowDrop - band * k / 2;
+    p.matrix = place(shelfX, shelfY, -.002f);
+    SpatialTile shelf{SpatialTile::Shelf, 0, {"shelf", p, (shelfIconHeight + band) * k, PanelRole::Menu}, ""};
+    shelf.layout.width = fullWidth;
+    shelf.layout.height = shelfIconHeight + band;
+    tiles.push_back(shelf);
   }
   for (size_t i = 0; i < s.apps.size(); ++i) {
     Placement p;
-    p.width = step;
-    p.matrix = anchor;
-    auto t = spatialIdentity();
-    t.m[0][3] = (float(i) - (s.apps.size() - 1) * .5f) * step;
-    t.m[1][3] = -.48f;
-    p.matrix = multiply(anchor, t);
+    const float a = (float(i) - n / 2) * step, xa = stretch(a), xb = stretch(a + step);
+    p.width = xb - xa;
+    const float height = shelfIconHeight * k * p.width / step;
+    p.matrix = place((xa + xb) / 2, rowBottom + height / 2, 0);
+    if (int(i) == menu) {
+      menuX = (xa + xb) / 2;
+      menuTop = rowBottom + height;
+    }
     tiles.push_back({SpatialTile::Dock,
                      int(i),
-                     {"dock:" + s.apps[i].id, p, .115f, PanelRole::Menu},
+                     {"dock:" + s.apps[i].id, p, height, PanelRole::Menu},
                      s.apps[i].name});
   }
   if (s.open)
@@ -269,19 +312,30 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
   if (menu >= 0 && menu < int(s.apps.size()))
     for (int i = 0; i < 3; ++i) {
       Placement p;
-      p.width = .25f;
-      auto t = spatialIdentity();
-      t.m[0][3] = (menu - (s.apps.size() - 1) * .5f) * step;
-      t.m[1][3] = -.30f - i * .045f;
-      t.m[2][3] = .025f;
-      p.matrix = multiply(anchor, t);
+      p.width = .25f * k;
+      // Resting on the enlarged icon, first item at the top.
+      p.matrix = place(menuX, menuTop + (.01f + .0225f + (2 - i) * .045f) * k, .025f);
       tiles.push_back({SpatialTile::Menu,
                        i,
-                       {"menu:" + menuID + ":" + std::to_string(i), p, .045f, PanelRole::Menu},
+                       {"menu:" + menuID + ":" + std::to_string(i), p, .045f * k, PanelRole::Menu},
                        i == 0   ? "Show All Windows"
                        : i == 1 ? (s.apps[menu].hidden ? "Unhide" : "Hide")
                                 : "Quit"});
     }
+  if (!s.apps.empty() && view.pinned) {
+    // The window move pill, hung from a virtual window the size of the full
+    // shelf and shrunk with it; centred under the shelf as drawn.
+    SpatialTile move{SpatialTile::Move, 0, {"shelf:move", {}, 0, PanelRole::Menu}, ""};
+    move.layout = tiles.front().layout;
+    move.chrome = view.chrome;
+    move.pickable = false;
+    move.shown = view.handle;
+    const auto &l = move.layout;
+    move.surface.placement.width = l.chromeWidth() * k;
+    move.surface.height = l.chromeHeight() * k;
+    move.surface.placement.matrix = place(shelfX - l.pillX() * k, shelfY, .004f);
+    tiles.push_back(move);
+  }
   return tiles;
 }
 // Auxiliary poses and their window-layer regions are host-owned; UV stays top-left.
@@ -315,19 +369,22 @@ inline PanelSurface menuStripPlacement(const PanelSurface &window, const Surface
   return s;
 }
 inline PanelSurface statusStripPlacement(const std::vector<SpatialTile> &tiles,
-                                          const SurfaceMessage &m, float metresPerPoint) {
+                                          const SurfaceMessage &m, float metresPerPoint,
+                                          float shelfScale = 1) {
   PanelSurface s{"status", {}, 0, PanelRole::Status};
   for (const auto &tile : tiles) if (tile.kind == SpatialTile::Shelf) {
-    const float scale = std::min(metresPerPoint,
-        (tile.surface.placement.width - 2 * shelfInset) / std::max(1.f, m.rect.w));
-    const float band = tile.surface.height - .115f;
+    // The picture and its padding shrink with the shelf, and ride its right end.
+    const float inset = shelfInset * shelfScale;
+    const float scale = std::min(metresPerPoint * shelfScale,
+        (tile.surface.placement.width - 2 * inset) / std::max(1.f, m.rect.w));
+    const float band = tile.surface.height - .115f * shelfScale;
     s.placement.width = m.rect.w * scale;
     s.height = m.rect.h * scale;
     auto t = spatialIdentity();
-    t.m[0][3] = (tile.surface.placement.width - s.placement.width) / 2 - shelfInset;
+    t.m[0][3] = (tile.surface.placement.width - s.placement.width) / 2 - inset;
     t.m[1][3] = -tile.surface.height / 2 + band / 2;
     t.m[2][3] = .003f;
-    s.menuRise = tile.surface.height / 2 - t.m[1][3] - s.height / 2 + .006f;
+    s.menuRise = tile.surface.height / 2 - t.m[1][3] - s.height / 2 + .006f * shelfScale;
     s.placement.matrix = multiply(tile.surface.placement.matrix, t);
     return s;
   }
@@ -416,6 +473,8 @@ inline int spatialPick(const EyeRay &ray, const std::vector<SpatialTile> &tiles,
   int best = -1;
   PanelPick hit;
   for (size_t i = 0; i < tiles.size(); ++i) {
+    if (!tiles[i].pickable)
+      continue;
     auto h = surfacePick(ray, tiles[i].surface);
     if (h && (!hit || h.distance < hit.distance)) {
       hit = h;
