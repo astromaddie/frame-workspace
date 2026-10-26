@@ -129,8 +129,10 @@ class SpatialRenderer {
     int width = 0, height = 0;
     int kind = -1;         // the tile kind its overlay's sort order was set for
     float curvature = 0;   // OpenVR curvature last set
+    float boundsU = -1, boundsV = -1; // shelf: the part of its texture the overlay shows
   };
   std::unique_ptr<LauncherPainter> painter; // the launcher, its button and backdrop
+  unsigned shelfAllocations = 0;
 
 public:
   static uint32_t sortOrder(SpatialTile::Kind kind) { return spatialSortOrder(kind); }
@@ -139,6 +141,7 @@ private:
   std::vector<Layer> layers;
   Layer handleLayer; // the move pill's own overlay, whichever tile index it has
   std::vector<GLuint> drawn;
+  std::vector<std::pair<float, float>> extent;
   std::shared_ptr<OverlaySession> session;
   ChromeRenderer chrome; // the shelf's move pill is the windows' own pill
   static GLuint shader(GLenum type, const char *src) {
@@ -216,6 +219,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
     drawn.assign(tiles.size(), 0);
+    extent.assign(tiles.size(), {1.f, 1.f});
     for (size_t i = 0; i < layers.size(); ++i) {
       if (i >= tiles.size()) {
         if (layers[i].overlay)
@@ -232,25 +236,28 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           session->overlay->HideOverlay(l.overlay);
         continue;
       }
-      // The shelf's raster follows the size it is drawn at (whole 8 px steps,
-      // so a still shelf does not redraw), keeping the overlay's aspect true.
-      auto snap = [](float metres) {
-        return std::max(16, int(std::lround(metres * shelfPixelsPerMetre / 8)) * 8);
-      };
+      // The shelf is drawn at the size it has (whole 8 px steps, so a still
+      // shelf does not redraw) into the corner of a texture that keeps one size
+      // while it animates; see shelfRaster. cw x ch is the texture, w x h what is
+      // drawn on it. Every other tile fills its texture.
+      const bool shelf = t.kind == SpatialTile::Shelf;
+      const ShelfRaster sr = shelf ? shelfRaster(t) : ShelfRaster{};
       const bool iconTile = t.kind == SpatialTile::Dock || t.kind == SpatialTile::Apps || t.kind == SpatialTile::Carry;
-      int w = t.kind == SpatialTile::Shelf
-                  ? std::min(2048, snap(t.surface.placement.width))
+      int w = shelf                        ? sr.w
               : iconTile                        ? 128
               : t.kind == SpatialTile::Launcher ? int(launcherUnits * launcherPixelsPerUnit)
               : t.kind == SpatialTile::Dim      ? 256
                                                 : 384,
-          h = t.kind == SpatialTile::Shelf      ? snap(t.surface.height)
+          h = shelf                             ? sr.h
               : iconTile                        ? 140
               : t.kind == SpatialTile::Launcher ? int(std::lround(launcherUnitsHigh * launcherPixelsPerUnit))
               : t.kind == SpatialTile::Dim
                   ? std::max(16, int(std::lround(256 * t.surface.height / std::max(.01f, t.surface.placement.width))))
               : t.kind == SpatialTile::Menu ? 64
                                             : 280;
+      const int cw = shelf ? sr.canvasW : w, ch = shelf ? sr.canvasH : h;
+      if (shelf)
+        extent[i] = {sr.u, sr.v};
       bool redraw = false;
       if (move) {
         ChromeRenderer::textureSize(t.layout.chromeWidth(), t.layout.chromeHeight(), false, w, h);
@@ -324,11 +331,13 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           glBindTexture(GL_TEXTURE_2D, l.texture);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
           glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-          if (l.width != w || l.height != h) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
+          if (l.width != cw || l.height != ch) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, cw, ch, 0, GL_RGBA,
                          GL_UNSIGNED_BYTE, nullptr);
-            l.width = w;
-            l.height = h;
+            l.width = cw;
+            l.height = ch;
+            if (shelf)
+              ++shelfAllocations;
           }
           glBindFramebuffer(GL_FRAMEBUFFER, fb);
           glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
@@ -336,6 +345,11 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
             throw std::runtime_error("spatial framebuffer incomplete");
           glViewport(0, 0, w, h);
+          if (shelf) {
+            // What an earlier, larger drawing left outside this one must not show.
+            glClearColor(0, 0, 0, 0);
+            glClear(GL_COLOR_BUFFER_BIT);
+          }
           glDisable(GL_DEPTH_TEST);
           glDisable(GL_BLEND);
           glUseProgram(program);
@@ -385,6 +399,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
             throw std::runtime_error("spatial overlay unavailable");
           VRTextureBounds_t bounds{0, 1, 1, 0};
           session->overlay->SetOverlayTextureBounds(l.overlay, &bounds);
+          l.boundsU = l.boundsV = 1;
           session->overlay->SetOverlayFlag(l.overlay, VROverlayFlags_IsPremultiplied, true);
         }
         if (l.kind != int(t.kind)) {
@@ -402,6 +417,14 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
             l.overlay, ETrackingUniverseOrigin_TrackingUniverseStanding, &m);
         session->overlay->SetOverlayWidthInMeters(l.overlay,
                                                   t.surface.placement.width);
+        if (shelf && (sr.u != l.boundsU || sr.v != l.boundsV)) {
+          // Rows run top to bottom from v = 0, as the overlay's default flip
+          // above has it: the drawn corner is [0, u] x [0, v].
+          VRTextureBounds_t bounds{0, sr.v, sr.u, 0};
+          session->overlay->SetOverlayTextureBounds(l.overlay, &bounds);
+          l.boundsU = sr.u;
+          l.boundsV = sr.v;
+        }
         Texture_t tex{reinterpret_cast<void *>(uintptr_t(l.texture)),
                       ETextureType_TextureType_OpenGL,
                       EColorSpace_ColorSpace_Gamma};
@@ -414,8 +437,18 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
     }
     glViewport(vp[0], vp[1], vp[2], vp[3]);
   }
-  // Borrowed texture after draw(); owned until the renderer is destroyed.
+  // Borrowed texture after draw(); owned until the renderer is destroyed. For
+  // the shelf only the top-left `tileExtent` of it is drawn on.
   GLuint tileTexture(size_t index) const { return drawn.at(index); }
+  // The drawn part of tile `index`'s texture, as fractions (u across, v down).
+  void tileExtent(size_t index, float &u, float &v) const {
+    u = extent.at(index).first;
+    v = extent.at(index).second;
+  }
+  // How many times the shelf's texture storage has been allocated. It changes
+  // only when the shelf's content (its app count or status band) does, never
+  // while the shelf grows, shrinks or magnifies.
+  unsigned shelfAllocationCount() const { return shelfAllocations; }
   bool dump(const std::string &path, const std::vector<SpatialTile> &tiles) {
     const int w = 1280, h = 720;
     GLuint output;
@@ -451,14 +484,15 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       glMultMatrixf(matrix);
       glBindTexture(GL_TEXTURE_2D, drawn[i]);
       float x = t.surface.placement.width / 2, y = t.surface.height / 2;
+      const float eu = extent[i].first, ev = extent[i].second;
       glBegin(GL_QUADS);
       glTexCoord2f(0, 0);
       glVertex2f(-x, y);
-      glTexCoord2f(1, 0);
+      glTexCoord2f(eu, 0);
       glVertex2f(x, y);
-      glTexCoord2f(1, 1);
+      glTexCoord2f(eu, ev);
       glVertex2f(x, -y);
-      glTexCoord2f(0, 1);
+      glTexCoord2f(0, ev);
       glVertex2f(-x, -y);
       glEnd();
       glPopMatrix();

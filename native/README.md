@@ -706,8 +706,13 @@ the edge does not flicker it. Icons relax in 150 ms as soon as the ray leaves th
 icons. `spatialLayout` takes the shelf's scale, magnification, pointer and pose, and
 its tiles are the geometry both drawn and picked, so clicks land on the icon under
 the ray at every size. The shelf consumes gaze like any foreground UI: looking at it
-magnifies it but does not change the focused window. The shelf backing's raster
-follows its drawn size (whole 8 px steps).
+magnifies it but does not change the focused window. The shelf backing is drawn at its
+current size (whole 8 px steps) into the corner of a texture that stays the size of
+the shelf's largest form (full size, icons fully magnified), and the overlay shows that
+corner through its texture bounds, so SteamVR sees one texture size while the shelf
+grows, shrinks and magnifies and does not recreate its remote image on every frame.
+The texture is reallocated only when the shelf's content changes (its app count or
+status band). `tests_spatial_render.cpp` checks this with the renderer's allocation counter.
 
 Its icons keep the
 companion's order and show running dots. Trigger release opens an app; a
