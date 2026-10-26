@@ -247,20 +247,102 @@ public:
       }
       if (icon >= 0) shelfHot = icon + 1; // the shelf comes first, then the icons in order
     }
+    // An optional "launcher" object opens Launcher A in front of the HMD pose
+    // as the host does: "catalog" (launcher.json's format, inline), "query",
+    // "results", "selected", "keyboard", "folder", "page", "hover"
+    // ({"kind": "cell"|"recent"|"dot"|"back", "index": N}) and "carry"
+    // ({"id": ID, "x": X, "y": Y} in panel units, 600 x 372). Icons are
+    // <bundle>.png beside the JSON.
+    LauncherCatalog launcherCatalog;
+    LauncherView launcherView;
+    LauncherTarget launcherHover;
+    float hoverU = .5f, hoverV = .5f;
+    if (auto rawLauncher = field(scene, "launcher")) {
+      auto cfg = object(rawLauncher);
+      auto catalog = field(cfg, "catalog");
+      if (!catalog || !LauncherCatalog::parse(json_object_to_json_string(catalog), launcherCatalog))
+        throw std::runtime_error("invalid scene launcher catalog");
+      auto &l = state.launcher;
+      l.available = l.open = true;
+      l.keyboard = flag(cfg, "keyboard");
+      l.query = str(cfg, "query");
+      l.selected = int(num(cfg, "selected", 0));
+      if (auto results = field(cfg, "results"))
+        for (size_t i = 0; i < json_object_array_length(results); ++i)
+          l.results.push_back(json_object_get_string(json_object_array_get_idx(results, i)));
+      launcherView.update(l, true, spatialIdentity());
+      launcherView.folder = str(cfg, "folder");
+      launcherView.page = int(num(cfg, "page", 0));
+      const auto listing = launcherListing(launcherCatalog, l, launcherView.folder);
+      launcherView.clampPage(listing.pages());
+      if (auto hover = field(cfg, "hover")) {
+        auto h = object(hover);
+        const auto kind = str(h, "kind");
+        const int index = int(num(h, "index", 0));
+        float x = 0, y = 0;
+        if (kind == "cell") {
+          launcherHover = {LauncherTarget::Cell, launcherView.page * launcherPerPage + index};
+          launcherSlot(index, x, y);
+          y += launcherIcon * .55f;
+        } else if (kind == "recent") {
+          launcherHover = {LauncherTarget::Recent, index};
+          x = launcherRecentX(index, int(launcherCatalog.recent.size()));
+          y = launcherRecentTop + launcherRecentIcon * .55f;
+        } else if (kind == "dot") {
+          launcherHover = {LauncherTarget::Dot, index};
+          x = launcherDotX(index, listing.pages());
+          y = launcherDotsY;
+        } else if (kind == "back") {
+          launcherHover = {LauncherTarget::Back, 0};
+          x = launcherBackX + launcherBackW / 2;
+          y = launcherBackY + launcherBackH / 2;
+        } else throw std::runtime_error("invalid scene launcher hover");
+        hoverU = x / launcherUnits;
+        hoverV = y / launcherUnitsHigh;
+      }
+      if (auto carry = field(cfg, "carry")) {
+        auto c = object(carry);
+        auto &k = launcherView.carry;
+        k.hand = 1;
+        k.id = str(c, "id");
+        k.container = listing.container;
+        k.x = float(num(c, "x", 0));
+        k.y = float(num(c, "y", 0));
+        k.onPanel = true;
+        k.gap = launcherGapAt(k.x, k.y, launcherView.page, int(listing.cells.size()));
+        hoverU = k.x / launcherUnits;
+        hoverV = k.y / launcherUnitsHigh;
+      }
+    }
     auto tiles = spatialLayout(state, anchor, "", &statusMessage, view);
+    int launcherTile = -1;
+    if (launcherView.open) {
+      auto picture = std::make_shared<LauncherPicture>(
+          launcherPicture(launcherCatalog, state.launcher, launcherView, launcherHover, false, root.string()));
+      const int carried = launcherView.carry.active() ? launcherCatalog.app(launcherView.carry.id) : -1;
+      launcherTiles(tiles, launcherView, picture,
+                    carried >= 0 ? (root / (launcherCatalog.apps[carried].id + ".png")).string() : "");
+      for (size_t i = 0; i < tiles.size(); ++i)
+        if (tiles[i].kind == SpatialTile::Launcher) launcherTile = int(i);
+      if (launcherHover.kind != LauncherTarget::None || launcherView.carry.active()) shelfHot = launcherTile;
+    }
     SpatialRenderer shelf(session);
-    shelf.draw(state, tiles, shelfHot, .5f, .5f, false, root.string(),
-               [](const std::string &) { return SpatialPicture{}; });
+    shelf.draw(state, tiles, shelfHot, shelfHot == launcherTile ? hoverU : .5f, shelfHot == launcherTile ? hoverV : .5f,
+               false, root.string(), [](const std::string &) { return SpatialPicture{}; });
     for (size_t i = 0; i < tiles.size(); ++i) {
       if (!tiles[i].shown) continue;
-      add(tiles[i].surface, shelf.tileTexture(i), tiles[i].kind == SpatialTile::Shelf ? 99 : 100);
+      add(tiles[i].surface, shelf.tileTexture(i), int(SpatialRenderer::sortOrder(tiles[i].kind)));
     }
-    if (shelfHot >= 0) {
+    if (shelfHot >= 0 && shelfHot == launcherTile) {
+      const auto &surface = tiles[launcherTile].surface;
+      shelfTip = surfacePoint(surface, (hoverU - .5f) * surface.placement.width, (.5f - hoverV) * surface.height, .004f);
+      shelfTipped = true;
+    } else if (shelfHot >= 0) {
       shelfTip = multiply(tiles[shelfHot].surface.placement.matrix, bendPointXY(
           bendShape(tiles[shelfHot].surface.placement, tiles[shelfHot].surface.height), 0, 0, .004f));
       shelfTipped = true;
     } else if (view.handle) {
-      const auto &move = tiles.back();
+      const auto &move = *std::find_if(tiles.begin(), tiles.end(), [](const auto &t) { return t.kind == SpatialTile::Move; });
       shelfTip = multiply(move.surface.placement.matrix, bendPointXY(
           bendShape(move.surface.placement, move.surface.height), move.layout.pillX() * view.scale, move.layout.rowY() * view.scale, .004f));
       shelfTipped = true;

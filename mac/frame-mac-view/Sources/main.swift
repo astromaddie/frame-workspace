@@ -22,6 +22,8 @@
 //   POST /apps/action?bundleID=&verb=...   ?k=: open, hide, unhide, quit, show_windows
 //   GET  /switcher                         ?k=: spatial Cmd-Tab state
 //   POST /switcher?mode=spatial|desktop    ?k=: panel entries and switcher lease
+//   GET  /launcher, /launcher/keys?after=N ?k=: launcher catalogue, typed keys (renews the lease)
+//   POST /launcher/keys?verb=open|close    ?k=: the launcher's keyboard lease
 // src is window:<CGWindowID>, display:<CGDirectDisplayID> or test.
 import AppKit
 import ApplicationServices
@@ -1412,6 +1414,8 @@ final class Agent {
             apps.switcherResponse(req, c)
         case ("POST", "/switcher"):
             apps.configureSwitcherResponse(req, c)
+        case (_, "/launcher"), (_, "/launcher/keys"):
+            apps.launcherResponse(req, c)
         default:
             c.respond(404, text: "not found")
         }

@@ -477,7 +477,7 @@ static int selfTest() {
   selfTestWall();
   selfTestDepth();
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout, overlay budget ordering/hysteresis/nine-window fit and trigger gestures\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout, launcher (catalogue, paging, curved picking, folders, filter, reorder), overlay budget ordering/hysteresis/nine-window fit and trigger gestures\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -1230,6 +1230,16 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   double gazeSince = 0;
   double lastSpatialDraw = -1000;
   std::vector<SpatialTile> tiles;
+  // Launcher A: the companion's catalogue (launcher.json beside the state),
+  // the host's view of it (open, page, folder, a carried icon) and the head
+  // pose it opens in front of.
+  LauncherCatalog launcherCatalog;
+  LauncherView launcherView;
+  LauncherStick launcherStick[2];
+  double launcherCatalogTried = -1000;
+  HmdMatrix34_t headPose = spatialIdentity();
+  bool headValid = false;
+  const std::string spatialFolder = std::filesystem::path(spatialPath).parent_path().string();
   auto emit = [&](const std::string &body) {
     static uint64_t serial = 0;
     atomicWrite(spatialRequests + "/spatial-" + std::to_string(getpid()) + "-" +
@@ -1274,6 +1284,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         ",\"wallAnchored\":" + (wall->ready ? std::string("true") : "false") +
         ",\"spatialMode\":" + (spatial.spatial ? std::string("true") : "false") +
         ",\"switcherOpen\":" + (spatial.open ? std::string("true") : "false") +
+        ",\"launcherOpen\":" + (launcherView.open ? std::string("true") : "false") +
+        ",\"launcherApps\":" + std::to_string(launcherCatalog.apps.size()) +
+        ",\"launcherItems\":" + std::to_string(launcherCatalog.items.size()) +
         ",\"spatialTiles\":" + std::to_string(tiles.size()) +
         ",\"overlayCount\":" + std::to_string(session->overlayCount()) +
         ",\"overlayBudget\":" + std::to_string(session->overlayBudgetLimit()) +
@@ -1412,6 +1425,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
           lastSpatialRaw = raw;
           visibility.reconcile(next);
           navigation.reconcile(next);
+          launcherView.acknowledge(next.launcher);
           spatial = std::move(next);
           if (spatial.spatial)
             shelfPin.observeSequence(spatial.recenterSeq);
@@ -1438,7 +1452,9 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         head.bPoseIsValid = true;
         head.mDeviceToAbsoluteTracking = spatialIdentity();
       }
+      headValid = head.bPoseIsValid;
       if (head.bPoseIsValid) {
+        headPose = head.mDeviceToAbsoluteTracking;
         wall->capture(head.mDeviceToAbsoluteTracking);
         if (spatial.spatial && shelfPin.update(true, head.mDeviceToAbsoluteTracking) == ShelfPin::Recentered)
           saveShelf();
@@ -1452,6 +1468,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       }
     } else
       anchored = false;
+    auto setLauncher = [&](bool open) {
+      if (launcherView.open == open && spatial.launcher.open == open) return;
+      launcherView.request(spatial.launcher, open);
+      try {
+        emit("{\"action\":\"launcher\",\"verb\":" + jsonString(open ? "open" : "close") + "}");
+      } catch (...) {
+      }
+    };
     bool button = session->hand[0].switcher || session->hand[1].switcher;
     if (button && !buttonWas && spatial.spatial) {
       spatial.open = !spatial.open;
@@ -1461,8 +1485,36 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
              jsonString(spatial.open ? "open" : "close") + "}");
       } catch (...) {
       }
+      if (spatial.open) setLauncher(false); // one at a time
     }
     buttonWas = button;
+    // Launcher: a newer catalogue, then open/close edges, the Mac keyboard's
+    // page turns and selection.
+    if (spatial.launcher.available && spatial.launcher.catalog != launcherCatalog.catalog &&
+        now - launcherCatalogTried >= 250) {
+      launcherCatalogTried = now;
+      try {
+        LauncherCatalog next;
+        if (LauncherCatalog::parse(readFile(spatialFolder + "/launcher.json", 512 * 1024), next) &&
+            next.catalog == spatial.launcher.catalog)
+          launcherCatalog = std::move(next);
+      } catch (...) {
+      } // the catalogue is written before the state that names it; retried
+    }
+    if (!spatial.spatial || !spatial.launcher.available) spatial.launcher.open = false;
+    if (launcherView.update(spatial.launcher, headValid, headPose) && spatial.open) {
+      spatial.open = false;
+      visibility.request(false, spatial.seq);
+    }
+    const auto launcherList = launcherListing(launcherCatalog, spatial.launcher, launcherView.folder);
+    if (launcherView.open) {
+      // Thumbstick paging: the stick reaches OverlaySession::Hand with the
+      // controller content input; until then the page dots and the Mac's
+      // arrows turn pages.
+      const float stickX[2]{};
+      for (int hand = 0; hand < 2; ++hand) launcherView.page += launcherStick[hand].update(stickX[hand]);
+      launcherView.clampPage(launcherList.pages());
+    }
     bool grip[2]{session->hand[0].valid&&session->hand[0].squeeze,session->hand[1].valid&&session->hand[1].squeeze};
     navigation.update(spatial,grip);
     if(spatialAppIndex(spatial,menuID)<0)menuID.clear();
@@ -1526,7 +1578,21 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       shelfView.chrome = shelfMover.chrome();
       shelfView.handle = shelfMover.visible();
     }
-    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
+    LauncherTarget launcherHover;
+    bool launcherPressed = false;
+    auto buildTiles = [&] {
+      tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
+      if (!launcherView.open) return;
+      const auto icons = spatialFolder + "/icons";
+      auto picture = std::make_shared<LauncherPicture>(
+          launcherPicture(launcherCatalog, spatial.launcher, launcherView, launcherHover, launcherPressed, icons));
+      int carried = launcherView.carry.active() ? launcherCatalog.app(launcherView.carry.id) : -1;
+      for (const auto &item : launcherCatalog.items) // a carried folder shows its first app
+        if (carried < 0 && launcherView.carry.active() && item.folder && "folder:" + item.id == launcherView.carry.id)
+          carried = item.apps.front();
+      launcherTiles(tiles, launcherView, picture, carried >= 0 ? icons + "/" + launcherCatalog.apps[carried].id + ".png" : "");
+    };
+    buildTiles();
     const float mpp = focused && focused->w > 0 ? focused->overlay.placement.width * 2 / focused->w : .001f;
     bool openMenu = false;
     for (auto &[path, e] : entries)
@@ -1589,16 +1655,121 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       }
     bool grab = pointer >= 0 && session->hand[pointer].grab;
     std::string handHits[2];
-    bool down[2]{};
-    for (int hand = 0; hand < 2; ++hand) {
+    bool down[2]{}, borrowed[2]{};
+    // On the launcher a press binds to what is under the laser (an icon, a
+    // page dot, Back); with the eyes on an icon, a hand aimed at nothing
+    // presses what they look at.
+    auto launcherAt = [&](const EyeRay &ray, LauncherTarget &target) {
+      PanelPick pick;
+      const int t = spatialPick(ray, tiles, &pick);
+      if (t < 0 || tiles[t].kind != SpatialTile::Launcher) return t >= 0 ? tiles[t].surface.key : std::string();
+      target = launcherHit(pick.u * launcherUnits, pick.v * launcherUnitsHigh, launcherList,
+                           int(launcherCatalog.recent.size()), launcherView.page);
+      return launcherTargetKey(launcherCatalog, launcherList, target);
+    };
+    LauncherTarget eyeTarget;
+    const std::string eyeKey = launcherView.open && wallPriorityIsEye ? launcherAt(wallPriorityRay, eyeTarget) : "";
+    const bool eyeOnIcon = eyeTarget.kind == LauncherTarget::Recent || eyeTarget.kind == LauncherTarget::Cell ||
+                           eyeTarget.kind == LauncherTarget::Dot || eyeTarget.kind == LauncherTarget::Back;
+    launcherHover = {};
+    for (int hand : {1, 0}) {
       down[hand] = session->hand[hand].valid && session->hand[hand].grab;
       if (session->hand[hand].valid && !auxiliaryHit(session->hand[hand].ray())) {
-        int t = spatialPick(session->hand[hand].ray(), tiles);
-        if (t >= 0)
-          handHits[hand] = tiles[t].surface.key;
+        LauncherTarget target;
+        handHits[hand] = launcherAt(session->hand[hand].ray(), target);
+        if (target.kind != LauncherTarget::None && launcherHover.kind == LauncherTarget::None) {
+          launcherHover = target;
+          launcherPressed = down[hand];
+        }
+      }
+      if (session->hand[hand].valid && handHits[hand].empty() && eyeOnIcon) {
+        handHits[hand] = eyeKey;
+        borrowed[hand] = true;
       }
     }
+    if (launcherHover.kind == LauncherTarget::None && eyeOnIcon) launcherHover = eyeTarget;
+    const int pressOwner = press.owner;
     auto gesture = press.update(handHits, down, now);
+    const int gestureHand = press.owner >= 0 ? press.owner : pressOwner;
+    if (launcherView.open) {
+      auto starts = [](const std::string &key, const char *prefix, std::string &rest) {
+        const size_t n = std::strlen(prefix);
+        if (key.compare(0, n, prefix) != 0) return false;
+        rest = key.substr(n);
+        return true;
+      };
+      std::string id;
+      if (starts(gesture.click, "launcher:recent:", id) ||
+          (starts(gesture.click, "launcher:cell:", id) && id.compare(0, 7, "folder:") != 0)) {
+        if (launcherCatalog.app(id) >= 0) {
+          try {
+            emit("{\"action\":\"app\",\"verb\":\"open\",\"bundleID\":" + jsonString(id) + "}");
+          } catch (...) {
+          }
+          setLauncher(false);
+        }
+      } else if (starts(gesture.click, "launcher:cell:folder:", id)) {
+        launcherView.folder = id;
+        launcherView.page = 0;
+      } else if (gesture.click == "launcher:back") {
+        launcherView.folder.clear();
+        launcherView.page = 0;
+      } else if (starts(gesture.click, "launcher:dot:", id)) {
+        launcherView.page = std::atoi(id.c_str());
+      } else if (starts(gesture.hold, "launcher:cell:", id) && gestureHand >= 0 && !borrowed[gestureHand] &&
+                 !launcherList.searching) {
+        // Picked up: it follows the laser until the trigger is released.
+        launcherView.carry = {};
+        launcherView.carry.hand = gestureHand;
+        launcherView.carry.id = id;
+        launcherView.carry.container = launcherList.container;
+      } else if (gesture.outside && !launcherView.carry.active()) {
+        setLauncher(false);
+      }
+    }
+    if (launcherView.carry.active()) {
+      auto &carry = launcherView.carry;
+      const auto &hand = session->hand[carry.hand];
+      if (!hand.valid || !hand.grab) {
+        // Dropped: between two icons it moves there; onto an icon or off the
+        // panel nothing changes.
+        std::vector<std::string> ids;
+        for (const auto &cell : launcherList.cells) ids.push_back(launcherCellID(launcherCatalog, cell));
+        std::string before;
+        if (carry.onPanel && carry.gap && launcherList.container == carry.container &&
+            launcherDropBefore(ids, carry.id, carry.gap.gap, before) &&
+            launcherMove(launcherCatalog, carry.id, before, carry.container)) {
+          try {
+            emit("{\"action\":\"launcher\",\"verb\":\"move\",\"id\":" + jsonString(carry.id) +
+                 ",\"before\":" + (before.empty() ? std::string("null") : jsonString(before)) +
+                 ",\"folder\":" + (carry.container.empty() ? std::string("null") : jsonString(carry.container)) + "}");
+          } catch (...) {
+          }
+        }
+        carry = {};
+      } else {
+        const auto hit = surfacePick(hand.ray(), launcherSurface(launcherView), .05f);
+        carry.onPanel = bool(hit);
+        if (hit) {
+          carry.x = hit.u * launcherUnits;
+          carry.y = hit.v * launcherUnitsHigh;
+          carry.gap = launcherGapAt(carry.x, carry.y, launcherView.page, int(launcherList.cells.size()));
+          // Held at the left or right edge, the page turns.
+          const int edge = carry.y > launcherGridTop - 20 && carry.y < launcherDotsY + 10
+                               ? (carry.x < 34 ? -1 : carry.x > launcherUnits - 34 ? 1 : 0) : 0;
+          if (edge != carry.edge) {
+            carry.edge = edge;
+            carry.edgeSince = now;
+          } else if (edge && now - carry.edgeSince >= launcherEdgeFlipMs) {
+            launcherView.page = std::clamp(launcherView.page + edge, 0, launcherList.pages() - 1);
+            carry.edgeSince = now;
+          }
+        } else {
+          carry.gap = {};
+          carry.edge = 0;
+        }
+      }
+    }
     const bool dismissedMenu = gesture.outside && !menuID.empty();
     if(gesture.outside)menuID.clear();
     for (const auto &t : tiles) {
@@ -1610,7 +1781,11 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         if (t.kind == SpatialTile::Window)
           select(spatial.windows[t.index].key);
         else if (t.kind == SpatialTile::Shelf)menuID.clear();
-        else {
+        else if (t.kind == SpatialTile::Apps) {
+          menuID.clear();
+          setLauncher(!launcherView.open); // the switcher closes as it opens
+        } else if (t.kind == SpatialTile::Launcher || t.kind == SpatialTile::Dim || t.kind == SpatialTile::Carry) {
+        } else {
           int app = t.kind == SpatialTile::Dock ? t.index : spatialAppIndex(spatial,menuID);
           if (app >= 0 && app < int(spatial.apps.size())) {
             auto &a = spatial.apps[app];
@@ -1626,12 +1801,17 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       } catch (...) {
       }
     }
-    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
+    // Opening or closing above takes effect now, not a frame later.
+    if (launcherView.update(spatial.launcher, headValid, headPose) && spatial.open) {
+      spatial.open = false;
+      visibility.request(false, spatial.seq);
+    }
+    buildTiles();
     shelfRect = {};
     if (shelfView.pinned) {
       const auto inverse = inverseRigid(shelfView.pose);
       for (const auto &t : tiles)
-        if (t.kind == SpatialTile::Shelf || t.kind == SpatialTile::Dock) {
+        if (t.kind == SpatialTile::Shelf || t.kind == SpatialTile::Dock || t.kind == SpatialTile::Apps) {
           const auto local = multiply(inverse, t.surface.placement.matrix);
           shelfRect.add(local.m[0][3], local.m[1][3], t.surface.placement.width, t.surface.height);
         }
@@ -1640,7 +1820,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       lastSpatialDraw = now;
       spatialRenderer.draw(
           spatial, tiles, hot, uiHit.u, uiHit.v, grab,
-          std::filesystem::path(spatialPath).parent_path().string() + "/icons",
+          spatialFolder + "/icons",
           [&](const std::string &key) {
             for (auto &[p, e] : entries)
               if (e.panel && e.spec.key == key)
@@ -1652,8 +1832,11 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     std::string handOwner[2], revealOwner[2];
     for (int hand = 0; hand < 2; ++hand) {
       if (!session->hand[hand].valid) continue;
+      // The launcher is in front of everything while it is open; the windows
+      // behind are dimmed and wait.
       HandRoute route(auxiliaryHit(session->hand[hand].ray()) || dismissedMenu || shelfMover.owns(hand) ||
-          (spatial.spatial && spatial.open && grip[hand]) || spatialPick(session->hand[hand].ray(), tiles) >= 0);
+          (spatial.spatial && spatial.open && grip[hand]) || launcherView.open ||
+          spatialPick(session->hand[hand].ray(), tiles) >= 0);
       for (const auto &[path, entry] : entries) {
         if (!entry.panel || entry.spec.role != PanelRole::Window) continue;
         const auto &o = entry.panel->overlay;
@@ -1700,7 +1883,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       source = "controller";
       // Right hand wins when both point at a window, matching placement input.
       for (int hand : {1, 0}) if (session->hand[hand].valid) {
-          if (auxiliaryHit(session->hand[hand].ray()) || spatialPick(session->hand[hand].ray(), tiles) >= 0) {
+          if (auxiliaryHit(session->hand[hand].ray()) || spatialPick(session->hand[hand].ray(), tiles) >= 0 ||
+              launcherView.open) {
             hit = {};
             break;
           }
@@ -1710,7 +1894,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         }
     }
     // Foreground UI consumes gaze before underlying windows can build focus.
-    if (eye && (auxiliaryHit(ray) || spatialPick(ray, tiles) >= 0))
+    if (eye && (auxiliaryHit(ray) || spatialPick(ray, tiles) >= 0 || launcherView.open))
       hit = {};
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window)

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "ui"))
 from frame_spatial_apps import SpatialApps, SCRIPT
 import frame_macview
+import frame_spatial_launcher as launcher
 
 TERMINAL = "com.apple.Terminal"
 NOTES = "com.apple.Notes"
@@ -60,6 +61,10 @@ class FakeMacView:
                          "windows": [KEY1, KEY2], "tapActive": True}
         self.missing, self.icon_fail = [], False
         self.lane, self.action_error = [], None
+        # Launcher A: the helper's catalogue (None: an older helper without
+        # one) and its keyboard lease.
+        self.catalog = None
+        self.keys = {"active": False, "events": [], "last": 0, "tap": True}
 
     def call(self, path, method="GET", **query):
         self.calls.append((path, method, query))
@@ -69,13 +74,33 @@ class FakeMacView:
             return {"windows": copy.deepcopy(self.windows)}
         if path == "/switcher":
             return copy.deepcopy(self.switcher)
+        if path == "/launcher":
+            if self.catalog is None:
+                raise frame_macview.MacViewError("The Mac Streaming Helper: not found")
+            return copy.deepcopy(self.catalog)
+        if path == "/launcher/keys":
+            keys = self.keys
+            if method == "POST":
+                keys["active"] = query["verb"] == "open" and keys["tap"]
+                if keys["active"]:
+                    keys["events"] = []
+                return {"active": keys["active"], "tapActive": keys["tap"]}
+            after = int(query.get("after", 0))
+            return {"active": keys["active"], "last": keys["last"],
+                    "events": [e for e in keys["events"] if e["n"] > after]}
         if path == "/apps/action" and self.action_error:
             raise frame_macview.MacViewError("The Mac Streaming Helper: " + self.action_error)
         if path == "/apps/icon":
             if self.icon_fail:
                 raise ValueError("icon failed")
-            return {"png": base64.b64encode(png()).decode()}
+            return {"png": base64.b64encode(png()).decode(), "version": "v-" + query["bundleID"]}
         return {}
+
+    def type_keys(self, *events):
+        """The helper's key queue, as the event tap fills it."""
+        for event in events:
+            self.keys["last"] += 1
+            self.keys["events"].append({**event, "n": self.keys["last"]})
 
     def run(self, command, **kwargs):
         args = shlex.split(command)
@@ -403,6 +428,320 @@ class RuntimeWriter(unittest.TestCase):
         self.assertEqual(list(outside.iterdir()), [])
 
 
+SAFARI, MAIL, CHESS, ECRAN, PHOTOS, BOOTH = ("com.apple.Safari", "com.apple.mail", "com.apple.Chess",
+                                             "com.example.ecran", "com.apple.Photos", "com.apple.PhotoBooth")
+
+
+def catalog():
+    """A helper catalogue: Launchpad order with a Games folder, the rest by name."""
+    names = {SAFARI: "Safari", MAIL: "Mail", CHESS: "Chess", ECRAN: "Écran Partagé", PHOTOS: "Photos",
+             BOOTH: "Photo Booth", TERMINAL: "Terminal", NOTES: "Notes"}
+    return {"apps": [{"bundleID": b, "name": n, "version": "1-" + b} for b, n in names.items()],
+            "items": [{"app": SAFARI}, {"app": MAIL}, {"folder": "folder-1", "name": "Games", "apps": [CHESS]},
+                      {"app": ECRAN}, {"app": NOTES}, {"app": BOOTH}, {"app": PHOTOS}, {"app": TERMINAL}],
+            "recent": [PHOTOS, TERMINAL], "launchpad": "imported"}
+
+
+class LauncherData(unittest.TestCase):
+    APPS = [(PHOTOS, "Photos"), (BOOTH, "Photo Booth"), (ECRAN, "Écran Partagé"), (SAFARI, "Safari"),
+            ("com.example.iphoto", "iPhoto Library Upgrader"), ("com.example.graph", "Graphotype"),
+            ("com.example.shop", "Adobe Photoshop 2026")]
+
+    def test_search_is_case_and_diacritic_insensitive_with_word_prefixes_first(self):
+        self.assertEqual(launcher.search(self.APPS, "pho"), [BOOTH, PHOTOS, "com.example.shop", "com.example.graph",
+                                                             "com.example.iphoto"])
+        self.assertEqual(launcher.search(self.APPS, "PHO", recent=[PHOTOS]), [PHOTOS, BOOTH, "com.example.shop",
+                                                                             "com.example.graph", "com.example.iphoto"])
+        self.assertEqual(launcher.search(self.APPS, "ecran"), [ECRAN])
+        self.assertEqual(launcher.search(self.APPS, "PARTAGE"), [ECRAN])
+        self.assertEqual(launcher.search(self.APPS, "photo b"), [BOOTH])
+        self.assertEqual(launcher.search(self.APPS, "  "), [])
+        self.assertEqual(launcher.search(self.APPS, "zz"), [])
+
+    def test_saved_layout_drops_gone_apps_and_appends_new_ones(self):
+        base = catalog()["items"]
+        known = {b for b, _ in self.APPS} | {MAIL, CHESS, NOTES, TERMINAL}
+        self.assertEqual(launcher.merge_layout(base, None, known), [i for i in base if i.get("app") != "x"])
+        saved = [{"app": TERMINAL}, {"app": "com.gone"}, {"folder": "folder-1", "name": "Games", "apps": [CHESS, "x"]},
+                 {"folder": "empty", "name": "Gone", "apps": ["com.gone"]}, {"app": TERMINAL}, "junk",
+                 {"folder": "../bad", "name": "Bad", "apps": [SAFARI]}]
+        merged = launcher.merge_layout(base, saved, known)
+        self.assertEqual(merged[:2], [{"app": TERMINAL}, {"folder": "folder-1", "name": "Games", "apps": [CHESS]}])
+        self.assertEqual([i["app"] for i in merged[2:]], [SAFARI, MAIL, ECRAN, NOTES, BOOTH, PHOTOS,
+                                                          "com.example.graph", "com.example.iphoto", "com.example.shop"])
+        self.assertEqual(len(list(launcher.flatten(merged))), len(known), "every app exactly once")
+
+    def test_move_reorders_without_making_folders(self):
+        items = catalog()["items"]
+        moved = launcher.move(items, TERMINAL, SAFARI)
+        self.assertEqual([launcher.item_id(i) for i in moved][:3], [TERMINAL, SAFARI, MAIL])
+        self.assertEqual([launcher.item_id(i) for i in launcher.move(items, SAFARI, None)][-1], SAFARI)
+        self.assertEqual([launcher.item_id(i) for i in launcher.move(items, "folder:folder-1", SAFARI)][0],
+                         "folder:folder-1")
+        two = [{"folder": "f", "name": "F", "apps": [CHESS, MAIL, SAFARI]}]
+        self.assertEqual(launcher.move(two, SAFARI, CHESS, "f")[0]["apps"], [SAFARI, CHESS, MAIL])
+        self.assertEqual(two[0]["apps"], [CHESS, MAIL, SAFARI], "the original is untouched")
+        for args in ((SAFARI, SAFARI), ("com.gone", None), (SAFARI, "com.gone"), (CHESS, None),
+                     (SAFARI, None, "folder-1"), (CHESS, "com.gone", "folder-1"), (CHESS, None, "nope")):
+            self.assertIsNone(launcher.move(items, *args), args)
+
+    def test_search_field_keys(self):
+        field = launcher.SearchField()
+        for event in ({"k": "text", "s": "Ph"}, {"k": "text", "s": "o"}, {"k": "back"}, {"k": "text", "s": "o"}):
+            field.apply(event, 0)
+        self.assertEqual(field.query, "Pho")
+        for key, expected in (("right", 1), ("down", 9), ("down", 11), ("left", 10), ("up", 2), ("up", 0)):
+            field.apply({"k": key}, 12)
+            self.assertEqual(field.selected, expected, key)
+        field.apply({"k": "right"}, 12)
+        field.apply({"k": "text", "s": "t"}, 12)
+        self.assertEqual(field.selected, 0, "typing selects the top match again")
+        self.assertEqual(field.apply({"k": "return"}, 3), "submit")
+        self.assertEqual(field.apply({"k": "esc"}, 3), "close")
+        field.apply({"k": "text", "s": "x" * 100}, 0)
+        self.assertEqual(len(field.query), launcher.MAX_QUERY)
+        field.reset()
+        for key in ("right", "right", "left", "down"):
+            field.apply({"k": key}, 0)
+        self.assertEqual((field.page_step, field.selected), (1, 0), "with an empty field the arrows turn pages")
+        field.apply({"k": "text", "s": "\x00\x1b"}, 0)
+        self.assertEqual(field.query, "  ")
+
+    def test_layout_file_round_trip_is_private(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "data" / "layout.json"
+            self.assertIsNone(launcher.load_layout(path))
+            launcher.save_layout(path, catalog()["items"])
+            self.assertEqual(launcher.load_layout(path), catalog()["items"])
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+            path.write_text("{")
+            self.assertIsNone(launcher.load_layout(path))
+            path.write_text('{"version": 2, "items": []}')
+            self.assertIsNone(launcher.load_layout(path))
+
+
+class Launcher(unittest.TestCase):
+    def setUp(self):
+        self.mv = FakeMacView()
+        self.mv.catalog = catalog()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.layout = Path(self.temp.name) / "layout.json"
+        self.apps = SpatialApps(self.mv, layout_path=self.layout)
+        self.apps.refresh()
+
+    def launcher_state(self):
+        return self.apps.state["launcher"]
+
+    def open(self):
+        self.assertTrue(self.apps.handle_request({"action": "launcher", "verb": "open"}))
+
+    def test_publication_and_helper_without_a_catalogue(self):
+        state = self.launcher_state()
+        self.assertEqual({k: state[k] for k in ("available", "open", "query", "selected", "pageStep", "keyboard")},
+                         {"available": True, "open": False, "query": "", "selected": 0, "pageStep": 0,
+                          "keyboard": False})
+        self.assertNotIn("results", state)
+        self.mv.missing = []
+        self.apps.sync()
+        commands = [r[0] for r in self.mv.remote]
+        self.assertEqual(commands[:2], ["sync", "launcher"])
+        published = json.loads(self.mv.remote[1][1])
+        self.assertEqual(published["catalog"], state["catalog"])
+        self.assertEqual(published["apps"][3], {"id": ECRAN, "name": "Écran Partagé", "v": "1-" + ECRAN})
+        self.assertEqual(published["items"][2]["apps"], [CHESS])
+        self.assertEqual(published["recent"], [PHOTOS, TERMINAL])
+        older = FakeMacView()
+        apps = SpatialApps(older, layout_path=self.layout)
+        apps.refresh()
+        self.assertNotIn("launcher", apps.state, "an older helper shows no Applications button")
+        self.assertEqual(len(apps.state["apps"]), 3, "and the shelf still works")
+
+    def test_catalogue_is_published_when_the_frame_lacks_it_and_icons_once_by_version(self):
+        def run(command, **kwargs):
+            args = shlex.split(command)[2:]
+            self.mv.remote.append(args)
+            if args[0] == "sync":
+                return "SPATIAL_ICONS_MISSING []\nLAUNCHER_CATALOG " + json.dumps(frame_catalog)
+            if args[0] == "launcher":
+                return "LAUNCHER_ICONS_MISSING " + json.dumps(missing)
+            return ""
+        self.mv.run = run
+        frame_catalog, missing = None, [TERMINAL, PHOTOS, SAFARI, CHESS]
+        self.apps.sync()
+        launches = [r for r in self.mv.remote if r[0] == "launcher"]
+        self.assertEqual(len(launches), 1)
+        icons = [r for r in self.mv.remote if r[0] == "icons"]
+        self.assertEqual(icons[0][1::3], [PHOTOS, TERMINAL, SAFARI, CHESS], "recent apps first, then the grid's order")
+        self.assertEqual(icons[0][2::3], ["v-" + b for b in (PHOTOS, TERMINAL, SAFARI, CHESS)])
+        frame_catalog = self.launcher_state()["catalog"]
+        self.mv.remote.clear()
+        self.apps.sync()
+        self.assertEqual([r[0] for r in self.mv.remote], ["sync"], "nothing resent while the Frame is current")
+        frame_catalog = None  # the Frame's runtime folder was emptied
+        self.apps.sync()
+        self.assertIn("launcher", [r[0] for r in self.mv.remote])
+
+    def test_icon_batches_fit_one_command_line(self):
+        big = base64.b64encode(png() + b"\0" * 30000).decode()
+        self.mv.catalog = catalog()
+        self.apps._icons = {b: (big, "1-" + b) for b in (SAFARI, MAIL, CHESS, ECRAN, PHOTOS, BOOTH, TERMINAL, NOTES)}
+        self.apps._launcher_icons = list(self.apps._icons)
+        self.apps.sync()
+        batches = [r for r in self.mv.remote if r[0] == "icons"]
+        self.assertEqual(len(batches), 1)
+        self.assertLessEqual(sum(len(x) for x in batches[0][3::3]), 90000)
+        self.assertEqual(len(self.apps._launcher_icons), 8 - len(batches[0][1::3]), "the rest follow on later syncs")
+
+    def test_open_takes_the_keyboard_and_typing_filters_and_return_opens(self):
+        self.open()
+        state = self.launcher_state()
+        self.assertTrue(state["open"] and state["keyboard"])
+        self.assertIn(("/launcher/keys", "POST", {"verb": "open"}), self.mv.calls)
+        seq = state["seq"]
+        self.mv.type_keys({"k": "text", "s": "PH"}, {"k": "text", "s": "o"})
+        self.apps.poll_launcher()
+        state = self.launcher_state()
+        self.assertEqual((state["query"], state["results"]), ("PHo", [PHOTOS, BOOTH]))
+        self.mv.type_keys({"k": "right"})
+        self.apps.poll_launcher()
+        self.assertEqual(self.launcher_state()["selected"], 1)
+        self.mv.type_keys({"k": "return"}, {"k": "text", "s": "ignored"})
+        self.apps.poll_launcher()
+        self.assertIn(("/apps/action", "POST", {"bundleID": BOOTH, "verb": "open"}), self.mv.calls)
+        state = self.launcher_state()
+        self.assertFalse(state["open"])
+        self.assertGreater(state["seq"], seq)
+        self.assertEqual(state["query"], "")
+        self.assertIn(("/launcher/keys", "POST", {"verb": "close"}), self.mv.calls)
+        self.assertFalse(self.mv.keys["active"], "the keyboard goes back to the Mac")
+
+    def test_esc_and_headset_close_release_the_keyboard(self):
+        self.open()
+        self.mv.type_keys({"k": "text", "s": "x"}, {"k": "esc"})
+        self.apps.poll_launcher()
+        self.assertFalse(self.launcher_state()["open"])
+        self.assertFalse(self.mv.keys["active"])
+        self.open()
+        self.assertTrue(self.mv.keys["active"])
+        self.assertEqual(self.launcher_state()["query"], "", "a reopened field is empty")
+        self.apps.handle_request({"action": "launcher", "verb": "close"})
+        self.assertFalse(self.mv.keys["active"])
+        self.assertFalse(self.launcher_state()["open"])
+
+    def test_stop_desktop_and_disconnect_release_the_keyboard(self):
+        for leave in ("desktop", "stop", "restart"):
+            with self.subTest(leave=leave):
+                self.mv.mode, self.mv.exit_pending = "spatial", False
+                self.apps.refresh()
+                self.open()
+                self.assertTrue(self.mv.keys["active"])
+                if leave == "desktop":
+                    self.mv.mode = "desktop"
+                    self.apps.refresh()
+                    self.assertFalse(self.mv.keys["active"])
+                elif leave == "stop":
+                    self.mv.exit_pending = True
+                    self.apps.refresh(False)
+                    self.assertFalse(self.mv.keys["active"])
+                else:
+                    # A restarted helper has no lease; the companion asks again.
+                    self.mv.agent = FakeAgent()
+                    self.mv.keys["active"] = False
+                    self.apps.refresh()
+                    self.assertTrue(self.mv.keys["active"] and self.apps._lease)
+                    self.apps.handle_request({"action": "launcher", "verb": "close"})
+                self.assertFalse(self.apps.launcher_open)
+        # A helper whose lease lapsed (the companion stalled) is asked again.
+        self.apps.refresh()
+        self.open()
+        self.mv.keys["active"] = False
+        self.apps.poll_launcher()
+        self.assertFalse(self.apps._lease)
+        self.apps.refresh()
+        self.assertTrue(self.apps._lease)
+
+    def test_without_a_tap_the_launcher_still_opens(self):
+        self.mv.keys["tap"] = False
+        self.open()
+        self.assertTrue(self.launcher_state()["open"])
+        self.assertFalse(self.launcher_state()["keyboard"])
+
+    def test_requests_open_catalogue_apps_and_save_moves(self):
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": CHESS})
+        self.assertIn(("/apps/action", "POST", {"bundleID": CHESS, "verb": "open"}), self.mv.calls)
+        count = len(self.mv.calls)
+        self.apps.handle_request({"action": "app", "verb": "quit", "bundleID": CHESS})
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": "com.unknown"})
+        self.assertEqual(len(self.mv.calls), count, "only opening reaches apps that are not on the shelf")
+        seq = self.launcher_state()["catalog"]
+        self.apps.handle_request({"action": "launcher", "verb": "move", "id": TERMINAL, "before": SAFARI})
+        self.assertEqual(self.apps.catalog["items"][0], {"app": TERMINAL})
+        self.assertGreater(self.launcher_state()["catalog"], seq)
+        self.assertEqual(launcher.load_layout(self.layout)[0], {"app": TERMINAL})
+        self.apps.handle_request({"action": "launcher", "verb": "move", "id": CHESS, "before": None, "folder": "folder-1"})
+        for bad in ({"id": "../x"}, {"id": TERMINAL, "before": 3}, {"id": TERMINAL, "folder": "../f"},
+                    {"id": TERMINAL, "before": TERMINAL}, {"id": "com.gone"}):
+            before = self.layout.read_text()
+            self.apps.handle_request({"action": "launcher", "verb": "move", **bad})
+            self.assertEqual(self.layout.read_text(), before, bad)
+        # The saved arrangement wins over the helper's order on the next read.
+        self.apps._catalog_at = None
+        self.apps.refresh()
+        self.assertEqual(self.apps.catalog["items"][0], {"app": TERMINAL})
+        self.mv.catalog["apps"].append({"bundleID": "com.example.new", "name": "Aardvark", "version": "1"})
+        self.mv.catalog["items"].append({"app": "com.example.new"})
+        self.apps._catalog_at = None
+        self.apps.refresh()
+        self.assertEqual(self.apps.catalog["items"][-1], {"app": "com.example.new"}, "new apps join at the end")
+
+    def test_launcher_state_passes_the_frame_writer(self):
+        self.open()
+        self.mv.type_keys({"k": "text", "s": "é"})
+        self.apps.poll_launcher()
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {**os.environ, "XDG_RUNTIME_DIR": tmp}
+            def write(*args):
+                return subprocess.run([sys.executable, str(SCRIPT), *args], env=env, capture_output=True,
+                                      text=True, timeout=10)
+            result = write("sync", json.dumps(self.apps.state))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("LAUNCHER_CATALOG null", result.stdout)
+            result = write("launcher", self.apps._catalog_json())
+            self.assertEqual(result.returncode, 0, result.stderr)
+            missing = json.loads(result.stdout.split("LAUNCHER_ICONS_MISSING ", 1)[1])
+            self.assertEqual(set(missing), {a["bundleID"] for a in self.apps.catalog["apps"]})
+            runtime = Path(tmp) / "frame-workspace"
+            self.assertEqual(json.loads((runtime / "launcher.json").read_text())["catalog"], self.apps.catalog_seq)
+            self.assertIn("LAUNCHER_CATALOG %d" % self.apps.catalog_seq, write("sync", json.dumps(self.apps.state)).stdout)
+            encoded = base64.b64encode(png()).decode()
+            result = write("icons", SAFARI, "1-" + SAFARI, encoded, CHESS, "old", encoded)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            missing = json.loads(write("launcher", self.apps._catalog_json()).stdout.split(" ", 1)[1])
+            self.assertNotIn(SAFARI, missing)
+            self.assertIn(CHESS, missing, "an icon from an older version is sent again")
+            self.assertEqual((runtime / "icons" / (SAFARI + ".png")).read_bytes(), png())
+            bad = copy.deepcopy(self.apps.state)
+            for field, value in (("open", 1), ("seq", -1), ("query", "x" * 300), ("results", ["../x"]),
+                                 ("results", [SAFARI, SAFARI]), ("available", False)):
+                broken = copy.deepcopy(bad)
+                broken["launcher"][field] = value
+                self.assertEqual(write("sync", json.dumps(broken)).returncode, 2, field)
+            catalogue = json.loads(self.apps._catalog_json())
+            for change in (lambda c: c["items"].append({"app": SAFARI}),
+                           lambda c: c["items"].append({"app": "com.unknown"}),
+                           lambda c: c["items"].append({"folder": "../x", "name": "X", "apps": []}),
+                           lambda c: c["apps"].append({"id": "../x", "name": "X", "v": ""}),
+                           lambda c: c.update(catalog=-1)):
+                broken = copy.deepcopy(catalogue)
+                change(broken)
+                self.assertEqual(write("launcher", json.dumps(broken)).returncode, 2)
+            self.assertEqual(write("icons", "../x", "1", encoded).returncode, 2)
+            self.assertEqual(write("icons", SAFARI, "1").returncode, 2)
+            self.assertEqual(write("clear").returncode, 0)
+            self.assertFalse((runtime / "launcher.json").exists())
+
+
 @unittest.skipUnless(sys.platform == "darwin" and shutil.which("xcrun"), "Swift contract check needs macOS")
 class SwiftContract(unittest.TestCase):
     def test_companion_entries_pass_helper_parser_and_release_contract(self):
@@ -441,6 +780,48 @@ class SwiftContract(unittest.TestCase):
             self.assertFalse(released["open"])
             self.assertEqual(released["chosen"], KEY2)
             self.assertGreater(released["seq"], opened["seq"])
+
+    def test_helper_catalogue_and_key_events_pass_the_companion(self):
+        with tempfile.TemporaryDirectory(prefix="launcher-contract-") as tmp:
+            source = Path(tmp) / "Contract.swift"
+            binary = Path(tmp) / "contract"
+            source.write_text('''import Foundation
+@main struct Contract {
+    static func main() throws {
+        let apps = [LauncherApp(bundleID: "com.apple.Safari", name: "Safari", path: "/A/Safari.app", version: "1-2"),
+                    LauncherApp(bundleID: "com.apple.Chess", name: "Échecs", path: "/A/Chess.app", version: "3")]
+        let items = LauncherCatalog.merge(launchpad: [.folder(name: "Games", apps: ["com.apple.Chess"])], apps: apps)
+        let catalog = LauncherCatalog.json(apps: apps, items: items, recent: ["com.apple.Chess"], launchpad: "imported")
+        print(String(data: try JSONSerialization.data(withJSONObject: catalog), encoding: .utf8)!)
+        let lease = LauncherKeyLease()
+        lease.open(at: 0)
+        for (code, text) in [(UInt16(0x0E), "é"), (0x08, "c"), (0x33, ""), (0x7C, ""), (0x24, "\\r"), (0x35, "")] {
+            _ = lease.handle(.down, code: code, command: false, control: false, text: text)
+        }
+        print(String(data: try JSONSerialization.data(withJSONObject: lease.snapshot(after: 0).json), encoding: .utf8)!)
+    }
+}
+''')
+            sources = ROOT / "mac/frame-mac-view/Sources"
+            build = subprocess.run(["xcrun", "swiftc", "-swift-version", "5", str(sources / "AppsState.swift"),
+                                    str(sources / "LauncherCatalog.swift"), str(sources / "LauncherKeys.swift"),
+                                    str(source), "-lsqlite3", "-o", str(binary)], capture_output=True, text=True, timeout=120)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            result = subprocess.run([str(binary)], capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            raw_catalog, raw_keys = map(json.loads, result.stdout.splitlines())
+            catalog = launcher.sanitize_catalog(raw_catalog)
+            self.assertEqual(catalog["items"], [{"folder": "folder-1", "name": "Games", "apps": ["com.apple.Chess"]},
+                                                {"app": "com.apple.Safari"}])
+            self.assertEqual(catalog["recent"], ["com.apple.Chess"])
+            self.assertEqual(catalog["apps"][1], {"bundleID": "com.apple.Chess", "name": "Échecs", "version": "3"})
+            field, actions = launcher.SearchField(), []
+            for event in raw_keys["events"]:
+                actions.append(field.apply(event, 1))
+            self.assertEqual(field.query, "é")
+            self.assertEqual(actions[-2:], ["submit", "close"])
+            self.assertEqual(raw_keys["last"], 6)
+            self.assertTrue(raw_keys["active"])
 
 
 if __name__ == "__main__":

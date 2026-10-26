@@ -1,8 +1,11 @@
 // Read-only Dock app discovery and explicit app actions for the spatial
-// companion, plus the leased Cmd-Tab event tap used only in spatial mode.
+// companion, plus the leased Cmd-Tab event tap used only in spatial mode, and
+// the launcher's app catalogue and keyboard lease (LauncherCatalog.swift,
+// LauncherKeys.swift).
 import AppKit
 import ApplicationServices
 import CoreFoundation
+import CoreServices
 import Foundation
 
 final class MacApps {
@@ -11,6 +14,8 @@ final class MacApps {
     private var observers: [NSObjectProtocol] = []
     private let iconCache = NSCache<NSString, NSData>()
     private var launchOrder: [String] = []
+    private let catalogQueue = DispatchQueue(label: "frame-mac-view.launcher", qos: .utility)
+    private var catalog: (built: TimeInterval, json: [String: Any])?
 
     init() {
         let running = regularApps()
@@ -66,11 +71,64 @@ final class MacApps {
             return connection.respond(400, text: "bundleID is required")
         }
         DispatchQueue.main.async {
-            guard let data = self.iconPNG(bundleID: bundleID) else {
+            guard let (data, version) = self.iconPNG(bundleID: bundleID) else {
                 return connection.respond(404, text: "application icon not found")
             }
-            connection.respond(json: ["png": data.base64EncodedString()])
+            connection.respond(json: ["png": data.base64EncodedString(), "version": version])
         }
+    }
+
+    // MARK: Launcher (FW-15 A)
+
+    /// GET /launcher: the catalogue. POST /launcher/keys?verb=open|close: the
+    /// keyboard lease. GET /launcher/keys?after=N: typed keys, renewing the lease.
+    func launcherResponse(_ request: Request, _ connection: HTTPConnection) {
+        switch (request.method, request.path) {
+        case ("GET", "/launcher"):
+            catalogResponse(fresh: request.query["fresh"] == "1", connection)
+        case ("GET", "/launcher/keys"):
+            let after = Int(request.query["after"] ?? "") ?? 0
+            connection.respond(json: switcher.launcherKeys.snapshot(after: after,
+                                                                    renewAt: ProcessInfo.processInfo.systemUptime).json)
+        case ("POST", "/launcher/keys"):
+            guard let verb = request.query["verb"], verb == "open" || verb == "close" else {
+                return connection.respond(400, text: "verb=open|close")
+            }
+            DispatchQueue.main.async {
+                connection.respond(json: self.switcher.launcherLease(open: verb == "open"))
+            }
+        default:
+            connection.respond(404, text: "not found")
+        }
+    }
+
+    private func catalogResponse(fresh: Bool, _ connection: HTTPConnection) {
+        catalogQueue.async {
+            let now = ProcessInfo.processInfo.systemUptime
+            if !fresh, let catalog = self.catalog, now - catalog.built < 10 {
+                return connection.respond(json: catalog.json)
+            }
+            let json = self.buildCatalog()
+            self.catalog = (ProcessInfo.processInfo.systemUptime, json)
+            connection.respond(json: json)
+        }
+    }
+
+    /// Launch Services' application folders, the Launchpad database's order
+    /// and folders where it still exists, and Spotlight's last-used dates.
+    private func buildCatalog() -> [String: Any] {
+        let apps = LauncherCatalog.scan(roots: LauncherCatalog.defaultRoots, extras: LauncherCatalog.defaultExtras,
+                                        preferred: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) })
+        let launchpad = LaunchpadDatabase.defaultURL().map { LaunchpadDatabase.read($0) } ?? .missing
+        let items = LauncherCatalog.merge(launchpad: launchpad.entries, apps: apps)
+        var used: [(String, Date)] = []
+        for app in apps {
+            guard let item = MDItemCreateWithURL(kCFAllocatorDefault, URL(fileURLWithPath: app.path) as CFURL),
+                  let date = MDItemCopyAttribute(item, kMDItemLastUsedDate) as? Date else { continue }
+            used.append((app.bundleID, date))
+        }
+        return LauncherCatalog.json(apps: apps, items: items, recent: LauncherCatalog.recent(used),
+                                    launchpad: launchpad.label)
     }
 
     func actionResponse(_ request: Request, _ connection: HTTPConnection) {
@@ -190,10 +248,14 @@ final class MacApps {
         }
     }
 
-    private func iconPNG(bundleID: String) -> Data? {
-        if let cached = iconCache.object(forKey: bundleID as NSString) { return cached as Data }
+    /// The 128 px icon and the version it was drawn from (cached by both, so an
+    /// updated app's new icon replaces the old one).
+    private func iconPNG(bundleID: String) -> (Data, String)? {
         let pinned = pinnedApps()
         guard let url = applicationURL(bundleID: bundleID, pinned: pinned) else { return nil }
+        let version = LauncherCatalog.read(bundle: url)?.version ?? ""
+        let key = "\(bundleID)|\(version)" as NSString
+        if let cached = iconCache.object(forKey: key) { return (cached as Data, version) }
         let source = workspace.icon(forFile: url.path)
         guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 128, pixelsHigh: 128,
                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
@@ -208,8 +270,8 @@ final class MacApps {
         context.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
         guard let png = bitmap.representation(using: .png, properties: [:]) else { return nil }
-        iconCache.setObject(png as NSData, forKey: bundleID as NSString)
-        return png
+        iconCache.setObject(png as NSData, forKey: key)
+        return (png, version)
     }
 
     private func perform(_ verb: String, bundleID: String, connection: HTTPConnection) {
@@ -255,6 +317,7 @@ private extension Array where Element: Hashable {
 
 final class SwitcherController {
     let state = SwitcherState()
+    let launcherKeys = LauncherKeyLease()
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var leaseTimer: DispatchSourceTimer?
@@ -263,6 +326,7 @@ final class SwitcherController {
 
     func configure(mode: String, entries: [SwitcherPanel]?, verb: String?, key: String? = nil) {
         if mode == "desktop" {
+            launcherKeys.close()
             removeTap()
             cancelLeaseTimer()
             state.disableSpatial()
@@ -285,9 +349,21 @@ final class SwitcherController {
 
     func stop() {
         stopping = true
+        launcherKeys.close()
         removeTap()
         cancelLeaseTimer()
         state.disableSpatial()
+    }
+
+    /// The launcher's keyboard lease needs the Spatial Mode tap; without it
+    /// (Desktop Mode, or no permission) typing simply stays with the Mac.
+    func launcherLease(open: Bool) -> [String: Any] {
+        if open, tap != nil, !stopping {
+            launcherKeys.open(at: ProcessInfo.processInfo.systemUptime)
+        } else {
+            launcherKeys.close()
+        }
+        return ["active": launcherKeys.active, "tapActive": tap != nil]
     }
 
     private func installTapIfNeeded() {
@@ -317,6 +393,7 @@ final class SwitcherController {
     }
 
     private func removeTap() {
+        launcherKeys.close()
         if let tap { CGEvent.tapEnable(tap: tap, enable: false) }
         if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
         if let tap { CFMachPortInvalidate(tap) }
@@ -331,8 +408,10 @@ final class SwitcherController {
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now() + 1, repeating: 1)
         timer.setEventHandler { [weak self] in
-            guard let self,
-                  self.state.expireLease(at: ProcessInfo.processInfo.systemUptime) else { return }
+            guard let self else { return }
+            // A companion that stopped polling gives the keyboard back.
+            self.launcherKeys.expire(at: ProcessInfo.processInfo.systemUptime)
+            guard self.state.expireLease(at: ProcessInfo.processInfo.systemUptime) else { return }
             self.removeTap()
             self.cancelLeaseTimer()
         }
@@ -352,6 +431,15 @@ final class SwitcherController {
             return Unmanaged.passUnretained(event)
         }
         let code = CGKeyCode(event.getIntegerValueField(.keyboardEventKeycode))
+        let phase: LauncherKeyPhase = type == .keyDown ? .down : type == .keyUp ? .up : .flags
+        var length = 0
+        var units = [UniChar](repeating: 0, count: 8)
+        if phase == .down { event.keyboardGetUnicodeString(maxStringLength: 8, actualStringLength: &length, unicodeString: &units) }
+        if launcherKeys.handle(phase, code: code, command: event.flags.contains(.maskCommand),
+                               control: event.flags.contains(.maskControl),
+                               text: String(utf16CodeUnits: units, count: max(0, min(length, 8)))) == .consume {
+            return nil
+        }
         if type == .keyDown, code == 0x30, event.flags.contains(.maskCommand) {
             suppressTabUp = state.cycle(reverse: event.flags.contains(.maskShift))
             return suppressTabUp ? nil : Unmanaged.passUnretained(event)

@@ -327,6 +327,279 @@ inline void selfTestShelf() {
   for (int i = 0; i < 40; ++i) gaze.update({}, .05f, "eye");
   check(gaze.active == "one" && gaze.feedback["one"].focused, "looking at the shelf leaves the focused window alone");
 }
+// Launcher A (FW-15): catalogue and state, layout and paging, picking on the
+// curved panel and at shelf magnification, folders, the search filter, and
+// pick-up/drop reordering.
+inline void selfTestLauncher() {
+  auto check = [](bool ok, const char *why) {
+    if (!ok)
+      throw std::runtime_error(why);
+  };
+  // A catalogue: 30 top-level items (28 apps and two folders), recent apps.
+  std::string apps, items;
+  for (int i = 0; i < 40; ++i) {
+    apps += std::string(i ? "," : "") + "{\"id\":\"com.example.app" + std::to_string(i) + "\",\"name\":\"App " +
+            std::to_string(i) + "\",\"v\":\"1\"}";
+  }
+  for (int i = 0; i < 28; ++i) items += "{\"app\":\"com.example.app" + std::to_string(i) + "\"},";
+  items += R"({"folder":"folder-1","name":"Games","apps":["com.example.app28","com.example.app29","com.example.gone","com.example.app0"]},)";
+  items += R"({"folder":"folder-2","name":"Tools","apps":["com.example.app30","com.example.app31"]},)";
+  items += R"({"folder":"empty","name":"Empty","apps":["com.example.gone"]},{"folder":"../bad","name":"Bad","apps":["com.example.app32"]},)";
+  items += R"({"app":"com.example.app1"},{"app":"bad id"},"junk")";
+  const std::string raw = "{\"catalog\":7,\"apps\":[" + apps + R"(,{"id":"com.example.app1","name":"Duplicate"},{"id":"../x","name":"X"}],"items":[)" +
+                          items + R"(],"recent":["com.example.app5","com.example.app5","com.example.app3","nope"]})";
+  LauncherCatalog c;
+  check(LauncherCatalog::parse(raw, c), "launcher catalogue parses");
+  check(c.catalog == 7 && c.apps.size() == 40 && c.app("com.example.app1") == 1 && c.apps[1].name == "App 1",
+        "apps are unique and valid");
+  check(c.items.size() == 28 + 2 + 8, "items: apps, two folders, then every app the items left out");
+  check(c.items[28].folder && c.items[28].apps == std::vector<int>{28, 29}, "a folder keeps known apps once each");
+  check(c.items[30].app == 32 && c.items.back().app == 39, "left-out apps join at the end in catalogue order");
+  check(c.recent == std::vector<int>{5, 3}, "recent apps are known and unique");
+  for (const char *bad : {"", "[]", "{}", R"({"catalog":"7","apps":[],"items":[]})", R"({"catalog":1,"apps":{},"items":[]})"}) {
+    LauncherCatalog none;
+    check(!LauncherCatalog::parse(bad, none), "malformed catalogue refused");
+  }
+
+  // State from the companion.
+  auto stateOf = [](const std::string &text) {
+    auto j = json(text);
+    return LauncherState::parse(j.get());
+  };
+  auto st = stateOf(R"({"available":true,"open":true,"seq":4,"catalog":7,"query":"Ap","results":["com.example.app3","../x","com.example.app12"],"selected":1,"pageStep":0,"keyboard":true})");
+  check(st.available && st.open && st.keyboard && st.seq == 4 && st.searching() &&
+        st.results == std::vector<std::string>{"com.example.app3", "com.example.app12"}, "launcher state parses");
+  check(!stateOf(R"({"open":true})").open, "only an available launcher opens");
+  check(!stateOf(R"({"available":true,"query":"   "})").searching(), "a blank query is not a search");
+  SpatialState spatialState = SpatialState::parse(R"({"mode":"spatial","apps":[],"launcher":{"available":true,"seq":2}})");
+  check(spatialState.launcher.available && spatialState.launcher.seq == 2, "spatial state carries the launcher");
+
+  // Layout: eight columns centred like the mockup, three rows a page.
+  float cx, top;
+  launcherSlot(0, cx, top);
+  check(std::fabs(cx - 69) < 1e-3f && std::fabs(top - launcherGridTop) < 1e-3f, "first slot");
+  launcherSlot(23, cx, top);
+  check(std::fabs(cx - 531) < 1e-3f && std::fabs(top - (launcherGridTop + 120)) < 1e-3f, "last slot of a page");
+  check(std::fabs(launcherRecentX(0, 8) + launcherRecentX(7, 8) - launcherUnits) < 1e-3f, "recent row centred");
+  check(std::fabs(launcherHeight / launcherWidth - launcherUnitsHigh / launcherUnits) < 1e-5f, "panel aspect");
+
+  LauncherState top_;
+  top_.available = top_.open = true;
+  auto listing = launcherListing(c, top_, "");
+  check(listing.cells.size() == 38 && listing.pages() == 2 && listing.container.empty(), "top level pages");
+  auto hit = launcherHit(69, launcherGridTop + 10, listing, 2, 0);
+  check(hit.kind == LauncherTarget::Cell && hit.index == 0, "first cell");
+  hit = launcherHit(531, launcherGridTop + 130, listing, 2, 1);
+  check(hit.kind == LauncherTarget::None || (hit.kind == LauncherTarget::Panel), "past the last item is the panel");
+  hit = launcherHit(69 + 66, launcherGridTop + 70, listing, 2, 1);
+  check(hit.kind == LauncherTarget::Cell && hit.index == 24 + 9, "a cell on the second page");
+  hit = launcherHit(launcherRecentX(1, 2), launcherRecentTop + 10, listing, 2, 0);
+  check(hit.kind == LauncherTarget::Recent && hit.index == 1, "recent app");
+  hit = launcherHit(launcherDotX(1, 2), launcherDotsY + 1, listing, 2, 0);
+  check(hit.kind == LauncherTarget::Dot && hit.index == 1, "page dot");
+  check(launcherHit(300, 30, listing, 2, 0).kind == LauncherTarget::Field, "search field");
+  check(launcherHit(launcherBackX + 5, launcherBackY + 5, listing, 2, 0).kind != LauncherTarget::Back,
+        "no Back at the top level");
+  check(launcherHit(-1, 30, listing, 2, 0).kind == LauncherTarget::None &&
+        launcherHit(5, 365, listing, 2, 0).kind == LauncherTarget::Panel, "outside and margins");
+  check(launcherTargetKey(c, listing, launcherHit(69 + 66 * 4, launcherGridTop + 10, listing, 0, 1)) ==
+            "launcher:cell:folder:folder-1", "folder cell key");
+
+  // Paging: thumbstick, the Mac's arrows, a new query, the keyboard selection.
+  LauncherStick stick;
+  check(stick.update(.7f) == 1 && stick.update(.9f) == 0 && stick.update(.2f) == 0 && stick.update(-.8f) == -1 &&
+        stick.update(NAN) == 0, "one page per thumbstick push");
+  LauncherView view;
+  LauncherState ls;
+  ls.available = true;
+  auto head = shelfIdentity();
+  head.m[1][3] = 1.6f;
+  view.request(ls, true);
+  check(!view.update(ls, false, head) && !view.open && !ls.open, "opens only in front of a known head");
+  view.request(ls, true);
+  check(view.update(ls, true, head) && view.open, "a local open is immediate");
+  check(std::fabs(view.pose.m[2][3] + launcherDistance) < 1e-4f && std::fabs(view.pose.m[1][3] - 1.6f + launcherDrop) < 1e-4f,
+        "the panel opens in front of the head, at eye level");
+  LauncherState echo = ls;
+  echo.open = false; // a refresh of the same sequence before the companion acknowledged
+  view.acknowledge(echo);
+  check(echo.open, "a local open holds until acknowledged");
+  echo.seq = 1;
+  echo.open = true;
+  view.acknowledge(echo);
+  ls = echo;
+  view.update(ls, true, head);
+  ls.pageStep = 2;
+  view.update(ls, true, head);
+  check(view.page == 2, "the Mac's arrows turn pages");
+  view.clampPage(listing.pages());
+  check(view.page == 1, "pages are clamped");
+  ls.query = "App";
+  ls.results = {"com.example.app1"};
+  view.update(ls, true, head);
+  check(view.page == 0, "a new query starts at its first page");
+  ls.results.clear();
+  for (int i = 0; i < 30; ++i) ls.results.push_back("com.example.app" + std::to_string(i));
+  ls.selected = 26;
+  view.update(ls, true, head);
+  check(view.page == 1, "the keyboard selection keeps its page in view");
+  ls.open = false;
+  ls.seq = 2;
+  view.folder = "folder-1";
+  view.carry.hand = 1;
+  view.update(ls, true, head);
+  check(!view.open && view.folder.empty() && view.page == 0 && !view.carry.active(), "closing resets the view");
+
+  // Folders open in place; the filter shows only matches, in result order.
+  auto inFolder = launcherListing(c, top_, "folder-1");
+  check(inFolder.inFolder && inFolder.container == "folder-1" && inFolder.folderName == "Games" &&
+        inFolder.cells.size() == 2 && inFolder.cells[0].app == 28, "a folder opens in place");
+  check(launcherHit(launcherBackX + 5, launcherBackY + 5, inFolder, 2, 0).kind == LauncherTarget::Back, "Back");
+  LauncherState search;
+  search.available = search.open = true;
+  search.query = "app 1";
+  search.results = {"com.example.app12", "com.example.unknown", "com.example.app1", "com.example.app30"};
+  auto filtered = launcherListing(c, search, "folder-1");
+  check(filtered.searching && filtered.cells.size() == 3 && filtered.cells[0].app == 12 && filtered.cells[2].app == 30 &&
+        filtered.container.empty(), "the filter overrides the folder and keeps the companion's order");
+  LauncherView v2;
+  v2.open = true;
+  search.selected = 1;
+  auto picture = launcherPicture(c, search, v2, {}, false, "/icons");
+  check(picture.searching && picture.section == "Matching Applications" && picture.grid.size() == 3 &&
+        picture.grid[1].selected && picture.grid[0].icon == "/icons/com.example.app12.png", "filtered picture");
+  search.results = {"com.example.none"};
+  check(launcherPicture(c, search, v2, {}, false, "").empty, "no matches says so");
+  v2.folder = "folder-2";
+  auto folderPicture = launcherPicture(c, top_, v2, {LauncherTarget::Back, 0}, true, "");
+  check(folderPicture.inFolder && folderPicture.section == "Tools" && folderPicture.backHot && folderPicture.backPressed,
+        "folder picture");
+  v2.folder.clear();
+  auto grid = launcherPicture(c, top_, v2, {LauncherTarget::Cell, 3}, false, "");
+  check(grid.grid.size() == 24 && grid.grid[3].hot && grid.grid[4].folder == false && grid.pages == 2 &&
+        grid.recent.size() == 2 && grid.signature() != launcherPicture(c, top_, v2, {}, false, "").signature(),
+        "the laser lights one icon and redraws");
+
+  // Pick-up and drop: between icons reorders, onto an icon does nothing.
+  auto gap = launcherGapAt(69 - 30, launcherGridTop + 20, 0, 38);
+  check(gap && gap.gap == 0, "left edge of the first cell is before it");
+  gap = launcherGapAt(69 + 30, launcherGridTop + 20, 0, 38);
+  check(gap && gap.gap == 1, "right part of a cell is after it");
+  gap = launcherGapAt(69, launcherGridTop + 20, 0, 38);
+  check(!gap && gap.onto, "the middle of an icon is onto it");
+  gap = launcherGapAt(69 + 66 * 5 + 30, launcherGridTop + 140, 1, 38);
+  check(gap && gap.gap == 38, "after the last icon is the end");
+  check(!launcherGapAt(300, 40, 0, 38), "not over the grid");
+  std::vector<std::string> ids;
+  for (const auto &cell : listing.cells) ids.push_back(launcherCellID(c, cell));
+  std::string before;
+  check(!launcherDropBefore(ids, ids[3], 3, before) && !launcherDropBefore(ids, ids[3], 4, before),
+        "dropping where it was changes nothing");
+  check(launcherDropBefore(ids, ids[5], 0, before) && before == ids[0], "drop before the first");
+  check(launcherDropBefore(ids, ids[0], 38, before) && before.empty(), "drop at the end");
+  auto moved = c;
+  check(launcherMove(moved, "com.example.app5", "com.example.app0", ""), "move in the top level");
+  check(moved.items[0].app == 5 && moved.items[1].app == 0 && moved.items.size() == c.items.size(), "moved first");
+  check(launcherMove(moved, "folder:folder-2", "", "") && moved.items.back().id == "folder-2", "folders move too");
+  check(launcherMove(moved, "com.example.app29", "com.example.app28", "folder-1") &&
+        moved.items[std::find_if(moved.items.begin(), moved.items.end(), [](auto &i) { return i.id == "folder-1"; }) -
+                    moved.items.begin()].apps == std::vector<int>{29, 28}, "move inside a folder");
+  check(!launcherMove(moved, "com.example.app5", "com.example.app5", "") &&
+        !launcherMove(moved, "com.example.app5", "com.example.nope", "") &&
+        !launcherMove(moved, "com.example.app28", "", "") && !launcherMove(moved, "com.example.app5", "", "folder-1") &&
+        !launcherMove(moved, "com.example.app28", "", "nope"), "invalid moves change nothing");
+  v2.carry.hand = 1;
+  v2.carry.id = ids[6];
+  v2.carry.gap = launcherGapAt(69 + 66 * 2 - 30, launcherGridTop + 20, 0, 38);
+  auto carried = launcherPicture(c, top_, v2, {LauncherTarget::Cell, 2}, true, "");
+  check(carried.grid[6].ghost && !carried.grid[2].hot && std::fabs(carried.markerX - (69 + 66 * 1.5f)) < 1e-3f,
+        "the carried icon's place is a ghost and the gap shows a marker");
+
+  // The shelf's Applications button: first slot, magnified and picked like an icon.
+  SpatialState shelfState;
+  shelfState.spatial = true;
+  for (const char *id : {"a", "b", "c"}) shelfState.apps.push_back({id, id, "", true, false});
+  ShelfView rest;
+  rest.pinned = true;
+  rest.pose = shelfFrontOf(shelfIdentity());
+  rest.scale = shelfRestScale;
+  auto without = spatialLayout(shelfState, rest.pose, "", nullptr, rest);
+  shelfState.launcher.available = true;
+  auto restTiles = spatialLayout(shelfState, rest.pose, "", nullptr, rest);
+  auto find = [](const std::vector<SpatialTile> &tiles, SpatialTile::Kind kind, int index = 0) {
+    for (const auto &t : tiles)
+      if (t.kind == kind && t.index == index) return t;
+    throw std::runtime_error("tile missing");
+  };
+  check(std::none_of(without.begin(), without.end(), [](auto &t) { return t.kind == SpatialTile::Apps; }),
+        "no Applications button without a launcher");
+  const auto button = find(restTiles, SpatialTile::Apps);
+  check(button.surface.placement.matrix.m[0][3] < find(restTiles, SpatialTile::Dock, 0).surface.placement.matrix.m[0][3],
+        "the Applications button is at the left end");
+  check(find(restTiles, SpatialTile::Shelf).surface.placement.width > find(without, SpatialTile::Shelf).surface.placement.width,
+        "the shelf makes room for it");
+  auto rayTo = [](const HmdMatrix34_t &m) {
+    EyeRay r;
+    for (int i = 0; i < 3; ++i) {
+      r.origin[i] = i == 1 ? m.m[1][3] : 0;
+      r.direction[i] = m.m[i][3] - r.origin[i];
+    }
+    const float n = std::hypot(r.direction[0], r.direction[1], r.direction[2]);
+    for (auto &d : r.direction) d /= n;
+    return r;
+  };
+  int picked = spatialPick(rayTo(button.surface.placement.matrix), restTiles);
+  check(picked >= 0 && restTiles[picked].kind == SpatialTile::Apps, "picked at rest");
+  ShelfView big = rest;
+  big.scale = 1;
+  big.magnify = 1;
+  const float step = std::min(.105f, 1.35f / 4);
+  big.pointer = -1.5f * step;
+  auto bigTiles = spatialLayout(shelfState, rest.pose, "", nullptr, big);
+  const auto grown = find(bigTiles, SpatialTile::Apps);
+  check(grown.surface.placement.width > step * 1.4f, "magnified under the pointer like the icons");
+  picked = spatialPick(rayTo(grown.surface.placement.matrix), bigTiles);
+  check(picked >= 0 && bigTiles[picked].kind == SpatialTile::Apps, "picked at full magnification");
+  check(!find(bigTiles, SpatialTile::Apps).lit, "unlit while closed");
+  shelfState.launcher.open = true;
+  check(find(spatialLayout(shelfState, rest.pose, "", nullptr, big), SpatialTile::Apps).lit, "lit while open");
+
+  // The curved panel: a ray at a cell's place on the curve picks that cell.
+  LauncherView open;
+  open.open = true;
+  open.place(head);
+  std::vector<SpatialTile> tiles;
+  launcherTiles(tiles, open, std::make_shared<LauncherPicture>(grid));
+  check(tiles.size() == 2 && tiles[0].kind == SpatialTile::Dim && !tiles[0].pickable &&
+        tiles[1].kind == SpatialTile::Launcher && tiles[1].surface.placement.bendA > .1f, "backdrop and curved panel");
+  for (int slot : {0, 7, 12, 23}) {
+    launcherSlot(slot, cx, top);
+    const auto &surface = tiles[1].surface;
+    const auto point = surfacePoint(surface, (cx / launcherUnits - .5f) * launcherWidth,
+                                    (.5f - (top + 17) / launcherUnitsHigh) * launcherHeight);
+    EyeRay r;
+    for (int i = 0; i < 3; ++i) {
+      r.origin[i] = head.m[i][3];
+      r.direction[i] = point.m[i][3] - head.m[i][3];
+    }
+    PanelPick pick;
+    check(spatialPick(r, tiles, &pick) == 1, "the panel is picked through its curve");
+    const auto target = launcherHit(pick.u * launcherUnits, pick.v * launcherUnitsHigh, listing, 2, 0);
+    check(target.kind == LauncherTarget::Cell && target.index == slot, "the ray's cell is the one drawn there");
+  }
+  open.carry.hand = 1;
+  open.carry.onPanel = true;
+  open.carry.x = 300;
+  open.carry.y = 200;
+  tiles.clear();
+  launcherTiles(tiles, open, nullptr, "/icons/a.png");
+  check(tiles.size() == 3 && tiles[2].kind == SpatialTile::Carry && !tiles[2].pickable && tiles[2].icon == "/icons/a.png",
+        "a carried icon follows the laser");
+  check(spatialSortOrder(SpatialTile::Dim) > 54 && spatialSortOrder(SpatialTile::Dim) < spatialSortOrder(SpatialTile::Shelf) &&
+        spatialSortOrder(SpatialTile::Shelf) < spatialSortOrder(SpatialTile::Launcher) &&
+        spatialSortOrder(SpatialTile::Launcher) < spatialSortOrder(SpatialTile::Carry),
+        "the backdrop dims the windows, not the shelf or the launcher");
+}
 inline void selfTestSpatial() {
   auto check = [](bool ok, const char *why) {
     if (!ok)
@@ -706,6 +979,7 @@ inline void selfTestSpatial() {
   check(press.update(hits, down, 1300).outside,
         "outside trigger dismisses menu");
   selfTestShelf();
+  selfTestLauncher();
   HostFocus f;
   f.feedback["one"] = {};
   f.feedback["two"] = {};

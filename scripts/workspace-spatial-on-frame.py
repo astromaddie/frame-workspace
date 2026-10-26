@@ -11,6 +11,8 @@ import tempfile
 
 BUNDLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 KEY = re.compile(r"com\.frame-workspace\.native\.\d{1,15}\.panel-w\d{1,15}\Z")
+FOLDER = re.compile(r"[A-Za-z0-9_-]{1,40}\Z")
+MAX_LAUNCHER_APPS = 600
 
 
 def require(ok):
@@ -53,7 +55,63 @@ def validate_state(raw):
     require(switcher.get("chosen") is None or switcher["chosen"] in keys)
     require("tapActive" not in switcher or type(switcher["tapActive"]) is bool)
     require("error" not in switcher or text(switcher["error"], 512))
+    if "launcher" in state:
+        validate_launcher_state(state["launcher"])
     return state
+
+
+def counter(value):
+    return type(value) is int and 0 <= value < 2**63
+
+
+def validate_launcher_state(launcher):
+    """The launcher's open state and search field (Launcher A)."""
+    require(isinstance(launcher, dict) and launcher.get("available") is True)
+    require(all(type(launcher.get(k)) is bool for k in ("open", "keyboard")))
+    require(all(counter(launcher.get(k)) for k in ("seq", "catalog", "selected")))
+    require(type(launcher.get("pageStep")) is int and abs(launcher["pageStep"]) < 2**31)
+    require(text(launcher.get("query"), 256))
+    results = launcher.get("results", [])
+    require(isinstance(results, list) and len(results) <= MAX_LAUNCHER_APPS and len(set(results)) == len(results))
+    require(all(isinstance(b, str) and BUNDLE.fullmatch(b) for b in results))
+
+
+def validate_catalog(raw):
+    """The launcher's apps, layout and recent apps, published only when they change."""
+    require(len(raw.encode()) <= 100000)
+    catalog = json.loads(raw)
+    require(isinstance(catalog, dict) and counter(catalog.get("catalog")))
+    apps, items, recent = catalog.get("apps"), catalog.get("items"), catalog.get("recent")
+    require(isinstance(apps, list) and len(apps) <= MAX_LAUNCHER_APPS)
+    require(isinstance(items, list) and isinstance(recent, list) and len(recent) <= 16)
+    ids = set()
+    for app in apps:
+        require(isinstance(app, dict) and isinstance(app.get("id"), str) and BUNDLE.fullmatch(app["id"]))
+        require(app["id"] not in ids and text(app.get("name"), 128) and text(app.get("v"), 96))
+        ids.add(app["id"])
+    placed, folders = set(), set()
+    for item in items:
+        require(isinstance(item, dict))
+        if "folder" in item:
+            members = item.get("apps")
+            require(isinstance(item["folder"], str) and FOLDER.fullmatch(item["folder"]) and item["folder"] not in folders)
+            require(text(item.get("name"), 64) and isinstance(members, list) and members)
+            folders.add(item["folder"])
+        else:
+            members = [item.get("app")]
+        for bundle in members:
+            require(isinstance(bundle, str) and bundle in ids and bundle not in placed)
+            placed.add(bundle)
+    require(all(isinstance(b, str) and b in ids for b in recent))
+    return catalog
+
+
+def load_versions(icons):
+    try:
+        versions = json.loads((icons / "versions.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return versions if isinstance(versions, dict) else {}
 
 
 def png_bytes(encoded):
@@ -85,6 +143,17 @@ def main(args):
     elif action == "icon":
         require(len(args) == 3 and BUNDLE.fullmatch(args[1]))
         data = png_bytes(args[2])
+    elif action == "launcher":
+        require(len(args) == 2)
+        catalog = validate_catalog(args[1])
+    elif action == "icons":
+        # Launcher icons in one write: bundle, version, PNG; the version is
+        # recorded so each icon is sent once until the app changes.
+        require(len(args) >= 4 and (len(args) - 1) % 3 == 0 and len(args) <= 1 + 3 * 16)
+        batch = []
+        for i in range(1, len(args), 3):
+            require(BUNDLE.fullmatch(args[i]) and text(args[i + 1], 96))
+            batch.append((args[i], args[i + 1], png_bytes(args[i + 2])))
     else:
         require(action == "clear" and len(args) == 1)
     os.umask(0o077)
@@ -96,11 +165,33 @@ def main(args):
     path = runtime / "spatial-ui.json"
     if action == "clear":
         path.unlink(missing_ok=True)
+        (runtime / "launcher.json").unlink(missing_ok=True)
     elif action == "sync":
         atomic(path, (json.dumps(state, ensure_ascii=True, separators=(",", ":")) + "\n").encode())
         missing = [a["bundleID"] for a in state["apps"]
                    if (icons / a["icon"]).is_symlink() or not (icons / a["icon"]).is_file()]
         print("SPATIAL_ICONS_MISSING " + json.dumps(missing))
+        try:
+            published = json.loads((runtime / "launcher.json").read_text()).get("catalog")
+        except (OSError, ValueError, AttributeError):
+            published = None
+        print("LAUNCHER_CATALOG " + json.dumps(published if counter(published) else None))
+    elif action == "launcher":
+        atomic(runtime / "launcher.json", (json.dumps(catalog, ensure_ascii=True, separators=(",", ":")) + "\n").encode())
+        versions = load_versions(icons)
+        missing = [a["id"] for a in catalog["apps"]
+                   if (icons / (a["id"] + ".png")).is_symlink() or not (icons / (a["id"] + ".png")).is_file() or
+                   versions.get(a["id"]) != a["v"]]
+        print("LAUNCHER_ICONS_MISSING " + json.dumps(missing))
+    elif action == "icons":
+        icons.mkdir(mode=0o700, exist_ok=True)
+        versions = load_versions(icons)
+        for bundle, version, data in batch:
+            atomic(icons / (bundle + ".png"), data)
+            versions[bundle] = version
+        if len(versions) > 4 * MAX_LAUNCHER_APPS:
+            versions = dict(list(versions.items())[-2 * MAX_LAUNCHER_APPS:])
+        atomic(icons / "versions.json", json.dumps(versions, separators=(",", ":")).encode())
     else:
         icons.mkdir(mode=0o700, exist_ok=True)
         atomic(icons / (args[1] + ".png"), data)

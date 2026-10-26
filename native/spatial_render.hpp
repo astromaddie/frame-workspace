@@ -1,4 +1,5 @@
 #pragma once
+#include "launcher_render.hpp"
 #include "spatial.hpp"
 #include "session.hpp"
 #include <array>
@@ -126,7 +127,15 @@ class SpatialRenderer {
     std::string iconPath, iconVersion;
     double iconChecked = -1000;
     int width = 0, height = 0;
+    int kind = -1;         // the tile kind its overlay's sort order was set for
+    float curvature = 0;   // OpenVR curvature last set
   };
+  std::unique_ptr<LauncherPainter> painter; // the launcher, its button and backdrop
+
+public:
+  static uint32_t sortOrder(SpatialTile::Kind kind) { return spatialSortOrder(kind); }
+
+private:
   std::vector<Layer> layers;
   Layer handleLayer; // the move pill's own overlay, whichever tile index it has
   std::vector<GLuint> drawn;
@@ -188,8 +197,8 @@ public:
           "#version 120\nvoid "
           "main(){gl_Position=gl_Vertex;gl_TexCoord[0]=gl_MultiTexCoord0;}");
       auto fs = shader(GL_FRAGMENT_SHADER, R"GLSL(#version 120
-uniform vec2 size;uniform vec3 tip;uniform float held,selected,clear,lighting;
-void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(size*.5-r);float edge=length(max(d,0.))+min(max(d.x,d.y),0.)-r;float a=1.-smoothstep(-1.,0.,edge);vec3 c=mix(vec3(.985,.98,.995),vec3(.79,.76,.84),q.y*.75+q.x*.25);float rim=smoothstep(-4.,-1.,edge);c+=rim*(.12*(1.-q.y)-.12*q.y);float light=tip.z*exp(-dot((q-tip.xy)*size,(q-tip.xy)*size)/1000.);if(lighting>.5){float core=tip.z*exp(-dot((q-tip.xy)*size,(q-tip.xy)*size)/3.);float alpha=min(1.,light*.22+core)*a;gl_FragColor=vec4(mix(vec3(.5,.78,1.),vec3(1.),core)*alpha,alpha);return;}c+=light*vec3(.12,.20,.24);c=mix(c,vec3(.45,.72,.95),held*.45);c=mix(c,vec3(.35,.68,1.),selected*rim*.8);c+=vec3(1.)*tip.z*exp(-dot((q-tip.xy)*size,(q-tip.xy)*size)/3.);if(clear>.5){float core=tip.z*exp(-dot((q-tip.xy)*size,(q-tip.xy)*size)/3.);a=max(held*.3+light*.18,core);c=mix(vec3(.48,.74,1.),vec3(1.),core); }gl_FragColor=vec4(c*a,a);})GLSL");
+uniform vec2 size;uniform vec3 tip;uniform float held,selected,clear,lighting,reach;
+void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(size*.5-r);float edge=length(max(d,0.))+min(max(d.x,d.y),0.)-r;float a=1.-smoothstep(-1.,0.,edge);vec3 c=mix(vec3(.985,.98,.995),vec3(.79,.76,.84),q.y*.75+q.x*.25);float rim=smoothstep(-4.,-1.,edge);c+=rim*(.12*(1.-q.y)-.12*q.y);vec2 t=(q-tip.xy)*size/reach;float light=tip.z*exp(-dot(t,t)/1000.);if(lighting>.5){float core=tip.z*exp(-dot(t,t)/3.);float alpha=min(1.,light*.22+core)*a;gl_FragColor=vec4(mix(vec3(.5,.78,1.),vec3(1.),core)*alpha,alpha);return;}c+=light*vec3(.12,.20,.24);c=mix(c,vec3(.45,.72,.95),held*.45);c=mix(c,vec3(.35,.68,1.),selected*rim*.8);c+=vec3(1.)*tip.z*exp(-dot(t,t)/3.);if(clear>.5){float core=tip.z*exp(-dot(t,t)/3.);a=max(held*.3+light*.18,core);c=mix(vec3(.48,.74,1.),vec3(1.),core); }gl_FragColor=vec4(c*a,a);})GLSL");
       program = glCreateProgram();
       glAttachShader(program, vs);
       glAttachShader(program, fs);
@@ -228,12 +237,18 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       auto snap = [](float metres) {
         return std::max(16, int(std::lround(metres * shelfPixelsPerMetre / 8)) * 8);
       };
+      const bool iconTile = t.kind == SpatialTile::Dock || t.kind == SpatialTile::Apps || t.kind == SpatialTile::Carry;
       int w = t.kind == SpatialTile::Shelf
                   ? std::min(2048, snap(t.surface.placement.width))
-              : t.kind == SpatialTile::Dock ? 128
-                                            : 384,
-          h = t.kind == SpatialTile::Shelf  ? snap(t.surface.height)
-              : t.kind == SpatialTile::Dock ? 140
+              : iconTile                        ? 128
+              : t.kind == SpatialTile::Launcher ? int(launcherUnits * launcherPixelsPerUnit)
+              : t.kind == SpatialTile::Dim      ? 256
+                                                : 384,
+          h = t.kind == SpatialTile::Shelf      ? snap(t.surface.height)
+              : iconTile                        ? 140
+              : t.kind == SpatialTile::Launcher ? int(std::lround(launcherUnitsHigh * launcherPixelsPerUnit))
+              : t.kind == SpatialTile::Dim
+                  ? std::max(16, int(std::lround(256 * t.surface.height / std::max(.01f, t.surface.placement.width))))
               : t.kind == SpatialTile::Menu ? 64
                                             : 280;
       bool redraw = false;
@@ -258,9 +273,15 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
         std::string icon =
             t.kind == SpatialTile::Dock && !state.apps[t.index].icon.empty()
                 ? (std::filesystem::path(icons) / state.apps[t.index].icon).string()
-                : "";
+            : t.kind == SpatialTile::Carry ? t.icon
+                                           : "";
         bool running = t.kind == SpatialTile::Dock && state.apps[t.index].running;
-        auto signature = t.surface.key + t.label + icon + std::to_string(running);
+        const bool painted = t.kind == SpatialTile::Apps || t.kind == SpatialTile::Launcher || t.kind == SpatialTile::Dim;
+        if (painted && !painter) painter = std::make_unique<LauncherPainter>();
+        auto signature = t.surface.key + t.label + icon + std::to_string(running) + std::to_string(t.kind) +
+                         std::to_string(t.lit) + std::to_string(w) + "x" + std::to_string(h);
+        if (t.kind == SpatialTile::Launcher && t.picture)
+          signature += t.picture->signature() + painter->iconStamp(*t.picture, nowMs());
         // Icons and JSON travel separately. Recheck without rerasterizing static
         // labels, so an icon arriving after its state entry can become visible.
         if (icon != l.iconPath || nowMs() - l.iconChecked >= 1000) {
@@ -274,10 +295,16 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
         signature += l.iconVersion;
         bool labelChanged = signature != l.signature;
         if (labelChanged) {
-          if (l.label)
-            glDeleteTextures(1, &l.label);
-          l.label = raster->label(t.kind == SpatialTile::Dock ? "" : t.label,
-                                  icon, w, h, running);
+          if (painted) {
+            if (t.kind == SpatialTile::Apps) l.label = painter->button(t.lit, w, h, l.label);
+            else if (t.kind == SpatialTile::Dim) l.label = painter->backdrop(w, h, .45, l.label);
+            else if (t.picture) l.label = painter->panel(*t.picture, w, h, l.label, nowMs());
+          } else {
+            if (l.label)
+              glDeleteTextures(1, &l.label);
+            l.label = raster->label(t.kind == SpatialTile::Dock || t.kind == SpatialTile::Carry ? "" : t.label,
+                                    icon, w, h, running);
+          }
           l.signature = signature;
         }
         auto drawSignature = signature + std::to_string(t.kind) + std::to_string(w) + "x" + std::to_string(h) +
@@ -313,12 +340,13 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           glDisable(GL_BLEND);
           glUseProgram(program);
           glUniform1f(glGetUniformLocation(program, "lighting"), 0);
+          // The launcher's laser spot is drawn larger: its texture is dense.
+          glUniform1f(glGetUniformLocation(program, "reach"), t.kind == SpatialTile::Launcher ? 3.f : 1.f);
           glUniform2f(glGetUniformLocation(program, "size"), w, h);
           glUniform3f(glGetUniformLocation(program, "tip"), u, v, int(i) == hot);
           glUniform1f(glGetUniformLocation(program, "held"),
                       held && int(i) == hot);
-          glUniform1f(glGetUniformLocation(program, "clear"),
-                      t.kind == SpatialTile::Dock);
+          glUniform1f(glGetUniformLocation(program, "clear"), iconTile || painted);
           glUniform1f(glGetUniformLocation(program, "selected"),
                       t.kind == SpatialTile::Window && t.index == state.index);
           quad();
@@ -358,8 +386,16 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
           VRTextureBounds_t bounds{0, 1, 1, 0};
           session->overlay->SetOverlayTextureBounds(l.overlay, &bounds);
           session->overlay->SetOverlayFlag(l.overlay, VROverlayFlags_IsPremultiplied, true);
-          session->overlay->SetOverlaySortOrder(
-              l.overlay, t.kind == SpatialTile::Shelf ? 99 : 100);
+        }
+        if (l.kind != int(t.kind)) {
+          // Layers are reused as the tile list changes.
+          session->overlay->SetOverlaySortOrder(l.overlay, sortOrder(t.kind));
+          l.kind = int(t.kind);
+        }
+        const float curvature = t.surface.placement.bendA;
+        if (curvature != l.curvature && session->overlay->SetOverlayCurvature) {
+          session->overlay->SetOverlayCurvature(l.overlay, curvature);
+          l.curvature = curvature;
         }
         auto m = t.surface.placement.matrix;
         session->overlay->SetOverlayTransformAbsolute(
