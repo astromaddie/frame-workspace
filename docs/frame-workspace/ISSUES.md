@@ -644,6 +644,18 @@ toggle between the two, because Spatial Mode won't suit every task.
   `--render-scene`): **L2**, windows without a remembered position open on a curved two-row wall in
   front of you (about 1.75 m away, columns 25 degrees apart, the lower row clear of the dock
   shelf), so everything is in view without turning. Last Session still restores positions you set.
+- **Shelf placement** (chosen 2026-10-26): the shelf no longer follows the head. The user places
+  and pins it, it keeps its place across restarts, and Recenter brings it back in front. It is
+  small at rest and grows with Mac Dock-style magnification when the laser or the eyes land on it,
+  then shrinks back shortly after they leave.
+- **Real Mac UI over rebuilt UI** (chosen 2026-10-26, after `evidence/launcher-mockup.png`): bring
+  the Mac's own elements into the room instead of recreating them. Spotlight (on macOS 26 its Apps
+  view replaces Launchpad) is the launcher, so the custom launcher options A, B and C are dropped.
+  **S1**: system surfaces (Spotlight, permission prompts, open and save panels, notifications)
+  appear as panels in front of the user. **S2**: a Laptop Screen panel shows the covered built-in
+  display as the safety net for anything S1 misses. The native shelf stays for now; a captured
+  real Dock is to be tried once headset clicks into panels work. Password prompts may be hidden
+  from capture by macOS; check that first.
 
 ## Approach
 Each window gets its own virtual display, sized to it, streamed as its own panel
