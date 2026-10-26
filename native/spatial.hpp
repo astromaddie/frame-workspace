@@ -247,6 +247,10 @@ struct SpatialTile {
   // the limit), in metres. The renderer keeps its texture this size, so the
   // animation never changes the texture's dimensions.
   float canvasWidth = 0, canvasHeight = 0;
+  // Shelf: the status picture shares the row at its right end. statusScale is metres
+  // per point at full size (0: no room was made for it), dividerX the groove between
+  // the icons and it, in metres from the backing's left edge as drawn (-1: none).
+  float statusScale = 0, dividerX = -1;
   bool lit = false;                                 // Apps: the launcher is open
   std::shared_ptr<const LauncherPicture> picture;   // Launcher
   std::string icon;                                 // Carry: the icon's file
@@ -303,7 +307,7 @@ inline HmdMatrix34_t spatialAnchor(const HmdMatrix34_t &head, float distance,
            {0, 1, 0, head.m[1][3] - down},
            {-x, 0, z, head.m[2][3] - z * distance}}};
 }
-inline constexpr float shelfStatusBand = .052f, shelfInset = .006f;
+inline constexpr float shelfInset = .006f;
 // The dock shelf, then its icons, the app menu, the switcher cards and last the
 // move pill. The shelf and its icons hang from `view.pose` once pinned (else
 // from `anchor`, as before) and are drawn view.scale times full size about the
@@ -322,8 +326,12 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
   const float k = std::clamp(view.scale, .05f, 1.5f);
   // The Applications button takes the row's first slot when the launcher exists.
   const size_t lead = s.launcher.available ? 1 : 0, slots = s.apps.size() + lead;
+  // The status picture rides the right end of the same row, after a groove.
+  const float statusScale = status ? shelfStatusScale(status->rect.w, status->rect.h) : 0;
+  const float statusWidth = status ? status->rect.w * statusScale : 0;
+  const float segment = statusWidth > 0 ? shelfStatusGap + statusWidth : 0;
   // Scale the whole ordered shelf to fit 1.35 m; no app silently disappears.
-  const float step0 = std::min(.105f, 1.35f / std::max(size_t(1), slots));
+  const float step0 = std::min(.105f, (1.35f - segment) / std::max(size_t(1), slots));
   const float step = step0 * k, n = float(slots);
   const float reach = shelfIconReach * step, boost = shelfIconBoost * std::clamp(view.magnify, 0.f, 1.f);
   auto stretch = [&](float u) { return shelfMagnifiedX(u, view.pointer, boost, reach); };
@@ -334,31 +342,34 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     t.m[2][3] = z;
     return multiply(base, t);
   };
-  // Icon i spans [stretch(a), stretch(b)] along the row; bottoms stay level.
+  // The row (icons, then the status) is centred; icon i spans [stretch(a), stretch(b)]
+  // along it, bottoms level.
+  const float rowLeft = -(step0 * n + segment) / 2 * k;
   const float rowBottom = -shelfRowDrop - shelfIconHeight * k / 2;
   float menuX = 0, menuTop = 0, shelfX = 0, shelfY = 0;
   if (slots) {
-    const float fullWidth = step0 * n + .022f;
+    const float fullWidth = step0 * n + segment + 2 * shelfEndMargin;
     Placement p;
-    const float scale = status && status->rect.w > 0 ? std::min(.001f, (fullWidth - 2*shelfInset) / status->rect.w) : .001f;
-    const float band = status ? std::max(shelfStatusBand, status->rect.h * scale + 2*shelfInset) : shelfStatusBand;
-    const float left = stretch(-n * step / 2), right = stretch(n * step / 2);
-    p.width = right - left + .022f * k;
+    const float left = stretch(rowLeft) - shelfEndMargin * k, iconsRight = stretch(rowLeft + n * step);
+    const float right = (segment > 0 ? iconsRight + segment * k : iconsRight) + shelfEndMargin * k;
+    p.width = right - left;
     shelfX = (left + right) / 2;
-    shelfY = -shelfRowDrop - band * k / 2;
+    shelfY = rowBottom + (shelfIconHeight + shelfBackTop + shelfBackBottom) * k / 2;
     p.matrix = place(shelfX, shelfY, -.002f);
-    SpatialTile shelf{SpatialTile::Shelf, 0, {"shelf", p, (shelfIconHeight + band) * k, PanelRole::Menu}, ""};
+    SpatialTile shelf{SpatialTile::Shelf, 0, {"shelf", p, shelfRowHeight * k, PanelRole::Menu}, ""};
     shelf.layout.width = fullWidth;
-    shelf.layout.height = shelfIconHeight + band;
+    shelf.layout.height = shelfRowHeight;
     // Magnifying stretches the row by at most boost * reach (the bell's area).
     const float most = std::max(1.f, k);
     shelf.canvasWidth = most * (fullWidth + shelfIconBoost * shelfIconReach * step0);
-    shelf.canvasHeight = most * (shelfIconHeight + band);
+    shelf.canvasHeight = most * shelfRowHeight;
+    shelf.statusScale = segment > 0 ? statusScale : 0;
+    if (segment > 0) shelf.dividerX = iconsRight + shelfStatusGap * k / 2 - left;
     tiles.push_back(shelf);
   }
   for (size_t i = 0; i < s.apps.size(); ++i) {
     Placement p;
-    const float a = (float(i + lead) - n / 2) * step, xa = stretch(a), xb = stretch(a + step);
+    const float a = rowLeft + float(i + lead) * step, xa = stretch(a), xb = stretch(a + step);
     p.width = xb - xa;
     const float height = shelfIconHeight * k * p.width / step;
     p.matrix = place((xa + xb) / 2, rowBottom + height / 2, 0);
@@ -375,7 +386,7 @@ inline std::vector<SpatialTile> spatialLayout(const SpatialState &s,
     // After the app icons in the list (their tile indices stay put), drawn at
     // the left end and magnified like them.
     Placement p;
-    const float a = -n / 2 * step, xa = stretch(a), xb = stretch(a + step);
+    const float a = rowLeft, xa = stretch(a), xb = stretch(a + step);
     p.width = xb - xa;
     const float height = shelfIconHeight * k * p.width / step;
     p.matrix = place((xa + xb) / 2, rowBottom + height / 2, 0);
@@ -523,18 +534,21 @@ inline PanelSurface statusStripPlacement(const std::vector<SpatialTile> &tiles,
                                           float shelfScale = 1) {
   PanelSurface s{"status", {}, 0, PanelRole::Status};
   for (const auto &tile : tiles) if (tile.kind == SpatialTile::Shelf) {
-    // The picture and its padding shrink with the shelf, and ride its right end.
-    const float inset = shelfInset * shelfScale;
-    const float scale = std::min(metresPerPoint * shelfScale,
-        (tile.surface.placement.width - 2 * inset) / std::max(1.f, m.rect.w));
-    const float band = tile.surface.height - .115f * shelfScale;
+    // The picture shrinks with the shelf and rides the right end of its one row,
+    // centred on it. A shelf that made no room for it (laid out without the
+    // status) takes it as before, scaled to fit inside.
+    const float k = tile.layout.height > 0 ? tile.surface.height / tile.layout.height : shelfScale;
+    const bool reserved = tile.statusScale > 0;
+    const float margin = (reserved ? shelfEndMargin : shelfInset) * k;
+    const float scale = reserved ? tile.statusScale * k
+        : std::min(metresPerPoint * shelfScale, (tile.surface.placement.width - 2 * margin) / std::max(1.f, m.rect.w));
     s.placement.width = m.rect.w * scale;
     s.height = m.rect.h * scale;
     auto t = spatialIdentity();
-    t.m[0][3] = (tile.surface.placement.width - s.placement.width) / 2 - inset;
-    t.m[1][3] = -tile.surface.height / 2 + band / 2;
+    t.m[0][3] = (tile.surface.placement.width - s.placement.width) / 2 - margin;
     t.m[2][3] = .003f;
-    s.menuRise = tile.surface.height / 2 - t.m[1][3] - s.height / 2 + .006f * shelfScale;
+    // Status menus open just above the backing's top edge.
+    s.menuRise = tile.surface.height / 2 - t.m[1][3] - s.height / 2 + .006f * k;
     s.placement.matrix = multiply(tile.surface.placement.matrix, t);
     return s;
   }

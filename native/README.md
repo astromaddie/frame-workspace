@@ -431,7 +431,7 @@ and cross-panel drags; see [SPATIAL.md](../docs/frame-workspace/SPATIAL.md).
 ### Content input (FW-15)
 
 In Spatial Mode the controllers drive the Mac cursor in window pictures, the
-menu bar strip (M1), the status band (I1) and open menus. Point the laser and
+menu bar strip (M1), the shelf's status items (I1) and open menus. Point the laser and
 move it a little: a laser resting on something (a controller put down) never
 takes the pointer. The window under it comes forward and the Mac cursor follows
 the laser. Trigger is the left button (hold it to drag), right B is a right
@@ -760,7 +760,7 @@ places it there (not saved until it is moved or recentered). The pose lives in
 `$XDG_DATA_HOME/frame-workspace/panels/spatial-shelf-pose.json` (`spatial-shelf-pose.json`
 beside the state file when `--spatial-state` is given), in the window pose format,
 and is checked like one (orthonormal rows, within 10 m) plus handedness. The
-status band and the app menus move with it. A pose that fails is ignored.
+status items and the app menus move with it. A pose that fails is ignored.
 
 Move it the way a window moves: the same Palladium move pill slides out under the
 shelf when a controller laser comes near it, and a trigger (or grip, while the
@@ -789,7 +789,7 @@ the shelf's largest form (full size, icons fully magnified), and the overlay sho
 corner through its texture bounds, so SteamVR sees one texture size while the shelf
 grows, shrinks and magnifies and does not recreate its remote image on every frame.
 The texture is reallocated only when the shelf's content changes (its app count or
-status band). `tests_spatial_render.cpp` checks this with the renderer's allocation counter.
+status picture). `tests_spatial_render.cpp` checks this with the renderer's allocation counter.
 
 Its icons keep the
 companion's order and show running dots. Trigger release opens an app; a
@@ -943,10 +943,14 @@ The linear 0.12-second slide matches the handles. Covered pixels do not take
 host gaze/laser hits; visible hits map to the inset source picture. Held still
 pictures redraw with the changing crop as well as streamed pictures.
 
-The shelf extends at least 52 mm below the icon row as one piece. Its width still follows
-the icons. Status is right-aligned inside that band, with 6 mm padding, at 1 mm
-per point; it shrinks uniformly when too wide. A taller picture extends the band downward
-to preserve its natural scale.
+The shelf is one row. The Applications button is at its left end, the app icons follow,
+and the status items (clock, Wi-Fi, battery, Control Center) sit at the right end, set
+off from the icons by a 3 px V-groove (the launcher's groove, upright). The backing
+hugs the icons: it rises 4 mm above the icon tiles and stops under their running dots,
+about 103 mm in all at full size, with 11 mm at each end. Magnified icons grow past its
+top edge, as in the macOS Dock. The status picture is 1 mm per point, shrunk to at most
+450 mm wide and 75 mm tall, centred on the row; the row (icons, groove, status) is centred
+on the shelf, which widens to fit it, and it all scales and magnifies with the shelf.
 It has no separate rim. Status-menu placement uses the fitted scale and the item's
 horizontal position, with clearance above the whole shelf. Other menu offsets use
 `rect.minX - anchorRect.minX` and `rect.minY - anchorRect.maxY`, at the anchor's

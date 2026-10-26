@@ -27,6 +27,21 @@ inline constexpr float shelfMagnifySeconds = .15f;
 inline constexpr float shelfRowDrop = .48f;       // icon row centre below the pose frame's origin
 inline constexpr float shelfIconHeight = .115f;   // full-size icon tile height
 inline constexpr float shelfPixelsPerMetre = 1200;
+// One row: the backing hugs the icon tiles. It rises a little above their top edge
+// and stops short of their bottom edge (the tile's empty foot), so the icons, their
+// running dots and a modest margin are all it holds. Magnified icons grow past it.
+inline constexpr float shelfBackTop = .004f;      // backing above the icon tiles' top edge
+inline constexpr float shelfBackBottom = .0164f;  // backing ends this far above their bottom edge
+inline constexpr float shelfRowHeight = shelfIconHeight + shelfBackTop - shelfBackBottom;
+inline constexpr float shelfEndMargin = .011f;    // backing past the first icon and the status
+inline constexpr float shelfStatusGap = .02f;     // icons to status picture; the divider sits in it
+inline constexpr float shelfStatusMaxWidth = .45f;  // the status picture at most this wide, this tall (full size)
+inline constexpr float shelfStatusMaxHeight = .075f;
+// Metres per point of the status picture at full size: 1 mm, less when it would be too big.
+inline float shelfStatusScale(float width, float height) {
+  if (!(width > 0) || !(height > 0)) return 0;
+  return std::min({.001f, shelfStatusMaxWidth / width, shelfStatusMaxHeight / height});
+}
 
 inline HmdMatrix34_t shelfIdentity() {
   return {{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
