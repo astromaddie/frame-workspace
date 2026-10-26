@@ -649,10 +649,6 @@ toggle between the two, because Spatial Mode won't suit every task.
   `--render-scene`): **L2**, windows without a remembered position open on a curved two-row wall in
   front of you (about 1.75 m away, columns 25 degrees apart, the lower row clear of the dock
   shelf), so everything is in view without turning. Last Session still restores positions you set.
-- **Shelf placement** (chosen 2026-10-26): the shelf no longer follows the head. The user places
-  and pins it, it keeps its place across restarts, and Recenter brings it back in front. It is
-  small at rest and grows with Mac Dock-style magnification when the laser or the eyes land on it,
-  then shrinks back shortly after they leave.
 - **Real Mac UI over rebuilt UI** (chosen 2026-10-26, after `evidence/launcher-mockup.png`): bring
   the Mac's own elements into the room where they work well instead of recreating them. Real
   Spotlight is used, so the custom search (option B) is dropped. **S1**: system surfaces
