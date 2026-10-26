@@ -35,6 +35,9 @@ class SpatialApps:
         self._icons = {}
         self._sent_icons = set()
         self._published = False
+        # Counts dashboard Recenter requests made in Spatial Mode; the headset
+        # brings the shelf back in front of the user when it grows.
+        self.recenter_seq = 0
 
     @property
     def enabled(self):
@@ -129,7 +132,10 @@ class SpatialApps:
         self._agent = self.macview.agent
         self._configured = True
         self._entries = entries
-        self._set_state({"mode": "spatial", "apps": result, "switcher": self._switcher(switcher, entries)})
+        state = {"mode": "spatial", "apps": result, "switcher": self._switcher(switcher, entries)}
+        if self.recenter_seq:
+            state["recenterSeq"] = self.recenter_seq
+        self._set_state(state)
 
     @staticmethod
     def _switcher(raw, entries):
@@ -210,8 +216,22 @@ class SpatialApps:
             except Exception as exc:
                 self.error = str(exc)  # retry failed icons, without blocking the state
 
+    def recenter(self):
+        """Dashboard Recenter in Spatial Mode: publish a newer counter."""
+        with self.lock:
+            self.recenter_seq += 1
+            state = {**self.state, "recenterSeq": self.recenter_seq} if self.state else None
+        if state is not None:
+            self._set_state(state)
+
     def handle_request(self, request):
         action = request.get("action")
+        if action == "recenter":
+            # Desktop Mode keeps its Workspace recenter (the caller's own path).
+            if not self.enabled:
+                return False
+            self.recenter()
+            return True
         if action not in ("app", "switch", "switcher"):
             return False
         if not self.enabled:

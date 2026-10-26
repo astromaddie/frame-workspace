@@ -628,6 +628,11 @@ toggle between the two, because Spatial Mode won't suit every task.
   shelf below the line of sight that follows the user when they turn far away; **S1**, the app
   switcher as a curved strip of live window thumbnails at eye level, Cmd-Tab moving along it;
   **V1**, still windows look exactly like live ones.
+- **Dock shelf placement** (decided 2026-10-26, replacing "follows the user when they turn far away"):
+  place and pin. The shelf stays where the user puts it; the window move pill carries it, its pose is
+  saved like a window pose, and Recenter (SteamVR's or the dashboard's, in Spatial Mode) brings it back
+  in front of the user. At rest it is small; a controller laser or the eyes on it grow it to full size
+  with Dock-style icon magnification, and it shrinks again shortly after the ray leaves.
 - **One shared display** (chosen 2026-10-21, `evidence/spatial-options-mockup.png`, option B): after
   the first device runs showed a display per window is too fragile at everyday scale (28 windows),
   every window still gets its own panel, but on the Mac they all share one large hidden display;

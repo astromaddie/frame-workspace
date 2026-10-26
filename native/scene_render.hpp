@@ -211,12 +211,60 @@ public:
       auto metadata = field(object(statusItem), "surface");
       if (metadata) statusMessage = SurfaceMessage::parse(json_object_to_json_string(metadata));
     }
-    auto tiles = spatialLayout(state, spatialAnchor(spatialIdentity(), 1.3f, 0), "", &statusMessage);
+    // Without a "shelf" object the shelf is the old full-size one. With it, the
+    // shelf is pinned and drawn like the host draws it: "scale" (1 full size,
+    // 0.6 at rest), "magnify" (0..1), "icon" (the app index under the
+    // laser; sets the pointer and lights it), "handle" (show the move pill).
+    const auto anchor = spatialAnchor(spatialIdentity(), 1.3f, 0);
+    ShelfView view;
+    int shelfHot = -1;
+    HmdMatrix34_t shelfTip{};
+    bool shelfTipped = false;
+    auto shelfConfig = field(scene, "shelf");
+    if (shelfConfig) {
+      auto cfg = object(shelfConfig);
+      view.pinned = true;
+      view.pose = anchor;
+      view.scale = float(num(cfg, "scale", 1));
+      view.magnify = float(num(cfg, "magnify", 0));
+      if (!std::isfinite(view.scale) || view.scale < .3f || view.scale > 1.5f ||
+          !std::isfinite(view.magnify) || view.magnify < 0 || view.magnify > 1)
+        throw std::runtime_error("invalid scene shelf");
+      const int icon = int(num(cfg, "icon", -1));
+      if (icon >= int(state.apps.size())) throw std::runtime_error("invalid scene shelf icon");
+      if (icon >= 0) {
+        const float step = std::min(.105f, 1.35f / std::max(size_t(1), state.apps.size())) * view.scale;
+        view.pointer = (float(icon) - (state.apps.size() - 1) * .5f) * step;
+      }
+      auto first = spatialLayout(state, anchor, "", &statusMessage, view);
+      if (flag(cfg, "handle") && !first.empty()) {
+        view.handle = true;
+        const auto &l = first.front().layout;
+        view.chrome.reveal[handleIndex(Handle::Pill)] = 1;
+        view.chrome.tip = true;
+        view.chrome.tipX = l.pillX();
+        view.chrome.tipY = l.rowY();
+      }
+      if (icon >= 0) shelfHot = icon + 1; // the shelf comes first, then the icons in order
+    }
+    auto tiles = spatialLayout(state, anchor, "", &statusMessage, view);
     SpatialRenderer shelf(session);
-    shelf.draw(state, tiles, -1, 0, 0, false, root.string(),
+    shelf.draw(state, tiles, shelfHot, .5f, .5f, false, root.string(),
                [](const std::string &) { return SpatialPicture{}; });
-    for (size_t i = 0; i < tiles.size(); ++i)
+    for (size_t i = 0; i < tiles.size(); ++i) {
+      if (!tiles[i].shown) continue;
       add(tiles[i].surface, shelf.tileTexture(i), tiles[i].kind == SpatialTile::Shelf ? 99 : 100);
+    }
+    if (shelfHot >= 0) {
+      shelfTip = multiply(tiles[shelfHot].surface.placement.matrix, bendPointXY(
+          bendShape(tiles[shelfHot].surface.placement, tiles[shelfHot].surface.height), 0, 0, .004f));
+      shelfTipped = true;
+    } else if (view.handle) {
+      const auto &move = tiles.back();
+      shelfTip = multiply(move.surface.placement.matrix, bendPointXY(
+          bendShape(move.surface.placement, move.surface.height), move.layout.pillX() * view.scale, move.layout.rowY() * view.scale, .004f));
+      shelfTipped = true;
+    }
     SurfaceRenderer material;
     PanelSurface menubar, status;
     for (const char *name : {"menubar", "status", "dropdown"}) {
@@ -233,7 +281,7 @@ public:
         if (!focusedPixels) throw std::runtime_error("menubar needs a focused window");
         menubar = s = menuStripPlacement(focused, m, mpp, float(num(item, "reveal", m.hot ? 1.f : 0.f)));
       } else if (std::string(name) == "status") {
-        status = s = statusStripPlacement(tiles, m, .001f);
+        status = s = statusStripPlacement(tiles, m, .001f, view.scale);
       } else {
         auto anchor = m.anchor == "status" ? status : m.anchor == "menubar" ? menubar : focused;
         s = surfacePlacement(anchor, m, m.anchor == "status" ? .001f : mpp);
@@ -245,10 +293,11 @@ public:
           transposed ? pic.width : pic.height, s, transposed, false);
       add(s, t, std::string(name) == "dropdown" ? 104 : std::string(name) == "menubar" ? 51 : 102);
     }
-    if (focusedPixels) {
+    if (!focusedPixels && shelfTipped) tip = shelfTip;
+    if (focusedPixels || shelfTipped) {
       GLuint cursor = createCursorTexture(); textures.push_back(cursor);
       PanelSurface s; s.placement.matrix = tip; s.placement.width = .014f; s.height = .014f;
-      add(s, cursor, 54);
+      add(s, cursor, focusedPixels ? 54 : 101);
     }
     // Four source samples per output pixel (2x each dimension), including text.
     const int w = camera.width * 2, h = camera.height * 2;
@@ -291,7 +340,7 @@ public:
     glEnable(GL_BLEND); glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
     glEnable(GL_TEXTURE_2D); glColor4f(1,1,1,1);
     for (const auto &l : layers) draw(l);
-    if (focusedPixels) {
+    if (focusedPixels || shelfTipped) {
       // A diagnostic right-controller ray; the endpoint is the production tip.
       glDisable(GL_TEXTURE_2D); glLineWidth(2);
       glBegin(GL_LINES); glColor4f(.025f,.06f,.10f,.12f); glVertex3f(.28f,-.30f,-.32f);

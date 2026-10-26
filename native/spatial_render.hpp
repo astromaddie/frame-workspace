@@ -128,7 +128,10 @@ class SpatialRenderer {
     int width = 0, height = 0;
   };
   std::vector<Layer> layers;
+  Layer handleLayer; // the move pill's own overlay, whichever tile index it has
+  std::vector<GLuint> drawn;
   std::shared_ptr<OverlaySession> session;
+  ChromeRenderer chrome; // the shelf's move pill is the windows' own pill
   static GLuint shader(GLenum type, const char *src) {
     auto s = glCreateShader(type);
     glShaderSource(s, 1, &src, nullptr);
@@ -156,12 +159,14 @@ public:
   explicit SpatialRenderer(std::shared_ptr<OverlaySession> s)
       : session(std::move(s)) {}
   ~SpatialRenderer() {
+    layers.push_back(handleLayer);
     for (auto &l : layers) {
       if (l.overlay)
         session->destroyOverlay(l.overlay);
       glDeleteTextures(1, &l.texture);
       glDeleteTextures(1, &l.label);
     }
+    chrome.release();
     if (program)
       glDeleteProgram(program);
     if (fb)
@@ -201,117 +206,152 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
       layers.emplace_back();
     GLint vp[4];
     glGetIntegerv(GL_VIEWPORT, vp);
+    drawn.assign(tiles.size(), 0);
     for (size_t i = 0; i < layers.size(); ++i) {
-      auto &l = layers[i];
       if (i >= tiles.size()) {
+        if (layers[i].overlay)
+          session->overlay->HideOverlay(layers[i].overlay);
+        continue;
+      }
+      auto &t = tiles[i];
+      const bool move = t.kind == SpatialTile::Move;
+      auto &l = move ? handleLayer : layers[i];
+      if (move && layers[i].overlay)
+        session->overlay->HideOverlay(layers[i].overlay);
+      if (move && !t.shown) {
         if (l.overlay)
           session->overlay->HideOverlay(l.overlay);
         continue;
       }
-      auto &t = tiles[i];
+      // The shelf's raster follows the size it is drawn at (whole 8 px steps,
+      // so a still shelf does not redraw), keeping the overlay's aspect true.
+      auto snap = [](float metres) {
+        return std::max(16, int(std::lround(metres * shelfPixelsPerMetre / 8)) * 8);
+      };
       int w = t.kind == SpatialTile::Shelf
-                  ? std::min(2048, int(t.surface.placement.width * 1200))
+                  ? std::min(2048, snap(t.surface.placement.width))
               : t.kind == SpatialTile::Dock ? 128
                                             : 384,
-          h = t.kind == SpatialTile::Shelf  ? int(t.surface.height * 1200)
+          h = t.kind == SpatialTile::Shelf  ? snap(t.surface.height)
               : t.kind == SpatialTile::Dock ? 140
               : t.kind == SpatialTile::Menu ? 64
                                             : 280;
-      std::string icon =
-          t.kind == SpatialTile::Dock && !state.apps[t.index].icon.empty()
-              ? (std::filesystem::path(icons) / state.apps[t.index].icon).string()
-              : "";
-      bool running = t.kind == SpatialTile::Dock && state.apps[t.index].running;
-      auto signature = t.surface.key + t.label + icon + std::to_string(running);
-      // Icons and JSON travel separately. Recheck without rerasterizing static
-      // labels, so an icon arriving after its state entry can become visible.
-      if (icon != l.iconPath || nowMs() - l.iconChecked >= 1000) {
-        l.iconPath = icon;
-        l.iconChecked = nowMs();
-        std::error_code error;
-        auto stamp = std::filesystem::last_write_time(icon, error);
-        l.iconVersion = error ? "missing" : std::to_string(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(stamp.time_since_epoch()).count());
-      }
-      signature += l.iconVersion;
-      bool labelChanged = signature != l.signature;
-      if (labelChanged) {
-        if (l.label)
-          glDeleteTextures(1, &l.label);
-        l.label = raster->label(t.kind == SpatialTile::Dock ? "" : t.label,
-                                icon, w, h, running);
-        l.signature = signature;
-      }
-      auto drawSignature = signature + std::to_string(t.kind) +
-                           std::to_string(int(i) == hot) +
-                           std::to_string(held && int(i) == hot) +
-                           std::to_string(t.kind == SpatialTile::Window &&
-                                          t.index == state.index);
-      if (int(i) == hot)
-        drawSignature +=
-            std::to_string(int(u * 128)) + "," + std::to_string(int(v * 128));
-      bool redraw = labelChanged || drawSignature != l.drawSignature ||
-                    t.kind == SpatialTile::Window;
-      if (redraw) {
-        l.drawSignature = drawSignature;
-        if (!l.texture)
-          glGenTextures(1, &l.texture);
-        glBindTexture(GL_TEXTURE_2D, l.texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        if (l.width != w || l.height != h) {
-          glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
-                       GL_UNSIGNED_BYTE, nullptr);
+      bool redraw = false;
+      if (move) {
+        ChromeRenderer::textureSize(t.layout.chromeWidth(), t.layout.chromeHeight(), false, w, h);
+        const auto &c = t.chrome;
+        const int pill = handleIndex(Handle::Pill);
+        auto signature = std::to_string(w) + "x" + std::to_string(h) + ":" +
+                         std::to_string(int(c.reveal[pill] * 64)) + "," +
+                         std::to_string(int(c.held[pill] * 64)) + "," + std::to_string(c.tip) + "," +
+                         std::to_string(int(c.tipX * 1000)) + "," + std::to_string(int(c.tipY * 1000));
+        if (signature != l.drawSignature || !l.texture) {
+          if (!l.texture)
+            glGenTextures(1, &l.texture);
+          chrome.render(1, t.layout, c, t.layout.chromeWidth(), t.layout.chromeHeight(), false, l.texture, w, h);
+          l.drawSignature = signature;
           l.width = w;
           l.height = h;
+          redraw = true;
         }
-        glBindFramebuffer(GL_FRAMEBUFFER, fb);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-                               GL_TEXTURE_2D, l.texture, 0);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-          throw std::runtime_error("spatial framebuffer incomplete");
-        glViewport(0, 0, w, h);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glUseProgram(program);
-        glUniform1f(glGetUniformLocation(program, "lighting"), 0);
-        glUniform2f(glGetUniformLocation(program, "size"), w, h);
-        glUniform3f(glGetUniformLocation(program, "tip"), u, v, int(i) == hot);
-        glUniform1f(glGetUniformLocation(program, "held"),
-                    held && int(i) == hot);
-        glUniform1f(glGetUniformLocation(program, "clear"),
-                    t.kind == SpatialTile::Dock);
-        glUniform1f(glGetUniformLocation(program, "selected"),
-                    t.kind == SpatialTile::Window && t.index == state.index);
-        quad();
-        glUseProgram(0);
-        glEnable(GL_TEXTURE_2D);
-        glColor4f(1, 1, 1, 1);
-        if (t.kind == SpatialTile::Window) {
-          auto pic = picture(state.windows[t.index].key);
-          if (pic.texture) {
-            glBindTexture(GL_TEXTURE_2D, pic.texture);
-            quad(-.95f, -.94f, .95f, .72f, pic.transposed);
+      } else {
+        std::string icon =
+            t.kind == SpatialTile::Dock && !state.apps[t.index].icon.empty()
+                ? (std::filesystem::path(icons) / state.apps[t.index].icon).string()
+                : "";
+        bool running = t.kind == SpatialTile::Dock && state.apps[t.index].running;
+        auto signature = t.surface.key + t.label + icon + std::to_string(running);
+        // Icons and JSON travel separately. Recheck without rerasterizing static
+        // labels, so an icon arriving after its state entry can become visible.
+        if (icon != l.iconPath || nowMs() - l.iconChecked >= 1000) {
+          l.iconPath = icon;
+          l.iconChecked = nowMs();
+          std::error_code error;
+          auto stamp = std::filesystem::last_write_time(icon, error);
+          l.iconVersion = error ? "missing" : std::to_string(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(stamp.time_since_epoch()).count());
+        }
+        signature += l.iconVersion;
+        bool labelChanged = signature != l.signature;
+        if (labelChanged) {
+          if (l.label)
+            glDeleteTextures(1, &l.label);
+          l.label = raster->label(t.kind == SpatialTile::Dock ? "" : t.label,
+                                  icon, w, h, running);
+          l.signature = signature;
+        }
+        auto drawSignature = signature + std::to_string(t.kind) + std::to_string(w) + "x" + std::to_string(h) +
+                             std::to_string(int(i) == hot) +
+                             std::to_string(held && int(i) == hot) +
+                             std::to_string(t.kind == SpatialTile::Window &&
+                                            t.index == state.index);
+        if (int(i) == hot)
+          drawSignature +=
+              std::to_string(int(u * 128)) + "," + std::to_string(int(v * 128));
+        redraw = labelChanged || drawSignature != l.drawSignature ||
+                      t.kind == SpatialTile::Window;
+        if (redraw) {
+          l.drawSignature = drawSignature;
+          if (!l.texture)
+            glGenTextures(1, &l.texture);
+          glBindTexture(GL_TEXTURE_2D, l.texture);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+          if (l.width != w || l.height != h) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, nullptr);
+            l.width = w;
+            l.height = h;
           }
-        }
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-        glBindTexture(GL_TEXTURE_2D, l.label);
-        quad();
-        glDisable(GL_TEXTURE_2D);
-        if (int(i) == hot) {
+          glBindFramebuffer(GL_FRAMEBUFFER, fb);
+          glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                 GL_TEXTURE_2D, l.texture, 0);
+          if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            throw std::runtime_error("spatial framebuffer incomplete");
+          glViewport(0, 0, w, h);
+          glDisable(GL_DEPTH_TEST);
+          glDisable(GL_BLEND);
           glUseProgram(program);
-          glUniform1f(glGetUniformLocation(program, "lighting"), 1);
+          glUniform1f(glGetUniformLocation(program, "lighting"), 0);
+          glUniform2f(glGetUniformLocation(program, "size"), w, h);
+          glUniform3f(glGetUniformLocation(program, "tip"), u, v, int(i) == hot);
+          glUniform1f(glGetUniformLocation(program, "held"),
+                      held && int(i) == hot);
+          glUniform1f(glGetUniformLocation(program, "clear"),
+                      t.kind == SpatialTile::Dock);
+          glUniform1f(glGetUniformLocation(program, "selected"),
+                      t.kind == SpatialTile::Window && t.index == state.index);
           quad();
           glUseProgram(0);
+          glEnable(GL_TEXTURE_2D);
+          glColor4f(1, 1, 1, 1);
+          if (t.kind == SpatialTile::Window) {
+            auto pic = picture(state.windows[t.index].key);
+            if (pic.texture) {
+              glBindTexture(GL_TEXTURE_2D, pic.texture);
+              quad(-.95f, -.94f, .95f, .72f, pic.transposed);
+            }
+          }
+          glEnable(GL_BLEND);
+          glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+          glBindTexture(GL_TEXTURE_2D, l.label);
+          quad();
+          glDisable(GL_TEXTURE_2D);
+          if (int(i) == hot) {
+            glUseProgram(program);
+            glUniform1f(glGetUniformLocation(program, "lighting"), 1);
+            quad();
+            glUseProgram(0);
+          }
+          glDisable(GL_BLEND);
+          glBindFramebuffer(GL_FRAMEBUFFER, 0);
         }
-        glDisable(GL_BLEND);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
       }
+      drawn[i] = l.texture;
       if (!session->noVR) {
         if (!l.overlay) {
           std::string key = "com.frame-workspace.spatial." +
-                            std::to_string(getpid()) + "." + std::to_string(i);
+                            std::to_string(getpid()) + "." + (move ? "move" : std::to_string(i));
           if (session->createOverlay(
                   key, "Frame Workspace", &l.overlay))
             throw std::runtime_error("spatial overlay unavailable");
@@ -339,7 +379,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
     glViewport(vp[0], vp[1], vp[2], vp[3]);
   }
   // Borrowed texture after draw(); owned until the renderer is destroyed.
-  GLuint tileTexture(size_t index) const { return layers.at(index).texture; }
+  GLuint tileTexture(size_t index) const { return drawn.at(index); }
   bool dump(const std::string &path, const std::vector<SpatialTile> &tiles) {
     const int w = 1280, h = 720;
     GLuint output;
@@ -364,6 +404,8 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
     glColor4f(1, 1, 1, 1);
     for (size_t i = 0; i < tiles.size(); ++i) {
       auto &t = tiles[i];
+      if (!t.shown || i >= drawn.size())
+        continue;
       auto &m = t.surface.placement.matrix;
       float matrix[16] = {m.m[0][0], m.m[1][0], m.m[2][0], 0,
                           m.m[0][1], m.m[1][1], m.m[2][1], 0,
@@ -371,7 +413,7 @@ void main(){vec2 q=gl_TexCoord[0].xy,p=q*size;float r=7.;vec2 d=abs(p-size*.5)-(
                           m.m[0][3], m.m[1][3], m.m[2][3], 1};
       glPushMatrix();
       glMultMatrixf(matrix);
-      glBindTexture(GL_TEXTURE_2D, layers[i].texture);
+      glBindTexture(GL_TEXTURE_2D, drawn[i]);
       float x = t.surface.placement.width / 2, y = t.surface.height / 2;
       glBegin(GL_QUADS);
       glTexCoord2f(0, 0);

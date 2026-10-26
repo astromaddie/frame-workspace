@@ -1,6 +1,332 @@
 #pragma once
 #include "spatial.hpp"
 namespace fw {
+// The pinned, movable, magnifying shelf (FW-15 D1).
+inline void selfTestShelf() {
+  auto check = [](bool ok, const char *why) {
+    if (!ok)
+      throw std::runtime_error(why);
+  };
+  auto yawed = [](float yaw, float x, float y, float z) {
+    auto m = spatialIdentity();
+    m.m[0][0] = std::cos(yaw); m.m[0][2] = std::sin(yaw);
+    m.m[2][0] = -std::sin(yaw); m.m[2][2] = std::cos(yaw);
+    m.m[0][3] = x; m.m[1][3] = y; m.m[2][3] = z;
+    return m;
+  };
+  // A ray at (x, y) of a pose frame, one metre in front, pointing at its plane.
+  auto rayAt = [](const HmdMatrix34_t &pose, float x, float y) {
+    EyeRay ray;
+    for (int r = 0; r < 3; ++r) {
+      ray.origin[r] = pose.m[r][3] + pose.m[r][0] * x + pose.m[r][1] * y + pose.m[r][2];
+      ray.direction[r] = -pose.m[r][2];
+    }
+    return ray;
+  };
+  SpatialState st; st.spatial = true;
+  for (const char *id : {"a", "b", "c", "d", "e"})
+    st.apps.push_back({id, id, "", true, false});
+
+  // Anchor: in front of the head, same as the old default, and pinned there.
+  auto head = yawed(.4f, .3f, 1.6f, -.2f);
+  auto front = shelfFrontOf(head), old = spatialAnchor(head, 1.3f, 0);
+  for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c)
+    check(std::abs(front.m[r][c] - old.m[r][c]) < 1e-6, "shelf default sits where the old anchor did");
+  ShelfPin pin;
+  check(pin.update(false, head) == ShelfPin::Unchanged && !pin.placed, "no placement without a head pose");
+  check(pin.update(true, head) == ShelfPin::Defaulted && pin.placed, "first pose places the shelf");
+  auto first = pin.pose;
+  for (float yaw : {.5f, 1.4f, 3.f})
+    check(pin.update(true, yawed(yaw, 2, 1.5f, 1)) == ShelfPin::Unchanged &&
+          std::memcmp(&pin.pose, &first, sizeof first) == 0, "pinned shelf never follows the head");
+
+  // Saved pose: round trip, validation like window poses, plus handedness and range.
+  auto dir = std::filesystem::temp_directory_path() / ("fw-shelf-" + std::to_string(getpid()));
+  std::filesystem::create_directories(dir);
+  const std::string file = (dir / "panels" / "spatial-shelf-pose.json").string();
+  HmdMatrix34_t loaded{};
+  check(!loadShelfPose(file, loaded), "missing shelf pose is not loaded");
+  auto moved = yawed(-.7f, -1.2f, 1.1f, -2.5f);
+  check(saveShelfPose(file, moved) && loadShelfPose(file, loaded), "shelf pose saves beside the panel poses");
+  for (int r = 0; r < 3; ++r) for (int c = 0; c < 4; ++c)
+    check(std::abs(loaded.m[r][c] - moved.m[r][c]) < 1e-5, "saved shelf pose round trips");
+  ShelfPin restored;
+  restored.pose = loaded; restored.placed = true;
+  check(restored.update(true, head) == ShelfPin::Unchanged && std::abs(restored.pose.m[0][3] + 1.2f) < 1e-5,
+        "saved shelf pose wins over the default");
+  auto writeRaw = [&](const std::string &text) {
+    std::ofstream out(file); out << text;
+  };
+  const std::string good = placementJSON([&] { Placement p; p.matrix = moved; return p; }());
+  writeRaw(good); check(loadShelfPose(file, loaded), "valid pose file loads");
+  auto sheared = moved; sheared.m[0][1] += .3f;
+  auto mirrored = moved; for (int r = 0; r < 3; ++r) mirrored.m[r][0] = -mirrored.m[r][0];
+  auto far = moved; far.m[2][3] = -40;
+  for (const auto &bad : {sheared, mirrored, far}) {
+    Placement p; p.matrix = bad;
+    writeRaw(placementJSON(p));
+    check(!loadShelfPose(file, loaded), "shelf pose with a sheared, mirrored or far matrix is refused");
+    check(!saveShelfPose(file, bad), "unusable shelf pose is never saved");
+  }
+  for (const char *junk : {"", "{", "[]", "{\"version\":2}", "{\"version\":1,\"matrix\":[1,2]}"}) {
+    writeRaw(junk); check(!loadShelfPose(file, loaded), "malformed shelf pose is refused");
+  }
+  std::filesystem::remove_all(dir);
+
+  // Recenter: a companion request, a runtime zero-pose reset or a call brings it back.
+  ShelfPin rc;
+  rc.update(true, head);
+  rc.observeSequence(7);
+  check(!rc.recenterPending, "first recenter counter seen only sets the baseline");
+  rc.observeSequence(7);
+  rc.observeSequence(3);
+  check(!rc.recenterPending, "repeated or older counters do nothing");
+  auto elsewhere = yawed(2.2f, 0, 1.2f, 0);
+  check(rc.update(true, elsewhere) == ShelfPin::Unchanged, "no recenter before it is asked");
+  rc.observeSequence(4);
+  check(rc.recenterPending, "newer counter requests a recenter");
+  check(rc.update(false, elsewhere) == ShelfPin::Unchanged && rc.recenterPending, "recenter waits for a head pose");
+  check(rc.update(true, elsewhere) == ShelfPin::Recentered && !rc.recenterPending, "recenter places it and asks to save");
+  auto fresh = shelfFrontOf(elsewhere);
+  check(std::abs(rc.pose.m[0][3] - fresh.m[0][3]) < 1e-6 && std::abs(rc.pose.m[2][3] - fresh.m[2][3]) < 1e-6 &&
+        std::abs(rc.pose.m[1][1] - 1) < 1e-6, "recentered shelf is level, in front of the head");
+  rc.observeResets(5);
+  check(!rc.recenterPending, "first zero-pose count sets the baseline");
+  rc.observeResets(6);
+  check(rc.recenterPending, "zero-pose reset requests a recenter");
+  auto parsed = SpatialState::parse(R"({"mode":"spatial","apps":[],"switcher":{"open":false,"index":0,"seq":0},"recenterSeq":12})");
+  check(parsed.recenterSeq == 12 && SpatialState::parse(R"({"mode":"spatial"})").recenterSeq == 0,
+        "recenter counter is read from the spatial state");
+
+  // Hover timing: eased, with a grace delay and a larger region while enlarged.
+  ShelfHover hover;
+  double now = 0;
+  const float dt = 1.f / 60;
+  auto tick = [&](bool small, bool large) { now += dt * 1000; return hover.update(now, dt, small, large, true, 0); };
+  check(std::abs(hover.scale() - shelfRestScale) < 1e-6, "shelf rests at the small size");
+  for (int i = 0; i < 30; ++i) tick(false, true);
+  check(!hover.active && hover.scale() == shelfRestScale, "the larger region alone cannot enlarge a resting shelf");
+  float before = hover.scale(), biggestStep = 0;
+  int frames = 0;
+  while (hover.scale() < 1 && frames < 100) {
+    tick(true, true); ++frames;
+    biggestStep = std::max(biggestStep, hover.scale() - before);
+    check(hover.scale() >= before, "enlarging never reverses");
+    before = hover.scale();
+  }
+  check(frames >= 11 && frames <= 14, "enlarging takes about 200 ms");
+  check(biggestStep < .1f, "enlarging is eased, not a snap");
+  for (int i = 0; i < 20; ++i) tick(false, true);
+  check(hover.active && hover.scale() == 1, "the larger region holds it enlarged");
+  tick(false, false);
+  double left = now;
+  while (now - left < 450) tick(false, false);
+  check(hover.active && hover.scale() == 1, "grace delay: still full size 450 ms after the ray left");
+  tick(true, true);
+  check(hover.active, "ray returning inside grace keeps it enlarged");
+  left = now;
+  tick(false, false);
+  while (now - left < 520) tick(false, false);
+  check(!hover.active, "shrinks after the grace delay");
+  float mid = hover.scale();
+  for (int i = 0; i < 6; ++i) tick(false, false);
+  check(hover.scale() < mid && hover.scale() > shelfRestScale, "shrinking is gradual");
+  const float shrinking = hover.scale();
+  tick(true, true);
+  check(hover.active && hover.scale() >= shrinking && hover.scale() - shrinking < .05f,
+        "re-entering mid-shrink reverses without a snap");
+  for (int i = 0; i < 30; ++i) tick(false, false);
+  now += 1000; for (int i = 0; i < 40; ++i) tick(false, false);
+  check(std::abs(hover.scale() - shelfRestScale) < 1e-6 && hover.magnify == 0, "settles at rest after leaving");
+  // Magnification follows the pointer without snapping and starts under it.
+  ShelfHover pointed;
+  pointed.update(0, dt, true, true, true, .21f);
+  check(std::abs(pointed.pointer - .21f) < 1e-6 && pointed.magnify > 0 && pointed.magnify < .2f,
+        "magnification starts gently where the ray lands");
+  for (int i = 0; i < 30; ++i) pointed.update(i * 16.f, dt, true, true, true, .21f);
+  pointed.update(500, dt, true, true, true, -.2f);
+  check(pointed.pointer < .21f && pointed.pointer > -.2f, "pointer follows with light smoothing");
+
+  // Icon magnification: the point under the pointer stays put, falloff by distance.
+  const float reach = shelfIconReach * .105f;
+  check(std::abs(shelfMagnifiedX(.13f, .13f, shelfIconBoost, reach) - .13f) < 1e-6, "point under pointer does not move");
+  float lastX = -9;
+  for (float u = -.8f; u <= .8f; u += .01f) {
+    float x = shelfMagnifiedX(u, .1f, shelfIconBoost, reach);
+    check(x > lastX, "magnified row keeps its order");
+    lastX = x;
+  }
+  check(std::abs(shelfMagnifiedX(-.5f, .1f, shelfIconBoost, reach) - (-.5f - shelfIconBoost * reach / 2)) < 1e-6 &&
+        std::abs(shelfMagnifiedX(.8f, .1f, shelfIconBoost, reach) - (.8f + shelfIconBoost * reach / 2)) < 1e-6,
+        "far icons only shift outward as one block");
+  ShelfView pinnedView; pinnedView.pinned = true; pinnedView.pose = yawed(.35f, .4f, 1.25f, -1.1f);
+  auto resting = pinnedView; resting.scale = shelfRestScale;
+  auto fullView = pinnedView;
+  auto restTiles = spatialLayout(st, front, "", nullptr, resting);
+  auto fullTiles = spatialLayout(st, front, "", nullptr, fullView);
+  check(restTiles.front().kind == SpatialTile::Shelf &&
+        std::abs(restTiles.front().surface.placement.width / fullTiles.front().surface.placement.width - shelfRestScale) < 1e-5 &&
+        std::abs(restTiles.front().surface.height / fullTiles.front().surface.height - shelfRestScale) < 1e-5,
+        "resting shelf is 60 percent of full size");
+  auto defaults = spatialLayout(st, front);
+  check(defaults.size() == fullTiles.size() - 1 && fullTiles.back().kind == SpatialTile::Move && !fullTiles.back().pickable &&
+        std::abs(defaults.front().surface.placement.width - fullTiles.front().surface.placement.width) < 1e-6,
+        "an unpinned layout is the old full-size shelf; pinned adds the move pill");
+  auto widthOf = [&](const std::vector<SpatialTile> &tiles, int dock) {
+    for (const auto &t : tiles) if (t.kind == SpatialTile::Dock && t.index == dock) return t.surface.placement.width;
+    return 0.f;
+  };
+  auto bigView = pinnedView; bigView.magnify = 1; bigView.pointer = 0; // over the middle icon (c)
+  auto bigTiles = spatialLayout(st, front, "", nullptr, bigView);
+  const float base = widthOf(fullTiles, 2);
+  check(widthOf(bigTiles, 2) > 1.3f * base && widthOf(bigTiles, 2) <= (1 + shelfIconBoost) * base + 1e-6f,
+        "the icon under the pointer is magnified by about the boost");
+  check(widthOf(bigTiles, 2) > widthOf(bigTiles, 1) && widthOf(bigTiles, 1) > widthOf(bigTiles, 0) &&
+        std::abs(widthOf(bigTiles, 1) - widthOf(bigTiles, 3)) < 1e-5 && widthOf(bigTiles, 0) >= base - 1e-6f,
+        "nearer icons grow more than distant ones");
+  check(widthOf(bigTiles, 0) < 1.15f * base, "distant icons barely grow");
+  auto bottomOf = [&](const std::vector<SpatialTile> &tiles, int dock) {
+    for (const auto &t : tiles) if (t.kind == SpatialTile::Dock && t.index == dock) {
+      auto local = multiply(inverseRigid(pinnedView.pose), t.surface.placement.matrix);
+      return local.m[1][3] - t.surface.height / 2;
+    }
+    return 0.f;
+  };
+  check(std::abs(bottomOf(bigTiles, 2) - bottomOf(fullTiles, 2)) < 1e-5 &&
+        std::abs(bottomOf(bigTiles, 0) - bottomOf(fullTiles, 0)) < 1e-5, "magnified icons grow upward from a level base");
+  check(bigTiles.front().surface.placement.width > fullTiles.front().surface.placement.width &&
+        bigTiles.front().surface.height == fullTiles.front().surface.height, "backing widens with the stretched row");
+  // The status band and its picture shrink with the shelf and stay inside it.
+  SurfaceMessage statusMessage = SurfaceMessage::parse(R"({"t":"surface","v":1,"seq":1,"visible":true,"rect":[0,0,186,30],"anchor":"none","anchorRect":[0,0,186,30]})");
+  for (float k : {shelfRestScale, .8f, 1.f}) {
+    auto view = pinnedView; view.scale = k;
+    auto tiles = spatialLayout(st, front, "", &statusMessage, view);
+    auto status = statusStripPlacement(tiles, statusMessage, .001f, k);
+    const auto &shelf = tiles.front().surface;
+    auto local = multiply(inverseRigid(shelf.placement.matrix), status.placement.matrix);
+    check(std::abs(status.placement.width - .186f * k) < 1e-5 &&
+          local.m[0][3] + status.placement.width / 2 <= shelf.placement.width / 2 + 1e-6f &&
+          local.m[1][3] - status.height / 2 >= -shelf.height / 2 - 1e-6f,
+          "status picture scales with the shelf and stays inside it");
+  }
+  // Picking uses the drawn geometry at every size and magnification.
+  for (float k : {shelfRestScale, .7f, .85f, 1.f}) for (float amount : {0.f, .3f, 1.f}) for (float pointer : {-.2f, 0.f, .13f, .31f}) {
+    auto view = pinnedView; view.scale = k; view.magnify = amount; view.pointer = pointer * k;
+    auto tiles = spatialLayout(st, front, "", nullptr, view);
+    for (size_t i = 0; i < tiles.size(); ++i) {
+      if (tiles[i].kind != SpatialTile::Dock) continue;
+      auto local = multiply(inverseRigid(view.pose), tiles[i].surface.placement.matrix);
+      PanelPick pick;
+      int hit = spatialPick(rayAt(view.pose, local.m[0][3], local.m[1][3]), tiles, &pick);
+      check(hit == int(i) && std::abs(pick.u - .5f) < 1e-4 && std::abs(pick.v - .5f) < 1e-4,
+            "a ray at an icon's drawn centre picks that icon at any size or magnification");
+      // Just inside each drawn edge still picks it, just outside picks its neighbour or nothing else.
+      for (float sign : {-1.f, 1.f}) {
+        float edge = local.m[0][3] + sign * (tiles[i].surface.placement.width / 2 - .002f);
+        check(spatialPick(rayAt(view.pose, edge, local.m[1][3]), tiles) == int(i),
+              "icon edges pick the icon they bound");
+      }
+    }
+    // Whatever the ray points at in the row picks the icon drawn there, and pointing
+    // at the pointer itself picks the icon that was under it before it grew.
+    float x = pointer * k;
+    int under = -1;
+    for (size_t i = 0; i < tiles.size(); ++i) if (tiles[i].kind == SpatialTile::Dock) {
+      auto local = multiply(inverseRigid(view.pose), tiles[i].surface.placement.matrix);
+      if (x >= local.m[0][3] - tiles[i].surface.placement.width / 2 && x < local.m[0][3] + tiles[i].surface.placement.width / 2) under = int(i);
+    }
+    int rested = -1;
+    auto plain = spatialLayout(st, front, "", nullptr, [&] { auto v = view; v.magnify = 0; return v; }());
+    for (size_t i = 0; i < plain.size(); ++i) if (plain[i].kind == SpatialTile::Dock) {
+      auto local = multiply(inverseRigid(view.pose), plain[i].surface.placement.matrix);
+      if (x >= local.m[0][3] - plain[i].surface.placement.width / 2 && x < local.m[0][3] + plain[i].surface.placement.width / 2) rested = int(i);
+    }
+    if (under >= 0)
+      check(spatialPick(rayAt(view.pose, x, -shelfRowDrop), tiles) == under, "the ray picks the icon drawn under it");
+    check(under == rested, "the icon under the pointer is the one it pointed at before magnifying");
+  }
+  // The move pill is never a pick target, but it is drawn and moves with the shelf.
+  auto moveTile = fullTiles.back();
+  check(spatialPick(rayAt(pinnedView.pose, 0, -.48f - .155f), fullTiles) != int(fullTiles.size() - 1), "pill overlay is not pickable");
+  {
+    auto local = multiply(inverseRigid(pinnedView.pose), moveTile.surface.placement.matrix);
+    const auto &l = moveTile.layout;
+    check(std::abs(local.m[0][3] + l.pillX()) < 1e-5 && local.m[1][3] < -shelfRowDrop &&
+          std::abs(moveTile.surface.placement.width - l.chromeWidth()) < 1e-6, "move pill hangs centred under the full shelf");
+  }
+
+  // Moving it: reveal below the shelf, press the pill, carry it, release to save.
+  ShelfMover mover;
+  ShelfHandleFrame frame;
+  {
+    auto local = multiply(inverseRigid(pinnedView.pose), moveTile.surface.placement.matrix);
+    frame = {local.m[0][3], local.m[1][3], 1.f, moveTile.layout, true};
+  }
+  const float pillY = frame.cy + moveTile.layout.rowY(); // pill centre in the pose frame
+  const float pillXr = frame.ox + moveTile.layout.pillX();
+  auto pose = pinnedView.pose;
+  ShelfMover::Hand hands[2];
+  auto controllerAt = [&](const HmdMatrix34_t &frameOfShelf, float x, float y) {
+    HmdMatrix34_t c = frameOfShelf;
+    for (int r = 0; r < 3; ++r) c.m[r][3] += frameOfShelf.m[r][0] * x + frameOfShelf.m[r][1] * y + frameOfShelf.m[r][2] * .8f;
+    return c;
+  };
+  double t0 = 0;
+  auto step = [&](double ms = 16) { t0 += ms; return mover.update(frame, pose, hands, true, false, t0, float(ms / 1000)); };
+  hands[1] = {true, false, false, controllerAt(pose, 0, 0.4f)};
+  for (int i = 0; i < 30; ++i) step();
+  check(!mover.visible() && !mover.owns(1), "pill stays hidden while the laser is far away");
+  hands[1].pose = controllerAt(pose, pillXr, pillY + .04f); // below the shelf, in the pill row zone
+  for (int i = 0; i < 12; ++i) step();
+  check(mover.visible() && mover.showing.amount > .99f, "pill slides out when the laser is below the shelf");
+  hands[1].pose = controllerAt(pose, pillXr, pillY);
+  step();
+  check(mover.hot && mover.owns(1) && !mover.owns(0), "laser on the pill hands it to the shelf");
+  hands[1].grab = true;
+  step();
+  check(mover.dragging() && mover.dragHand == 1, "trigger on the pill starts the move");
+  auto startPose = pose;
+  hands[1].pose = controllerAt(yawed(.2f, .3f, 0, .1f), pillXr, pillY);
+  auto controllerStart = controllerAt(startPose, pillXr, pillY);
+  hands[1].pose = controllerStart;
+  hands[1].pose.m[0][3] += .5f; hands[1].pose.m[2][3] -= .25f; // the hand moves 50 cm right, 25 cm away
+  bool ended = step();
+  check(!ended && std::abs(pose.m[0][3] - startPose.m[0][3] - .5f) < 1e-4 && std::abs(pose.m[2][3] - startPose.m[2][3] + .25f) < 1e-4 &&
+        std::abs(pose.m[0][0] - startPose.m[0][0]) < 1e-5, "shelf follows the controller rigidly");
+  hands[1].pose.m[0][3] += 40; // absurd jump: pose stays valid and in range
+  step();
+  check(std::hypot(pose.m[0][3], pose.m[1][3], pose.m[2][3]) <= 10.f && shelfPoseUsable(pose), "move cannot leave the 10 m room");
+  hands[1].pose.m[0][3] -= 40;
+  step();
+  hands[1].grab = false;
+  ended = step();
+  check(ended && !mover.dragging(), "release ends the move so the caller saves the pose");
+  auto before2 = pose;
+  hands[1].pose.m[0][3] += .3f;
+  step();
+  check(std::memcmp(&before2, &pose, sizeof pose) == 0, "shelf stays where it was put after release");
+  // A squeeze moves it too, unless the switcher claims squeeze.
+  ShelfMover grip; double tg = 0; auto gpose = pinnedView.pose; ShelfMover::Hand gh[2];
+  gh[0] = {true, false, false, controllerAt(gpose, pillXr, pillY)};
+  for (int i = 0; i < 12; ++i) { tg += 16; grip.update(frame, gpose, gh, false, true, tg, .016f); }
+  gh[0].squeeze = true; tg += 16; grip.update(frame, gpose, gh, false, true, tg, .016f);
+  check(!grip.dragging(), "squeeze does not move the shelf while the switcher uses it");
+  gh[0].squeeze = false; tg += 16; grip.update(frame, gpose, gh, true, true, tg, .016f);
+  gh[0].squeeze = true; tg += 16; grip.update(frame, gpose, gh, true, true, tg, .016f);
+  check(grip.dragging(), "squeeze moves the shelf otherwise");
+
+  // The eyes magnify the shelf but are not a window pick: the gaze consumer keeps focus.
+  HostFocus gaze;
+  gaze.feedback["one"] = {};
+  gaze.activate("one");
+  PanelSurface behind{"one", {}, 1};
+  behind.placement.width = 2; behind.placement.matrix = pinnedView.pose; behind.placement.matrix.m[2][3] -= 1;
+  EyeRay look = rayAt(pinnedView.pose, 0, -shelfRowDrop);
+  check(spatialPick(look, fullTiles) >= 0 && bool(pickPanel(look, {behind})),
+        "gaze on the shelf is consumed by it even with a window behind");
+  for (int i = 0; i < 40; ++i) gaze.update({}, .05f, "eye");
+  check(gaze.active == "one" && gaze.feedback["one"].focused, "looking at the shelf leaves the focused window alone");
+}
 inline void selfTestSpatial() {
   auto check = [](bool ok, const char *why) {
     if (!ok)
@@ -379,6 +705,7 @@ inline void selfTestSpatial() {
   hits[1] = "";
   check(press.update(hits, down, 1300).outside,
         "outside trigger dismisses menu");
+  selfTestShelf();
   HostFocus f;
   f.feedback["one"] = {};
   f.feedback["two"] = {};

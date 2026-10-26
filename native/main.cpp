@@ -1177,6 +1177,26 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
                 "/requests"
           : defaults.requestDir;
   HmdMatrix34_t anchor = spatialAnchor(Placement{}.matrix, 1.3f, 0);
+  // The shelf is pinned where the user puts it (FW-15 D1): a saved pose, else
+  // in front of the user when first seen. The switcher cards above keep the
+  // old head-following anchor.
+  std::string shelfPoseFile = defaults.spatialStateFile.empty()
+      ? (std::getenv("XDG_DATA_HOME") && *std::getenv("XDG_DATA_HOME")
+             ? std::string(std::getenv("XDG_DATA_HOME"))
+             : std::string(std::getenv("HOME") ? std::getenv("HOME") : "") + "/.local/share") +
+            "/frame-workspace/panels/spatial-shelf-pose.json"
+      : std::filesystem::path(defaults.spatialStateFile).parent_path().string() + "/spatial-shelf-pose.json";
+  ShelfPin shelfPin;
+  ShelfHover shelfHover;
+  ShelfMover shelfMover;
+  ShelfRect shelfRect;
+  bool shelfHandHover = false;
+  if (loadShelfPose(shelfPoseFile, shelfPin.pose))
+    shelfPin.placed = true;
+  auto saveShelf = [&] {
+    if (!saveShelfPose(shelfPoseFile, shelfPin.pose))
+      fprintf(stderr, "[native-host] shelf pose could not be saved\n");
+  };
   bool anchored = false, buttonWas = false;
   SpatialPress press;
   std::string menuID;
@@ -1363,6 +1383,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
           visibility.reconcile(next);
           navigation.reconcile(next);
           spatial = std::move(next);
+          if (spatial.spatial)
+            shelfPin.observeSequence(spatial.recenterSeq);
           if (!spatial.spatial)
             menuID.clear();
           if (spatial.spatial && !spatial.chosen.empty() &&
@@ -1374,6 +1396,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       } catch (...) {
       } // Atomic replacement may be temporarily unavailable.
     }
+    shelfPin.observeResets(session->zeroPoseResets);
     if (spatial.spatial || std::any_of(entries.begin(), entries.end(), [](const auto &entry) {
           return entry.second.spec.slot >= 0;
         })) {
@@ -1387,6 +1410,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       }
       if (head.bPoseIsValid) {
         wall->capture(head.mDeviceToAbsoluteTracking);
+        if (spatial.spatial && shelfPin.update(true, head.mDeviceToAbsoluteTracking) == ShelfPin::Recentered)
+          saveShelf();
         auto next = spatialAnchor(head.mDeviceToAbsoluteTracking, 1.3f, 0);
         float dot =
             next.m[0][2] * anchor.m[0][2] + next.m[2][2] * anchor.m[2][2];
@@ -1419,7 +1444,59 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       if (e.spec.role == PanelRole::Menubar) menubar = e.panel.get();
       if (e.spec.role == PanelRole::Status) status = e.panel.get();
     }
-    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr);
+    ShelfView shelfView;
+    if (spatial.spatial && shelfPin.placed) {
+      const float dt = float((now - lastFrame) / 1000);
+      // The pill's place comes from the shelf as last drawn.
+      ShelfHandleFrame pillFrame;
+      for (const auto &t : tiles)
+        if (t.kind == SpatialTile::Move) {
+          const auto local = multiply(inverseRigid(shelfPin.pose), t.surface.placement.matrix);
+          pillFrame = {local.m[0][3], local.m[1][3], t.surface.placement.width / std::max(.001f, t.layout.chromeWidth()),
+                       t.layout, true};
+        }
+      ShelfMover::Hand movers[2];
+      for (int hand = 0; hand < 2; ++hand)
+        movers[hand] = {session->hand[hand].valid, session->hand[hand].grab, session->hand[hand].squeeze,
+                        session->hand[hand].pose};
+      if (shelfMover.update(pillFrame, shelfPin.pose, movers, !spatial.open, shelfHandHover, now, dt))
+        saveShelf();
+      // A controller laser or the eyes on the shelf enlarge it; the larger
+      // region keeps it enlarged while the ray strays a little.
+      bool small = false, large = false, hasX = false, controller = false;
+      float pointerX = 0;
+      auto probe = [&](const EyeRay &ray, float extra) {
+        float x, y;
+        if (!shelfRect.valid || !shelfPlaneHit(ray, shelfPin.pose, x, y)) return false;
+        const bool inSmall = shelfRect.contains(x, y, shelfRestMargin + extra);
+        const bool inLarge = shelfRect.contains(x, y, shelfActiveMargin + extra);
+        if (!(shelfHover.active ? inLarge : inSmall)) return false;
+        small = inSmall;
+        large = inLarge;
+        hasX = true;
+        pointerX = x;
+        return true;
+      };
+      for (int hand : {1, 0})
+        if (session->hand[hand].valid && probe(session->hand[hand].ray(), 0)) {
+          controller = true;
+          break;
+        }
+      if (!controller && wallPriorityIsEye)
+        probe(wallPriorityRay, shelfGazeMargin);
+      shelfHandHover = controller;
+      if (shelfMover.dragging() || shelfMover.hot)
+        small = large = true; // stays enlarged while it is being moved
+      shelfHover.update(now, dt, small, large, hasX, pointerX);
+      shelfView.pinned = true;
+      shelfView.pose = shelfPin.pose;
+      shelfView.scale = shelfHover.scale();
+      shelfView.magnify = shelfHover.magnify;
+      shelfView.pointer = shelfHover.pointer;
+      shelfView.chrome = shelfMover.chrome();
+      shelfView.handle = shelfMover.visible();
+    }
+    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
     const float mpp = focused && focused->w > 0 ? focused->overlay.placement.width * 2 / focused->w : .001f;
     bool openMenu = false;
     for (auto &[path, e] : entries)
@@ -1446,7 +1523,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       place(menubar, menuAnchor, focused != nullptr);
     }
     if (status) {
-      statusAnchor = statusStripPlacement(tiles, status->surface, .001f);
+      statusAnchor = statusStripPlacement(tiles, status->surface, .001f, shelfView.scale);
       place(status, statusAnchor, statusAnchor.height > 0);
     }
     for (auto &[path, e] : entries) if (e.panel && e.spec.role == PanelRole::Menu) {
@@ -1519,7 +1596,16 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       } catch (...) {
       }
     }
-    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr);
+    tiles = spatialLayout(spatial, anchor, menuID, status ? &status->surface : nullptr, shelfView);
+    shelfRect = {};
+    if (shelfView.pinned) {
+      const auto inverse = inverseRigid(shelfView.pose);
+      for (const auto &t : tiles)
+        if (t.kind == SpatialTile::Shelf || t.kind == SpatialTile::Dock) {
+          const auto local = multiply(inverse, t.surface.placement.matrix);
+          shelfRect.add(local.m[0][3], local.m[1][3], t.surface.placement.width, t.surface.height);
+        }
+    }
     if (now - lastSpatialDraw >= 33) {
       lastSpatialDraw = now;
       spatialRenderer.draw(
@@ -1536,7 +1622,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     std::string handOwner[2], revealOwner[2];
     for (int hand = 0; hand < 2; ++hand) {
       if (!session->hand[hand].valid) continue;
-      HandRoute route(auxiliaryHit(session->hand[hand].ray()) || dismissedMenu ||
+      HandRoute route(auxiliaryHit(session->hand[hand].ray()) || dismissedMenu || shelfMover.owns(hand) ||
           (spatial.spatial && spatial.open && grip[hand]) || spatialPick(session->hand[hand].ray(), tiles) >= 0);
       for (const auto &[path, entry] : entries) {
         if (!entry.panel || entry.spec.role != PanelRole::Window) continue;

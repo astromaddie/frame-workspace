@@ -140,6 +140,9 @@ public:
   } hand[2];
   std::unique_ptr<GazeBridge> eyes;
   const char *exitReason = "running";
+  // Counts SteamVR recenters (seated or standing zero pose resets), which move
+  // the room under anything pinned in it.
+  unsigned zeroPoseResets = 0;
 
   explicit OverlaySession(bool test) : noVR(test) {
     try {
@@ -208,6 +211,9 @@ public:
       if (event.eventType == EVREventType_VREvent_Quit) {
         exitReason = "openvr-system-quit";
         system->AcknowledgeQuit_Exiting(); return false;
+      } else if (event.eventType == EVREventType_VREvent_SeatedZeroPoseReset ||
+                 event.eventType == EVREventType_VREvent_StandingZeroPoseReset) {
+        ++zeroPoseResets;
       }
     for (auto &h : hand) h = {};
     if (!input) return true;

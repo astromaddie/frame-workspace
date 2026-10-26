@@ -436,6 +436,14 @@ def run_surfaces(binary):
                     atomic_json(specs / "window.json", {**window_spec, "generation": "later"})
                     wait(lambda: state("window").get("hostGeneration") == "later" and state("window").get("ready"), "later window")
                     assert host()["wallSession"] == "test"
+                    # The shelf is pinned: an unsaved default is not written, a companion Recenter is.
+                    shelf_pose = root / "spatial-shelf-pose.json"
+                    assert not shelf_pose.exists(), "unsaved default shelf placement is not written"
+                    spatial["recenterSeq"] = 1
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: shelf_pose.exists(), "recenter saves the shelf pose")
+                    saved = json.loads(shelf_pose.read_text())
+                    assert saved["version"] == 1 and len(saved["matrix"]) == 12 and abs(saved["matrix"][11] + 1.3) < 1e-3, saved
                     # A new Spatial session resets even with a retained Desktop window.
                     menu_spec = json.loads((specs / "menubar.json").read_text())
                     atomic_json(specs / "menubar.json", {**menu_spec, "generation": "next-session"})
@@ -445,7 +453,7 @@ def run_surfaces(binary):
                     wait(lambda: all(not state(n).get("surfaceVisible") for n in roles if n != "window"), "desktop hides auxiliaries")
                     assert state("window")["ready"], "desktop window path continues"
                     process.terminate(); assert process.wait(5) == 0
-                    print("surface integration passed: four roles across five streams; show/hide/equal/newer/older/re-show/hot gating; focus coordinates/request; no pose/control/focus target; desktop isolation")
+                    print("surface integration passed: four roles across five streams; show/hide/equal/newer/older/re-show/hot gating; focus coordinates/request; no pose/control/focus target; shelf recenter saves its pose; desktop isolation")
                 except Exception:
                     log.seek(0); print(log.read(), file=sys.stderr); raise
                 finally:

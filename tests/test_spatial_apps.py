@@ -150,6 +150,19 @@ class Companion(unittest.TestCase):
         self.assertEqual(self.apps.state["switcher"]["chosen"], KEY2)
         self.assertFalse(self.apps.state["switcher"]["open"])
 
+    def test_dashboard_recenter_in_spatial_mode_publishes_a_newer_counter(self):
+        self.apps.refresh()
+        self.assertNotIn("recenterSeq", self.apps.state)
+        self.assertTrue(self.apps.handle_request({"action": "recenter"}))
+        self.assertEqual(self.apps.state["recenterSeq"], 1)
+        self.apps.handle_request({"action": "recenter"})
+        self.apps.refresh()  # a refresh keeps the counter
+        self.assertEqual(self.apps.state["recenterSeq"], 2)
+        self.apps.sync()
+        self.assertEqual(json.loads([r for r in self.mv.remote if r[0] == "sync"][-1][1])["recenterSeq"], 2)
+        self.mv.mode = "desktop"
+        self.assertFalse(self.apps.handle_request({"action": "recenter"}))
+
     def test_desktop_never_starts_helper_or_writes_state(self):
         del self.mv.mode  # companion mode worker may not yet be present
         self.apps.refresh()
