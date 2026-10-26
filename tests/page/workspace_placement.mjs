@@ -3,17 +3,17 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 const src = readFileSync(new URL('../../ui/index.html', import.meta.url), 'utf8');
 const grab = name => src.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`))[0];
-const ids = [...src.matchAll(/id="(mv(?:Workspace|Placement|Width|Distance|Mode|Quality|Separate)[^"]*)"/g)].map(m=>m[1]);
+const ids = [...src.matchAll(/id="(mv(?:Workspace|Placement|Width|Distance|Mode|Quality|Separate|Errors|Arrange|Viewer)[^"]*)"/g)].map(m=>m[1]);
 const dom = Object.fromEntries(ids.map(id=>[id, {disabled:false, dataset:{}, options:[], setAttribute(){}, parentElement:{}}]));
 const document = {querySelectorAll: () => []};
 let calls=[], resolve, reject;
 const api = (path, body)=> {calls.push({path,body}); return new Promise((yes,no)=>{resolve=yes;reject=no;});};
 const state = {screen:true, workspace:{state:'running', preset:'wide', placement:{width:2.4,distance:2}, display:{},stream:{}}};
-const code = ['workspacePlacement','renderWorkspacePlacement','adjustWorkspacePlacement','renderMvWorkspace'].map(grab).join('\n');
+const code = ['workspacePlacement','renderWorkspacePlacement','adjustWorkspacePlacement','renderMvErrors','renderMvViewer','renderMvWorkspace'].map(grab).join('\n');
 const routeStart=src.indexOf('$("macview").onclick =');
 const routeEnd=src.indexOf('\n// ---- pages:', routeStart);
 const macview = {};
-const p = new Function('$','api','esc','mvHealth','setTimeout','document', `let mvSeq=0, mvState, mvWorkspaceBusy=false, mvPlacementBusy=false, mvPlacementError='', mvWorkspaceActivePreset=null,mvWorkspacePendingPreset=null;
+const p = new Function('$','api','esc','mvHealth','setTimeout','document', `let mvSeq=0, mvState, mvWorkspaceBusy=false, mvPlacementBusy=false, mvPlacementError='', mvWorkspaceActivePreset=null,mvWorkspacePendingPreset=null, mvViewerBusy=false;
 async function loadMacView() {};
 ${code}
 ${src.slice(routeStart,routeEnd)}

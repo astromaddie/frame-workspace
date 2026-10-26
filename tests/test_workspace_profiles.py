@@ -591,7 +591,8 @@ class ProductionRestorePathTests(unittest.TestCase):
             def run(remote, **kwargs):
                 nonlocal window_id
                 launches.append(remote)
-                if remote.startswith("bash -s -- 'start'"):
+                # The Workspace start; a Stop helper on the Frame adds --session first.
+                if remote.startswith("bash -s -- ") and " 'start' " in remote and "--panel" not in remote:
                     tag = re.search(r"(fc[0-9a-f]{8})", remote).group(1)
                     active_sources.append("display:4242")
                     # Startup changes the current enumeration after preflight.
