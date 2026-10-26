@@ -1273,6 +1273,7 @@ class SpatialPolicy(unittest.TestCase):
         self.mv.call = self.call
         # Exercise the production request handler without background timing.
         self.mv._dash_run = lambda busy, fn, *args: fn(*args)
+        self.mv._action_run = lambda fn, *args: fn(*args)
 
     def call(self, path, method="GET", **q):
         self.calls.append((path, method, q))
@@ -1528,10 +1529,16 @@ class SpatialMode(unittest.TestCase):
         self.mv.call = self.call
         self.jobs, self.events, self.launches = [], [], []
         self.mv._dash_run = lambda busy, fn, *args: self.jobs.append((fn, args))
+        self.mv._action_run = lambda fn, *args: self.jobs.append((fn, args))
         self.running, self.removed, self.fail_start = False, True, False
         self.failed_panels = set()
         self.windows = [self.window(42)]
         self.streams = []
+        # What the Frame's viewer reports (scripts/workspace-native-update-on-frame.py status).
+        self.viewer = {"installed": {"present": True, "identity": self.mv.headset_viewer.expected(), "protocol": 2,
+                                     "capabilities": ["host", "roles", "surfaces", "wall-slots", "idle-auxiliary",
+                                                      "capabilities"]},
+                       "sessionActive": False, "job": None}
 
     @staticmethod
     def window(wid):
@@ -1547,6 +1554,10 @@ class SpatialMode(unittest.TestCase):
         if path == "/spatial/stop":
             self.running = False
             self.streams.clear()
+        if path == "/spatial/cover":
+            if not self.running:
+                raise frame_macview.MacViewError("The Mac Streaming Helper: Spatial Mode is not running")
+            return {"cover": query["show"] == "1"}
         if path.startswith("/spatial"):
             return {"state": "running" if self.running else "stopped", "removed": self.removed,
                     "windows": [{k: v for k, v in w.items() if k != "src"} for w in self.windows],
@@ -1567,13 +1578,19 @@ class SpatialMode(unittest.TestCase):
 
     def remote_run(self, command, **kwargs):
         self.events.append(("remote", command))
+        if command == "python3 - status":
+            return json.dumps(self.viewer) + "\n"
         if "'start'" in command:
             args = shlex.split(command)
             panel = args[args.index("--panel") + 1]
             self.launches.append(args)
             if panel in self.failed_panels:
                 raise frame_macview.MacViewError("Panel Launch Failed")
-            return "registered OpenVR key com.frame-workspace.native.1000.panel-" + panel
+            # The launcher's own words: a window panel has a picture; an idle
+            # Menu Bar, Status or menu slot registers with none.
+            idle = "" if panel.startswith("w") else " (idle, no picture yet)"
+            return ("Native Workspace ready: registered OpenVR key com.frame-workspace.native.1000.panel-" + panel +
+                    " in frame-workspace-host-1000.service" + idle)
         return "stopped"
 
     def jobs_once(self):
@@ -1581,10 +1598,23 @@ class SpatialMode(unittest.TestCase):
         for fn, args in jobs:
             fn(*args)
 
+    def drain(self):
+        for _ in range(50):
+            if not self.jobs:
+                return
+            self.jobs_once()
+        self.fail("reconciliation kept queueing jobs")
+
+    def panel_launches(self):
+        return [a[a.index("--panel") + 1] for a in self.launches]
+
+    def window_launch(self, panel="w42"):
+        return next(a for a in reversed(self.launches) if a[a.index("--panel") + 1] == panel)
+
     def start(self):
         self.mv.set_mode("spatial")
         result = self.mv.start_workspace(quality="balanced")
-        self.jobs_once()
+        self.drain()
         return result
 
     def test_wall_slots_follow_focus_order_reuse_and_saved_pose_precedence(self):
@@ -1635,8 +1665,8 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(self.mv.shown, {"spatial:42", *frame_macview.SPATIAL_AUX_ROLES})
         self.assertTrue(self.mv.native_panels["spatial:42"]["host"])
         self.assertEqual(self.mv.native_panels["spatial:42"]["title"], "Shell 42")
-        self.assertEqual(self.launches[-1][0], "FRAME_NATIVE_HOST=1")
-        self.assertIn("src=spatial%3A42", " ".join(self.launches[-1]))
+        self.assertEqual(self.window_launch()[0], "FRAME_NATIVE_HOST=1")
+        self.assertIn("src=spatial%3A42", " ".join(self.window_launch()))
         self.assertTrue(self.mv.spatial_workspace["panelsReady"])
         self.assertTrue(self.mv.dash_state()["workspace"]["running"])
         self.assertEqual(self.mv.dash_state()["workspace"]["mode"], "spatial")
@@ -1652,14 +1682,15 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(snapshot["menus"], [])
         self.assertEqual(snapshot["focusedSrc"], "spatial:42")
         self.assertNotIn("src", snapshot["windows"][0])
-        args = self.launches[-1]
+        args = self.window_launch()
         start = args.index("start")
         self.assertEqual(args[start + 2:start + 4], list(map(str, frame_macview.fit(3600, 2119))))
         self.assertNotIn("spatial:44", self.mv.native_panels)
 
-    def test_auxiliary_roles_launch_first_once_and_stop_with_the_mode(self):
+    def test_windows_launch_before_idle_auxiliary_roles_once_and_stop_with_the_mode(self):
         self.start()
-        for args, (source, role) in zip(self.launches, frame_macview.SPATIAL_AUX_ROLES.items()):
+        self.assertEqual(self.panel_launches(), ["w42", "menubar", "status", "menu0", "menu1", "menu2", "menu3"])
+        for args, (source, role) in zip(self.launches[1:], frame_macview.SPATIAL_AUX_ROLES.items()):
             self.assertEqual(args[args.index("--panel") + 1], source.replace(":", ""))
             self.assertEqual(args[args.index("--role") + 1], role)
             self.assertIn("src=" + frame_macview.quote(source, safe=""), args[args.index("start") + 1])
@@ -1697,6 +1728,145 @@ class SpatialMode(unittest.TestCase):
         self.assertEqual(self.mv.mode, "desktop")
         self.mv.stop_workspace.assert_not_called()
         self.assertEqual(self.events, [])
+
+    def test_failing_auxiliary_panels_never_delay_window_panels(self):
+        self.failed_panels.update({"menubar", "status", "menu0", "menu1", "menu2", "menu3"})
+        self.windows = [self.window(42), self.window(43)]
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.mv.set_mode("spatial")
+            self.mv.start_workspace(quality="balanced")
+            self.jobs_once()
+            self.assertEqual(self.panel_launches(), ["w42"])
+            self.jobs_once()
+            self.assertEqual(self.panel_launches(), ["w42", "w43"])
+            self.drain()
+        self.assertEqual(self.panel_launches()[:2], ["w42", "w43"])
+        self.assertEqual(set(self.panel_launches()[2:]), {"menubar", "status", "menu0", "menu1", "menu2", "menu3"})
+        self.assertEqual({s for s in self.mv.native_panels}, {"spatial:42", "spatial:43"})
+        errors = [e["message"] for e in self.mv.errors_state()]
+        self.assertIn("Couldn't Open The Menu Bar Panel: Panel Launch Failed", errors)
+        self.assertFalse(self.mv.workspace_state()["panelsReady"])
+        # A window that appears while every auxiliary panel is retrying goes first.
+        self.windows.append(self.window(44))
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=101):
+            self.mv._spatial_mode_tick()
+            self.jobs_once()
+        self.assertEqual(self.panel_launches()[-1], "w44")
+
+    def covers(self):
+        return [q["show"] for path, q in self.events if path == "/spatial/cover"]
+
+    def test_laptop_cover_waits_for_the_first_window_panel_and_lifts_without_one(self):
+        self.windows = []
+        self.start()
+        self.assertEqual(self.covers(), [], "auxiliary panels alone never black out the laptop")
+        self.windows = [self.window(42)]
+        self.failed_panels.add("w42")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), [], "a failed window launch keeps the laptop visible")
+        self.failed_panels.clear()
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=106):
+            self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), ["1"])
+        cover_at = next(i for i, e in enumerate(self.events) if e[0] == "/spatial/cover")
+        launched_at = max(i for i, e in enumerate(self.events) if e[0] == "remote" and "'w42'" in e[1])
+        self.assertLess(launched_at, cover_at, "the cover follows the window panel's registration")
+        self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), ["1"], "no repeated requests")
+        self.windows = []
+        self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(self.covers(), ["1", "0"], "the last window panel closing uncovers the laptop")
+
+    def test_failed_spatial_start_never_asks_for_the_cover(self):
+        self.mv.set_mode("spatial")
+        self.fail_start = True
+        with self.assertRaises(frame_macview.MacViewError):
+            self.mv.start_workspace()
+        self.drain()
+        self.assertEqual(self.covers(), [])
+
+    def test_viewer_without_spatial_capabilities_is_refused_before_the_mac_changes(self):
+        for installed, message in (({"present": True, "capabilities": None}, "too old for Spatial Mode"),
+                                   ({"present": True, "identity": "a" * 64, "protocol": 2,
+                                     "capabilities": ["host", "roles"]}, "too old for Spatial Mode"),
+                                   ({"present": False}, "Install the native window host")):
+            with self.subTest(installed=installed):
+                self.events.clear()
+                self.viewer["installed"] = installed
+                self.mv.set_mode("spatial")
+                with self.assertRaisesRegex(frame_macview.MacViewError, message):
+                    self.mv.start_workspace(quality="balanced")
+                self.assertNotIn("/spatial/start", [e[0] for e in self.events])
+                self.assertNotIn("/spatial/cover", [e[0] for e in self.events])
+                self.assertFalse(self.launches)
+                self.assertEqual(self.mv.workspace_state()["state"], "stopped")
+        self.assertEqual(self.mv.headset_viewer.state()["state"], "missing")
+
+    def test_capable_viewer_from_other_sources_starts_and_offers_the_update(self):
+        self.viewer["installed"]["identity"] = "b" * 64
+        self.start()
+        self.assertIn("spatial:42", self.mv.native_panels)
+        viewer = self.mv.headset_viewer.state()
+        self.assertEqual((viewer["state"], viewer["label"], viewer["canUpdate"]),
+                         ("outdated", "Different From This Mac App", True))
+
+    def test_no_workspace_starts_while_the_viewer_updates_and_no_update_while_running(self):
+        self.mv.headset_viewer.update = {"state": "building"}
+        self.mv.set_mode("spatial")
+        with self.assertRaisesRegex(frame_macview.MacViewError, "headset viewer is updating"):
+            self.mv.start_workspace(quality="balanced")
+        self.assertFalse([e for e in self.events if e[0] == "/spatial/start"])
+        self.mv.headset_viewer.update = {"state": "idle"}
+        self.start()
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Stop the Workspace before updating"):
+            self.mv.update_headset_viewer()
+
+    def test_mac_page_stop_preempts_startup_between_stages(self):
+        self.mv.set_mode("spatial")
+        real_call = self.call
+        def call(path, method="GET", **query):
+            if path == "/spatial/start":
+                self.mv._stop_requested += 1  # Stop pressed on the Mac page while the display comes up
+            return real_call(path, method, **query)
+        self.mv.call = call
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Workspace Stop cancelled Spatial Mode startup"):
+            self.mv.start_workspace(quality="balanced")
+        self.assertEqual(self.events[-1][0], "/spatial/stop")
+        self.assertFalse(self.launches)
+        self.assertFalse(self.jobs)
+
+    def test_stop_during_a_window_launch_ends_reconciliation_at_that_stage(self):
+        self.windows = [self.window(42), self.window(43)]
+        self.mv.set_mode("spatial")
+        self.mv.start_workspace(quality="balanced")
+        real_run = self.remote_run
+        def run(command, **kwargs):
+            out = real_run(command, **kwargs)
+            if "'start'" in command:
+                self.mv._stop_requested += 1
+            return out
+        self.mv.run = run
+        self.jobs_once()
+        self.assertEqual(self.panel_launches(), ["w42"])
+        self.assertFalse(self.jobs, "no follow-up launch is queued once Stop is waiting")
+        self.mv._stop_requested -= 1
+        self.removed = True
+        self.mv.run = real_run
+        self.mv.stop_workspace()
+        self.assertFalse(self.mv.native_panels)
+        self.assertEqual(self.mv._stop_requested, 0)
+
+    def test_failed_workspace_job_is_recorded_for_the_bar_and_mac_page(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        def fail():
+            raise frame_macview.MacViewError("Spatial Mode Could Not Start: Mirror Setup Failed")
+        mv._dash_run("starting", fail)
+        mv.dash_jobs.join()
+        self.assertEqual([e["message"] for e in mv.errors_state()], ["Spatial Mode Could Not Start: Mirror Setup Failed"])
+        self.assertEqual(mv.dash_state()["workspace"]["notice"], "Spatial Mode Could Not Start: Mirror Setup Failed")
+        with mock.patch.object(frame_macview.time, "time", return_value=time.time() + 60):
+            self.assertNotIn("notice", mv.dash_state()["workspace"])
 
     def test_auxiliary_launch_failure_retries_without_relaunching_other_panels(self):
         self.failed_panels.add("menu2")
@@ -2550,7 +2720,7 @@ class Agent(unittest.TestCase):
         self.assertEqual(self.get("/status")[0], 403)
         self.assertEqual(self.get("/status?k=wrong")[0], 403)
         for path in ("/streams/live?src=", "/pointer?shared=1", "/focus?src=separate:1&u=0&v=0",
-                     "/spatial/start", "/spatial/stop"):
+                     "/spatial/start", "/spatial/stop", "/spatial/cover?show=1"):
             self.assertEqual(self.get(path, method="POST")[0], 403)
         self.assertEqual(self.get("/spatial")[0], 403)
         status, body = self.get(f"/status?k={self.token}")
@@ -2565,6 +2735,10 @@ class Agent(unittest.TestCase):
         self.assertEqual(spatial["state"], "stopped")
         self.assertEqual(spatial["windows"], [])
         self.assertIsInstance(spatial["revision"], int)
+        self.assertIs(spatial["cover"], False)
+        # The laptop cover exists only inside a running Spatial Mode.
+        self.assertEqual(self.get(f"/spatial/cover?show=1&k={self.token}", method="POST")[0], 409)
+        self.assertEqual(self.get(f"/spatial/cover?show=yes&k={self.token}", method="POST")[0], 400)
         self.assertEqual(json.loads(self.get(f"/status?k={self.token}")[1])["spatial"]["state"], "stopped")
         self.assertEqual(json.loads(self.get(f"/displays?k={self.token}")[1])["displays"], before)
 

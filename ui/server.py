@@ -2446,6 +2446,10 @@ def macview_action(body):
             return macview.set_gaze_sharpen(str(body["mode"]))
         if action == "workspace_stop":
             return macview.stop_workspace()
+        if action == "viewer_check":
+            return macview.check_headset_viewer()
+        if action == "viewer_update":
+            return macview.update_headset_viewer()
         if action == "stop":
             return macview.stop(body.get("src") or None)
         if action == "permissions":

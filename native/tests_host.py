@@ -55,8 +55,11 @@ def receive(connection):
 
 
 class Stream:
-    def __init__(self, encoded):
+    # idle: like an empty menu slot, the helper sends a hidden surface and
+    # `still`, and no picture. silent: connected, with no surface message.
+    def __init__(self, encoded, idle=False, silent=False):
         self.encoded = encoded
+        self.idle, self.silent = idle or silent, silent
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
@@ -95,7 +98,11 @@ class Stream:
                                         "Sec-WebSocket-Accept: " + accept + "\r\n\r\n").encode())
                     self.connections += 1
                     send(connection, b'{"t":"hello","r":"test-reconnect"}')
-                    live, seq, last = True, 0, 0
+                    live, seq, last = not self.idle, 0, 0
+                    if self.idle and not self.silent:
+                        send(connection, b'{"t":"surface","v":1,"seq":1,"visible":false}')
+                    if self.idle:
+                        send(connection, b'{"t":"still"}')
                     while not self.stopped.is_set():
                         try:
                             command = self.commands.get_nowait()
@@ -462,7 +469,79 @@ def run_surfaces(binary):
         for stream in streams.values(): stream.finish()
 
 
+def run_idle_auxiliary(binary):
+    """Idle menu slots (no picture) register and never hold up window panels."""
+    idle = {"menu0": Stream(b"", idle=True), "menu1": Stream(b"", idle=True),
+            "menu2": Stream(b"", idle=True), "menu3": Stream(b"", silent=True)}
+    window = Stream(encode("red", 320, 180))
+    menubar = Stream(encode("gray", 400, 36))
+    streams = {**idle, "window": window, "menubar": menubar}
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-idle-aux-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests = root / "specs", root / "requests"
+            specs.mkdir(); requests.mkdir()
+            def spec(name, role, **extra):
+                folder = root / name; folder.mkdir(exist_ok=True)
+                (folder / "url").write_text(f"http://127.0.0.1:{streams[name].port}/view?src={name}&t=local")
+                return {"version": 1, "role": role, "generation": "session", "urlFile": str(folder / "url"),
+                        "overlayKey": "test." + name, "overlayName": name,
+                        "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
+                        "poseFile": str(folder / "pose.json"), "requestDir": str(requests), **extra}
+            atomic_json(root / "spatial.json", {"mode": "spatial", "apps": [], "switcher": {"seq": 1, "open": False}})
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--no-vr",
+                    "--action-manifest", "none", "--state-file", str(root / "host.json"),
+                    "--spatial-state", str(root / "spatial.json"), "--seconds", "60"], stdout=log, stderr=log)
+                def state(name):
+                    try: return json.loads((root / name / "state.json").read_text())
+                    except (OSError, ValueError): return {}
+                def host():
+                    try: return json.loads((root / "host.json").read_text())
+                    except (OSError, ValueError): return {}
+                def wait(predicate, label):
+                    deadline = time.monotonic() + 8
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited: " + label
+                        result = predicate()
+                        if result: return result
+                        time.sleep(.025)
+                    raise AssertionError("timed out: " + label)
+                try:
+                    for name in idle:
+                        atomic_json(specs / (name + ".json"), spec(name, "menu"))
+                    for name in ("menu0", "menu1", "menu2"):
+                        wait(lambda: state(name).get("registered") is True, name + " registers without a picture")
+                        s = state(name)
+                        assert s["ready"] is False and s["textureWidth"] == 0 and s["state"] == "idle", s
+                        assert s["surfaceVisible"] is False and s["role"] == "menu"
+                    assert idle["menu3"].connections == 1
+                    assert state("menu3").get("registered") is False, "no surface message yet: not registered"
+                    # A window launched while every menu slot idles still shows.
+                    atomic_json(specs / "window.json", spec("window", "window", slot=0))
+                    w = wait(lambda: state("window").get("ready") and state("window"), "window ready beside idle menus")
+                    assert w["registered"] is True and w["textureWidth"] == 320 and w["wallSlot"] == 0
+                    placement = w["placement"]
+                    assert host().get("wallSession") == "", host()
+                    # Menu Bar after the windows adopts their wall, not a new one.
+                    atomic_json(specs / "menubar.json", spec("menubar", "menubar"))
+                    wait(lambda: state("menubar").get("ready"), "menu bar ready")
+                    assert host()["wallSession"] == "session" and host()["wallAnchored"]
+                    assert state("window")["wallSlot"] == 0 and state("window")["placement"] == placement
+                    assert all(state(n).get("registered") for n in ("menu0", "menu1", "menu2"))
+                    process.terminate(); assert process.wait(5) == 0
+                    print("idle auxiliary integration passed: idle menu slots register with no picture, a slot "
+                          "with no surface message does not, windows launch beside them, Menu Bar adopts the wall")
+                except Exception:
+                    log.seek(0); print(log.read(), file=sys.stderr); raise
+                finally:
+                    if process.poll() is None: process.terminate(); process.wait(5)
+    finally:
+        for stream in streams.values(): stream.finish()
+
+
 if __name__ == "__main__":
     binary = pathlib.Path(sys.argv[1]).resolve()
+    run_idle_auxiliary(binary)
     run(binary)
     run_surfaces(binary)

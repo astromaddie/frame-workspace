@@ -466,7 +466,16 @@ def start_panel():
         url_path.unlink(missing_ok=True)
         raise
 
-    deadline = time.monotonic() + 40
+    # A window is ready once it has submitted a decoded picture. Menu Bar,
+    # Status and menu slots can be idle with nothing to draw (a closed menu
+    # sends no video), so they count once the host reports them registered:
+    # connected, with their first surface message.
+    auxiliary = role != 'window'
+    try:
+        timeout = min(max(float(os.environ.get('FRAME_NATIVE_READY_SECONDS', '40')), 0.5), 120)
+    except ValueError:
+        timeout = 40
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         active, current_pid = service_status(host_unit)
         state = read_json(state_path)
@@ -484,10 +493,12 @@ def start_panel():
                     raise RuntimeError('The native host reported a panel error, and shutdown was not confirmed: ' + str(exc))
                 raise RuntimeError('The native host reported an error for this panel generation.')
             try:
-                ready = (state.get('ready') is True and state.get('hostPid') == current_pid and
-                         state.get('overlayKey') == key and
-                         0 < int(state.get('textureWidth', 0)) <= 5120 and
-                         0 < int(state.get('textureHeight', 0)) <= 5120)
+                owned = state.get('hostPid') == current_pid and state.get('overlayKey') == key
+                pictured = (state.get('ready') is True and
+                            0 < int(state.get('textureWidth', 0)) <= 5120 and
+                            0 < int(state.get('textureHeight', 0)) <= 5120)
+                idle = auxiliary and state.get('registered') is True and state.get('role') == role
+                ready = owned and (pictured or idle)
             except (TypeError, ValueError):
                 ready = False
             if ready:
@@ -499,7 +510,8 @@ def start_panel():
                 if overlays and overlays.returncode == 0 and f"'{key}' -- '" in overlays.stdout:
                     if old_url and old_url != str(url_path):
                         pathlib.Path(old_url).unlink(missing_ok=True)
-                    print(f'Native Workspace ready: registered OpenVR key {key} in {host_unit}')
+                    detail = '' if pictured else ' (idle, no picture yet)'
+                    print(f'Native Workspace ready: registered OpenVR key {key} in {host_unit}{detail}')
                     return
         time.sleep(0.1)
     try:
@@ -507,7 +519,9 @@ def start_panel():
     except Exception:
         # Preserve URL and runtime evidence if shutdown could not be confirmed.
         raise RuntimeError('The native panel did not become ready; its spec was removed but shutdown was not confirmed.')
-    raise RuntimeError('The native host did not submit a decoded texture and register this panel within 40 seconds.')
+    if auxiliary:
+        raise RuntimeError(f'The native host did not register this {role} panel within {timeout:g} seconds.')
+    raise RuntimeError(f'The native host did not submit a decoded texture and register this panel within {timeout:g} seconds.')
 
 host_root.mkdir(mode=0o700, parents=True, exist_ok=True)
 with lock_host():

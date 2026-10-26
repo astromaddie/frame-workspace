@@ -264,10 +264,23 @@ final class SwitcherState {
 
     /// Starts or advances one Cmd-Tab cycle. Index addresses the flattened
     /// panel strip; panels stay grouped by app MRU and each app's entry order.
+    /// Returns false, letting Cmd-Tab through to macOS, when no window has a panel.
     @discardableResult
     func cycle(reverse: Bool) -> Bool {
         locked {
             guard spatial else { return false }
+            guard !windowsLocked().isEmpty else {
+                if openValue {
+                    let before = visibleLocked()
+                    openValue = false
+                    frozenMRU = nil
+                    highlightedKey = nil
+                    keyboardCycle = false
+                    normalizeSelectionLocked()
+                    finishChangeLocked(from: before)
+                }
+                return false
+            }
             let before = visibleLocked()
             let continuing = openValue
             keyboardCycle = true
@@ -277,13 +290,6 @@ final class SwitcherState {
                 chosenKey = nil
             }
             let windows = windowsLocked()
-            guard !windows.isEmpty else {
-                selectedIndex = 0
-                chosenKey = nil
-                finishChangeLocked(from: before)
-                return true
-            }
-
             let direction = reverse ? -1 : 1
             let base: Int
             if continuing {
@@ -334,6 +340,23 @@ final class SwitcherState {
             }
             highlightedKey = windows.indices.contains(selectedIndex) ? windows[selectedIndex] : nil
             finishChangeLocked(from: before)
+        }
+    }
+
+    /// The companion opened an app that already has a panel: deliver it as a
+    /// choice, like a Cmd-Tab release. A new sequence even for the same key.
+    @discardableResult
+    func choose(_ key: String) -> Bool {
+        locked {
+            guard spatial, windowsLocked().contains(key) else { return false }
+            openValue = false
+            frozenMRU = nil
+            highlightedKey = nil
+            keyboardCycle = false
+            chosenKey = key
+            normalizeSelectionLocked()
+            sequence += 1
+            return true
         }
     }
 

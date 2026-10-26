@@ -2,6 +2,32 @@
 
 Labels as elsewhere: **verified** (run here, with date and versions) or **inferred**.
 
+## Making it start reliably (stage 1, 2026-10-26)
+
+Fixes for the first installed launch ([SPATIAL-AUDIT.md](SPATIAL-AUDIT.md)). Checked locally
+(macOS build of the host, fake Frame for the companion); not yet run on the device.
+
+- **Idle menus no longer block windows.** A Menu Bar, Status or menu panel counts as
+  registered once its stream is connected and its first `surface` message has arrived, with
+  no picture (host state `registered: true`, `state: "idle"`). Windows still need a submitted
+  texture. Reconciliation launches window panels first, focused one first, and the auxiliary
+  panels one per job once no window is waiting; a failing one retries after 5 s without
+  holding anything up. Menu Bar then adopts the wall the windows already share.
+- **Headset clicks have their own lane.** Shelf open/hide/quit, the switcher and focus run on
+  an action queue, not behind Spatial startup. Failures are kept: the bar panel shows the
+  latest one on its Workspace card for 20 s, and the Mac page lists recent problems. Opening
+  an app that already has a panel also chooses that panel (`POST /switcher?verb=choose&key=`),
+  so the host brings it forward. A Stop from the Mac page cancels startup and panel launches
+  at their next stage.
+- **The laptop goes dark only once the headset shows something.** The helper makes the cover
+  at start but keeps it off screen until the companion calls `POST /spatial/cover?show=1`,
+  after the first window panel has registered. It comes down when the last window panel goes
+  or Spatial Mode stops. Cmd-Tab reaches macOS while no window has a panel.
+- **The viewer must match.** Before Spatial Mode changes anything on the Mac, the companion
+  asks the Frame's viewer for `--capabilities` and refuses to start if roles, surfaces, wall
+  slots or idle auxiliary panels are missing. A capable viewer built from other sources still
+  starts; the Mac page offers **Update Headset Viewer** (see [NATIVE.md](NATIVE.md)).
+
 ## Apps and Cmd-Tab contract (stage 2)
 
 The approved dock is **D1**, the floating shelf; the switcher is **S1**, the curved window

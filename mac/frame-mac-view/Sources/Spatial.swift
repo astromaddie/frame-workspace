@@ -199,7 +199,7 @@ final class SpatialCoordinator {
         lock.lock(); defer { lock.unlock() }
         var result: [String: Any] = ["state": state, "revision": revision, "windows": windowJSON,
                                      "skipped": skipped, "menus": surfaces.menusJSON,
-                                     "focusedSrc": focus.focusedSource ?? NSNull()]
+                                     "focusedSrc": focus.focusedSource ?? NSNull(), "cover": coverVisible]
         if let shared {
             let b = shared.bounds
             result["display"] = ["id": shared.id, "bounds": SpatialSharedPolicy.rectJSON(b),
@@ -431,7 +431,9 @@ final class SpatialCoordinator {
             guard self.focus.fence.start() else {
                 return self.failStart("macOS Would Not Create The Spatial Cursor Fence", completion: completion)
             }
-            self.showCover(on: builtIn)
+            // Made now (so display captures can exclude it), shown only once
+            // the companion reports a window panel in the headset.
+            self.prepareCover(on: builtIn)
             self.activePhysicalLayout = self.currentPhysicalLayoutStates()?.1
             self.restoreLayoutBaseline = self.activePhysicalLayout
             self.setState("running")
@@ -539,8 +541,12 @@ final class SpatialCoordinator {
 
     /// A plain black cover over the laptop screen, just above normal windows,
     /// so the menu bar, Dock and system dialogs stay visible and usable there.
+    /// It exists from start but stays off screen until the companion says the
+    /// headset shows a window (`POST /spatial/cover?show=1`), so a startup that
+    /// never reaches the headset doesn't leave the laptop black.
     private var cover: NSWindow?
-    private func showCover(on builtIn: CGDirectDisplayID) {
+    private(set) var coverVisible = false
+    private func prepareCover(on builtIn: CGDirectDisplayID) {
         guard cover == nil, let screen = NSScreen.screens.first(where: {
             ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == builtIn
         }) else { return }
@@ -550,11 +556,20 @@ final class SpatialCoordinator {
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
         window.hasShadow = false
-        window.setFrame(screen.frame, display: true)
-        window.orderFrontRegardless()
+        window.setFrame(screen.frame, display: false)
         cover = window
+        coverVisible = false
+    }
+    /// Shows or hides the prepared cover; false when Spatial Mode isn't running.
+    func setCover(visible: Bool) -> Bool {
+        if !Thread.isMainThread { return DispatchQueue.main.sync { self.setCover(visible: visible) } }
+        guard isRunning, let cover else { return false }
+        if visible { cover.orderFrontRegardless() } else { cover.orderOut(nil) }
+        coverVisible = visible
+        return true
     }
     private func hideCover() {
+        coverVisible = false
         cover?.orderOut(nil)
         cover?.close()
         cover = nil

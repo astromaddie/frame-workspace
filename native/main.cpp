@@ -36,6 +36,20 @@ static float angularGazeDistance(const EyeRay &ray, const HmdMatrix34_t &placeme
     dot += (ray.direction[i] / directionLength) * (target[i] / targetLength);
   return std::acos(std::clamp(dot, -1.f, 1.f));
 }
+#ifndef FRAME_WORKSPACE_SOURCE_ID
+#define FRAME_WORKSPACE_SOURCE_ID "unknown"
+#endif
+// What this build can do, for the companion's compatibility check before a
+// Workspace starts. An older build rejects the flag, which reads as "none".
+// Bump `protocol` when a companion must not use an older viewer.
+static int printCapabilities() {
+  std::cout << "{\"name\":\"frame-workspace-native\",\"protocol\":2,\"sourceIdentity\":"
+            << jsonString(FRAME_WORKSPACE_SOURCE_ID)
+            << ",\"capabilities\":[\"host\",\"roles\",\"surfaces\",\"wall-slots\","
+               "\"idle-auxiliary\",\"capabilities\"],"
+               "\"roles\":[\"window\",\"menubar\",\"status\",\"menu\"]}\n";
+  return 0;
+}
 static int selfTest() {
   auto e = parseURL(
       "http://127.0.0.1:9123/"
@@ -625,6 +639,13 @@ public:
   uint32_t uploadedSeq = 0;
   double uploadedReceived = 0;
   bool auxiliary() const { return role != PanelRole::Window; }
+  // A window is registered once it shows a picture. An auxiliary strip or menu
+  // slot can be idle with nothing to draw (a closed menu sends no video), so it
+  // registers once its stream is connected and its first surface message has
+  // arrived. Its overlay still stays hidden until a fresh picture is uploaded.
+  bool registered() {
+    return ready || (auxiliary() && pipe.connected && pipe.surface().second > 0);
+  }
   void refreshSurface() {
     if (!auxiliary()) return;
     auto next = pipe.surface();
@@ -697,6 +718,7 @@ public:
                                  : "null";
     return "{\"version\":1,\"state\":\"" + std::string(status) +
            "\",\"ready\":" + (ready ? "true" : "false") +
+           ",\"registered\":" + (registered() ? "true" : "false") +
            ",\"diagnostic\":" + (test ? "true" : "false") +
            ",\"headsetVerified\":false,\"overlayKey\":\"" + key +
            "\",\"hostGeneration\":" + jsonString(hostGeneration) +
@@ -1062,7 +1084,7 @@ public:
       previousState = now;
       lastState = now;
       atomicWrite(stateFile, state(ready ? (test ? "diagnostic" : "streaming")
-                                         : "connecting"));
+                                         : registered() ? "idle" : "connecting"));
     }
     if (now - lastLog >= 10000) {
       lastLog = now;
@@ -1329,11 +1351,19 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         }
         // Menu Bar belongs to the Spatial session, even when it has no windows.
         // Its next generation also resets a host retained by Desktop panels.
+        // Window panels launch before Menu Bar, so Menu Bar adopts the wall they
+        // already share; a Menu Bar retry mid-session keeps it too.
         std::string nextSession;
-        for (const auto &[path, spec] : desired)
+        bool spatialPanels = false;
+        for (const auto &[path, spec] : desired) {
           if (spec.role == PanelRole::Menubar) nextSession = spec.generation;
-        if (nextSession != wallSession || desired.empty()) {
-          wall = std::make_shared<WallAnchor>(); wallSession = nextSession;
+          spatialPanels |= spec.role != PanelRole::Window || spec.slot >= 0;
+        }
+        if (desired.empty() || (!spatialPanels && (wall->ready || !wallSession.empty()))) {
+          wall = std::make_shared<WallAnchor>(); wallSession.clear();
+        } else if (!nextSession.empty() && nextSession != wallSession) {
+          if (!wallSession.empty()) wall = std::make_shared<WallAnchor>();
+          wallSession = nextSession;
         }
         auto changes = book.plan(desired);
         for (const auto &path : changes.remove) remove(path);
@@ -1777,6 +1807,8 @@ int main(int argc, char **argv) {
       };
       if (a == "--self-test")
         return selfTest();
+      else if (a == "--capabilities")
+        return printCapabilities();
       else if (a == "--host-dir")
         hostDir = value();
       else if (a == "--spatial-state")
@@ -2002,7 +2034,7 @@ int main(int argc, char **argv) {
                "[--decoder software|v4l2] [--conversion cpu|gpu] [--gaze] [--handoff fence|finish] [--present paced|immediate] [--v4l2-poc-rewrite on|off] [--foveation] "
                "[--seconds N] [--dump PATH.ppm [--dump-seq N] "
                "[--dump-size WIDTHxHEIGHT]] "
-               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | --render-scene SCENE.json OUT.png [--eye x,y,z] [--look yaw,pitch] [--fov deg] [--size WxH] | "
+               "\nDiagnostics: --diagnostic-gaze U,V|scan (requires --foveation; synthetic, not eye tracking) | --self-test | --capabilities | --render-spatial-style menubar-slim|menubar-wide|status|menu OUT.png | rest|hover|held|app-menu OUT.ppm | --spatial-state PATH | --render-chrome SCENE OUT.ppm | --render-scene SCENE.json OUT.png [--eye x,y,z] [--look yaw,pitch] [--fov deg] [--size WxH] | "
                "--test-pattern [--no-vr] [--seconds N] | "
                "--test-yuv-format nv12|yuv420p --conversion gpu "
                "[--test-yuv-range limited|full] "

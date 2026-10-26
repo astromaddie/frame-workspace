@@ -23,6 +23,7 @@ struct DashState {
   std::string session;
   bool locked = false;  // a press is being carried out: every button waits
   std::string workspaceLabel = "9:8 · 2880 × 2560";
+  std::string notice;  // the companion's latest failed headset action, for a short while
   std::vector<DashWindow> windows;
 };
 struct DashButton {
@@ -62,8 +63,11 @@ public:
     const std::string running = s.spatial ? "Running · Spatial Mode · " + std::to_string(s.windows.size()) +
                                                 (s.windows.size() == 1 ? " Window" : " Windows")
                                           : "Running · Desktop Mode · " + s.workspaceLabel;
-    text(s.workspaceBusy ? s.busyText : s.workspaceRunning ? running : "Stopped",
-         64, 160, 17, 400, s.workspaceRunning ? green : muted);
+    if (!s.workspaceBusy && !s.notice.empty())
+      text(ellipsize(s.notice, 64), 64, 160, 17, 400, warn);
+    else
+      text(s.workspaceBusy ? s.busyText : s.workspaceRunning ? running : "Stopped",
+           64, 160, 17, 400, s.workspaceRunning ? green : muted);
     const bool canStart = s.macConnected && !s.workspaceBusy && !s.locked;
     // T1: Desktop | Spatial, always on the card; Start starts whichever is chosen.
     segments(64, 198, s.spatial, hover, canStart);

@@ -17,6 +17,7 @@ Runs on the Mac, inside Frame Control's server. The pieces:
 Stdlib only. MacView gets a plain ssh argv for the tunnel (its own
 connection) and the server's `run(remote, stdin=, timeout=)` for commands.
 """
+import collections
 import json
 import math
 import os
@@ -36,6 +37,7 @@ import zlib
 from pathlib import Path
 from urllib.parse import quote, urlencode  # %20, not +: the agent's URLComponents keeps +
 
+from frame_native_update import HeadsetViewer, ViewerError
 from frame_spatial_apps import SpatialApps
 
 HERE = Path(__file__).resolve().parent
@@ -718,6 +720,18 @@ class MacView:
         self.dash_jobs = queue.Queue()
         self.dash_lock = threading.Lock()
         self.dash_worker = None
+        # Headset app actions, switcher and focus requests: their own lane, so
+        # a click never waits behind Spatial startup or panel launches.
+        self.action_jobs = queue.Queue(maxsize=32)
+        self.action_lock = threading.Lock()
+        self.action_worker = None
+        # Recent failed headset actions and panel launches, for the bar panel
+        # and the Mac page (newest last).
+        self.recent_errors = collections.deque(maxlen=8)
+        self._stop_requested = 0  # Mac-page Stops waiting for the Workspace lock
+        self._spatial_cover = False  # the helper's laptop cover is showing
+        # The Frame's native viewer: checked on connect and before each start.
+        self.headset_viewer = HeadsetViewer(lambda *args, **kwargs: self.run(*args, **kwargs))
         self.spatial_apps = SpatialApps(self)
         self.dash_wake = self.spatial_apps.wake  # one waker for the bar and the spatial state
         self.last_workspace_file = last_workspace_file
@@ -1137,6 +1151,7 @@ class MacView:
                     continue
                 try:
                     self._install_frame_exit_helper()
+                    self.headset_viewer.check(self.frame)  # once per connected Frame
                     self._frame_stop_available = self._probe_frame_stop_available()
                     self.spatial_apps.sync()
                 except Exception as exc:  # retry the spatial state independently of bar availability
@@ -1205,10 +1220,13 @@ class MacView:
         stop_available = (workspace.get("state") != "stopped" or self.exit_pending or
                           bool(self.workspace_panel_key) or bool(self.native_panels) or
                           self._frame_stop_available)
-        return {"connected": True, "workspace": {"running": running, "busy": busy, "label": label,
-                                                     "mode": self.mode, "stopAvailable": stop_available,
-                                                     "session": self.session_id},
-                "windows": windows[:32]}
+        workspace = {"running": running, "busy": busy, "label": label, "mode": self.mode,
+                     "stopAvailable": stop_available, "session": self.session_id}
+        notice = self._notice()
+        if notice:
+            workspace["notice"] = notice
+        return {"connected": True, "workspace": workspace, "windows": windows[:32],
+                "errors": [e["message"] for e in list(self.recent_errors)[-4:]]}
 
     def _install_frame_exit_helper(self):
         """Install the bounded local Stop helper before the dashboard is shown."""
@@ -1332,7 +1350,7 @@ class MacView:
                     time.monotonic() - self._last_frame_focus < .25):
                 return
             self._focus_queued = True
-        self._dash_run(None, self._focus_from_frame)
+        self._action_run(self._focus_from_frame)
 
     def _focus_from_frame(self):
         with self._spatial_lock:
@@ -1347,6 +1365,53 @@ class MacView:
             self.call("/focus", method="POST", src=src, u=u, v=v)
             with self._spatial_lock:
                 self._spatial_focused = src
+
+    AUX_NAMES = {"menubar": "Menu Bar", "status": "Status", "menu": "Menu"}
+    NOTICE_SECONDS = 20
+
+    def _record_error(self, message, kind="action"):
+        """Keep a failure the user caused (a headset click, a panel launch) visible."""
+        message = re.sub(r"[\x00-\x1f]+", " ", str(message or "")).strip()[:160] or "Something Went Wrong."
+        self.recent_errors.append({"at": time.time(), "kind": kind, "message": message})
+        self.dash_wake.set()
+
+    def errors_state(self):
+        return [dict(e) for e in list(self.recent_errors)]
+
+    def _notice(self):
+        latest = self.recent_errors[-1] if self.recent_errors else None
+        return latest["message"] if latest and time.time() - latest["at"] <= self.NOTICE_SECONDS else ""
+
+    def _action_run(self, fn, *args):
+        """Run a headset action (open, hide, quit, switch, focus) on its own lane."""
+        with self.action_lock:
+            try:
+                self.action_jobs.put_nowait((fn, args))
+            except queue.Full:
+                self._record_error("Too Many Headset Actions At Once; Some Were Dropped.")
+                return
+            if self.action_worker and self.action_worker.is_alive():
+                return
+
+            def work():
+                while True:
+                    try:
+                        job, job_args = self.action_jobs.get(timeout=5)
+                    except queue.Empty:
+                        with self.action_lock:
+                            if self.action_jobs.empty():
+                                self.action_worker = None
+                                return
+                        continue
+                    try:
+                        job(*job_args)
+                    except Exception as exc:  # noqa: BLE001 - shown on the bar panel and the Mac page
+                        self._record_error(str(exc))
+                    finally:
+                        self.action_jobs.task_done()
+
+            self.action_worker = threading.Thread(target=work, daemon=True)
+            self.action_worker.start()
 
     def _dash_run(self, busy, fn, *args):
         """Carry out headset requests in order, off the sync loop, so the
@@ -1374,8 +1439,8 @@ class MacView:
                 self.dash_action = job_busy
                 try:
                     job(*job_args)
-                except Exception:  # noqa: BLE001 - the Mac page shows any Workspace error
-                    pass
+                except Exception as exc:  # noqa: BLE001 - the Mac page and bar panel show it
+                    self._record_error(str(exc), kind="workspace")
                 finally:
                     self.dash_action = None
                     self.dash_jobs.task_done()
@@ -1946,6 +2011,8 @@ print(json.dumps(poses))
                 raise MacViewError("The Companion Is Shutting Down.")
             if self.exit_pending:
                 raise MacViewError(self.exit_error or "Workspace Stop is still being confirmed. Retry Stop before starting again.")
+            if self.headset_viewer.updating():
+                raise MacViewError("The headset viewer is updating. Start again when it finishes.")
             WorkspaceDisplayManager._validate_request(preset, scale, quality)
             if pose is not None:
                 pose = validate_pose(pose)
@@ -1998,22 +2065,27 @@ print(json.dumps(poses))
         # Check the viewer path before changing the Mac's display arrangement,
         # even for an empty desktop where no window launcher would run yet.
         self.ensure_tunnel(allow_new_port=not self.shown)
+        self._check_startup()
+        # The viewer must understand roles, surfaces and wall slots; an older one
+        # ignores them. Refuse before the helper moves windows or covers the laptop.
         try:
-            self.run('test -x "${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/frame-workspace-native"',
-                     timeout=8)
-        except Exception as exc:
-            raise MacViewError("Install The Native Window Host On The Frame Before Starting Spatial Mode.") from exc
+            self.headset_viewer.require_spatial(self.frame)
+        except ViewerError as exc:
+            raise MacViewError(str(exc)) from exc
+        self._check_startup()
         self._close_window_panels()
+        self._spatial_cover = False
         self.spatial_workspace = {**request, "state": "starting", "removed": False, "panelsReady": False}
         self._spatial_owned.clear()
         self._spatial_suppressed.clear()
         self._spatial_retry.clear()
         self._spatial_resume_poses.clear()
         try:
+            self._check_startup()
             home = self.call("/spatial/start", method="POST")
             if home.get("state") != "running":
                 raise MacViewError(home.get("error") or "The Spatial Shared Display Is Not Ready.")
-            if self.exit_pending:
+            if self.exit_pending or self._stop_requested or self.closing:
                 removal = self.call("/spatial/stop", method="POST")
                 self.spatial_workspace.update(state="stopped", removed=removal.get("removed") is True)
                 raise MacViewError("Workspace Stop cancelled Spatial Mode startup.")
@@ -2047,23 +2119,34 @@ print(json.dumps(poses))
         finally:
             self.workspace_lock.release()
 
+    def _spatial_cancelled(self, generation):
+        return (self.closing or self.exit_pending or self._stop_requested or self.mode != "spatial" or
+                generation != self._mode_generation or self.spatial_workspace.get("state") != "running")
+
+    def _check_startup(self):
+        """Between Spatial startup stages: a Stop from the headset or the Mac page wins."""
+        if self.closing or self.exit_pending or self._stop_requested:
+            raise MacViewError("Workspace Stop cancelled Spatial Mode startup.")
+
     def _reconcile_spatial_windows(self, generation):
         # One new panel per job keeps Stop/mode requests responsive between
         # launches. AX notifications update the helper's confirmed window list.
+        # Windows go first: Menu Bar, Status and the menu slots launch only
+        # when no window is waiting, so an idle or failing one never delays them.
+        again = False
         with self.workspace_lock:
             try:
-                if self.closing or self.exit_pending or self.mode != "spatial" or generation != self._mode_generation or \
-                        self.spatial_workspace.get("state") != "running":
+                if self._spatial_cancelled(generation):
                     return
                 state = self.call("/spatial")
                 if state.get("state") != "running" or self._spatial_agent is not self.agent:
                     self.spatial_workspace.update(state="error", removed=state.get("removed") is True,
                                                   panelCleanupPending=bool(self.native_panels),
                                                   error=state.get("error") or "The Spatial Helper Stopped. Use Stop Before Restarting.")
+                    self._spatial_cover = False
                     self._close_window_panels()
                     self.spatial_workspace["panelCleanupPending"] = False
                     return
-                self._ensure_spatial_aux_panels()
                 windows = {"spatial:" + str(w["id"]): w for w in state.get("windows", [])
                            if isinstance(w, dict) and type(w.get("id")) is int and w["id"] > 0}
                 self._spatial_suppressed.intersection_update(windows)
@@ -2100,14 +2183,39 @@ print(json.dumps(poses))
                         self.call("/close", method="POST", src=candidate)
                         self._stop_native_panels(candidate)
                         self._spatial_retry[candidate] = {"after": now + 5, "error": str(exc)}
+                        self._record_error(f"Couldn't Show {info.get('app') or 'A Window'}: {exc}", kind="panel")
+                    again = True
+                elif not self._spatial_cancelled(generation):
+                    again = self._ensure_spatial_aux_panels()
+                if not self._spatial_cancelled(generation):
+                    self._update_spatial_cover()
                 self.spatial_workspace.update(home=state,
                     panelsReady=not pending and SPATIAL_AUX_ROLES.keys() <= self.native_panels.keys(), windowCount=len(windows),
                     panelErrors={s: e["error"] for s, e in self._spatial_retry.items() if s in windows or s in SPATIAL_AUX_ROLES})
                 self.dash_wake.set()
             finally:
                 self._spatial_reconcile_queued = False
+                # Keep launching while there is work, without waiting for the next tick.
+                if again and not self._spatial_cancelled(generation):
+                    self._queue_spatial_reconcile()
+
+    def _update_spatial_cover(self):
+        """Black out the laptop only while the headset shows a window panel.
+
+        A window panel is in native_panels only after its launcher saw a
+        submitted picture, so this is the first moment the user can see the
+        Mac in the headset. If every window panel goes, the laptop shows again."""
+        want = any(p.get("role", "window") == "window" for p in self.native_panels.values())
+        if want == self._spatial_cover:
+            return
+        try:
+            self.call("/spatial/cover", method="POST", show="1" if want else "0")
+            self._spatial_cover = want
+        except MacViewError as exc:
+            self._record_error(f"Couldn't {'Cover' if want else 'Uncover'} The Laptop Screen: {exc}", kind="panel")
 
     def _ensure_spatial_aux_panels(self):
+        """Launch the next missing auxiliary panel; True if one launched."""
         now = time.monotonic()
         for source, role in SPATIAL_AUX_ROLES.items():
             if source in self.native_panels or self._spatial_retry.get(source, {}).get("after", 0) > now:
@@ -2115,10 +2223,14 @@ print(json.dumps(poses))
             try:
                 self._show(source, self.spatial_workspace["quality"], None, None, role=role)
                 self._spatial_retry.pop(source, None)
+                return True
             except Exception as exc:
                 self.call("/close", method="POST", src=source)
                 self._stop_native_panels(source)
                 self._spatial_retry[source] = {"after": now + 5, "error": str(exc)}
+                self._record_error(f"Couldn't Open The {self.AUX_NAMES.get(role, 'Menu')} Panel: {exc}", kind="panel")
+                return True  # it waits five seconds; the next one may go now
+        return False
 
     def _stop_spatial(self):
         with self.workspace_lock:
@@ -2144,6 +2256,7 @@ print(json.dumps(poses))
             self._spatial_owned.clear()
             self._spatial_resume_poses.clear()
             self._spatial_retry.clear()
+            self._spatial_cover = False  # the helper took it down with the display
             self.dash_wake.set()
             return {**removal, "mode": "spatial", "workspace": self.workspace_state()}
 
@@ -2213,6 +2326,9 @@ print(json.dumps(poses))
             if workspace_viewer_backend() != "native":
                 raise MacViewError("Saved Workspace poses require the native viewer.")
         self._remember_workspace(request["preset"], request["scale"], request["quality"])
+        if workspace_viewer_backend() == "native":
+            # Desktop Mode works with an older viewer; the Mac page offers the update.
+            self.headset_viewer.check(self.frame, force=True)
         with self.workspace_lock:
             if self.workspace_removal_pending:
                 # The last Stop could not confirm WindowServer removal. Retry
@@ -2304,7 +2420,14 @@ print(json.dumps(poses))
     def stop_workspace(self):
         """Close only the workspace panel/stream, then release its owned display."""
         if self.mode == "spatial":
-            return self._stop_spatial()
+            # Tell a running startup or panel launch to stop at its next stage,
+            # before waiting for the lock it holds.
+            self._stop_requested += 1
+            self._mode_generation += 1
+            try:
+                return self._stop_spatial()
+            finally:
+                self._stop_requested -= 1
         if self.before_workspace_stop and self.workspace_panel_key:
             try:
                 self.before_workspace_stop()  # the session's last snapshot, before anything closes
@@ -2441,7 +2564,24 @@ print(json.dumps(poses))
         return {"available": True, "screen": status.get("screen", False),
                 "accessibility": status.get("accessibility", False), "streams": status.get("streams", []),
                 "windows": windows, "displays": displays, "workspace": workspace, "tunnel": self.tunnel_up(),
-                "route": self.route}
+                "route": self.route, "recentErrors": self.errors_state(), "viewer": self.headset_viewer.state()}
+
+    # ---- the Frame's native viewer (frame_native_update.py) ----
+
+    def check_headset_viewer(self):
+        if self.headset_viewer.check(self.frame, force=True) is None:
+            raise MacViewError("Could not check the headset viewer. Is the Frame connected?")
+        return self.headset_viewer.state()
+
+    def update_headset_viewer(self):
+        """Update Headset Viewer: rebuild it on the Frame from this app's sources."""
+        with self.workspace_lock:
+            idle = (self.workspace_state().get("state") == "stopped" and not self.native_panels and
+                    not self.workspace_panel_key and not self.exit_pending and not self.closing)
+            try:
+                return self.headset_viewer.start_update(self.frame, idle)
+            except ViewerError as exc:
+                raise MacViewError(str(exc)) from exc
 
     def restart_agent(self):
         """Only if it's missing a permission: a running stream would stop."""

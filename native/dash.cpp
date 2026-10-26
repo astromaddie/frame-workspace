@@ -6,7 +6,7 @@
 // old file means the Mac is not connected.
 //
 //   frame-workspace-dash --state FILE --request-dir DIR [--images DIR] [--layout tiles|list]
-//   frame-workspace-dash --render-mock OUT.png list|tiles running|stopped|offline
+//   frame-workspace-dash --render-mock OUT.png list|tiles running|stopped|offline|spatial|notice
 #include "dash_ui.hpp"
 #include "vendor/openvr/openvr_capi.h"
 #include <json-c/json.h>
@@ -29,9 +29,10 @@ using namespace fw;
 static DashState mockState(const std::string &which) {
   DashState s;
   s.macConnected = which != "offline";
-  s.workspaceRunning = which == "running" || which == "spatial";
+  s.workspaceRunning = which == "running" || which == "spatial" || which == "notice";
   s.workspaceStopAvailable = s.workspaceRunning || !s.macConnected;
-  s.spatial = which == "spatial";
+  s.spatial = which == "spatial" || which == "notice";
+  if (which == "notice") s.notice = "Couldn't Open Claude: application not found";
   if (s.workspaceRunning)
     s.windows = {{"mads — grok — -zsh — 138×46", "com.frame-workspace.native.1000.panel-w105"},
                  {"Frame Workspace Preview — Google Chrome", "com.frame-workspace.native.1000.panel-w212"},
@@ -119,6 +120,8 @@ static DashState readState(const std::string &path) {
       s.busyText = busy == "stopping" ? "Stopping…" : "Starting…";
     }
     if (json_object_object_get_ex(ws, "label", &v)) s.workspaceLabel = json_object_get_string(v);
+    if (json_object_object_get_ex(ws, "notice", &v) && json_object_is_type(v, json_type_string))
+      s.notice = std::string(json_object_get_string(v)).substr(0, 200);
     if (json_object_object_get_ex(ws, "mode", &v) && json_object_is_type(v, json_type_string))
       s.spatial = std::string(json_object_get_string(v)) == "spatial";
     if (json_object_object_get_ex(ws, "session", &v) && json_object_is_type(v, json_type_string))
@@ -133,6 +136,7 @@ static DashState readState(const std::string &path) {
     }
   if (!fresh) {
     s.workspaceBusy = false;
+    s.notice.clear();
     s.workspaceStopAvailable = true; // local owned-service cleanup needs no Mac link
     s.windows.clear(); // do not present stale window entries as live
   }

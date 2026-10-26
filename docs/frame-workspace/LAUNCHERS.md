@@ -38,8 +38,9 @@ npm run dist:workspace:dir
 ```
 
 Copy `app/dist/mac-arm64/Frame Workspace.app` to `/Applications`. The bundle
-includes Python, the Swift Mac capture agent, the existing companion UI, and
-its required helpers. macOS may request Screen Recording and Accessibility
+includes Python, the Swift Mac capture agent, the existing companion UI, its
+required helpers, and the native viewer's sources and build script, which
+**Update Headset Viewer** sends to the Frame. macOS may request Screen Recording and Accessibility
 permission when the capture controls are first used.
 
 Install `scripts/workspace-launch-on-frame.py` and
@@ -47,7 +48,16 @@ Install `scripts/workspace-launch-on-frame.py` and
 `~/.local/share/frame-workspace/launcher/` on the Frame and make them executable.
 The Steam shortcut runs `workspace-launch-on-frame.py` directly as a VR entry.
 It uses the native viewer and dashboard already installed in
-`~/.local/share/frame-workspace/native/`.
+`~/.local/share/frame-workspace/native/`. The companion checks that viewer when
+the Frame connects and before each start; when it differs from the Mac app's
+sources, **Update Headset Viewer** on the Mac page rebuilds and installs it
+(see [NATIVE.md](NATIVE.md)). Spatial Mode refuses to start on a viewer without
+its capabilities.
+
+The panel launcher (`workspace-native-on-frame.sh`) waits for a window panel's
+first submitted texture. Menu Bar, Status and menu panels are ready once the
+host reports them `registered`, since an idle menu has no picture.
+`FRAME_NATIVE_READY_SECONDS` (default 40) bounds the wait.
 Install `scripts/workspace-exit-on-frame.py` beside that dashboard with mode
 `700` for local Stop while disconnected. The Mac companion also installs this
 helper when it connects.

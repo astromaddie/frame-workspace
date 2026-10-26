@@ -13,6 +13,7 @@ BUNDLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 KEY = re.compile(r"com\.frame-workspace\.native\.\d{1,15}\.panel-w\d{1,15}\Z")
 SOURCE = re.compile(r"(?:window|separate|spatial):(\d{1,15})\Z")
 VERBS = {"open", "hide", "unhide", "quit", "show_windows"}
+VERB_NAMES = {"open": "Open", "hide": "Hide", "unhide": "Show", "quit": "Quit", "show_windows": "Show"}
 
 
 def clean(value, limit):
@@ -241,23 +242,60 @@ class SpatialApps:
             with self.lock:
                 known = {a["bundleID"] for a in self.state["apps"]} if self.state else set()
             if isinstance(bundle, str) and bundle in known and isinstance(verb, str) and verb in VERBS:
-                self.macview._dash_run(None, self._app_action, bundle, verb)
+                self._lane(self._app_action, bundle, verb)
         elif action == "switch":
             key = request.get("key")
             if isinstance(key, str) and KEY.fullmatch(key) and self._source(key):
-                self.macview._dash_run(None, self._switch, key)
+                self._lane(self._switch, key)
         elif request.get("verb") in ("open", "close"):
-            self.macview._dash_run(None, self._switcher_action, request["verb"])
+            self._lane(self._switcher_action, request["verb"])
         return True
+
+    def _lane(self, fn, *args):
+        """Headset clicks run on the companion's action lane, never behind
+        Spatial startup or a panel launch on the Workspace queue."""
+        run = getattr(self.macview, "_action_run", None)
+        if run:
+            run(fn, *args)
+        else:
+            self.macview._dash_run(None, fn, *args)
+
+    def _app_name(self, bundle):
+        with self.lock:
+            apps = self.state["apps"] if self.state else []
+        return next((a["name"] for a in apps if a["bundleID"] == bundle and a.get("name")), bundle)
+
+    def _app_windows(self, bundle):
+        """This app's panel keys, most recently used first (the switcher's order)."""
+        with self.lock:
+            state = self.state
+        if not state:
+            return []
+        keys = [w["key"] for a in state["apps"] if a["bundleID"] == bundle for w in a["windows"]]
+        order = state.get("switcher", {}).get("windows", [])
+        return [k for k in order if k in keys] + [k for k in keys if k not in order]
 
     def _source(self, key):
         return next((s for s, p in list(self.macview.native_panels.items())
                      if p.get("key") == key and SOURCE.fullmatch(s)), None)
 
     def _app_action(self, bundle, verb):
-        if self.enabled:
-            self.macview.call("/apps/action", method="POST", bundleID=bundle, verb=verb)
-            self.refresh()
+        if not self.enabled:
+            return
+        name = self._app_name(bundle)
+        try:
+            result = self.macview.call("/apps/action", method="POST", bundleID=bundle, verb=verb)
+            if isinstance(result, dict) and result.get("ok") is False:
+                raise ValueError(result.get("error") or "macOS refused")
+        except Exception as exc:
+            reason = str(exc).removeprefix("The Mac Streaming Helper: ")
+            raise RuntimeError(f"Couldn't {VERB_NAMES[verb]} {clean(name, 64)}: {clean(reason, 120)}") from exc
+        # Opening an app that already has a panel also brings that panel forward.
+        if verb in ("open", "show_windows"):
+            keys = self._app_windows(bundle)
+            if keys and self.enabled:
+                self.macview.call("/switcher", method="POST", mode="spatial", verb="choose", key=keys[0])
+        self.refresh()
 
     def _switch(self, key):
         source = self._source(key)

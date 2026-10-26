@@ -20,6 +20,31 @@ Build on the Frame against its system development libraries using
 fails clearly if the executable is missing. Device installation/testing requires
 the shared Frame booking and explicit off-head consent.
 
+### Matching the Mac app (2026-10-26)
+
+The build hashes its inputs (`native/*.cpp`, `*.hpp`, `input/*.json`, `vendor/`,
+the build script and `scripts/native_source_identity.py`) into one source
+identity, compiles it in, and records it as `source_identity` in
+`BUILD-METADATA.json`. `frame-workspace-native --capabilities` prints it with
+the protocol version and capabilities (`roles`, `surfaces`, `wall-slots`,
+`idle-auxiliary`). An older viewer rejects the flag. The companion computes the
+same identity from its bundled sources and compares on connect and before each
+start. `build-workspace-native.sh -j 2` builds the viewer and dashboard together.
+
+**Update Headset Viewer** on the Mac page, with no Workspace running on either
+side: the companion copies the bundled sources over the existing SSH link to
+`~/.cache/frame-workspace/native-update/` and starts
+`scripts/workspace-native-update-on-frame.py` in the user unit
+`frame-workspace-native-update-UID.service`. That checks the sources against the
+identity, builds with `-j2`, runs `--self-test` and `--capabilities`, checks
+again that no Workspace unit is running, then replaces the viewer, dashboard,
+`input/` bindings and metadata one file at a time (the viewer last). The
+previous build is kept in `~/.local/share/frame-workspace/native-previous/`;
+poses, the Stop helper and other state are not touched. It stops the dashboard
+unit so the companion restarts it on the new binary. Progress and failures
+(with the end of the build log) show on the Mac page. To roll back, stop the
+Workspace and copy the files from `native-previous/` back.
+
 Start the Mac companion with these settings to select the native path:
 
 ```sh

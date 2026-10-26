@@ -67,7 +67,19 @@
           "*.sh",
           "workspace-spatial-on-frame.py",
           "workspace-launch-on-frame.py",
-          "workspace-exit-on-frame.py"
+          "workspace-exit-on-frame.py",
+          "workspace-native-update-on-frame.py",
+          "native_source_identity.py"
+        ]
+      },
+      {
+        "from": "../native",
+        "to": "native",
+        "filter": [
+          "*.cpp",
+          "*.hpp",
+          "input/*.json",
+          "vendor/**/*"
         ]
       },
       {
