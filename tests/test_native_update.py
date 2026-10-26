@@ -33,7 +33,7 @@ mkdir -p "$out"
 cat > "$out/frame-workspace-native" <<EOF
 #!/bin/sh
 case "\$1" in
-  --capabilities) echo '{"name":"frame-workspace-native","protocol":2,"sourceIdentity":"$identity","capabilities":["host","roles","surfaces","wall-slots","idle-auxiliary","capabilities"]}' ;;
+  --capabilities) echo '{"name":"frame-workspace-native","protocol":2,"sourceIdentity":"$identity","capabilities":["host","roles","surfaces","wall-slots","idle-auxiliary","window-layout","capabilities"]}' ;;
   --self-test) echo "native self-test passed" ;;
   *) exit 2 ;;
 esac

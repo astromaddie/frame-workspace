@@ -356,6 +356,26 @@ with open(os.environ['TEST_EVENTS'], 'a') as f: f.write('host-start\\n')
                 finally:
                     context.cleanup()
 
+    def test_standalone_window_gets_its_bundle_id_only_from_a_viewer_that_takes_it(self):
+        for capable in (True, False):
+            with self.subTest(capable=capable):
+                context, root, env, pose_file, _, prefix, _, _ = self.fixture(panel=True)
+                try:
+                    binary = Path(env["XDG_DATA_HOME"]) / "frame-workspace" / "native" / "frame-workspace-native"
+                    caps = '["host","window-layout","capabilities"]' if capable else '["host","capabilities"]'
+                    binary.write_text("#!/bin/sh\n[ \"$1\" = --capabilities ] && echo '{\"capabilities\":%s}' && exit 0\n"
+                                      "exit 99\n" % caps, encoding="utf-8")
+                    run = self.run_launcher(env, self.start_args(prefix, "--bundle-id", "com.apple.Terminal",
+                                                                 "--pose", VALID_RAW))
+                    self.assertEqual(run.returncode, 1, run.stdout + run.stderr)  # the stub viewer exits
+                    args = (root / "systemd-run-args").read_text().splitlines()
+                    self.assertEqual("--bundle-id" in args, capable)
+                    if capable:
+                        self.assertEqual(args[args.index("--bundle-id") + 1], "com.apple.Terminal")
+                    self.assertRestoredPose(pose_file.read_text(encoding="utf-8"), title="", bundle="com.apple.Terminal")
+                finally:
+                    context.cleanup()
+
     def test_pose_override_keeps_a_bend(self):
         context, root, env, pose_file, _, prefix, _, _ = self.fixture()
         try:

@@ -1161,7 +1161,10 @@ mkdir -p "$requests"
 chmod 700 "$requests"
 panel_args=(--request-dir "$requests")
 if [ -n "$panel_name" ]; then panel_args+=(--overlay-name "$panel_name"); fi
-if [ -n "$bundle_id" ]; then panel_args+=(--bundle-id "$bundle_id"); fi
+# An installed viewer from before window identities (FW-15) rejects the flag.
+if [ -n "$bundle_id" ] && "$binary" --capabilities 2>/dev/null | grep -q '"window-layout"'; then
+  panel_args+=(--bundle-id "$bundle_id")
+fi
 if [ -n "$initial_pose" ]; then panel_args+=(--initial-pose "$initial_pose"); fi
 vrcmd=/opt/steamvr/bin/linuxarm64/vrcmd
 native_start=(--user --unit="$unit" --description='Frame Workspace native viewer' --collect \

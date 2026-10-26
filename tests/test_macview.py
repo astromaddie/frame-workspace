@@ -1559,7 +1559,7 @@ class SpatialMode(unittest.TestCase):
         self.streams = []
         # What the Frame's viewer reports (scripts/workspace-native-update-on-frame.py status).
         self.viewer = {"installed": {"present": True, "identity": self.mv.headset_viewer.expected(), "protocol": 2,
-                                     "capabilities": ["host", "roles", "surfaces", "wall-slots", "idle-auxiliary",
+                                     "capabilities": ["host", "roles", "surfaces", "wall-slots", "idle-auxiliary", "window-layout",
                                                       "capabilities"]},
                        "sessionActive": False, "job": None}
 
@@ -1971,6 +1971,10 @@ class SpatialMode(unittest.TestCase):
         for installed, message in (({"present": True, "capabilities": None}, "too old for Spatial Mode"),
                                    ({"present": True, "identity": "a" * 64, "protocol": 2,
                                      "capabilities": ["host", "roles"]}, "too old for Spatial Mode"),
+                                   # Before FW-15 window layout: it would stack windows at stale poses.
+                                   ({"present": True, "identity": "a" * 64, "protocol": 2,
+                                     "capabilities": ["host", "roles", "surfaces", "wall-slots", "idle-auxiliary",
+                                                      "content-input", "capabilities"]}, "too old for Spatial Mode"),
                                    ({"present": False}, "Install the native window host")):
             with self.subTest(installed=installed):
                 self.events.clear()

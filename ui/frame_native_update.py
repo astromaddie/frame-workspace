@@ -24,7 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 UPDATER = ROOT / "scripts" / "workspace-native-update-on-frame.py"
 IDENTITY = ROOT / "scripts" / "native_source_identity.py"
-SPATIAL_CAPABILITIES = {"roles", "surfaces", "wall-slots", "idle-auxiliary"}
+# window-layout (FW-15): wall cells by occupancy, placeholders, user-set poses
+# only and Arrange Windows; an older host would stack windows at stale poses.
+SPATIAL_CAPABILITIES = {"roles", "surfaces", "wall-slots", "idle-auxiliary", "window-layout"}
 PROTOCOL = 2
 BASE = '"${XDG_CACHE_HOME:-$HOME/.cache}/frame-workspace/native-update"'
 RUNNING = ("sending", "queued", "building", "testing", "installing")
