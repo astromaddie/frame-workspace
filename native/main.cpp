@@ -8,6 +8,8 @@
 #include "tests_spatial.hpp"
 #include "tests_wall.hpp"
 #include "tests_depth.hpp"
+#include "content_input.hpp"
+#include "tests_content.hpp"
 #include <array>
 #include <cassert>
 #include <csignal>
@@ -46,7 +48,7 @@ static int printCapabilities() {
   std::cout << "{\"name\":\"frame-workspace-native\",\"protocol\":2,\"sourceIdentity\":"
             << jsonString(FRAME_WORKSPACE_SOURCE_ID)
             << ",\"capabilities\":[\"host\",\"roles\",\"surfaces\",\"wall-slots\","
-               "\"idle-auxiliary\",\"capabilities\"],"
+               "\"idle-auxiliary\",\"content-input\",\"capabilities\"],"
                "\"roles\":[\"window\",\"menubar\",\"status\",\"menu\"]}\n";
   return 0;
 }
@@ -476,8 +478,9 @@ static int selfTest() {
   selfTestSpatial();
   selfTestWall();
   selfTestDepth();
+  selfTestContent();
   std::cout
-      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout, overlay budget ordering/hysteresis/nine-window fit and trigger gestures\n";
+      << "native self-test passed: URL allowlist, wire framing, initial/overflow/software and hardware reconnect/resize recovery policy, bounded reset PTS metadata, strict unknown PTS, newest picture, spatial placement, VR handles, bends, host bookkeeping, gaze picking, focus feedback, spatial layout, overlay budget ordering/hysteresis/nine-window fit, trigger gestures and content input (picture picking on every bend, press latching, foreground priority, two hands, drag handoff, gaze suppression, scroll, tracking loss, trackpad takeover)\n";
   return 0;
 }
 static std::shared_ptr<Picture> pattern(uint32_t seq) {
@@ -597,7 +600,7 @@ static void convertYuvOracle(Picture &p) {
 }
 struct PanelOptions {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
-      requestDir, spatialStateFile, hostGeneration,
+      requestDir, spatialStateFile, hostGeneration, testHandsFile,
       key = "com.frame-workspace.native.workspace", decoderMode = "software", conversionMode = "cpu",
       presentMode = "paced", handoffMode = "fence", testYuvFormat, testYuvRange = "limited",
       testYuvColorSpace = "bt601", testYuvPattern = "sharp", exitReason = "running";
@@ -639,6 +642,32 @@ public:
   uint32_t uploadedSeq = 0;
   double uploadedReceived = 0;
   bool auxiliary() const { return role != PanelRole::Window; }
+  // Native input geometry for the picture on show: revisions wait for the
+  // first uploaded picture they describe; a hidden surface applies at once.
+  Pipeline::InputGeometry inputGeometry;
+  bool inputGeometryValid = false;
+  std::deque<Pipeline::InputGeometry> waitingGeometry;
+  uint64_t geometryConnection = 0;
+  void refreshInputGeometry() {
+    // A new connection starts without geometry, until its own arrives.
+    if (pipe.inputConnection != geometryConnection) { resetInputGeometry(); geometryConnection = pipe.inputConnection; }
+    for (auto &g : pipe.takeInputGeometry()) {
+      if (g.connection != geometryConnection) continue;
+      if (g.pictureSeq == 0) { inputGeometry = g; inputGeometryValid = true; waitingGeometry.clear(); }
+      else waitingGeometry.push_back(g);
+    }
+    while (ready && !waitingGeometry.empty() &&
+           (uploadedSeq == waitingGeometry.front().pictureSeq ||
+            sequenceNewer(uploadedSeq, waitingGeometry.front().pictureSeq))) {
+      inputGeometry = waitingGeometry.front(); inputGeometryValid = true;
+      waitingGeometry.pop_front();
+    }
+  }
+  void resetInputGeometry() { inputGeometry = {}; inputGeometryValid = false; waitingGeometry.clear(); }
+  // Whether picture (u, v) is Mac content this panel can address now.
+  bool inputContent(float u, float v) const {
+    return pipe.inputNegotiated && inputGeometryValid && inputGeometry.contains(u, v);
+  }
   // A window is registered once it shows a picture. An auxiliary strip or menu
   // slot can be idle with nothing to draw (a closed menu sends no video), so it
   // registers once its stream is connected and its first surface message has
@@ -1035,6 +1064,7 @@ public:
           ready = true;
           uploadedSeq = picture->seq; uploadedReceived = picture->received;
           refreshSurface();
+          refreshInputGeometry();
           ++uploads;
           w = picture->outputWidth();
           h = picture->outputHeight();
@@ -1151,6 +1181,52 @@ public:
 static int runHost(const std::string &folder, const std::string &stateFile, const PanelOptions &defaults) {
   auto session = std::make_shared<OverlaySession>(defaults.noVR);
   session->sharedHost = true;
+  if (defaults.noVR && !defaults.testHandsFile.empty()) {
+    // Test-only hand samples (native/tests_host.py): {"hands": [left, right]},
+    // each {"valid", "origin", "direction", "trigger", "secondary", "squeeze", "stick"}.
+    auto raw = std::make_shared<std::string>();
+    auto cached = std::make_shared<std::array<OverlaySession::Hand, 2>>();
+    session->testHands = [file = defaults.testHandsFile, raw, cached](OverlaySession::Hand (&hands)[2]) {
+      try {
+        auto text = readFile(file, 65536);
+        if (text != *raw) {
+          *raw = text;
+          auto j = json(text);
+          auto list = field(j, "hands");
+          std::array<OverlaySession::Hand, 2> next{};
+          for (int i = 0; list && json_object_is_type(list, json_type_array) && i < 2 &&
+                          i < int(json_object_array_length(list)); ++i) {
+            auto item = json_object_array_get_idx(list, i);
+            auto get = [&](const char *name) { json_object *v = nullptr; json_object_object_get_ex(item, name, &v); return v; };
+            auto boolean = [&](const char *name) { auto v = get(name); return v && json_object_get_boolean(v); };
+            auto vec = [&](const char *name, float *out, int n) {
+              auto v = get(name);
+              for (int k = 0; v && k < n && k < int(json_object_array_length(v)); ++k)
+                out[k] = float(json_object_get_double(json_object_array_get_idx(v, k)));
+            };
+            auto &h = next[i];
+            float origin[3]{}, direction[3]{0, 0, -1};
+            vec("origin", origin, 3); vec("direction", direction, 3); vec("stick", h.scroll, 2);
+            h.valid = boolean("valid"); h.grab = boolean("trigger"); h.secondary = boolean("secondary");
+            h.squeeze = boolean("squeeze");
+            const float n = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+            float z[3]{-direction[0] / n, -direction[1] / n, -direction[2] / n};  // pose -Z points
+            float up[3]{0, 1, 0};
+            if (std::fabs(z[1]) > .99f) { up[1] = 0; up[2] = 1; }
+            float x[3]{up[1] * z[2] - up[2] * z[1], up[2] * z[0] - up[0] * z[2], up[0] * z[1] - up[1] * z[0]};
+            const float xn = std::sqrt(x[0] * x[0] + x[1] * x[1] + x[2] * x[2]);
+            for (auto &c : x) c /= xn;
+            float y[3]{z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]};
+            for (int r = 0; r < 3; ++r) {
+              h.pose.m[r][0] = x[r]; h.pose.m[r][1] = y[r]; h.pose.m[r][2] = z[r]; h.pose.m[r][3] = origin[r];
+            }
+          }
+          *cached = next;
+        }
+      } catch (...) {}  // atomic replacement may be briefly absent
+      hands[0] = (*cached)[0]; hands[1] = (*cached)[1];
+    };
+  }
   if (!defaults.actionManifest.empty()) session->initInput(defaults.actionManifest);
   struct Entry { PanelSpec spec; std::unique_ptr<PanelRunner> panel; };
   std::map<std::string, Entry> entries;
@@ -1183,6 +1259,65 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     return true;
   };
   MenuStripReveal menuReveal;
+  ContentInput content;
+  // A focus the helper confirmed over a panel's stream: snap the host's focus
+  // and tell the companion (live set only; it must not replay a raise).
+  auto confirmFocus = [&](const std::string &key) {
+    for (auto &[path, e] : entries)
+      if (e.panel && e.spec.role == PanelRole::Window && e.spec.key == key) {
+        focus.activate(key);
+        focusRecency[key] = ++focusClock;
+        for (auto &[otherPath, other] : entries) if (other.panel && other.spec.role == PanelRole::Window)
+          other.panel->overlay.setSpatialForeground(other.spec.key == key);
+        try {
+          static uint64_t direct = 0;
+          atomicWrite(e.spec.requestDir + "/focus-" + std::to_string(getpid()) + "-d" + std::to_string(++direct) +
+                          ".json", "{\"action\":\"focus\",\"key\":" + jsonString(key) +
+                          ",\"u\":0.5,\"v\":0.5,\"direct\":true}");
+        } catch (...) {}
+      }
+  };
+  // Content commands become ordered stream messages. A stream that cannot
+  // take one (gone, not negotiated, queue full) resets the arbiter there.
+  auto dispatchContent = [&](const std::vector<ContentCommand> &commands) {
+    for (const auto &c : commands) {
+      PanelRunner *panel = nullptr;
+      for (auto &[path, e] : entries) if (e.panel && e.spec.key == c.key) panel = e.panel.get();
+      if (!panel || !panel->pipe.inputNegotiated) { content.streamReset(c.key); continue; }
+      auto number = [](float x) { return std::to_string(x); };
+      const std::string geometry = std::to_string(panel->inputGeometryValid ? panel->inputGeometry.revision : 0);
+      std::string body;
+      bool move = false;
+      switch (c.kind) {
+      case ContentCommand::Focus:
+        body = "{\"t\":\"focus\",\"u\":" + number(c.u) + ",\"v\":" + number(c.v) + ",\"intent\":" +
+            jsonString(c.intent) + ",\"deliberate\":" + (c.deliberate ? "true" : "false");
+        break;
+      case ContentCommand::Move:
+        body = "{\"t\":\"m\",\"e\":\"move\",\"x\":" + number(c.u) + ",\"y\":" + number(c.v) +
+            ",\"geometry\":" + geometry;
+        move = true;
+        break;
+      case ContentCommand::Down:
+      case ContentCommand::Up:
+        body = std::string("{\"t\":\"m\",\"e\":\"") + (c.kind == ContentCommand::Down ? "down" : "up") +
+            "\",\"b\":" + std::to_string(c.button) + ",\"x\":" + number(c.u) + ",\"y\":" + number(c.v) +
+            ",\"geometry\":" + geometry;
+        break;
+      case ContentCommand::Wheel:
+        body = "{\"t\":\"wheel\",\"dx\":" + number(c.dx) + ",\"dy\":" + number(c.dy) + ",\"x\":" +
+            number(c.u) + ",\"y\":" + number(c.v) + ",\"geometry\":" + geometry;
+        break;
+      case ContentCommand::Barrier: body = "{\"t\":\"input-barrier\""; break;
+      case ContentCommand::Keepalive: body = "{\"t\":\"input-keepalive\""; break;
+      case ContentCommand::Release: panel->pipe.releaseInput(); continue;
+      }
+      if (!panel->pipe.sendInput(body, move, c.token)) {
+        panel->pipe.releaseInput();
+        content.overflow(c.key);
+      }
+    }
+  };
   SpatialState spatial;
   SpatialRenderer spatialRenderer(session);
   std::string spatialPath = defaults.spatialStateFile;
@@ -1690,6 +1825,67 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         auto s = e.panel->overlay.surfaceGeometry; s.key = e.spec.key;
         auxiliaries.push_back(s);
       }
+    // Content input: stream answers first, then this frame's hands.
+    for (auto &[path, e] : entries) if (e.panel) {
+      auto &panel = *e.panel;
+      panel.refreshInputGeometry();
+      for (const auto &event : panel.pipe.takeInputEvents()) switch (event.kind) {
+        case Pipeline::InputEvent::Ack: content.acknowledge(e.spec.key, event.token, event.ok); break;
+        case Pipeline::InputEvent::Refused: content.refused(e.spec.key); break;
+        case Pipeline::InputEvent::Physical: content.yieldToPhysical(); break;
+        case Pipeline::InputEvent::Unfocused: content.focusLost(e.spec.key); break;
+        case Pipeline::InputEvent::Released: case Pipeline::InputEvent::Reset:
+          content.streamReset(e.spec.key);
+          break;
+        default: break;
+      }
+    }
+    for (const auto &key : content.takeConfirmed()) confirmFocus(key);
+    // What each hand's laser is on, in the host's render and routing order.
+    auto contentHit = [&](int hand) {
+      ContentHit result;
+      const auto &h = session->hand[hand];
+      if (!h.valid) return result;
+      const auto r = h.ray();
+      if (dismissedMenu || shelfMover.owns(hand) || (spatial.spatial && spatial.open && grip[hand])) {
+        result.consumer = ContentConsumer::Ui;
+        return result;
+      }
+      if (auto aux = pickPanel(r, auxiliaries)) {
+        result.consumer = ContentConsumer::Ui;  // it hides the window behind it either way
+        for (auto &[path, e] : entries)
+          if (e.panel && e.spec.key == aux.key && aux.content && e.panel->inputContent(aux.u, aux.v) &&
+              (e.spec.role != PanelRole::Menubar || menuReveal.wide >= .999f)) {
+            result = {ContentConsumer::Content, aux.key, true, aux.u, aux.v};
+          }
+        return result;
+      }
+      if (spatialPick(r, tiles) >= 0) { result.consumer = ContentConsumer::Ui; return result; }
+      auto it = entries.find(handOwner[hand]);
+      if (it == entries.end() || !it->second.panel || it->second.spec.role != PanelRole::Window) return result;
+      auto &panel = *it->second.panel;
+      if (panel.overlay.handleAt(h.pose, hand)) { result.consumer = ContentConsumer::Handle; return result; }
+      if (!panel.ready || !panel.overlay.interactive()) return result;
+      auto pick = surfacePick(r, {it->second.spec.key, panel.overlay.placement, panel.overlay.panelHeight()});
+      if (pick && pick.content && panel.inputContent(pick.u, pick.v))
+        result = {ContentConsumer::Content, it->second.spec.key, false, pick.u, pick.v};
+      return result;
+    };
+    if (spatial.spatial) {
+      ContentFrame frame;
+      frame.now = now; frame.menuOpen = openMenu; frame.activeWindow = focus.active;
+      for (int hand = 0; hand < 2; ++hand) {
+        const auto &h = session->hand[hand];
+        auto &sample = frame.hand[hand];
+        sample.valid = h.valid; sample.trigger = h.grab; sample.secondary = h.secondary;
+        sample.stick[0] = h.scroll[0]; sample.stick[1] = h.scroll[1];
+        const auto r = h.ray();
+        for (int i = 0; i < 3; ++i) sample.direction[i] = r.direction[i];
+        sample.hit = contentHit(hand);
+      }
+      dispatchContent(content.update(frame));
+    } else
+      dispatchContent(content.cancelAll());
     EyeRay ray = wallPriorityRay;
     bool eye = wallPriorityIsEye;
     PanelPick hit;
@@ -1712,6 +1908,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     // Foreground UI consumes gaze before underlying windows can build focus.
     if (eye && (auxiliaryHit(ray) || spatialPick(ray, tiles) >= 0))
       hit = {};
+    // The controller owns the pointer, a button is held or a Mac menu is
+    // open: dwell waits, and starts again from nothing afterwards.
+    if (spatial.spatial && content.suppressGaze())
+      hit = {};
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window)
         focus.feedback.try_emplace(e.spec.key);
@@ -1719,7 +1919,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         now - lastFocusAttempt >= 100) {
       lastFocusAttempt = now;
       for (auto &[path, e] : entries)
-        if (e.panel && e.spec.key == hit.key)
+        if (e.panel && e.spec.key == hit.key && spatial.spatial && e.panel->pipe.inputNegotiated) {
+          // Snapped on the helper's acknowledgement (confirmFocus).
+          if (content.gazeFocus(hit.key, hit.u, hit.v, now)) dispatchContent(content.drain());
+        } else if (e.panel && e.spec.key == hit.key)
           try {
             atomicWrite(e.spec.requestDir + "/focus-" + std::to_string(getpid()) + "-" + std::to_string(++requests) + ".json", "{\"action\":\"focus\",\"key\":" + jsonString(hit.key) + ",\"u\":" +
                       std::to_string(hit.u) + ",\"v\":" + std::to_string(hit.v) + "}");
@@ -1767,6 +1970,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
   if (interrupted) reason = "signal-" + std::to_string(interrupted);
+  dispatchContent(content.cancelAll());
   for (auto &[path, entry] : entries) if (entry.panel) entry.panel->finish(reason);
   entries.clear();
   writeHostState("stopped");
@@ -1774,7 +1978,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
 }
 int main(int argc, char **argv) {
   std::string urlFile, controlFile, stateFile, poseFile, dumpPath, overlayName, initialPose, actionManifest,
-      requestDir, hostDir, spatialStateFile,
+      requestDir, hostDir, spatialStateFile, testHandsFile,
       key = "com.frame-workspace.native.workspace", decoderMode = "software",
       conversionMode = std::getenv("FRAME_WORKSPACE_CONVERSION")
                           ? std::getenv("FRAME_WORKSPACE_CONVERSION")
@@ -1813,6 +2017,8 @@ int main(int argc, char **argv) {
         hostDir = value();
       else if (a == "--spatial-state")
         spatialStateFile = value();
+      else if (a == "--test-hands")
+        testHandsFile = value();
       else if (a == "--url-file")
         urlFile = value();
       else if (a == "--control-file")
@@ -2122,6 +2328,7 @@ int main(int argc, char **argv) {
     options.actionManifest = actionManifest;
     options.requestDir = requestDir;
     options.spatialStateFile = spatialStateFile;
+    options.testHandsFile = testHandsFile;
     options.key = key;
     options.decoderMode = decoderMode;
     options.conversionMode = conversionMode;

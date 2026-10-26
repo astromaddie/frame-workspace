@@ -5,12 +5,16 @@
     {"name": "/actions/workspace/in/grab", "type": "boolean"},
     {"name": "/actions/workspace/in/squeeze", "type": "boolean"},
     {"name": "/actions/workspace/in/switcher", "type": "boolean"},
+    {"name": "/actions/workspace/in/secondary", "type": "boolean"},
+    {"name": "/actions/workspace/in/scroll", "type": "vector2"},
     {"name": "/actions/workspace/out/haptic", "type": "vibration"}
   ],
   "action_sets": [{"name": "/actions/workspace", "usage": "leftright"}],
   "localization": [{"language_tag": "en_US", "/actions/workspace": "Frame Workspace",
-                    "/actions/workspace/in/aim": "Point at Windows", "/actions/workspace/in/grab": "Grab Handle",
+                    "/actions/workspace/in/aim": "Point at Windows", "/actions/workspace/in/grab": "Grab Handle or Click",
                     "/actions/workspace/in/squeeze": "Grab Handle (Both Sides)",
                     "/actions/workspace/in/switcher": "Window Switcher",
+                    "/actions/workspace/in/secondary": "Right Click",
+                    "/actions/workspace/in/scroll": "Scroll",
                     "/actions/workspace/out/haptic": "Handle Feedback"}]
 }

@@ -6,6 +6,7 @@ Do not use this test on an in-use headset. Temporary sources/state are removed.
 import base64
 import hashlib
 import json
+import math
 import pathlib
 import queue
 import select
@@ -57,9 +58,14 @@ def receive(connection):
 class Stream:
     # idle: like an empty menu slot, the helper sends a hidden surface and
     # `still`, and no picture. silent: connected, with no surface message.
-    def __init__(self, encoded, idle=False, silent=False):
+    # native: offers native content input like a Spatial helper stream, with
+    # a fresh epoch per connection and input geometry for its pictures; it
+    # acknowledges focus, barriers and releases (refuse=True: focus fails).
+    def __init__(self, encoded, idle=False, silent=False, native=False, rect=(0, 30, 640, 360)):
         self.encoded = encoded
         self.idle, self.silent = idle or silent, silent
+        self.native, self.rect, self.refuse = native, list(rect), False
+        self.epoch, self.revision = None, 0
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
         self.listener.listen()
@@ -97,8 +103,16 @@ class Stream:
                     connection.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
                                         "Sec-WebSocket-Accept: " + accept + "\r\n\r\n").encode())
                     self.connections += 1
-                    send(connection, b'{"t":"hello","r":"test-reconnect"}')
+                    hello = {"t": "hello", "r": "test-reconnect"}
+                    if self.native:
+                        self.epoch = f"epoch-{self.connections}"
+                        hello.update(nativeInput=1, inputEpoch=self.epoch, inputExpiryMs=1500)
+                    send(connection, json.dumps(hello).encode())
                     live, seq, last = not self.idle, 0, 0
+                    if self.native and not self.idle:
+                        self.revision += 1
+                        send(connection, json.dumps({"t": "input-geometry", "v": 1, "revision": self.revision,
+                            "pictureSeq": 1, "rect": self.rect, "contentUV": [0, 0, 1, 1], "visible": True}).encode())
                     if self.idle and not self.silent:
                         send(connection, b'{"t":"surface","v":1,"seq":1,"visible":false}')
                     if self.idle:
@@ -117,6 +131,8 @@ class Stream:
                                 forced = command[1]
                         elif isinstance(command, dict):
                             send(connection, json.dumps(command).encode())
+                        elif command == "drop":
+                            break  # gone without a close: the viewer reconnects
                         elif command:
                             send(connection, json.dumps({"t": command}).encode())
                             if command in ("still", "live"):
@@ -136,6 +152,11 @@ class Stream:
                                 break
                             message = json.loads(payload)
                             self.messages.put(message)
+                            if self.native and message.get("epoch") == self.epoch and \
+                                    message.get("t") in ("focus", "input-barrier", "release"):
+                                ok = not (self.refuse and message["t"] == "focus")
+                                send(connection, json.dumps({"t": "input-ack", "q": message["q"], "ok": ok,
+                                                             "epoch": self.epoch}).encode())
                             if message.get("t") == "ping":
                                 send(connection, json.dumps({"t": "pong", "c": message["c"],
                                                              "a": time.monotonic() * 1e6}).encode())
@@ -540,8 +561,283 @@ def run_idle_auxiliary(binary):
         for stream in streams.values(): stream.finish()
 
 
+INPUT_TYPES = ("focus", "m", "wheel", "input-barrier", "input-keepalive", "release")
+
+
+def run_content_input(binary):
+    """Controller pointer, click, drag and scroll through the production host
+    and arbiter: a test-only hand file replaces OpenVR's samples (--test-hands)."""
+    streams = {"a": Stream(encode("red", 320, 180), native=True),
+               "b": Stream(encode("blue", 320, 180), native=True, rect=(0, 30, 800, 450)),
+               "status": Stream(encode("gray", 400, 24), native=True, rect=(3000, 0, 600, 36))}
+    seen = {name: [] for name in streams}
+
+    def collect(name):
+        while not streams[name].messages.empty():
+            m = streams[name].messages.get_nowait()
+            if m.get("t") in INPUT_TYPES and "epoch" in m:
+                seen[name].append(m)
+        return seen[name]
+
+    def mark():
+        return {name: len(collect(name)) for name in streams}
+
+    def since(marked, name):
+        return collect(name)[marked[name]:]
+
+    def summary(messages):
+        out = []
+        for m in messages:
+            if m["t"] == "m":
+                out.append(m["e"] + ("" if m["e"] == "move" else str(m.get("b", 0))))
+            elif m["t"] == "focus":
+                out.append("focus:" + m.get("intent", "gaze"))
+            elif m["t"] != "input-keepalive":
+                out.append(m["t"])
+        return out
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="fw-content-input-") as temporary:
+            root = pathlib.Path(temporary)
+            specs, requests = root / "specs", root / "requests"
+            specs.mkdir(); requests.mkdir()
+            hands_file = root / "hands.json"
+            atomic_json(hands_file, {"hands": []})
+            for name, stream in streams.items():
+                folder = root / name; folder.mkdir()
+                (folder / "url").write_text(f"http://127.0.0.1:{stream.port}/view?src=spatial%3A1&t=local")
+                spec = {"version": 1, "generation": "content", "urlFile": str(folder / "url"),
+                        "overlayKey": "test.panel." + name, "overlayName": name,
+                        "controlFile": str(folder / "control.json"), "stateFile": str(folder / "state.json"),
+                        "poseFile": str(folder / "pose.json"), "requestDir": str(requests)}
+                spec.update({"role": "status"} if name == "status" else {"slot": 0 if name == "a" else 1})
+                atomic_json(specs / (name + ".json"), spec)
+            spatial = {"mode": "spatial", "apps": [{"bundleID": "test.app", "name": "Fixture", "running": True,
+                       "windows": [{"key": "test.panel.a", "title": "A"}, {"key": "test.panel.b", "title": "B"}]}],
+                       "switcher": {"seq": 1, "open": False}}
+            atomic_json(root / "spatial.json", spatial)
+            with (root / "viewer.log").open("w+") as log:
+                process = subprocess.Popen([str(binary), "--host-dir", str(specs), "--no-vr", "--action-manifest", "none",
+                    "--state-file", str(root / "host.json"), "--spatial-state", str(root / "spatial.json"),
+                    "--test-hands", str(hands_file), "--seconds", "90"], stdout=log, stderr=log)
+
+                def state(name):
+                    try: return json.loads((root / name / "state.json").read_text())
+                    except (OSError, ValueError): return {}
+
+                def wait(predicate, label, timeout=8):
+                    deadline = time.monotonic() + timeout
+                    while time.monotonic() < deadline:
+                        assert process.poll() is None, "host exited: " + label
+                        result = predicate()
+                        if result: return result
+                        time.sleep(.02)
+                    raise AssertionError("timed out: " + label)
+
+                def point(name, u, v):
+                    st = state(name)
+                    m, w, h = st["placement"]["matrix"], st["placement"]["width"], st["surfaceHeight"]
+                    x, y, z = (u - .5) * w, (.5 - v) * h, .03 if name != "status" else 0
+                    return [m[r * 4] * x + m[r * 4 + 1] * y + m[r * 4 + 2] * z + m[r * 4 + 3] for r in range(3)]
+
+                hand = {"valid": True, "origin": [0, 0, 0], "direction": [0, 0, -1], "trigger": False,
+                        "secondary": False, "stick": [0, 0]}
+
+                def write(**change):
+                    hand.update(change)
+                    atomic_json(hands_file, {"hands": [{"valid": False}, dict(hand)]})
+                    time.sleep(.03)
+
+                def yawed(direction, angle):
+                    c, s = math.cos(angle), math.sin(angle)
+                    x, y, z = direction
+                    return [c * x + s * z, y, -s * x + c * z]
+
+                def aim(target, sweep=True, steps=8):
+                    # Pointing deliberately: a small back-and-forth ending on the target.
+                    direction = [t - o for t, o in zip(target, hand["origin"])]
+                    if sweep:
+                        for i in range(steps):
+                            write(direction=yawed(direction, (.012 if i % 2 else -.012)))
+                    write(direction=direction)
+
+                try:
+                    wait(lambda: all(state(n).get("ready") for n in ("a", "b")), "windows ready")
+                    wait(lambda: state("status").get("ready"), "status ready")
+                    assert all(streams[n].connections == 1 for n in streams)
+
+                    # A resting laser over a window never moves the cursor. With no
+                    # eye tracking it is the gaze fallback: one dwell focus that
+                    # restores the window's own cursor.
+                    marked = mark()
+                    aim(point("a", .3, .4), sweep=False)
+                    time.sleep(.6)
+                    assert summary(since(marked, "a")) == ["focus:gaze"], since(marked, "a")
+                    assert since(marked, "a")[0]["deliberate"] is False
+                    # Deliberate pointing then hovers there.
+                    aim(point("a", .3, .4))
+                    wait(lambda: "move" in summary(since(marked, "a")), "hover on A")
+                    first = since(marked, "a")
+                    assert all(m["epoch"] == streams["a"].epoch for m in first)
+                    qs = [m["q"] for m in first]
+                    assert qs == sorted(qs) and len(set(qs)) == len(qs), "sequence numbers increase"
+                    moves = [m for m in first if m["t"] == "m"]
+                    assert moves and all(m["geometry"] == streams["a"].revision for m in moves)
+                    time.sleep(.1)
+                    last = [m for m in collect("a") if m["t"] == "m"][-1]
+                    assert abs(last["x"] - .3) < .02 and abs(last["y"] - .4) < .02, last
+                    # Click and drag within the window.
+                    marked = mark()
+                    write(trigger=True)
+                    wait(lambda: "down0" in summary(since(marked, "a")), "press on A")
+                    aim(point("a", .35, .45), sweep=False)
+                    wait(lambda: summary(since(marked, "a"))[-1:] == ["move"], "drag motion on A")
+                    write(trigger=False)
+                    wait(lambda: "up0" in summary(since(marked, "a")), "click on A")
+                    order = summary(since(marked, "a"))
+                    assert order[0] == "down0" and order[-1] == "up0" and "move" in order[1:-1], order
+                    up = [m for m in since(marked, "a") if m["t"] == "m"][-1]
+                    assert abs(up["x"] - .35) < .02, up
+                    # Right click on the secondary button.
+                    marked = mark()
+                    write(secondary=True); write(secondary=False)
+                    wait(lambda: summary(since(marked, "a"))[-1:] == ["up2"], "right click")
+                    assert summary(since(marked, "a")) == ["down2", "up2"], summary(since(marked, "a"))
+                    # Thumbstick scroll: whole-pixel wheel steps, forward scrolls up.
+                    marked = mark()
+                    write(stick=[0, 1]); time.sleep(.3); write(stick=[0, 0])
+                    time.sleep(.1)
+                    wheels = [m for m in since(marked, "a") if m["t"] == "wheel"]
+                    assert wheels and all(m["dy"] < 0 and m["dy"] == int(m["dy"]) for m in wheels), wheels
+                    assert 300 < -sum(m["dy"] for m in wheels) < 1400, sum(m["dy"] for m in wheels)
+
+                    # Cross-window drag: barrier on A, drag focus on B, one up at the drop.
+                    marked = mark()
+                    write(trigger=True)
+                    wait(lambda: "down0" in summary(since(marked, "a")), "drag starts on A")
+                    aim(point("b", .6, .5), sweep=False)
+                    wait(lambda: "move" in summary(since(marked, "b")), "drag continues on B")
+                    write(trigger=False)
+                    wait(lambda: "up0" in summary(since(marked, "b")), "drop on B")
+                    on_a, on_b = summary(since(marked, "a")), summary(since(marked, "b"))
+                    assert on_a[0] == "down0" and on_a[-1] == "input-barrier" and "up0" not in on_a, on_a
+                    assert on_b[0] == "focus:drag" and on_b[-1] == "up0" and "down0" not in on_b, on_b
+                    assert sum(x.startswith("up") for x in on_a + on_b) == 1
+
+                    # Status band (I1) clicks route to its own stream.
+                    streams["status"].commands.put({"t": "surface", "v": 1, "seq": 5, "visible": True,
+                        "rect": [3000, 0, 600, 36], "anchor": "status", "anchorRect": [3000, 0, 600, 36],
+                        "menusWidth": 400})
+                    wait(lambda: state("status").get("surfaceVisible"), "status band shown")
+                    marked = mark()
+                    aim(point("status", .5, .5))
+                    wait(lambda: "move" in summary(since(marked, "status")), "status hover")
+                    # The shelf grows under the laser and carries the band: follow it.
+                    time.sleep(1.3)
+                    aim(point("status", .5, .5), sweep=False)
+                    time.sleep(.1)
+                    write(trigger=True)
+                    wait(lambda: "down0" in summary(since(marked, "status")), "status press")
+                    write(trigger=False)
+                    wait(lambda: "up0" in summary(since(marked, "status")), "status click")
+                    assert summary(since(marked, "status"))[:1] == ["focus:pointer"], summary(since(marked, "status"))
+                    assert "down0" not in summary(since(marked, "b")), "no click-through to the window"
+                    # Stale geometry: the helper hid the surface's input; presses stop.
+                    streams["status"].commands.put({"t": "input-geometry", "v": 1, "revision": 99, "pictureSeq": 0,
+                        "rect": [0, 0, 0, 0], "contentUV": [0, 0, 1, 1], "visible": False})
+                    time.sleep(.3)
+                    marked = mark()
+                    aim(point("status", .5, .5), sweep=False)
+                    write(trigger=True); time.sleep(.2); write(trigger=False)
+                    time.sleep(.4)
+                    assert "down0" not in summary(since(marked, "status")), since(marked, "status")
+                    # Hidden surface: nothing either.
+                    streams["status"].commands.put({"t": "surface", "v": 1, "seq": 6, "visible": False})
+                    wait(lambda: not state("status").get("surfaceVisible"), "status hidden")
+
+                    # The bezel is not content.
+                    marked = mark()
+                    aim(point("a", 1.03, .5))
+                    write(trigger=True); write(trigger=False)
+                    time.sleep(.4)
+                    assert "down0" not in summary(since(marked, "a")), since(marked, "a")
+
+                    # Switcher cards in front of a window keep their presses. Lower A
+                    # behind where the second card will be, and check it is there.
+                    atomic_json(root / "a" / "control.json", {"revision": 1, "move": [0, -.1, 0]})
+                    wait(lambda: state("a").get("controlRevision") == 1, "window A lowered")
+                    card = [.162, .1, -1.29]
+                    marked = mark()
+                    aim(card)
+                    wait(lambda: "move" in summary(since(marked, "a")), "A is behind the card")
+                    spatial["switcher"].update(open=True, seq=2, index=0)
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: json.loads((root / "host.json").read_text()).get("switcherOpen"), "switcher open")
+                    switches = len(list(requests.glob("spatial-*.json")))
+                    time.sleep(.2)
+                    marked = mark()
+                    aim(card)
+                    write(trigger=True); time.sleep(.15); write(trigger=False)
+                    wait(lambda: len(list(requests.glob("spatial-*.json"))) > switches, "the card takes the click")
+                    assert not [m for m in since(marked, "a") + since(marked, "b") if m["t"] == "m"], \
+                        "nothing reaches the window behind the card"
+                    spatial["switcher"].update(open=False, seq=3)
+                    atomic_json(root / "spatial.json", spatial)
+
+                    # The trackpad takes over: a resting laser cannot take it back.
+                    aim(point("a", .5, .5))
+                    wait(lambda: "move" in summary(collect("a")[-3:]), "back on A")
+                    streams["a"].commands.put({"t": "input-state", "owner": "physical", "epoch": streams["a"].epoch})
+                    time.sleep(.3)
+                    marked = mark()
+                    aim(point("a", .5, .5), sweep=False)
+                    time.sleep(.4)
+                    assert not since(marked, "a"), since(marked, "a")
+                    aim(point("a", .5, .5), steps=10)
+                    wait(lambda: since(marked, "a"), "deliberate motion takes the pointer back")
+                    assert summary(since(marked, "a"))[0] == "focus:pointer" and since(marked, "a")[0]["deliberate"]
+
+                    # Reconnect: the held press is not replayed and no stray up follows.
+                    marked = mark()
+                    write(trigger=True)
+                    wait(lambda: "down0" in summary(since(marked, "a")), "held on A")
+                    old_epoch = streams["a"].epoch
+                    streams["a"].commands.put("drop")
+                    wait(lambda: streams["a"].connections == 2 and streams["a"].epoch != old_epoch, "A reconnects")
+                    time.sleep(.4)
+                    write(trigger=False)
+                    time.sleep(.4)
+                    after = [m for m in since(marked, "a") if m["epoch"] != old_epoch]
+                    assert not [m for m in after if m["t"] == "m" and m["e"] in ("down", "up")], after
+
+                    # Stop (Desktop Mode) releases whatever is held.
+                    aim(point("a", .5, .5))
+                    wait(lambda: any(m["epoch"] == streams["a"].epoch and m["t"] == "m" for m in collect("a")), "hover again")
+                    marked = mark()
+                    write(trigger=True)
+                    wait(lambda: "down0" in summary(since(marked, "a")), "held again")
+                    spatial["mode"] = "desktop"
+                    atomic_json(root / "spatial.json", spatial)
+                    wait(lambda: "release" in summary(since(marked, "a")), "Stop releases")
+                    write(trigger=False)
+                    process.terminate(); assert process.wait(5) == 0
+                    print("content input integration passed: deliberate pointer focus, ordered move/down/drag/up with "
+                          "geometry and increasing sequence, right click, stick scroll, cross-window drag barrier "
+                          "handoff, status band routing, stale geometry and hidden surface rejection, bezel and "
+                          "switcher keep presses, trackpad takeover, reconnect without replay, release on Stop")
+                except Exception:
+                    log.seek(0); print(log.read()[-4000:], file=sys.stderr)
+                    for name in streams: print(name, summary(collect(name)), file=sys.stderr)
+                    raise
+                finally:
+                    if process.poll() is None: process.terminate(); process.wait(5)
+    finally:
+        for stream in streams.values(): stream.finish()
+
+
 if __name__ == "__main__":
     binary = pathlib.Path(sys.argv[1]).resolve()
     run_idle_auxiliary(binary)
     run(binary)
     run_surfaces(binary)
+    run_content_input(binary)

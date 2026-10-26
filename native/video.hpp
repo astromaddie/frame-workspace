@@ -13,6 +13,7 @@ extern "C" {
 #include <utility>
 
 #include <deque>
+#include <fcntl.h>
 #include <mutex>
 #include <thread>
 namespace fw {
@@ -172,6 +173,10 @@ struct Pipeline {
       throw std::runtime_error("decoder must be software or v4l2");
     if (conversionRequested != "cpu" && conversionRequested != "gpu")
       throw std::runtime_error("conversion must be cpu or gpu");
+    if (::pipe(wakePipe) == 0)
+      for (int fd : wakePipe) fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+    else
+      wakePipe[0] = wakePipe[1] = -1;
   }
   const char *codecName() const {
     return decoderRequested == "v4l2" ? "h264_v4l2m2m" : "h264";
@@ -348,7 +353,10 @@ struct Pipeline {
     }
     wake.notify_all();
   }
-  ~Pipeline() { finish(); }
+  ~Pipeline() {
+    finish();
+    for (int fd : wakePipe) if (fd >= 0) ::close(fd);
+  }
   void finish() {
     stop = true;
     wake.notify_all();
@@ -425,6 +433,138 @@ struct Pipeline {
   SurfaceMessage surfaceMessage;
   uint64_t surfaceRevision = 0;
   bool acceptsSurfaces = false;
+
+  // Native content input (FW-15). Negotiated per connection: the helper's
+  // hello offers `nativeInput` and a fresh epoch. Focus, edges, barriers and
+  // releases are reliable and ordered; only consecutive unsent moves
+  // coalesce. The host queues on its thread, the network thread numbers and
+  // sends at once (the wake pipe interrupts its poll).
+  struct InputGeometry {
+    uint64_t revision = 0;
+    uint64_t connection = 0;  // the connection it arrived on (Pipeline::inputConnection)
+    uint32_t pictureSeq = 0;  // 0: applies now (a hidden surface has no picture)
+    SurfaceRect rect;
+    float content[4]{0, 0, 1, 1};
+    bool visible = false;
+    bool contains(float u, float v) const {
+      return visible && u >= content[0] && v >= content[1] &&
+          u <= content[0] + content[2] && v <= content[1] + content[3];
+    }
+    static bool parse(const Json &j, InputGeometry &g) {
+      auto integer = [&](const char *name, double low, double high, double &out) {
+        auto f = field(j, name);
+        if (!f || !json_object_is_type(f, json_type_int)) return false;
+        out = json_object_get_double(f);
+        return out >= low && out <= high;
+      };
+      auto quad = [&](const char *name, float (&out)[4]) {
+        auto a = field(j, name);
+        if (!a || !json_object_is_type(a, json_type_array) || json_object_array_length(a) != 4) return false;
+        for (int i = 0; i < 4; ++i) {
+          auto v = json_object_array_get_idx(a, i);
+          if (!json_object_is_type(v, json_type_int) && !json_object_is_type(v, json_type_double)) return false;
+          const double d = json_object_get_double(v);
+          if (!std::isfinite(d) || std::fabs(d) > 1000000) return false;
+          out[i] = float(d);
+        }
+        return true;
+      };
+      double v = 0, revision = 0, seq = 0;
+      float rect[4]{}, content[4]{};
+      auto visible = field(j, "visible");
+      if (!integer("v", 1, 1, v) || !integer("revision", 1, 9007199254740991.0, revision) ||
+          !integer("pictureSeq", 0, UINT32_MAX, seq) || !quad("rect", rect) || !quad("contentUV", content) ||
+          !visible || !json_object_is_type(visible, json_type_boolean))
+        return false;
+      g = {};
+      g.revision = uint64_t(revision); g.pictureSeq = uint32_t(seq);
+      g.rect = {rect[0], rect[1], rect[2], rect[3]};
+      g.visible = json_object_get_boolean(visible);
+      for (int i = 0; i < 4; ++i) g.content[i] = content[i];
+      if (g.visible && (rect[2] <= 0 || rect[3] <= 0 || content[0] < 0 || content[1] < 0 || content[2] <= 0 ||
+                        content[3] <= 0 || content[0] + content[2] > 1.0001f || content[1] + content[3] > 1.0001f))
+        return false;
+      return true;
+    }
+  };
+  struct InputEvent {
+    enum Kind { Ack, Refused, Physical, Remote, Focused, Unfocused, Released, Reset } kind = Ack;
+    uint64_t token = 0;
+    bool ok = false;
+  };
+  static constexpr size_t maxInputQueue = 64, maxInputEvents = 64;
+  std::atomic<bool> inputNegotiated{false};
+  std::atomic<uint64_t> inputConnection{0};  // increases before each connection
+  std::atomic<uint64_t> inputSent{0}, inputCoalesced{0}, inputOverflows{0}, inputRefusals{0}, inputGeometries{0};
+  struct InputItem { std::string body; bool move = false; uint64_t token = 0; };
+  std::deque<InputItem> inputQueue;          // outMutex
+  std::deque<InputEvent> inputEvents;        // outMutex
+  std::deque<InputGeometry> inputGeometry;   // outMutex
+  std::string inputEpoch;                    // outMutex
+  int wakePipe[2]{-1, -1};
+  // `body` is the message without its closing brace; the network thread adds
+  // the epoch and sequence. False: not negotiated, or the queue is full (the
+  // caller cancels and releases, never dropping an edge silently).
+  bool sendInput(std::string body, bool move = false, uint64_t token = 0) {
+    {
+      std::lock_guard<std::mutex> l(outMutex);
+      if (!inputNegotiated) return false;
+      if (move && !inputQueue.empty() && inputQueue.back().move) {
+        inputQueue.back().body = std::move(body);
+        ++inputCoalesced;
+      } else if (inputQueue.size() >= maxInputQueue) {
+        ++inputOverflows;
+        return false;
+      } else
+        inputQueue.push_back({std::move(body), move, token});
+    }
+    wakeNetwork();
+    return true;
+  }
+  // Drops everything queued and lets go of all this connection holds.
+  void releaseInput() {
+    {
+      std::lock_guard<std::mutex> l(outMutex);
+      inputQueue.clear();
+      if (inputNegotiated) inputQueue.push_back({"{\"t\":\"release\"", false, 0});
+    }
+    wakeNetwork();
+  }
+  std::vector<InputEvent> takeInputEvents() {
+    std::lock_guard<std::mutex> l(outMutex);
+    std::vector<InputEvent> events(inputEvents.begin(), inputEvents.end());
+    inputEvents.clear();
+    return events;
+  }
+  std::vector<InputGeometry> takeInputGeometry() {
+    std::lock_guard<std::mutex> l(outMutex);
+    std::vector<InputGeometry> list(inputGeometry.begin(), inputGeometry.end());
+    inputGeometry.clear();
+    return list;
+  }
+  void wakeNetwork() {
+    if (wakePipe[1] >= 0) {
+      const char c = 1;
+      if (::write(wakePipe[1], &c, 1) < 0) { /* full: a wake is already pending */ }
+    }
+  }
+  void inputEvent(InputEvent e) {
+    std::lock_guard<std::mutex> l(outMutex);
+    if (inputEvents.size() >= maxInputEvents) inputEvents.pop_front();
+    inputEvents.push_back(e);
+  }
+  // A new or lost connection starts neutral; nothing queued is replayed.
+  void resetInput() {
+    inputNegotiated = false;
+    ++inputConnection;
+    {
+      std::lock_guard<std::mutex> l(outMutex);
+      inputQueue.clear();
+      inputGeometry.clear();
+      inputEpoch.clear();
+    }
+    inputEvent({InputEvent::Reset});
+  }
   std::string pendingFocus;
   void sendFocus(float u, float v) {
     std::lock_guard<std::mutex> lock(outMutex);
@@ -450,6 +590,10 @@ struct Pipeline {
           ws.idlePollMs = 8;
           ws.serviceIdleWhileReading = true;
         }
+        resetInput();
+        uint64_t inputQ = 0;
+        std::map<uint64_t, uint64_t> inputTokens;  // q -> host token
+        ws.wakeFd = wakePipe[0];
         ws.open(endpoint, reconnect);
         connected = true;
         ++reconnects;
@@ -465,6 +609,24 @@ struct Pipeline {
         bool lastSentValid = false;
         ws.idle = [&] {
           double now = nowMs();
+          if (inputNegotiated) {
+            std::deque<InputItem> items;
+            std::string epoch;
+            {
+              std::lock_guard<std::mutex> l(outMutex);
+              items.swap(inputQueue);
+              epoch = inputEpoch;
+            }
+            for (auto &item : items) {
+              const uint64_t q = ++inputQ;
+              if (item.token) {
+                inputTokens[q] = item.token;
+                while (inputTokens.size() > 256) inputTokens.erase(inputTokens.begin());
+              }
+              ws.sendText(item.body + ",\"epoch\":" + jsonString(epoch) + ",\"q\":" + std::to_string(q) + "}");
+              ++inputSent;
+            }
+          }
           if (endpoint.sendsGaze()) {
             double estimate = 0;
             const bool valid = gazeClock.estimate(now, estimate);
@@ -548,11 +710,64 @@ struct Pipeline {
                   ++surfaceRevision;
                 }
               } catch (...) { /* Malformed metadata cannot expose an old picture. */ }
+            } else if (t == "input-ack" || t == "input-state" || t == "input-released" || t == "input-geometry") {
+              std::string epoch;
+              { std::lock_guard<std::mutex> l(outMutex); epoch = inputEpoch; }
+              if (!inputNegotiated || (t != "input-geometry" && str(j, "epoch") != epoch)) {
+                // Another connection's or a stale message: ignored.
+              } else if (t == "input-ack") {
+                const double q = num(j, "q", 0);
+                auto it = q >= 1 ? inputTokens.find(uint64_t(q)) : inputTokens.end();
+                const bool ok = flag(j, "ok");
+                if (!ok) ++inputRefusals;
+                if (it != inputTokens.end()) {
+                  inputEvent({InputEvent::Ack, it->second, ok});
+                  inputTokens.erase(it);
+                } else if (!ok)
+                  inputEvent({InputEvent::Refused});
+              } else if (t == "input-state") {
+                const auto owner = str(j, "owner");
+                if (owner == "physical") inputEvent({InputEvent::Physical});
+                else if (owner == "remote") inputEvent({InputEvent::Remote});
+                auto focused = field(j, "focused");
+                if (focused && json_object_is_type(focused, json_type_boolean))
+                  inputEvent({json_object_get_boolean(focused) ? InputEvent::Focused : InputEvent::Unfocused});
+              } else if (t == "input-released") {
+                inputEvent({InputEvent::Released});
+              } else {
+                InputGeometry g;
+                if (InputGeometry::parse(j, g)) {
+                  g.connection = inputConnection;
+                  ++inputGeometries;
+                  std::lock_guard<std::mutex> l(outMutex);
+                  if (inputGeometry.size() >= 16) inputGeometry.pop_front();
+                  inputGeometry.push_back(g);
+                }
+              }
             } else if (t == "hello") {
               auto r = str(j, "r");
               if (r.empty() || r.size() > 256)
                 throw std::runtime_error("invalid reconnect key");
               reconnect = r;
+              {
+                // Native content input, offered by Spatial sources only.
+                auto epoch = str(j, "inputEpoch");
+                auto offered = field(j, "nativeInput");
+                if (offered && json_object_is_type(offered, json_type_int) && num(j, "nativeInput") == 1 &&
+                    !epoch.empty() && epoch.size() <= 64 &&
+                    epoch.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_") ==
+                        std::string::npos) {
+                  {
+                    std::lock_guard<std::mutex> l(outMutex);
+                    if (inputEpoch != epoch) inputQueue.clear();
+                    inputEpoch = epoch;
+                  }
+                  inputNegotiated = true;
+                  // Input goes out promptly, even while a picture is arriving.
+                  ws.idlePollMs = std::min(ws.idlePollMs, 8);
+                  ws.serviceIdleWhileReading = true;
+                }
+              }
               if (endpoint.foveation &&
                   (!json_object_is_type(field(j, "foveation"), json_type_int) || num(j, "foveation") != 1 ||
                    !json_object_is_type(field(j, "direct"), json_type_int) || num(j, "direct") != 1)) {
@@ -622,6 +837,7 @@ struct Pipeline {
         }
       } catch (const std::exception &) {
         connected = false;
+        resetInput();
         clockValid = false;
         foveationNegotiated = false; atlasNegotiated = false; directNegotiated = false; gazeNegotiated = false;
         if (stop)

@@ -218,6 +218,9 @@ inline bool focusSurface(const PanelSurface &s) { return s.role == PanelRole::Wi
 struct PanelPick {
   std::string key;
   float u = 0, v = 0, distance = 0;
+  // On the picture itself: not the bezel, a frame wall, an inset rim or
+  // capture padding past the picture's edge (UV above is clamped either way).
+  bool content = false;
   explicit operator bool() const { return !key.empty(); }
 };
 // Uses the same arc lengths and asymmetric/vertical surfaces as the window
@@ -263,8 +266,15 @@ inline PanelPick surfacePick(const EyeRay &ray, const PanelSurface &s, float mar
   for (int i = 0; i < 3; ++i) facing += point.m[i][2] * d[i];
   if (facing >= -1e-5f) return hit;
   hit.key = s.key; hit.distance = distance;
-  hit.u = std::clamp(x / s.placement.width + .5f, 0.f, 1.f);
-  hit.v = std::clamp(.5f - y / s.height, 0.f, 1.f);
+  const float rawU = x / s.placement.width + .5f, rawV = .5f - y / s.height;
+  hit.content = rawU >= 0 && rawU <= 1 && rawV >= 0 && rawV <= 1;
+  if (s.pictureWidth > 0 && s.pictureHeight > 0) {
+    const float pu = (rawU * s.placement.width - s.inset) / s.pictureWidth;
+    const float pv = (rawV * s.height - s.inset) / s.pictureHeight;
+    hit.content = hit.content && pu >= 0 && pu <= 1 && pv >= 0 && pv <= 1;
+  }
+  hit.u = std::clamp(rawU, 0.f, 1.f);
+  hit.v = std::clamp(rawV, 0.f, 1.f);
   surfaceUV(s, hit.u, hit.v);
   return hit;
 }

@@ -765,6 +765,18 @@ public:
       return distance;
     return -1;
   }
+  // A press here belongs to placement (a shown handle under the laser, or
+  // this hand's drag), never to the window's content.
+  bool handleAt(const HmdMatrix34_t &pose, int hand) const {
+    if (!interactive() || auxiliary()) return false;
+    if (dragHand >= 0 && dragHand == hand) return true;
+    HandleLayout l; l.width = placement.width; l.height = panelHeight();
+    float x = 0, y = 0;
+    if (!layerHit(pose, controlsDepth, x, y)) return false;
+    unsigned visible = 0;
+    for (int i = 0; i < handleCount; ++i) if (chromeState.reveal[i] > .001f) visible |= 1u << i;
+    return l.zone(x, y, visible) != Handle::None;
+  }
   // What the layers were last placed and drawn for.
   struct LayerGeometry {
     float width = -1, height = -1, a = -1, b = -1;
