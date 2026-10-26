@@ -10,7 +10,8 @@ private func spatialDiagnostic(_ message: String) {
     }
 }
 
-private let spatialFocusChanged = Notification.Name("FrameSpatialFocusChanged")
+/// Posted on main by SpatialFocus whenever its focused source may have changed.
+let spatialFocusChanged = Notification.Name("FrameSpatialFocusChanged")
 
 final class SpatialFocus: NSObject {
     private let memory = FocusCursorMemory()
@@ -19,27 +20,54 @@ final class SpatialFocus: NSObject {
     private var windowRect = CGRect.zero
     private var menuRect = CGRect.zero
     private var menuRects: [CGRect] = []
+    private var contentRect: CGRect?
 
     @discardableResult
     func focus(windowID: CGWindowID, u: Double = 0.5, v: Double = 0.5) -> Bool {
+        focus(windowID: windowID, intent: .gaze, u: u, v: v)
+    }
+
+    /// `gaze` restores the window's remembered cursor (first visit: `u, v`);
+    /// `pointer` raises and puts the cursor at `point`, the laser position,
+    /// without a restore first; `drag` raises and moves the fence only, so a
+    /// held drag carries on into the window.
+    @discardableResult
+    func focus(windowID: CGWindowID, intent: NativeFocusIntent, u: Double = 0.5, v: Double = 0.5,
+               point: CGPoint? = nil, content: CGRect? = nil) -> Bool {
         guard let first = NormalizedPoint(u: u, v: v), let info = WindowInfo.find(windowID),
               SpatialCoordinator.allowedPID(info.pid) else { return false }
         let key = "spatial:\(windowID)"
         var leaving: NormalizedPoint?
-        if let old = memory.focusedSource, case .spatial(let oldID)? = Source(old), let frame = WindowInfo.find(oldID)?.bounds {
+        if intent != .drag, let old = memory.focusedSource, case .spatial(let oldID)? = Source(old),
+           let frame = WindowInfo.find(oldID)?.bounds {
             let point = Input.cursorLocation
             if frame.contains(point) {
                 leaving = NormalizedPoint(u: Double((point.x - frame.minX) / frame.width),
                                           v: Double((point.y - frame.minY) / frame.height))
             }
         }
-        let selection = memory.focus(key, firstVisit: first, leavingPoint: leaving)
         Input.focus(window: windowID, pid: info.pid)
         windowRect = WindowInfo.find(windowID)?.bounds ?? info.bounds
+        contentRect = content
         updateFence()
-        if selection.shouldMoveCursor {
-            Input.moveCursor(to: SpatialSharedPolicy.panelToGlobal(u: selection.point.u, v: selection.point.v,
-                                                                   captureRect: windowRect))
+        switch intent {
+        case .gaze:
+            let selection = memory.focus(key, firstVisit: first, leavingPoint: leaving)
+            if selection.shouldMoveCursor {
+                Input.moveCursor(to: SpatialSharedPolicy.panelToGlobal(u: selection.point.u, v: selection.point.v,
+                                                                       captureRect: windowRect))
+            }
+        case .pointer:
+            memory.noteFocus(key, leavingPoint: leaving)
+            let target = point ?? SpatialSharedPolicy.panelToGlobal(u: u, v: v, captureRect: windowRect)
+            if windowRect.width > 0, windowRect.height > 0 {
+                memory.remember(NormalizedPoint(u: min(max(Double((target.x - windowRect.minX) / windowRect.width), 0), 1),
+                                                v: min(max(Double((target.y - windowRect.minY) / windowRect.height), 0), 1))!,
+                                for: key)
+            }
+            Input.moveCursor(to: target)
+        case .drag:
+            memory.noteFocus(key)
         }
         NotificationCenter.default.post(name: spatialFocusChanged, object: self)
         return true
@@ -52,7 +80,7 @@ final class SpatialFocus: NSObject {
     func removeWindow(_ windowID: CGWindowID) {
         let wasFocused = focusedSource == "spatial:\(windowID)"
         memory.remove("spatial:\(windowID)")
-        if wasFocused { windowRect = .zero; updateFence() }
+        if wasFocused { windowRect = .zero; contentRect = nil; updateFence() }
     }
 
     func updateMenus(rect: CGRect, surfaces: [CGRect]) {
@@ -61,8 +89,13 @@ final class SpatialFocus: NSObject {
         updateFence()
     }
 
-    private func updateFence() { fence.update([windowRect, menuRect] + menuRects) }
-    func clear() { memory.clear(); fence.stop(); windowRect = .zero; menuRect = .zero; menuRects.removeAll() }
+    private func updateFence() {
+        fence.update(SpatialFocusPolicy.fenceRects(window: windowRect, content: contentRect, menuBar: menuRect,
+                                                   surfaces: menuRects))
+    }
+    func clear() {
+        memory.clear(); fence.stop(); windowRect = .zero; menuRect = .zero; menuRects.removeAll(); contentRect = nil
+    }
 }
 
 /// A window stays on the shared display across viewer disconnects. Its capture
@@ -85,6 +118,9 @@ final class SharedWindowSource: CaptureSource, CaptureStopAwaitable {
     var app: String { inner.app }
     var pid: pid_t? { inner.pid }
     var pixelSize: (Int, Int)? { inner.pixelSize }
+    var frameGeometry: CaptureFrameGeometry? { inner.frameGeometry }
+    var inputIdentity: String { "spatial:\(windowID)" }
+    var inputFrameRect: CGRect { inner.frameRect }
     var focusCap: Int { coordinator.focus.focusedSource == "spatial:\(windowID)" ? 60 : 30 }
 
     init(windowID: CGWindowID, coordinator: SpatialCoordinator) {
@@ -327,6 +363,14 @@ final class SpatialSurfaceSource: CaptureSource, CaptureStopAwaitable {
     var app: String { "Mac" }
     var pid: pid_t? { nil }
     var pixelSize: (Int, Int)? { lock.lock(); defer { lock.unlock() }; return inner?.pixelSize }
+    private var deliveredGeometry: CaptureFrameGeometry?
+    var frameGeometry: CaptureFrameGeometry? { lock.lock(); defer { lock.unlock() }; return deliveredGeometry }
+    /// Each retarget is a new capture generation, even for a reused window ID.
+    var inputIdentity: String {
+        lock.lock(); defer { lock.unlock() }
+        return "\(source.key):\(generation):\(surface.id ?? 0)"
+    }
+    var inputVisible: Bool { lock.lock(); defer { lock.unlock() }; return surface.visible }
 
     init(_ source: Source, coordinator: SpatialCoordinator) { self.source = source; self.coordinator = coordinator }
     func start(maxLong: Int, fps: Int, completion: @escaping (String?) -> Void) {
@@ -409,11 +453,13 @@ final class SpatialSurfaceSource: CaptureSource, CaptureStopAwaitable {
                 if !receivedPicture { useDisplayCrop() }
             }
         }
-        capture.onFrame = { [weak self] pb, pts, shown in
+        capture.onFrame = { [weak self, weak capture] pb, pts, shown in
             guard let self else { return }
+            let geometry = capture?.frameGeometry  // this frame's, on its own callback
             DispatchQueue.main.async {
                 self.lock.lock()
                 let current = !self.stopped && self.generation == epoch
+                if current && !retargeted { self.deliveredGeometry = geometry }
                 self.lock.unlock()
                 guard current, !retargeted else { return }
                 receivedPicture = true

@@ -64,7 +64,8 @@ Pure Swift checks use `xcrun swiftc -swift-version 5 -module-cache-path
 | --- | --- |
 | SpatialPolicyTests | SpatialPolicy.swift |
 | SpatialSharedPolicyTests | SpatialSharedPolicy.swift |
-| SpatialCursorFenceTests | SpatialCursorFence.swift |
+| SpatialCursorFenceTests | SpatialCursorFence.swift, NativeInput.swift, SpatialStreams.swift |
+| NativeInputTests | NativeInput.swift, SpatialStreams.swift, SpatialCursorFence.swift |
 | SpatialStreamsTests | SpatialStreams.swift |
 | StreamPriorityTests | StreamPriority.swift, Controller.swift |
 | AppsStateTests | AppsState.swift |

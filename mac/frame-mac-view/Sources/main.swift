@@ -102,7 +102,7 @@ func printJSONLine(_ obj: Any) {
 func num(_ v: Any?) -> Double? { (v as? NSNumber)?.doubleValue }
 
 /// One viewer watching one source.
-final class Session {
+final class Session: NativeInputClient {
     let id: Int
     let source: Source
     let capture: CaptureSource
@@ -131,6 +131,7 @@ final class Session {
         var directEpoch: UInt64? = nil
         var echo: UInt32  // the input this picture is the first reply to
         let epoch: UInt64
+        var geometry: CaptureFrameGeometry? = nil
     }
     private var last: Picture?
     /// The newest complete still-mode buffer is retained without encoding so
@@ -179,6 +180,19 @@ final class Session {
     var onFocused: ((String) -> Void)?
     var onSpatialFocus: ((CGWindowID, Double, Double) -> Void)?
     var onSpatialInput: ((CGWindowID) -> Void)?
+    /// Native input (FW-15): raise a Spatial window for `intent`, then report
+    /// what macOS shows in front (nil: not a window that can be focused).
+    var onNativeFocus: ((CGWindowID, NativeFocusIntent, Double, Double, CGPoint?, CGRect?,
+                         @escaping (FocusObservation?) -> Void) -> Void)?
+    /// Advertised in hello for Spatial sources; every native message echoes it.
+    let inputEpoch: String?
+    private var inputSequencer = NativeInputSequencer()  // main
+    private var heldExpiry = HeldInputExpiry()  // main
+    private var geometryBook = InputGeometryBook()  // lock
+    /// The Spatial focus's current source (thread-safe), for window sessions.
+    var spatialFocusedSource: (() -> String?)?
+    private var focusObserver: NSObjectProtocol?  // main
+    private var reportedFocused: Bool?  // main
     private let encodeQueue = DispatchQueue(label: "frame-mac-view.encode", qos: .userInteractive)
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
@@ -196,6 +210,7 @@ final class Session {
         self.ws = ws
         self.codec = codec
         self.reconnectKey = reconnectKey
+        inputEpoch = source.isSpatial ? NativeInputParser.randomEpoch() : nil
         self.activity = activity
         self.spatial = spatial
         // Diagnostic TestSource only: model a source cadence below the target
@@ -235,6 +250,7 @@ final class Session {
         let arrived = nowUs()
         stats.withLock { stats.captured += 1 }
         let size = capture.pixelSize ?? (CVPixelBufferGetWidth(pb), CVPixelBufferGetHeight(pb))
+        let geometry = inputEpoch == nil ? nil : capture.frameGeometry
         // SCKSource forwards only complete samples. In still mode its cursor
         // is hidden and cadence is 1fps, so those observations follow content
         // changes, including small and color-only edits, rather than the cursor.
@@ -243,7 +259,7 @@ final class Session {
         guard !stopped else { lock.unlock(); return }
         if !liveGate.live {
             stillPicture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived,
-                                   echo: 0, epoch: liveGate.epoch)
+                                   echo: 0, epoch: liveGate.epoch, geometry: geometry)
             lock.unlock()
             return
         }
@@ -255,7 +271,7 @@ final class Session {
             pendingEcho = nil
         }
         let picture = Picture(pb: pb, pts: pts, capture: shown, arrived: arrived, layout: layout,
-                              directEpoch: directEpoch, echo: echo, epoch: liveGate.epoch)
+                              directEpoch: directEpoch, echo: echo, epoch: liveGate.epoch, geometry: geometry)
         last = picture
         let busy = ws.pendingBytes > maxPending || inFlight >= Session.maxInFlight
             || paced(now: arrived) || !controller.maySend(now: arrived)
@@ -284,6 +300,9 @@ final class Session {
             r.encodeStart = nowUs()
             let seq = self.stats.newFrame(r)
             self.lock.lock(); self.frameEpochs[seq] = p.epoch; self.lock.unlock()
+            // Ahead of this picture on the socket: the viewer applies it from
+            // the first picture with this sequence on.
+            self.publishGeometry(p.geometry, seq: seq)
             if p.echo != 0 { self.stats.updateInput(p.echo) { $0.frame = seq; $0.capture = p.capture } }
             var buffer = p.pb
             var layout = p.layout
@@ -375,12 +394,21 @@ final class Session {
     /// wait for the first encoded picture, while a resume activates only after
     /// ScreenCaptureKit has restored the live cursor and cadence.
     private func applySurface(_ message: [String: Any]) {
+        let identity = capture.inputIdentity
         lock.lock()
         liveGate.stop()
         last = nil; stillPicture = nil; skipped = false
         ws.sendJSON(message)
         let visible = message["visible"] as? Bool == true
-        if !visible { ws.sendJSON(["t": "still"]) }
+        if !visible {
+            // Clicks on a hidden or retargeted slot are refused at once, with
+            // no picture to wait for.
+            if inputEpoch != nil, let hidden = geometryBook.observe(frame: .zero, rect: .zero,
+                    contentUV: InputGeometryPolicy.full, visible: false, identity: identity, pictureSeq: 0) {
+                ws.sendJSON(hidden.json)
+            }
+            ws.sendJSON(["t": "still"])
+        }
         lock.unlock()
         if visible { setLive(true, auxiliary: true) }
     }
@@ -438,7 +466,7 @@ final class Session {
                                 let resumed = Picture(pb: cached.pb,
                                                       pts: CMClockGetTime(CMClockGetHostTimeClock()),
                                                       capture: cached.capture, arrived: now, echo: 0,
-                                                      epoch: self.liveGate.epoch)
+                                                      epoch: self.liveGate.epoch, geometry: cached.geometry)
                                 self.last = resumed
                                 self.inFlight += 1
                                 self.lastSubmit = now
@@ -483,7 +511,7 @@ final class Session {
         if let p = next {
             submit(Picture(pb: p.pb, pts: CMClockGetTime(CMClockGetHostTimeClock()), capture: p.capture,
                            arrived: p.arrived, layout: p.layout, directEpoch: p.directEpoch, echo: p.echo,
-                           epoch: p.epoch))
+                           epoch: p.epoch, geometry: p.geometry))
         }
     }
 
@@ -577,6 +605,22 @@ final class Session {
         if foveation { hello["foveation"] = 1; hello["gazeSession"] = gazeSession }
         if gazeSharpen { hello["gaze"] = 1; hello["gazeSession"] = gazeSession }
         if foveationAtlas { hello["atlas"] = 1 }
+        if let inputEpoch {
+            hello["nativeInput"] = NativeInputLimits.version
+            hello["inputEpoch"] = inputEpoch
+            hello["inputExpiryMs"] = NativeInputLimits.expiryMs
+            DispatchQueue.main.async {
+                NativeInputCoordinator.shared.register(self)
+                guard case .spatial = self.source, !self.isStopped else { return }
+                // Tell the viewer when its window gains or loses Mac focus by
+                // any path, so it never moves a cursor over a covering window.
+                self.focusObserver = NotificationCenter.default.addObserver(forName: spatialFocusChanged, object: nil,
+                                                                            queue: .main) { [weak self] _ in
+                    self?.reportFocus()
+                }
+                self.reportFocus()
+            }
+        }
         // Direct capability is advertised only after both actual SCK streams
         // have supplied validated buffers and the first composition succeeded.
         if !foveationDirect { ws.sendJSON(hello) }
@@ -730,7 +774,12 @@ final class Session {
         }
         encodeQueue.async { self.encoder.invalidate() }
         let owner = id
-        DispatchQueue.main.async { Input.releaseAll(owner: owner) }
+        DispatchQueue.main.async {
+            Input.releaseAll(owner: owner)
+            NativeInputCoordinator.shared.unregister(owner)
+            if let observer = self.focusObserver { NotificationCenter.default.removeObserver(observer) }
+            self.focusObserver = nil
+        }
         ws.close()
         onEnd?(self)
     }
@@ -806,6 +855,155 @@ final class Session {
     /// Asks the viewer to do something for a benchmark (type, click, show its overlay).
     func bench(_ m: [String: Any]) { ws.sendJSON(m.merging(["t": "bench"]) { a, _ in a }) }
 
+    // MARK: Native input (FW-15)
+
+    private static var uptimeMs: Double { ProcessInfo.processInfo.systemUptime * 1000 }
+
+    func nativeInputNotify(_ message: [String: Any]) {
+        guard let inputEpoch, !isStopped else { return }
+        ws.sendJSON(message.merging(["epoch": inputEpoch]) { a, _ in a })
+    }
+
+    func nativeInputExpire(nowMs: Double) {
+        guard heldExpiry.expired(nowMs: nowMs, holding: Input.holds(owner: id)) else { return }
+        Input.releaseAll(owner: id)
+        heldExpiry.touch(nowMs)
+        nativeInputNotify(["t": "input-released", "reason": "expired"])
+    }
+
+    /// Main. Spatial window sessions only.
+    private func reportFocus() {
+        guard !isStopped else { return }
+        let focused = spatialFocusedSource?() == source.key
+        guard focused != reportedFocused else { return }
+        reportedFocused = focused
+        nativeInputNotify(["t": "input-state", "focused": focused])
+    }
+
+    /// Moves and presses for a Spatial window only while it holds Mac focus:
+    /// windows overlap on the shared display, so a point in one may be
+    /// covered by another. Auxiliary surfaces are always in front.
+    private var holdsSpatialFocus: Bool {
+        guard case .spatial = source else { return true }
+        return spatialFocusedSource?() == source.key
+    }
+
+    private func nativeAck(_ q: UInt64, ok: Bool, reason: NativeInputRejection? = nil, extra: [String: Any] = [:]) {
+        nativeInputNotify(NativeInputAck.json(q: q, ok: ok, reason: reason, extra: extra))
+    }
+
+    /// Picture geometry for native input, published when its mapping changes.
+    /// On the encode queue, ahead of the picture with `seq`.
+    private func publishGeometry(_ info: CaptureFrameGeometry?, seq: UInt32) {
+        guard inputEpoch != nil else { return }
+        let frame = capture.inputFrameRect, identity = capture.inputIdentity, visible = capture.inputVisible
+        guard frame.width > 0, frame.height > 0 else { return }
+        let mapped = InputGeometryPolicy.geometry(frame: frame, info: info)
+        lock.lock()
+        let next = stopped ? nil : geometryBook.observe(frame: frame, rect: mapped.rect, contentUV: mapped.contentUV,
+                                                        visible: visible, identity: identity, pictureSeq: seq)
+        lock.unlock()
+        if let next { ws.sendJSON(next.json) }
+    }
+
+    private func resolve(_ u: Double, _ v: Double, revision: UInt64?, clamp: Bool) -> GeometryResolution {
+        let frame = capture.frameRect, identity = capture.inputIdentity
+        lock.lock(); defer { lock.unlock() }
+        guard let revision = revision ?? geometryBook.current?.revision else { return .stale }
+        return geometryBook.resolve(u: u, v: v, revision: revision, currentFrame: frame, currentIdentity: identity,
+                                    clampToContent: clamp)
+    }
+
+    private static func rejection(_ r: GeometryResolution) -> NativeInputRejection {
+        switch r { case .padding: return .padding; case .hidden: return .hidden; default: return .geometry }
+    }
+
+    /// Main queue, in arrival order per connection.
+    private func handleNative(_ m: [String: Any]) {
+        guard !isStopped, let inputEpoch else { return }
+        let envelope: NativeInputEnvelope
+        switch NativeInputParser.parse(m, epoch: inputEpoch) {
+        case .success(let parsed): envelope = parsed
+        case .failure(let reason):
+            if let q = (m["q"] as? NSNumber)?.uint64Value, q > 0 { nativeAck(q, ok: false, reason: reason) }
+            return
+        }
+        let q = envelope.q
+        guard inputSequencer.accept(q) else { return nativeAck(q, ok: false, reason: .sequence) }
+        heldExpiry.touch(Session.uptimeMs)
+        switch envelope.message {
+        case .barrier:
+            // Everything this connection sent before has been posted.
+            nativeAck(q, ok: true, extra: ["barrier": true])
+        case .keepalive:
+            break
+        case .release:
+            Input.releaseAll(owner: id)
+            nativeAck(q, ok: true, extra: ["released": true])
+        case .focus(let u, let v, let intent, let deliberate):
+            nativeFocus(q: q, u: u, v: v, intent: intent, deliberate: deliberate)
+        case .mouse(let kind, let button, let u, let v, let revision):
+            let resolved = resolve(u, v, revision: revision, clamp: kind != .down)
+            switch kind {
+            case .move:
+                guard case .point(let p) = resolved, holdsSpatialFocus,
+                      NativeInputCoordinator.shared.remoteMove(to: p) else { return }
+                Input.mouse("move", button: button, at: p, owner: id)
+                onPointerPosition?(source.key, p)
+            case .down:
+                guard Input.allowed else { return nativeAck(q, ok: false, reason: .permission) }
+                guard case .point(let p) = resolved else { return nativeAck(q, ok: false, reason: Session.rejection(resolved)) }
+                guard holdsSpatialFocus else { return nativeAck(q, ok: false, reason: .focus) }
+                guard NativeInputCoordinator.shared.remoteEdge() else { return nativeAck(q, ok: false, reason: .physical) }
+                if case .spatial(let wid) = source { onSpatialInput?(wid) }
+                onFocused?(source.key)
+                Input.mouse("down", button: button, at: p, owner: id)
+                onPointerPosition?(source.key, p)
+                injected(m, kind: "click")
+            case .up:
+                // A release must work even when the geometry went stale.
+                var p = Input.cursorLocation
+                if case .point(let mapped) = resolved { p = mapped }
+                Input.mouse("up", button: button, at: p, owner: id)
+            }
+        case .wheel(let dx, let dy, let u, let v, let revision):
+            guard case .point(let p) = resolve(u, v, revision: revision, clamp: false), holdsSpatialFocus,
+                  NativeInputCoordinator.shared.remoteEdge() else { return }
+            Input.scroll(dx: dx, dy: dy, at: p, owner: id)
+            onPointerPosition?(source.key, p)
+            injected(m, kind: "wheel")
+        }
+    }
+
+    private func nativeFocus(q: UInt64, u: Double, v: Double, intent: NativeFocusIntent, deliberate: Bool) {
+        guard Input.allowed else { return nativeAck(q, ok: false, reason: .permission) }
+        let coordinator = NativeInputCoordinator.shared
+        // A resting laser never takes the pointer from the trackpad.
+        if intent == .pointer, coordinator.contention.physicalOwns {
+            guard deliberate, coordinator.remoteEdge() else { return nativeAck(q, ok: false, reason: .physical) }
+        }
+        var point: CGPoint?
+        if case .point(let p) = resolve(u, v, revision: nil, clamp: true) { point = p }
+        lock.lock(); let content = geometryBook.current?.rect; lock.unlock()
+        switch source {
+        case .spatial(let wid):
+            guard let onNativeFocus else { return nativeAck(q, ok: false, reason: .source) }
+            onNativeFocus(wid, intent, u, v, point, content) { [weak self] observed in
+                guard let self else { return }
+                let ok = observed == .confirmed || observed == .modal
+                self.nativeAck(q, ok: ok, reason: ok ? nil : observed == nil ? .source : .focus,
+                               extra: ["focusedSrc": self.source.key, "observed": observed?.rawValue ?? "unavailable"])
+            }
+        case .menubar, .status, .menu:
+            // The app keeps its focus, so its menus stay the ones shown.
+            guard let point else { return nativeAck(q, ok: false, reason: .geometry) }
+            if intent == .pointer { Input.moveCursor(to: point) }
+            nativeAck(q, ok: true, extra: ["focusedSrc": source.key, "observed": "surface"])
+        default:
+            nativeAck(q, ok: false, reason: .source)
+        }
+    }
+
     private func handle(_ text: String) {
         guard !isStopped, let d = text.data(using: .utf8),
               let m = try? JSONSerialization.jsonObject(with: d) as? [String: Any], let t = m["t"] as? String else { return }
@@ -816,6 +1014,10 @@ final class Session {
         }
         if report(t, m) { return }
         activity.recordMessage(sessionID: id, type: t)
+        if inputEpoch != nil, NativeInputParser.isNative(m) {
+            DispatchQueue.main.async { [self] in handleNative(m) }
+            return
+        }
         let x = m["x"] as? Double ?? -1, y = m["y"] as? Double ?? -1
         if t == "ack" {
             onAck?()
@@ -986,6 +1188,8 @@ final class Agent {
         self.page = page
         Input.setPointerShared(pointerSharedMode)
         spatialMode.restorePersistedAtStartup()
+        // The trackpad's own activity, seen by the Spatial fence tap.
+        spatialMode.focus.fence.onExternal = { NativeInputCoordinator.shared.external($0) }
     }
 
     private func isWindowSource(_ source: Source) -> Bool {
@@ -1483,6 +1687,14 @@ final class Agent {
         session.onSpatialFocus = { [weak self] id, u, v in
             guard let self, self.spatialMode.isRunning, self.spatialMode.contains(windowID: id) else { return }
             _ = self.spatialMode.focus.focus(windowID: id, u: u, v: v)
+        }
+        session.spatialFocusedSource = { [weak self] in self?.spatialMode.focus.focusedSource }
+        session.onNativeFocus = { [weak self] id, intent, u, v, point, content, reply in
+            guard let self, self.spatialMode.isRunning, self.spatialMode.contains(windowID: id),
+                  let info = WindowInfo.find(id),
+                  self.spatialMode.focus.focus(windowID: id, intent: intent, u: u, v: v, point: point, content: content)
+            else { return reply(nil) }
+            NativeInputCoordinator.confirmFocus(windowID: id, pid: info.pid) { reply($0) }
         }
         session.onSpatialInput = { [weak self] id in
             guard let self, self.spatialMode.isRunning, self.spatialMode.contains(windowID: id) else { return }

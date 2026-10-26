@@ -199,6 +199,8 @@ struct SharedPointerButtons {
         return true
     }
 
+    func holds(owner: Int) -> Bool { ownerByButton.values.contains(owner) }
+
     mutating func releaseAll(owner: Int) -> [Int] {
         let buttons = ownerByButton.filter { $0.value == owner }.map(\.key)
         for button in buttons { _ = up(button) }

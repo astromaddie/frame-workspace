@@ -1275,8 +1275,11 @@ class MacView:
         and recenter it. The Frame can only ask for these fixed actions. Each
         line is one request, already removed on the Frame. Spatial gaze focus
         uses the same owned panel keys and only the newest valid request in a
-        batch survives; execution is capped at four requests per second."""
-        focus = None
+        batch survives; execution is capped at four requests per second. A
+        `direct` focus was already raised and acknowledged over the panel's
+        stream (native input): it only steers the live set, and drops any older
+        queued focus so a late replay cannot undo it."""
+        focus, direct = None, None
         for line in (out or "").splitlines():
             if not line.startswith("{"):
                 continue
@@ -1312,7 +1315,10 @@ class MacView:
                         math.isfinite(u) and math.isfinite(v) and 0 <= u <= 1 and 0 <= v <= 1 and
                         re.fullmatch(r"com\.frame-workspace\.native\.\d+\.panel-w\d{1,15}", key) and
                         any(p["key"] == key for p in list(self.native_panels.values()))):
-                    focus = (key, u, v)
+                    if request.get("direct") is True:
+                        focus, direct = None, key
+                    else:
+                        focus, direct = (key, u, v), None
             elif action == "workspace_start":
                 if not self.exit_pending:
                     self._dash_run("starting", lambda: self.start_workspace(*self.last_workspace, resume=True))
@@ -1339,6 +1345,12 @@ class MacView:
             elif action == "recenter":
                 if not self.exit_pending:
                     self._dash_run(None, self._focus_workspace_viewer)
+        if direct:
+            src = next((s for s, p in list(self.native_panels.items()) if p["key"] == direct), None)
+            with self._spatial_lock:
+                self._pending_focus = None
+                if src and src.startswith("spatial:"):
+                    self._spatial_focused = src
         if focus:
             with self._spatial_lock:
                 self._pending_focus = focus
