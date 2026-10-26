@@ -49,12 +49,24 @@ final class NativeInputCoordinator {
     /// From the fence tap, already on main.
     func external(_ activity: SpatialCursorFence.External) {
         let took: Bool
+        let wasHeld = !contention.physicalButtons.isEmpty
         switch activity {
         case .motion: took = contention.physicalMotion()
         case .button(let button, let down): took = contention.physicalButton(button, down: down)
         }
         Input.physicallyHeld = contention.physicalButtons
         if took { broadcast(owner: "physical") }
+        // A held trackpad button holds a long stare back on the headset.
+        let held = !contention.physicalButtons.isEmpty
+        if held != wasHeld { notifyAll(["t": "input-state", "physicalHeld": held]) }
+    }
+
+    /// The Mac's keyboard is in use (the fence tap, throttled): the headset
+    /// does not let a long stare move focus while the user types.
+    func typed() { notifyAll(["t": "input-state", "typing": true]) }
+
+    private func notifyAll(_ message: [String: Any]) {
+        for client in clients.values.compactMap({ $0() }) { client.nativeInputNotify(message) }
     }
 
     /// Whether a remote hover move may go to the Mac now.

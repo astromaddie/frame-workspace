@@ -11,6 +11,8 @@ enum NativeInputLimits {
     static let expiryMs = 1500
     static let retainedGeometry = 8
     static let maxWheel = 10_000.0
+    /// `gaze-highlight` (FW-15): which window the eyes highlight, offered in hello.
+    static let gazeHighlight = 1
 }
 
 /// Every helper-posted CGEvent carries this in `eventSourceUserData`, so the
@@ -42,6 +44,9 @@ enum NativeInputMessage: Equatable {
     case barrier
     case keepalive
     case release
+    /// The eyes highlight this stream's window (`on`), or no longer do. Eyes
+    /// only highlight: the first physical click while it lasts focuses it.
+    case highlight(on: Bool)
 }
 
 struct NativeInputEnvelope: Equatable {
@@ -107,6 +112,11 @@ enum NativeInputParser {
                 return .failure(.malformed)
             }
             return .success(.init(q: q, message: .wheel(dx: dx, dy: dy, u: u, v: v, geometry: geometry)))
+        case "gaze-highlight":
+            guard let v = m["v"] as? NSNumber, CFGetTypeID(v) != CFBooleanGetTypeID(),
+                  v.doubleValue == Double(NativeInputLimits.gazeHighlight),
+                  let on = m["on"] as? NSNumber, CFGetTypeID(on) == CFBooleanGetTypeID() else { return .failure(.malformed) }
+            return .success(.init(q: q, message: .highlight(on: on.boolValue)))
         case "input-barrier": return .success(.init(q: q, message: .barrier))
         case "input-keepalive": return .success(.init(q: q, message: .keepalive))
         case "release": return .success(.init(q: q, message: .release))

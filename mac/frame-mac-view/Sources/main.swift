@@ -186,6 +186,8 @@ final class Session: NativeInputClient {
     /// what macOS shows in front (nil: not a window that can be focused).
     var onNativeFocus: ((CGWindowID, NativeFocusIntent, Double, Double, CGPoint?, CGRect?,
                          @escaping (FocusObservation?) -> Void) -> Void)?
+    /// The eyes highlight this Spatial window (true) or no longer do (FW-15).
+    var onGazeHighlight: ((CGWindowID, Bool) -> Void)?
     /// Advertised in hello for Spatial sources; every native message echoes it.
     let inputEpoch: String?
     private var inputSequencer = NativeInputSequencer()  // main
@@ -611,6 +613,7 @@ final class Session: NativeInputClient {
             hello["nativeInput"] = NativeInputLimits.version
             hello["inputEpoch"] = inputEpoch
             hello["inputExpiryMs"] = NativeInputLimits.expiryMs
+            hello["gazeHighlight"] = NativeInputLimits.gazeHighlight
             DispatchQueue.main.async {
                 NativeInputCoordinator.shared.register(self)
                 guard case .spatial = self.source, !self.isStopped else { return }
@@ -778,6 +781,7 @@ final class Session: NativeInputClient {
         let owner = id
         DispatchQueue.main.async {
             Input.releaseAll(owner: owner)
+            if self.inputEpoch != nil, case .spatial(let wid) = self.source { self.onGazeHighlight?(wid, false) }
             NativeInputCoordinator.shared.unregister(owner)
             if let observer = self.focusObserver { NotificationCenter.default.removeObserver(observer) }
             self.focusObserver = nil
@@ -944,6 +948,9 @@ final class Session: NativeInputClient {
             nativeAck(q, ok: true, extra: ["released": true])
         case .focus(let u, let v, let intent, let deliberate):
             nativeFocus(q: q, u: u, v: v, intent: intent, deliberate: deliberate)
+        case .highlight(let on):
+            // Source-bound: only a window stream can say its window is looked at.
+            if case .spatial(let wid) = source { onGazeHighlight?(wid, on) }
         case .mouse(let kind, let button, let u, let v, let revision):
             let resolved = resolve(u, v, revision: revision, clamp: kind != .down)
             switch kind {
@@ -1192,6 +1199,20 @@ final class Agent {
         spatialMode.restorePersistedAtStartup()
         // The trackpad's own activity, seen by the Spatial fence tap.
         spatialMode.focus.fence.onExternal = { NativeInputCoordinator.shared.external($0) }
+        spatialMode.focus.fence.onTyping = { NativeInputCoordinator.shared.typed() }
+        // Eyes highlight, an action commits (FW-15): the first trackpad click
+        // while the eyes highlight another window was swallowed; it focuses
+        // that window and restores its remembered cursor, nothing more.
+        // The active window runs live at once (FW-15): a still window that
+        // takes focus does not wait for the companion's next live-set pass,
+        // which then budgets the rest around it.
+        NotificationCenter.default.addObserver(forName: spatialFocusChanged, object: spatialMode.focus,
+                                               queue: .main) { [weak self] _ in self?.promoteFocusedWindow() }
+        spatialMode.focus.fence.onGazeClick = { [weak self] key in
+            guard let self, self.spatialMode.isRunning, case .spatial(let id)? = Source(key),
+                  self.spatialMode.contains(windowID: id) else { return }
+            _ = self.spatialMode.focus.focus(windowID: id, intent: .gaze)
+        }
     }
 
     private func isWindowSource(_ source: Source) -> Bool {
@@ -1247,6 +1268,17 @@ final class Agent {
             spatialStreams.remove(source)
             cursorMemory.remove(source)
         }
+    }
+
+    private var promotedFocus: String?  // main
+    private func promoteFocusedWindow() {
+        guard let key = spatialMode.focus.focusedSource, key != promotedFocus else { return }
+        promotedFocus = key
+        lock.lock()
+        let targets = sessions.values.filter { $0.source.key == key }
+        if desiredLiveSources != nil { desiredLiveSources?.insert(key) }
+        lock.unlock()
+        for session in targets { session.setLive(true) }
     }
 
     private func setWindowStreamsLive(_ selected: Set<String>?) {
@@ -1693,6 +1725,10 @@ final class Agent {
             _ = self.spatialMode.focus.focus(windowID: id, u: u, v: v)
         }
         session.spatialFocusedSource = { [weak self] in self?.spatialMode.focus.focusedSource }
+        session.onGazeHighlight = { [weak self] id, on in
+            guard let self, self.spatialMode.isRunning, !on || self.spatialMode.contains(windowID: id) else { return }
+            self.spatialMode.focus.fence.highlight("spatial:\(id)", on: on, ttlMs: Double(NativeInputLimits.expiryMs))
+        }
         session.onNativeFocus = { [weak self] id, intent, u, v, point, content, reply in
             guard let self, self.spatialMode.isRunning, self.spatialMode.contains(windowID: id),
                   let info = WindowInfo.find(id),

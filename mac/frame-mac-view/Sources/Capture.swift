@@ -191,6 +191,9 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
     private var maxLong = 1920
     private var maxFps = 60
     private var stillCaptureMode = false
+    /// Whether this capture draws the Mac cursor (stills never do). Spatial
+    /// Mode turns it off for every window but the active one (FW-15).
+    private var cursorWanted = true
     private var lastShown: Int64 = 0  // display time of the last kept frame
     private var scale = 2.0
     private var poll: DispatchSourceTimer?
@@ -316,7 +319,7 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
         config.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         config.colorMatrix = CGDisplayStream.yCbCrMatrix_ITU_R_709_2
         config.colorSpaceName = CGColorSpace.sRGB
-        config.showsCursor = true
+        config.showsCursor = cursorWanted && !stillCaptureMode
         config.queueDepth = 5
         config.scalesToFit = true
         config.preservesAspectRatio = true
@@ -530,12 +533,23 @@ final class SCKSource: NSObject, CaptureSource, CaptureStopAwaitable, SCStreamOu
         }
     }
 
+    /// Applied on the next frame with no restart (SCStream updateConfiguration).
+    func setShowsCursor(_ shows: Bool) {
+        queue.async {
+            self.cursorWanted = shows
+            let next = shows && !self.stillCaptureMode
+            guard next != self.config.showsCursor else { return }
+            self.config.showsCursor = next
+            self.stream?.updateConfiguration(self.config) { _ in }
+        }
+    }
+
     func setStillCaptureMode(_ still: Bool, maxLong: Int, fps: Int, completion: @escaping () -> Void) {
         queue.async {
             self.stillCaptureMode = still
             self.maxLong = maxLong
             self.maxFps = still ? 1 : max(1, fps)
-            self.config.showsCursor = !still
+            self.config.showsCursor = !still && self.cursorWanted
             self.config.minimumFrameInterval = self.minimumInterval(fps: self.maxFps)
             let (w, h) = fitSize(width: self.frameRect.width * self.scale,
                                  height: self.frameRect.height * self.scale, maxLong: self.maxLong)
