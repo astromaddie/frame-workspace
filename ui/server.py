@@ -2446,6 +2446,10 @@ def macview_action(body):
             return macview.set_gaze_sharpen(str(body["mode"]))
         if action == "workspace_stop":
             return macview.stop_workspace()
+        if action == "arrange_windows":
+            if set(body) != {"action"}:
+                raise Failure("Arrange Windows takes no options.", 400)
+            return macview.arrange_windows()
         if action == "viewer_check":
             return macview.check_headset_viewer()
         if action == "viewer_update":

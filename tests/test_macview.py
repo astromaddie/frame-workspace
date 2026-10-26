@@ -179,9 +179,11 @@ class Helpers(unittest.TestCase):
         self.assertTrue(runs[-1].startswith("bash -s -- "))
         args = shlex.split(runs[-1])[3:]
         self.assertEqual(args[:4], ["--panel", "w42", "--name", "Terminal zsh"])
-        self.assertEqual(args[4], "--initial-pose")
-        self.assertEqual(json.loads(args[5])["width"], 1.0)
-        self.assertEqual(args[6:8], ["start", "http://127.0.0.1:1/view?x"])
+        # Its size in points (no bundle ID in this listing) sizes the panel on the Frame.
+        self.assertEqual(args[4:6], ["--points", "1200x800"])
+        self.assertEqual(args[6], "--initial-pose")
+        self.assertEqual(json.loads(args[7])["width"], 1.0)
+        self.assertEqual(args[8:10], ["start", "http://127.0.0.1:1/view?x"])
         self.assertEqual(args[-2:], ["v4l2", "gpu"])
         self.assertEqual(mv.native_panels["window:42"]["key"], "com.frame-workspace.native.1000.panel-w42")
         self.assertIs(mv.native_panels["window:42"]["host"], False)
@@ -341,7 +343,10 @@ class Helpers(unittest.TestCase):
             pose = {"version": 1, "width": 1.5, "distance": 3, "curvature": .7,
                     "matrix": [1, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1, -2]}
             path = base / "panels" / "w42-pose.json"
-            path.write_text(json.dumps(pose))
+            # A window's pose as the Frame writes it once its user placed it.
+            path.write_text(json.dumps({**pose, "userSet": True, "bundleID": "com.apple.Terminal", "title": "zsh",
+                                        "session": "s" * 32, "savedAt": 1}))
+            (base / "panels" / "w7-pose.json").write_text(json.dumps(pose))  # no provenance: not the user's
             (base / "workspace-pose.json").write_text(json.dumps(pose))
             mv = frame_macview.MacView(["ssh"], mock.Mock(), "frame")
 
@@ -352,9 +357,10 @@ class Helpers(unittest.TestCase):
                 return result.stdout
 
             mv.run.side_effect = local_reader
+            user = {**pose, "userSet": True}
             self.assertEqual(mv.read_panel_poses(["workspace", "window:42", "window:7"]),
-                             {"workspace": pose, "window:42": pose})
-            self.assertEqual(mv.read_panel_poses(["spatial:42"]), {"spatial:42": pose})
+                             {"workspace": pose, "window:42": user})
+            self.assertEqual(mv.read_panel_poses(["spatial:42"]), {"spatial:42": user})
             path.write_text(" " * 4097)
             with self.assertRaisesRegex(frame_macview.MacViewError, "capture saved native panel poses"):
                 mv.read_panel_poses(["window:42"])
@@ -1545,6 +1551,8 @@ class SpatialMode(unittest.TestCase):
         self.jobs, self.events, self.launches = [], [], []
         self.mv._dash_run = lambda busy, fn, *args: self.jobs.append((fn, args))
         self.mv._action_run = lambda fn, *args: self.jobs.append((fn, args))
+        # Window launches run as jobs too, so their order is deterministic here.
+        self.mv._launch_run = lambda fn, *args: self.jobs.append((fn, args))
         self.running, self.removed, self.fail_start = False, True, False
         self.failed_panels = set()
         self.windows = [self.window(42)]
@@ -1635,10 +1643,10 @@ class SpatialMode(unittest.TestCase):
     def test_wall_slots_follow_focus_order_reuse_and_saved_pose_precedence(self):
         self.windows = [self.window(90), self.window(42), self.window(3)]
         self.start()
+        # All three launch together; the focused window takes the centre.
+        self.assertEqual(self.panel_launches()[:3], ["w42", "w90", "w3"])
         self.assertEqual(self.mv.native_panels["spatial:42"]["slot"], 0)
-        self.mv._spatial_mode_tick(); self.jobs_once()
         self.assertEqual(self.mv.native_panels["spatial:90"]["slot"], 1)
-        self.mv._spatial_mode_tick(); self.jobs_once()
         self.assertEqual(self.mv.native_panels["spatial:3"]["slot"], 2)
         for launch in self.launches:
             if launch[launch.index("--panel") + 1].startswith("w"):
@@ -1646,7 +1654,7 @@ class SpatialMode(unittest.TestCase):
             else:
                 self.assertNotIn("--slot", launch)
         self.windows = [self.window(90), self.window(3), self.window(77)]
-        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.mv._spatial_mode_tick(); self.drain()
         self.assertEqual(self.mv.native_panels["spatial:77"]["slot"], 0)
         pose = {"version": 1, "width": .2, "distance": 1.75, "curvature": 0,
                 "matrix": [1,0,0,0,0,1,0,0,0,0,1,-1.75]}
@@ -1655,8 +1663,157 @@ class SpatialMode(unittest.TestCase):
         self.assertIn("--pose", self.launches[-1])
         self.assertNotIn("--slot", self.launches[-1])
         self.windows.append(self.window(88))
-        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.mv._spatial_mode_tick(); self.drain()
         self.assertEqual(self.mv.native_panels["spatial:88"]["slot"], 1)
+
+    def placeholder_syncs(self):
+        """Each placeholder list sent to the Frame, newest last."""
+        lists = []
+        for event, command in self.events:
+            if event == "remote" and "placeholders" in command:
+                args = shlex.split(command)
+                lists.append(json.loads(args[args.index("placeholders") + 1])["panels"])
+        return lists
+
+    def test_window_panels_launch_in_parallel_bounded_with_focused_first(self):
+        self.windows = [self.window(i) for i in (10, 11, 12, 42, 13, 14, 15)]
+        self.mv.set_mode("spatial")
+        self.mv.start_workspace(quality="balanced")
+        self.jobs_once()  # one reconciliation
+        launches = [fn for fn, _ in self.jobs if fn == self.mv._launch_spatial_window]
+        self.assertEqual(len(launches), 4, "four at a time")
+        self.assertEqual([args[0] for fn, args in self.jobs if fn == self.mv._launch_spatial_window],
+                         ["spatial:42", "spatial:10", "spatial:11", "spatial:12"])
+        # Every window shows a placeholder at its own slot straight away.
+        first = self.placeholder_syncs()[-1]
+        self.assertEqual([p["panel"] for p in first], ["w10", "w11", "w12", "w42", "w13", "w14", "w15"])
+        slots = {p["panel"]: p["slot"] for p in first}
+        self.assertEqual(slots["w42"], 0)
+        self.assertEqual(sorted(slots.values()), list(range(7)))
+        self.assertEqual(first[0]["name"], "Shell 10")
+        self.assertEqual((first[0]["bundleID"], first[0]["points"]), ("com.apple.Terminal", [900, 600]))
+        self.assertNotIn("error", first[0])
+        # A second reconciliation while four are in flight starts no more.
+        self.mv._reconcile_spatial_windows(self.mv._mode_generation)
+        self.assertEqual(sum(1 for fn, _ in self.jobs if fn == self.mv._launch_spatial_window), 4)
+        self.drain()
+        windows = [p for p in self.panel_launches() if p.startswith("w")]
+        self.assertEqual(windows[:4], ["w42", "w10", "w11", "w12"])
+        self.assertEqual(sorted(windows[4:]), ["w13", "w14", "w15"])
+        # Menu Bar, Status and the menu slots only after every window.
+        last_window = max(i for i, p in enumerate(self.panel_launches()) if p.startswith("w"))
+        first_aux = min(i for i, p in enumerate(self.panel_launches()) if not p.startswith("w"))
+        self.assertLess(last_window, first_aux)
+        for panel in ("w42", "w13"):
+            args = self.window_launch(panel)
+            self.assertEqual(args[args.index("--slot") + 1], str(slots[panel]), "the panel opens at its placeholder's slot")
+            self.assertEqual(args[args.index("--bundle-id") + 1], "com.apple.Terminal")
+            self.assertEqual(args[args.index("--points") + 1], "900x600")
+        self.assertEqual(self.placeholder_syncs()[-1], [], "live panels replace every placeholder")
+        self.assertTrue(self.mv.workspace_state()["panelsReady"])
+
+    def test_window_launches_really_overlap_on_their_own_threads(self):
+        self.windows = [self.window(42), self.window(43), self.window(44)]
+        self.mv._launch_run = self.mv._launch_thread
+        gate, entered, guard = threading.Event(), [], threading.Lock()
+        real = self.remote_run
+
+        def run(command, **kwargs):
+            if "'start'" in command and "'--panel' 'w4" in command:
+                with guard:
+                    entered.append(command)
+                gate.wait(5)
+            return real(command, **kwargs)
+        self.mv.run = run
+        self.mv.set_mode("spatial")
+        self.mv.start_workspace(quality="balanced")
+        self.jobs_once()
+        deadline = time.monotonic() + 5
+        while len(entered) < 3 and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual(len(entered), 3, "three window launches in progress at once")
+        gate.set()
+        while len([s for s in self.mv.native_panels if s.startswith("spatial:")]) < 3 and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertEqual({s for s in self.mv.native_panels if s.startswith("spatial:")},
+                         {"spatial:42", "spatial:43", "spatial:44"})
+        self.assertEqual(self.mv._spatial_launching, {})
+
+    def test_launch_parallelism_is_configurable_and_validated(self):
+        self.windows = [self.window(i) for i in (10, 11, 12)]
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_LAUNCH_PARALLEL": "1"}):
+            self.mv.set_mode("spatial")
+            self.mv.start_workspace(quality="balanced")
+            self.jobs_once()
+            self.assertEqual(sum(1 for fn, _ in self.jobs if fn == self.mv._launch_spatial_window), 1)
+            self.drain()
+        self.assertEqual([p for p in self.panel_launches() if p.startswith("w")], ["w10", "w11", "w12"])
+        self.removed = True
+        self.mv.stop_workspace()
+        for bad in ("0", "9", "four"):
+            with self.subTest(bad=bad), mock.patch.dict(os.environ, {"FRAME_SPATIAL_LAUNCH_PARALLEL": bad}):
+                with self.assertRaisesRegex(frame_macview.MacViewError, "FRAME_SPATIAL_LAUNCH_PARALLEL"):
+                    self.mv.start_workspace(quality="balanced")
+
+    def test_failed_launch_shows_its_error_on_the_placeholder_and_retries(self):
+        self.windows = [self.window(42), self.window(43)]
+        self.failed_panels.add("w43")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.start()
+        self.assertIn("spatial:43", self.mv.workspace_state()["panelErrors"])
+        failed = self.placeholder_syncs()[-1]
+        self.assertEqual([p["panel"] for p in failed], ["w43"])
+        self.assertEqual(failed[0]["error"], frame_macview.PLACEHOLDER_ERROR)
+        self.assertEqual(failed[0]["slot"], 1, "the failed window keeps its slot")
+        self.assertIn("Couldn't Show Terminal: Panel Launch Failed", [e["message"] for e in self.mv.errors_state()])
+        self.failed_panels.clear()
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=106):
+            self.mv._spatial_mode_tick(); self.drain()
+        self.assertIn("spatial:43", self.mv.native_panels)
+        self.assertEqual(self.mv.native_panels["spatial:43"]["slot"], 1)
+        self.assertEqual(self.placeholder_syncs()[-1], [])
+
+    def test_a_placeholder_close_stops_that_window_opening(self):
+        self.windows = [self.window(42), self.window(43)]
+        self.failed_panels.add("w43")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.start()
+        self.mv._handle_frame_requests('{"action":"close","key":"com.frame-workspace.native.1000.panel-w43"}')
+        self.drain()
+        self.assertIn("spatial:43", self.mv._spatial_suppressed)
+        self.assertEqual(self.placeholder_syncs()[-1], [])
+        launches = len(self.launches)
+        self.failed_panels.clear()
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=110):
+            self.mv._spatial_mode_tick(); self.drain()
+        self.assertEqual(len(self.launches), launches, "a closed placeholder's window is not retried")
+
+    def test_stop_clears_placeholders_left_on_the_frame(self):
+        self.windows = [self.window(42), self.window(43)]
+        self.failed_panels.add("w43")
+        with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
+            self.start()
+        self.assertTrue(self.mv._placeholders_on_frame)
+        self.removed = True
+        self.mv.stop_workspace()
+        self.assertEqual(self.placeholder_syncs()[-1], [])
+        self.assertFalse(self.mv._placeholders_on_frame)
+
+    def test_arrange_windows_from_the_bar_and_the_mac_page(self):
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Needs Spatial Mode"):
+            self.mv.arrange_windows()
+        self.start()
+        self.mv.spatial_apps.state = {"mode": "spatial", "apps": []}
+        result = self.mv.arrange_windows()
+        self.assertTrue(result["arranged"])
+        self.assertEqual(self.mv.spatial_apps.arrange_seq, 1)
+        self.assertEqual(self.mv.spatial_apps.state["arrangeSeq"], 1)
+        self.mv._handle_frame_requests('{"action":"arrange_windows"}')
+        self.assertEqual(self.mv.spatial_apps.state["arrangeSeq"], 2)
+        self.assertEqual(self.launches[-1], self.launches[-1])  # no panel relaunch
+        launches = len(self.launches)
+        self.drain()
+        self.assertEqual(len(self.launches), launches)
 
     def test_hand_movement_releases_only_current_generation_slot(self):
         self.start()
@@ -1668,7 +1825,7 @@ class SpatialMode(unittest.TestCase):
         self.mv._handle_frame_requests(json.dumps(request))
         self.assertIsNone(panel["slot"])
         self.windows.append(self.window(43))
-        self.mv._spatial_mode_tick(); self.jobs_once()
+        self.mv._spatial_mode_tick(); self.drain()
         self.assertEqual(self.mv.native_panels["spatial:43"]["slot"], 0)
 
     def test_start_uses_shared_display_spatial_sources_and_shared_host(self):
@@ -1750,8 +1907,8 @@ class SpatialMode(unittest.TestCase):
         with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
             self.mv.set_mode("spatial")
             self.mv.start_workspace(quality="balanced")
-            self.jobs_once()
-            self.assertEqual(self.panel_launches(), ["w42"])
+            self.jobs_once()  # reconciliation: both windows start launching at once
+            self.assertEqual(self.panel_launches(), [])
             self.jobs_once()
             self.assertEqual(self.panel_launches(), ["w42", "w43"])
             self.drain()
@@ -1765,6 +1922,7 @@ class SpatialMode(unittest.TestCase):
         self.windows.append(self.window(44))
         with mock.patch.object(frame_macview.time, "monotonic", return_value=101):
             self.mv._spatial_mode_tick()
+            self.jobs_once()
             self.jobs_once()
         self.assertEqual(self.panel_launches()[-1], "w44")
 
@@ -1862,9 +2020,11 @@ class SpatialMode(unittest.TestCase):
                 self.mv._stop_requested += 1
             return out
         self.mv.run = run
-        self.jobs_once()
+        self.jobs_once()  # reconciliation queues both launches
+        self.jobs_once()  # the first one's Stop cancels the second before it starts
         self.assertEqual(self.panel_launches(), ["w42"])
         self.assertFalse(self.jobs, "no follow-up launch is queued once Stop is waiting")
+        self.assertNotIn("spatial:42", self.mv.native_panels, "a launch that finished after Stop is closed")
         self.mv._stop_requested -= 1
         self.removed = True
         self.mv.run = real_run
@@ -1930,6 +2090,7 @@ class SpatialMode(unittest.TestCase):
         self.mv._spatial_mode_tick()  # a single job while one is pending
         self.assertEqual(len(self.jobs), 1)
         self.jobs_once()
+        self.jobs_once()
         self.assertEqual(set(self.mv.native_panels), {"spatial:42", "spatial:43", *frame_macview.SPATIAL_AUX_ROLES})
         self.windows.pop(0)
         self.mv._spatial_mode_tick()
@@ -1946,13 +2107,13 @@ class SpatialMode(unittest.TestCase):
         self.failed_panels.add("w43")
         with mock.patch.object(frame_macview.time, "monotonic", return_value=100):
             self.mv._spatial_mode_tick()
-            self.jobs_once()
+            self.drain()
         self.assertIn("spatial:43", self.mv.workspace_state()["panelErrors"])
         self.assertEqual(self.mv._spatial_resume_poses["spatial:43"], pose)
         self.failed_panels.clear()
         with mock.patch.object(frame_macview.time, "monotonic", return_value=105):
             self.mv._spatial_mode_tick()
-            self.jobs_once()
+            self.drain()
         self.assertIn("spatial:43", self.mv.native_panels)
         self.assertNotIn("spatial:43", self.mv._spatial_resume_poses)
         args = self.launches[-1]

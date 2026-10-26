@@ -195,6 +195,19 @@ class Companion(unittest.TestCase):
         self.mv.mode = "desktop"
         self.assertFalse(self.apps.handle_request({"action": "recenter"}))
 
+    def test_arrange_windows_publishes_a_newer_counter_and_is_spatial_only(self):
+        self.apps.refresh()
+        self.assertNotIn("arrangeSeq", self.apps.state)
+        self.assertTrue(self.apps.handle_request({"action": "arrange_windows"}))
+        self.assertEqual(self.apps.state["arrangeSeq"], 1)
+        self.apps.refresh()  # a refresh keeps the counter
+        self.assertEqual(self.apps.state["arrangeSeq"], 1)
+        self.apps.sync()
+        self.assertEqual(json.loads([r for r in self.mv.remote if r[0] == "sync"][-1][1])["arrangeSeq"], 1)
+        self.mv.mode = "desktop"
+        self.assertTrue(self.apps.handle_request({"action": "arrange_windows"}), "consumed, with nothing to arrange")
+        self.assertEqual(self.apps.arrange_seq, 1)
+
     def test_desktop_never_starts_helper_or_writes_state(self):
         del self.mv.mode  # companion mode worker may not yet be present
         self.apps.refresh()

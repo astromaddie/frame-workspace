@@ -255,15 +255,19 @@ class ProfileCaptureTests(unittest.TestCase):
                 {"id": 8, "src": "window:8", "bundleID": "com.apple.Preview", "title": "One"},
                 {"id": 9, "src": "window:9", "bundleID": "com.apple.Preview", "title": "Two"}]})
             window_pose, workspace_pose = sample_pose(1), sample_pose(-1)
-            mv.run = mock.Mock(return_value=json.dumps({"w42": json.dumps(window_pose),
-                                                       "workspace": json.dumps(workspace_pose)}))
+            # As the Frame writes them: w42 placed by its user, w7 only by the wall.
+            mv.run = mock.Mock(return_value=json.dumps({
+                "w42": json.dumps({**window_pose, "userSet": True, "bundleID": "com.apple.Terminal",
+                                   "title": "Shell", "session": "s" * 32, "savedAt": 1}),
+                "w7": json.dumps(sample_pose(3)),
+                "workspace": json.dumps(workspace_pose)}))
             profile = sample_profile([{"bundleID": "com.apple.Terminal"}, {"bundleID": "com.example.Editor"},
                                       {"bundleID": "com.example.Missing"}, {"bundleID": "com.apple.Preview"},
                                       {"bundleID": "com.apple.Terminal", "titleHint": "Shell"},
                                       {"bundleID": "com.example.Editor", "titleHint": "Old Title"}])
             original = copy.deepcopy(profile)
             saved = profiles.save(store, mv, profile)
-            self.assertEqual(saved["windows"][0]["pose"], window_pose)
+            self.assertEqual(saved["windows"][0]["pose"], {**window_pose, "userSet": True})
             self.assertEqual(saved["workspace"]["pose"], workspace_pose)
             self.assertTrue(all("pose" not in rule for rule in saved["windows"][1:]))
             self.assertEqual(shlex.split(mv.run.call_args.args[0]), ["python3", "-", "workspace", "w42", "w7"])
@@ -660,7 +664,9 @@ class SessionKeeperTests(unittest.TestCase):
         def read_panel_poses(self, sources):
             if self.fail_poses:
                 raise frame_macview.MacViewError("Frame unreachable")
-            return {s: sample_pose(i) for i, s in enumerate(sources)}
+            # Window poses come back only once their user placed them, marked so.
+            return {s: sample_pose(i) if s == frame_macview.WorkspaceDisplayManager.KEY else
+                    {**sample_pose(i), "userSet": True} for i, s in enumerate(sources)}
 
         def show(self, src, quality="balanced", pose=None):
             self.shown.append((src, pose))
@@ -716,6 +722,27 @@ class SessionKeeperTests(unittest.TestCase):
             terminal = next(r for r in saved["windows"] if r["bundleID"] == "com.apple.Terminal")
             self.assertEqual(mv.shown, [("window:5", terminal["pose"])])
             self.assertFalse(keeper.paused)
+
+    def test_snapshot_poses_without_provenance_are_not_restored(self):
+        """Last Session files from before FW-15 provenance hold wall and test
+        positions too: those windows come back on the wall, not at a pose."""
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
+            mv, store, keeper = self.keeper(tmp)
+            mv.read_panel_poses = lambda sources: {s: sample_pose(i) for i, s in enumerate(sources)}
+            keeper.snapshot()
+            saved = store.get(profiles.LAST_SESSION)
+            self.assertTrue(all("userSet" not in r["pose"] for r in saved["windows"]))
+            keeper.final_snapshot()
+            mv.native_panels = {"window:9": {"key": "k9"}}
+            self.assertEqual(keeper.resume(), ["window:5"])
+            self.assertEqual(mv.shown, [("window:5", None)])
+            self.spatial(mv)
+            keeper.snapshot()
+            mv.call = mock.Mock(return_value={"windows": [{k: v for k, v in w.items() if k != "src"} for w in mv.windows]})
+            mv.native_panels.clear()
+            keeper.paused = True
+            keeper.resume_async(True)
+            self.assertEqual(mv._spatial_resume_poses, {})
 
     def test_a_named_profile_start_carries_on_saving_without_resuming(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"FRAME_WORKSPACE_VIEWER": "native"}):
