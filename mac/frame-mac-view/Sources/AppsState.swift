@@ -337,6 +337,23 @@ final class SwitcherState {
         }
     }
 
+    /// The companion opened an app that already has a panel: deliver it as a
+    /// choice, like a Cmd-Tab release. A new sequence even for the same key.
+    @discardableResult
+    func choose(_ key: String) -> Bool {
+        locked {
+            guard spatial, windowsLocked().contains(key) else { return false }
+            openValue = false
+            frozenMRU = nil
+            highlightedKey = nil
+            keyboardCycle = false
+            chosenKey = key
+            normalizeSelectionLocked()
+            sequence += 1
+            return true
+        }
+    }
+
     func controllerClose() {
         locked {
             // Close also acknowledges a delivered Cmd-release choice.

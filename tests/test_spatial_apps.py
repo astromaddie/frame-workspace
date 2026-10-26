@@ -59,6 +59,7 @@ class FakeMacView:
         self.switcher = {"open": False, "index": 0, "seq": 0, "chosen": None,
                          "windows": [KEY1, KEY2], "tapActive": True}
         self.missing, self.icon_fail = [], False
+        self.lane, self.action_error = [], None
 
     def call(self, path, method="GET", **query):
         self.calls.append((path, method, query))
@@ -68,6 +69,8 @@ class FakeMacView:
             return {"windows": copy.deepcopy(self.windows)}
         if path == "/switcher":
             return copy.deepcopy(self.switcher)
+        if path == "/apps/action" and self.action_error:
+            raise frame_macview.MacViewError("The Mac Streaming Helper: " + self.action_error)
         if path == "/apps/icon":
             if self.icon_fail:
                 raise ValueError("icon failed")
@@ -82,6 +85,10 @@ class FakeMacView:
         return "SPATIAL_ICONS_MISSING " + json.dumps(self.missing) if args[2] == "sync" else ""
 
     def _dash_run(self, busy, fn, *args):
+        fn(*args)
+
+    def _action_run(self, fn, *args):
+        self.lane.append(fn.__name__)
         fn(*args)
 
 
@@ -235,7 +242,53 @@ class Companion(unittest.TestCase):
         self.apps.handle_request({"action": "app", "bundleID": TERMINAL, "verb": "quit"})
         self.assertEqual(len(self.mv.calls), count)
 
-    def test_real_macview_dispatch_hook_uses_existing_job_queue(self):
+    def test_headset_clicks_use_the_action_lane(self):
+        self.apps.refresh()
+        self.apps.handle_request({"action": "app", "verb": "hide", "bundleID": NOTES})
+        self.apps.handle_request({"action": "switch", "key": KEY2})
+        self.apps.handle_request({"action": "switcher", "verb": "open"})
+        self.assertEqual(self.mv.lane, ["_app_action", "_switch", "_switcher_action"])
+
+    def test_opening_an_app_with_a_panel_brings_that_panel_forward(self):
+        self.mv.switcher["windows"] = [KEY2, KEY1]
+        self.apps.refresh()
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": TERMINAL})
+        self.assertIn(("/switcher", "POST", {"mode": "spatial", "verb": "choose", "key": KEY1}), self.mv.calls)
+        self.mv.calls.clear()
+        self.apps.handle_request({"action": "app", "verb": "open", "bundleID": PINNED})  # no panel yet
+        self.apps.handle_request({"action": "app", "verb": "hide", "bundleID": TERMINAL})
+        self.assertFalse([c for c in self.mv.calls if c[2].get("verb") == "choose"])
+
+    def test_failed_app_action_names_the_app_and_reason(self):
+        self.apps.refresh()
+        self.mv.action_error = "application not found"
+        with self.assertRaisesRegex(RuntimeError, r"^Couldn't Open Pinned: application not found$"):
+            self.apps._app_action(PINNED, "open")
+        self.assertFalse([c for c in self.mv.calls if c[2].get("verb") == "choose"])
+
+    def test_real_macview_action_lane_skips_a_blocked_workspace_queue_and_records_failures(self):
+        mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
+        mv.mode = "spatial"
+        mv.spatial_workspace["state"] = "running"
+        mv.native_panels = self.mv.native_panels
+        mv.call = self.mv.call
+        mv.agent = self.mv.agent
+        mv.spatial_apps.refresh()
+        started, release = threading.Event(), threading.Event()
+        mv._dash_run(None, lambda: (started.set(), release.wait(5)))  # a long panel launch
+        self.assertTrue(started.wait(2))
+        self.mv.action_error = "application not found"
+        mv._handle_frame_requests(json.dumps({"action": "app", "verb": "open", "bundleID": PINNED}))
+        mv._handle_frame_requests(json.dumps({"action": "switch", "key": KEY1}))
+        mv.action_jobs.join()
+        self.assertEqual(mv._spatial_focused, "spatial:1")
+        self.assertEqual([e["message"] for e in mv.errors_state()], ["Couldn't Open Pinned: application not found"])
+        self.assertEqual(mv.dash_state()["workspace"]["notice"], "Couldn't Open Pinned: application not found")
+        self.assertEqual(mv.dash_state()["errors"], ["Couldn't Open Pinned: application not found"])
+        release.set()
+        mv.dash_jobs.join()
+
+    def test_real_macview_dispatch_hook_uses_the_action_queue(self):
         mv = frame_macview.MacView([], lambda *a, **k: "", "fake")
         mv.mode = "spatial"
         mv.spatial_workspace["state"] = "running"
@@ -244,7 +297,7 @@ class Companion(unittest.TestCase):
         mv.agent = self.mv.agent
         mv.spatial_apps.refresh()
         mv._handle_frame_requests(json.dumps({"action": "switch", "key": KEY1}))
-        mv.dash_jobs.join()
+        mv.action_jobs.join()
         self.assertEqual(mv._spatial_focused, "spatial:1")
         self.assertIn(("/focus", "POST", {"src": "spatial:1", "u": .5, "v": .5}), self.mv.calls)
 

@@ -1742,6 +1742,52 @@ class SpatialMode(unittest.TestCase):
             self.jobs_once()
         self.assertEqual(self.panel_launches()[-1], "w44")
 
+    def test_mac_page_stop_preempts_startup_between_stages(self):
+        self.mv.set_mode("spatial")
+        real_call = self.call
+        def call(path, method="GET", **query):
+            if path == "/spatial/start":
+                self.mv._stop_requested += 1  # Stop pressed on the Mac page while the display comes up
+            return real_call(path, method, **query)
+        self.mv.call = call
+        with self.assertRaisesRegex(frame_macview.MacViewError, "Workspace Stop cancelled Spatial Mode startup"):
+            self.mv.start_workspace(quality="balanced")
+        self.assertEqual(self.events[-1][0], "/spatial/stop")
+        self.assertFalse(self.launches)
+        self.assertFalse(self.jobs)
+
+    def test_stop_during_a_window_launch_ends_reconciliation_at_that_stage(self):
+        self.windows = [self.window(42), self.window(43)]
+        self.mv.set_mode("spatial")
+        self.mv.start_workspace(quality="balanced")
+        real_run = self.remote_run
+        def run(command, **kwargs):
+            out = real_run(command, **kwargs)
+            if "'start'" in command:
+                self.mv._stop_requested += 1
+            return out
+        self.mv.run = run
+        self.jobs_once()
+        self.assertEqual(self.panel_launches(), ["w42"])
+        self.assertFalse(self.jobs, "no follow-up launch is queued once Stop is waiting")
+        self.mv._stop_requested -= 1
+        self.removed = True
+        self.mv.run = real_run
+        self.mv.stop_workspace()
+        self.assertFalse(self.mv.native_panels)
+        self.assertEqual(self.mv._stop_requested, 0)
+
+    def test_failed_workspace_job_is_recorded_for_the_bar_and_mac_page(self):
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        def fail():
+            raise frame_macview.MacViewError("Spatial Mode Could Not Start: Mirror Setup Failed")
+        mv._dash_run("starting", fail)
+        mv.dash_jobs.join()
+        self.assertEqual([e["message"] for e in mv.errors_state()], ["Spatial Mode Could Not Start: Mirror Setup Failed"])
+        self.assertEqual(mv.dash_state()["workspace"]["notice"], "Spatial Mode Could Not Start: Mirror Setup Failed")
+        with mock.patch.object(frame_macview.time, "time", return_value=time.time() + 60):
+            self.assertNotIn("notice", mv.dash_state()["workspace"])
+
     def test_auxiliary_launch_failure_retries_without_relaunching_other_panels(self):
         self.failed_panels.add("menu2")
         with mock.patch.object(frame_macview.time, "monotonic", return_value=100):

@@ -15,7 +15,8 @@ struct AppsStateTests {
         controllerRenewalWithoutEntriesPreservesPanels()
         controllerOpenReleaseAndCloseDoNotChoose()
         desktopModeAndLeaseExpiryResetState()
-        print("PASS app switcher validation, MRU ordering, cycling and lease state")
+        companionChoiceBringsAnExistingPanelForward()
+        print("PASS app switcher validation, MRU ordering, cycling, lease state and choices")
     }
 
     private static func tryInvalid(_ json: String) -> Bool {
@@ -192,6 +193,27 @@ struct AppsStateTests {
         state.noteActivation("org.example.beta")
         expect(state.snapshot().chosen == nil,
                "acknowledged choices must not replay after a later app activation")
+    }
+
+    private static func companionChoiceBringsAnExistingPanelForward() {
+        let state = SwitcherState()
+        let first = "com.frame-workspace.native.1000.panel-w1"
+        let second = "com.frame-workspace.native.1000.panel-w2"
+        state.seedMRU(["com.example.alpha", "org.example.beta"])
+        state.enableSpatial(entries: [SwitcherPanel(key: first, bundleID: "com.example.alpha"),
+                                      SwitcherPanel(key: second, bundleID: "org.example.beta")], at: 1)
+        let start = state.snapshot().seq
+        expect(state.choose(second), "a known panel can be chosen")
+        var current = state.snapshot()
+        expect(!current.open && current.chosen == second && current.seq > start, "a choice is delivered with a new sequence")
+        state.controllerClose()
+        let acknowledged = state.snapshot().seq
+        expect(state.choose(second), "the same panel can be chosen again")
+        current = state.snapshot()
+        expect(current.chosen == second && current.seq > acknowledged, "a repeated choice is a new event")
+        expect(!state.choose("com.frame-workspace.native.1000.panel-w9"), "unknown panels are never chosen")
+        state.disableSpatial()
+        expect(!state.choose(first), "desktop mode ignores choices")
     }
 
     private static func desktopModeAndLeaseExpiryResetState() {

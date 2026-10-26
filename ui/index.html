@@ -1291,6 +1291,7 @@
         <div class="mv-workspace-status" id="mvWorkspaceStatus" role="status" aria-live="polite">
           Start creates an extended Mac desktop and opens its panel in the Frame.
         </div>
+        <div class="mv-workspace-status" id="mvErrors" role="status" aria-live="polite" hidden></div>
       </div>
       <label class="mv-opt"><input type="checkbox" id="mvSeparate" checked> Give each window its own display
         <span class="sub">its menus and sheets come along, nothing covers it, and it goes back when you stop</span></label>
@@ -4346,8 +4347,17 @@ async function adjustWorkspacePlacement(b) {
     await loadMacView();
   }
 }
+// Failed headset clicks and panel launches from the last ten minutes, newest first.
+function renderMvErrors(s) {
+  const box = $("mvErrors"), now = Date.now() / 1000;
+  const recent = (s.recentErrors || []).filter(e => e && now - e.at < 600).slice(-3).reverse();
+  box.hidden = !recent.length;
+  box.innerHTML = recent.length ? '<span class="mv-ws-state">Recent Problems</span> · '
+    + recent.map(e => esc(e.message)).join(" · ") : "";
+}
 function renderMvWorkspace(s) {
   renderWorkspacePlacement(s);
+  renderMvErrors(s);
   const ws = s.workspace || {state: "stopped"}, running = ws.state === "running";
   const spatial = ws.mode === "spatial";
   const stream = running && (s.streams || []).find(x => x.src === ws.captureSrc);

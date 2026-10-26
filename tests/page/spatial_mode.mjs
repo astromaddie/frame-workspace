@@ -64,7 +64,16 @@ assert.equal(element("mvModeDesktop").disabled, true);
 assert.equal(element("mvWorkspaceStop").hidden, false);
 assert.equal(element("mvWorkspaceStop").disabled, false);
 
+assert.equal(element("mvErrors").hidden, true);
+render({...desktop, workspace: {mode: "spatial", state: "running", panelsReady: true},
+  recentErrors: [{at: Date.now() / 1000 - 5, kind: "action", message: "Couldn't Open Claude: application not found"},
+                 {at: Date.now() / 1000 - 4000, kind: "panel", message: "Old Problem"}]});
+assert.equal(element("mvErrors").hidden, false);
+assert.match(element("mvErrors").innerHTML, /Recent Problems.*Couldn't Open Claude: application not found/);
+assert.doesNotMatch(element("mvErrors").innerHTML, /Old Problem/);
+
 render(desktop);
+assert.equal(element("mvErrors").hidden, true);
 element("mvModeSpatial").dataset = {mv: "workspace-mode", mode: "spatial"};
 await element("macview").onclick({target: {closest: () => element("mvModeSpatial")}});
 assert.equal(requests.length, 1);

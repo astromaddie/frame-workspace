@@ -104,14 +104,19 @@ final class MacApps {
             entries = nil
         }
         let verb = request.query["verb"]
-        guard verb == nil || verb == "open" || verb == "close" else {
-            return connection.respond(400, text: "verb=open|close")
+        guard verb == nil || verb == "open" || verb == "close" || verb == "choose" else {
+            return connection.respond(400, text: "verb=open|close|choose")
         }
-        guard mode == "spatial" || verb != "open" else {
-            return connection.respond(400, text: "verb=open requires mode=spatial")
+        guard mode == "spatial" || (verb != "open" && verb != "choose") else {
+            return connection.respond(400, text: "verb=\(verb ?? "") requires mode=spatial")
+        }
+        // choose: bring this panel forward in the headset, as a Cmd-Tab release does.
+        let key = request.query["key"]
+        guard verb != "choose" || key.map(SwitcherPanel.validWindowKey) == true else {
+            return connection.respond(400, text: "verb=choose needs a panel key")
         }
         DispatchQueue.main.async {
-            self.switcher.configure(mode: mode, entries: entries, verb: verb)
+            self.switcher.configure(mode: mode, entries: entries, verb: verb, key: key)
             connection.respond(json: self.switcher.state.snapshot().json)
         }
     }
@@ -256,7 +261,7 @@ final class SwitcherController {
     private var suppressTabUp = false
     private var stopping = false
 
-    func configure(mode: String, entries: [SwitcherPanel]?, verb: String?) {
+    func configure(mode: String, entries: [SwitcherPanel]?, verb: String?, key: String? = nil) {
         if mode == "desktop" {
             removeTap()
             cancelLeaseTimer()
@@ -272,6 +277,7 @@ final class SwitcherController {
             switch verb {
             case "open": state.controllerOpen()
             case "close": state.controllerClose()
+            case "choose": if let key { state.choose(key) }
             default: break
             }
         }
