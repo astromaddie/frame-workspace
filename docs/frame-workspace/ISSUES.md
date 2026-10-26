@@ -649,13 +649,17 @@ toggle between the two, because Spatial Mode won't suit every task.
   small at rest and grows with Mac Dock-style magnification when the laser or the eyes land on it,
   then shrinks back shortly after they leave.
 - **Real Mac UI over rebuilt UI** (chosen 2026-10-26, after `evidence/launcher-mockup.png`): bring
-  the Mac's own elements into the room instead of recreating them. Spotlight (on macOS 26 its Apps
-  view replaces Launchpad) is the launcher, so the custom launcher options A, B and C are dropped.
-  **S1**: system surfaces (Spotlight, permission prompts, open and save panels, notifications)
-  appear as panels in front of the user. **S2**: a Laptop Screen panel shows the covered built-in
-  display as the safety net for anything S1 misses. The native shelf stays for now; a captured
-  real Dock is to be tried once headset clicks into panels work. Password prompts may be hidden
-  from capture by macOS; check that first.
+  the Mac's own elements into the room where they work well instead of recreating them. Real
+  Spotlight is used, so the custom search (option B) is dropped. **S1**: system surfaces
+  (Spotlight, permission prompts, open and save panels, notifications) appear as panels in front
+  of the user. **S2**: a Laptop Screen panel shows the covered built-in display as the safety net
+  for anything S1 misses. Password prompts may be hidden from capture by macOS; check that first.
+- **Launcher** (chosen 2026-10-26): build **A**, the Applications grid opened from a button at the
+  shelf's left end, with Recent Apps and an app-name filter, operated by laser and eyes. macOS 26
+  has no Launchpad (its Apps view lives inside Spotlight and isn't laser-friendly), so the grid
+  is ours. The app list comes from Launch Services; the order and folders start from the user's
+  old Launchpad database where it still exists. The native shelf stays; a captured real Dock is
+  not planned.
 
 ## Approach
 Each window gets its own virtual display, sized to it, streamed as its own panel
