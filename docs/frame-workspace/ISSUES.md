@@ -655,6 +655,13 @@ toggle between the two, because Spatial Mode won't suit every task.
   (Spotlight, permission prompts, open and save panels, notifications) appear as panels in front
   of the user. **S2**: a Laptop Screen panel shows the covered built-in display as the safety net
   for anything S1 misses. Password prompts may be hidden from capture by macOS; check that first.
+- **Focus: eyes highlight, an action commits** (chosen 2026-10-26 after the first usable run, option
+  A; replaces "eyes pick the active window"). Looking at a window lights its border but doesn't
+  move focus. A window becomes active on a deliberate action: the controller laser moved onto it
+  or its trigger pressed there, or a trackpad click while looking at it (that first click only
+  focuses). Only the active window shows the Mac cursor and runs at full rate; the others dim a
+  little. In the run, glance focus put the cursor in several overlapping windows at once and left
+  the typed-in window at the background rate.
 - **Launcher** (chosen 2026-10-26): build **A**, the Applications grid opened from a button at the
   shelf's left end, with Recent Apps and an app-name filter, operated by laser and eyes. macOS 26
   has no Launchpad (its Apps view lives inside Spotlight and isn't laser-friendly), so the grid
