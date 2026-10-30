@@ -1323,7 +1323,7 @@ class SpatialPolicy(unittest.TestCase):
         if path == "/streams/live":
             selected = set(q.get("src", "").split(","))
             for s in self.status["streams"]:
-                if s["src"].startswith(("window:", "separate:", "spatial:")):
+                if s["src"].startswith(("window:", "separate:", "spatial:")) or s["src"] in frame_macview.SPATIAL_AUX_ROLES:
                     s["live"] = q.get("all") == "1" or s["src"] in selected
         elif path == "/streams/policy":
             if q.get("all") == "1":
@@ -1344,6 +1344,8 @@ class SpatialPolicy(unittest.TestCase):
         s = {"id": len(self.status["streams"]) + 1, "src": src, "width": width, "height": height,
              "requestedWidth": requested_width, "requestedHeight": requested_height,
              "lastChanged": self.now + 900 - age, "live": True, **extra}
+        if src in frame_macview.SPATIAL_AUX_ROLES:
+            s.setdefault("visible", True)
         self.status["streams"].append(s)
         return s
 
@@ -1452,21 +1454,45 @@ class SpatialPolicy(unittest.TestCase):
         self.assertEqual(self.live() & {focused["src"], background["src"]},
                          {focused["src"], background["src"]})
 
-    def test_known_auxiliary_cost_triggers_focus_resize_before_background_admission(self):
-        focused = self.stream("spatial:1", 17)
+    def test_oversized_known_auxiliary_yields_before_focused_light_minimum(self):
+        focused = self.stream("spatial:1", 20, width=4000, height=5000,
+                              requestedWidth=4000, requestedHeight=5000)
         background = self.stream("spatial:2", 6)
-        self.stream("menubar", 3)
+        menu = self.stream("menu:0", 17)
         self.status["focusedSrc"] = focused["src"]
         self.tick()
         self.tick(101)
         self.assertEqual(self.live() & {focused["src"], background["src"]}, {focused["src"]})
         self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3:], (1280, 30))
-        # Wait for the helper to confirm its in-place capture update; the
-        # requested Light footprint plus the known menu cost then fits.
-        focused.update(width=1280, height=75)
+        self.assertFalse(menu["live"], "the oversized menu surface is suspended before lowering focus FPS")
+        self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][2], "focused-decode-budget")
+        # Wait for the helper to confirm its in-place capture update; background
+        # work can then use the confirmed remaining cost.
+        focused.update(width=1280, height=410)
         self.tick(102)
         self.assertEqual(self.live() & {focused["src"], background["src"]},
                          {focused["src"], background["src"]})
+
+    def test_hidden_auxiliary_surface_is_not_counted_or_resumed(self):
+        focused = self.stream("spatial:1", 16)
+        hidden_menu = self.stream("menu:0", 17, visible=False, live=False)
+        self.status["focusedSrc"] = focused["src"]
+        self.tick()
+        self.assertEqual(self.live() & {focused["src"]}, {focused["src"]})
+        self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3:], (0, 0))
+        self.assertFalse(hidden_menu["live"], "an invisible menu slot remains still")
+
+    def test_light_minimum_over_budget_reports_limited_without_lowering_fps(self):
+        focused = self.stream("spatial:1", 20, width=4000, height=5000,
+                              requestedWidth=4000, requestedHeight=5000)
+        self.status["focusedSrc"] = focused["src"]
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "0.1"}):
+            self.tick()
+            self.tick(101)
+        policy = self.mv._spatial_policy_targets[focused["src"]]
+        self.assertEqual(self.live() & {focused["src"]}, {focused["src"]})
+        self.assertEqual(policy[2], "focused-decode-limited")
+        self.assertEqual(policy[3:], (1280, 30), "an unavoidable load is reported without shrinking below Light")
 
     def test_focused_quality_restores_after_two_seconds_of_spare_capacity(self):
         focused = self.stream("spatial:1", 4)
@@ -1568,7 +1594,8 @@ class SpatialPolicy(unittest.TestCase):
         self.assertEqual(self.live() & {"spatial:42", "spatial:43"}, {"spatial:42"})
         for _, method, query in (c for c in self.calls if c[0] == "/streams/live"):
             self.assertEqual(method, "POST")
-            self.assertTrue(all(s.startswith("spatial:") for s in query["src"].split(",") if s))
+            self.assertTrue(all(s.startswith("spatial:") or s in frame_macview.SPATIAL_AUX_ROLES
+                                for s in query["src"].split(",") if s))
 
     def test_focus_coalesces_latest_and_is_limited_to_four_per_second(self):
         a, b = self.panel("window:1", 1), self.panel("separate:2", 2)

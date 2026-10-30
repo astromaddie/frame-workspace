@@ -11,6 +11,7 @@ struct VideoBudgetTests {
         roleSharesAreFairAndUnusedCapacityMovesToDemand()
         newSessionsJoinImmediatelyAndFocusCanSwitch()
         zeroCapRemainsUncapped()
+        uncappedRoutesKeepOptionalDataRateLimits()
         captureLimitsComposeWithoutPerTickKeyframes()
         print("PASS shared video budget caps, redistribution, focus changes and uncapped routes")
     }
@@ -74,12 +75,23 @@ struct VideoBudgetTests {
 
     private static func zeroCapRemainsUncapped() {
         let requests = [
-            VideoBudgetRequest(sessionID: 1, role: "focused", demand: 30_000_000, ceiling: 25_000_000),
-            VideoBudgetRequest(sessionID: 2, role: "background", demand: 12_000_000, ceiling: 8_000_000)
+            VideoBudgetRequest(sessionID: 1, role: "focused", demand: 300_000, ceiling: 25_000_000),
+            VideoBudgetRequest(sessionID: 2, role: "background", demand: 300_000, ceiling: 8_000_000)
         ]
         let allocations = SharedVideoBudgetPolicy.allocate(routeCap: 0, requests: requests)
         expect(allocations[1] == 25_000_000 && allocations[2] == 8_000_000,
-               "zero route cap should return each requested quality ceiling without a USB limit")
+               "zero route cap should ignore activity estimates and return requested targets")
+    }
+
+    private static func uncappedRoutesKeepOptionalDataRateLimits() {
+        expect(!EncoderDataRatePolicy.shouldLimit(routeCap: 0, configuredCap: false, previouslyLimited: false),
+               "a new uncapped encoder must retain the optional hard-limit behavior")
+        expect(EncoderDataRatePolicy.shouldLimit(routeCap: 12_000_000, configuredCap: false, previouslyLimited: false),
+               "a capped route must apply its per-session hard rate window")
+        expect(EncoderDataRatePolicy.shouldLimit(routeCap: 0, configuredCap: true, previouslyLimited: false),
+               "the explicit encoder cap option must remain active on an uncapped route")
+        expect(EncoderDataRatePolicy.shouldLimit(routeCap: 0, configuredCap: false, previouslyLimited: true),
+               "a target already hard-limited on a capped route keeps its existing route-transition semantics")
     }
 
     private static func captureLimitsComposeWithoutPerTickKeyframes() {

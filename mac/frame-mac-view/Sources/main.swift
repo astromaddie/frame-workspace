@@ -425,9 +425,9 @@ final class Session: NativeInputClient {
         return (maxLong, fps)
     }
 
-    /// Applies the live/still policy to window captures. A still request can
-    /// wait for the first encoded picture, while a resume activates only after
-    /// ScreenCaptureKit has restored the live cursor and cadence.
+    /// Applies the live/still policy to window and spatial auxiliary captures.
+    /// A still request can wait for the first encoded picture, while a resume
+    /// activates only after ScreenCaptureKit has restored the live cursor and cadence.
     private func applySurface(_ message: [String: Any]) {
         let identity = capture.inputIdentity
         lock.lock()
@@ -1325,6 +1325,10 @@ final class Agent {
         switch source { case .window, .separate, .spatial: return true; default: return false }
     }
 
+    private func isSpatialAuxiliarySource(_ source: Source) -> Bool {
+        switch source { case .menubar, .status, .menu: return true; default: return false }
+    }
+
     private func windowID(_ key: String) -> CGWindowID? {
         guard let source = Source(key) else { return nil }
         switch source { case .window(let id), .separate(let id), .spatial(let id): return id; default: return nil }
@@ -1387,32 +1391,34 @@ final class Agent {
         for session in targets { session.setLive(true) }
     }
 
-    private func setWindowStreamsLive(_ selected: Set<String>?) {
+    private func setBudgetedStreamsLive(_ selected: Set<String>?) {
         lock.lock()
         desiredLiveSources = selected
-        let targets = sessions.values.filter { isWindowSource($0.source) }
+        let targets = sessions.values.filter { isWindowSource($0.source) || isSpatialAuxiliarySource($0.source) }
         lock.unlock()
         for session in targets {
-            session.setLive(selected == nil || selected!.contains(session.source.key))
+            session.setLive(selected == nil || selected!.contains(session.source.key),
+                            auxiliary: isSpatialAuxiliarySource(session.source))
         }
     }
 
     private func liveStreamsResponse(_ req: Request, _ c: HTTPConnection) {
         if req.query["all"] == "1" {
-            setWindowStreamsLive(nil)
+            setBudgetedStreamsLive(nil)
             return c.respond(json: ["all": true])
         }
         guard let raw = req.query["src"] else { return c.respond(400, text: "Missing Stream Sources") }
         var selected = Set<String>()
         if !raw.isEmpty {
             for key in raw.split(separator: ",", omittingEmptySubsequences: false).map(String.init) {
-                guard let source = Source(key), isWindowSource(source), source.key == key else {
+                guard let source = Source(key),
+                      (isWindowSource(source) || isSpatialAuxiliarySource(source)), source.key == key else {
                     return c.respond(400, text: "Invalid Stream Source")
                 }
                 selected.insert(key)
             }
         }
-        setWindowStreamsLive(selected)
+        setBudgetedStreamsLive(selected)
         c.respond(json: ["live": selected.sorted(), "all": false])
     }
 
@@ -1678,6 +1684,7 @@ final class Agent {
                                         "width": observed.width > 0 ? observed.width : previous.width,
                                         "height": observed.height > 0 ? observed.height : previous.height,
                                         "live": s.isLive, "lastChanged": observed.lastChanged]
+                if let surface = s.capture as? SpatialSurfaceSource { e["visible"] = surface.inputVisible }
                 if let w = budget["requestedWidth"] as? Int { e["requestedWidth"] = w }
                 if let h = budget["requestedHeight"] as? Int { e["requestedHeight"] = h }
                 if let d = (s.capture as? SeparateSource)?.displayID { e["display"] = d }

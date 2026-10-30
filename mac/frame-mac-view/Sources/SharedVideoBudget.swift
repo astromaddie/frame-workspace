@@ -23,7 +23,11 @@ enum SharedVideoBudgetPolicy {
         let wants = Dictionary(uniqueKeysWithValues: requests.map {
             ($0.sessionID, max(0, min($0.demand, $0.ceiling)))
         })
-        guard let budget = videoBudget(routeCap: routeCap) else { return wants }
+        guard let budget = videoBudget(routeCap: routeCap) else {
+            // A zero route cap preserves the historical uncapped path: the
+            // activity estimate must not lower a stream's requested target.
+            return Dictionary(uniqueKeysWithValues: requests.map { ($0.sessionID, max(0, $0.ceiling)) })
+        }
         guard budget > 0, !requests.isEmpty else { return Dictionary(uniqueKeysWithValues: requests.map { ($0.sessionID, 0) }) }
 
         let focused = requests.filter { $0.role == "focused" }
@@ -115,6 +119,12 @@ enum CaptureBudgetPolicy {
         (previousPriorityRole.map { $0 != nextPriorityRole } ?? false)
             || (previousBudgetRole.map { $0 != nextBudgetRole } ?? false)
             || (previousMaxLong > 0 && previousMaxLong != nextMaxLong)
+    }
+}
+
+enum EncoderDataRatePolicy {
+    static func shouldLimit(routeCap: Int, configuredCap: Bool, previouslyLimited: Bool) -> Bool {
+        routeCap > 0 || configuredCap || previouslyLimited
     }
 }
 

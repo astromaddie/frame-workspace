@@ -23,6 +23,7 @@ final class Encoder {
     /// bits per pixel. Changing it takes effect on the next frame.
     private var target: Int?
     private(set) var bitrate = 0
+    private var dataRateLimited = false
     private let errorLock = NSLock()
     private var reportedFrameError = false
     /// Called on VideoToolbox's thread with one access unit (or JPEG) per
@@ -63,13 +64,21 @@ final class Encoder {
         target = bps
         guard codec == .h264, let s = session else { return }
         let b = max(1, bps ?? defaultBitrate(width: width, height: height))
-        guard b != bitrate else { return }
-        bitrate = b
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: b as CFTypeRef)
-        // Keep bursts within the allocated share, not merely its long-term
-        // average, so a large keyframe cannot monopolize the route.
-        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits,
-                             value: [max(1, b / 8 / 5), 0.2] as CFArray)
+        let shouldLimit = EncoderDataRatePolicy.shouldLimit(routeCap: Encoder.linkCap,
+                                                            configuredCap: Encoder.options.contains("cap"),
+                                                            previouslyLimited: dataRateLimited)
+        guard b != bitrate || (shouldLimit && !dataRateLimited) else { return }
+        if b != bitrate {
+            bitrate = b
+            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: b as CFTypeRef)
+        }
+        if shouldLimit {
+            dataRateLimited = true
+            // Keep bursts within the allocated share, not merely its long-term
+            // average, so a large keyframe cannot monopolize a capped route.
+            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits,
+                                 value: [max(1, b / 8 / 5), 0.2] as CFArray)
+        }
     }
 
     deinit { invalidate() }
@@ -143,6 +152,7 @@ final class Encoder {
         height = h
         forceKey = true
         bitrate = 0
+        dataRateLimited = false
         setBitrate(target)
         return true
     }

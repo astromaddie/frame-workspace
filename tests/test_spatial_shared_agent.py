@@ -138,12 +138,12 @@ class Agent(unittest.TestCase):
         for u, v in (("nan", "0"), ("0", "inf"), ("1.01", "0"), ("0", "-.01")):
             self.assertEqual(self.call(f"/focus?src=spatial:123&u={u}&v={v}", "POST")[0], 400)
 
-    def test_auxiliary_sources_are_not_window_live_set_members(self):
-        for source in ("menubar", "status", "menu:0"):
-            self.assertEqual(self.call(f"/streams/live?src={source}", "POST")[0], 400)
-        code, data = self.call("/streams/live?src=spatial:123", "POST")
+    def test_live_set_accepts_only_window_and_spatial_surface_sources(self):
+        code, data = self.call("/streams/live?src=spatial:123,menubar,status,menu:0", "POST")
         self.assertEqual(code, 200)
-        self.assertEqual(json.loads(data)["live"], ["spatial:123"])
+        self.assertEqual(json.loads(data)["live"], ["menu:0", "menubar", "spatial:123", "status"])
+        self.assertEqual(self.call("/streams/live?src=display:1", "POST")[0], 400,
+                         "non-window, non-surface sources stay outside this capture policy")
         self.call("/streams/live?all=1", "POST")
 
     def test_per_stream_budget_policy_is_authenticated_and_bounded(self):

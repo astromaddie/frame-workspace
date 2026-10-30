@@ -1108,6 +1108,7 @@ class MacView:
         status = self.call("/status")
         streams = status.get("streams", [])
         windows = {}
+        auxiliaries = {}
         reserved = 0
         unknown_auxiliary = False
         for stream in streams:
@@ -1124,8 +1125,17 @@ class MacView:
             has_requested_size = ((type(stream.get("requestedWidth")) is int and type(stream.get("requestedHeight")) is int)
                                   or (type(budget.get("requestedWidth")) is int and type(budget.get("requestedHeight")) is int))
             if not src.startswith(("window:", "separate:", "spatial:")):
-                if pixels is None and SPATIAL_AUX_ROLES.get(src) == "menu":
-                    continue  # an idle slot has no picture or decoder yet
+                if src in SPATIAL_AUX_ROLES:
+                    if stream.get("visible") is not True:
+                        continue  # hidden menu slots do not enter or consume the capture budget
+                    entry = auxiliaries.setdefault(src, {"pixels": 0, "ids": [], "changed": 0, "live": True})
+                    entry["pixels"] = None if pixels is None or entry["pixels"] is None else entry["pixels"] + pixels
+                    entry["ids"].append(stream.get("id"))
+                    entry["live"] = entry["live"] and stream.get("live") is True
+                    changed = stream.get("lastChanged", 0)
+                    if type(changed) in (int, float) and math.isfinite(changed):
+                        entry["changed"] = max(entry["changed"], changed)
+                    continue
                 if pixels is None:
                     unknown_auxiliary = True
                 else:
@@ -1168,6 +1178,7 @@ class MacView:
             focus = status.get("focusedSrc") or self._spatial_focused
         # Session identities stop a reconnect inheriting a departed viewer's lease.
         identities = {s: tuple(sorted(e["ids"], key=str)) for s, e in windows.items()}
+        auxiliary_identities = {s: tuple(sorted(e["ids"], key=str)) for s, e in auxiliaries.items()}
         requested_sizes = {}
         for src, entry in windows.items():
             identity = identities[src]
@@ -1219,7 +1230,9 @@ class MacView:
         previous_focus_policy = self._spatial_policy_targets.get(focus) if focus in windows else None
         had_focus_limit = bool(previous_focus_policy and previous_focus_policy[0] == identities[focus]
                                and previous_focus_policy[3] > 0)
-        known_auxiliary = min(capacity, reserved)
+        # These are already running screen streams outside the window policy;
+        # unlike menubar/status/menu surfaces, /streams/live cannot suspend them.
+        fixed_auxiliary = min(capacity, reserved)
 
         if focus in windows:
             if focus_pixels is None:
@@ -1227,12 +1240,12 @@ class MacView:
                 # full service before allowing unknown auxiliary streams in.
                 focus_cost = capacity
                 focus_reason = "focused-size-unknown"
-            elif focus_pixels + known_auxiliary > capacity:
+            elif focus_pixels + fixed_auxiliary > capacity:
                 focus_max_long = min(focus_long, SPATIAL_FOCUSED_MAX_LONG) if focus_long else 0
                 if focus_long and focus_max_long:
                     projected = int(focus_pixels * (focus_max_long / focus_long) ** 2)
                     focus_target_pixels = projected
-                    limited_focus = projected + known_auxiliary > capacity
+                    limited_focus = projected + fixed_auxiliary > capacity
                     focus_cost = min(capacity, projected)
                 else:
                     limited_focus = True
@@ -1240,14 +1253,13 @@ class MacView:
                     focus_target_pixels = capacity
                 focus_max_fps = SPATIAL_FOCUSED_MAX_FPS
                 if limited_focus:
-                    focus_max_fps = SPATIAL_BACKGROUND_MAX_FPS
                     focus_reason = "focused-decode-limited"
                 else:
                     focus_reason = "focused-decode-budget"
             elif had_focus_limit:
                 # A smaller policy remains in place until full requested quality
-                # has had two seconds of spare capacity, after auxiliary service.
-                spare_for_focus = capacity - known_auxiliary
+                # has had two seconds of spare capacity after unmanageable streams.
+                spare_for_focus = capacity - fixed_auxiliary
                 if not unknown_auxiliary and focus_pixels <= spare_for_focus:
                     since = self._spatial_restore_since.setdefault(focus, now)
                     if now - since >= SPATIAL_RESTORE_SECONDS:
@@ -1270,7 +1282,7 @@ class MacView:
 
         selected = {focus} if focus in windows else set()
         remaining = max(0, capacity - min(capacity, focus_cost))
-        remaining = max(0, remaining - min(remaining, known_auxiliary))
+        remaining = max(0, remaining - min(remaining, fixed_auxiliary))
         if unknown_auxiliary:
             remaining = 0
         if focus in windows and focus_max_long > 0:
@@ -1279,6 +1291,22 @@ class MacView:
                 # The in-place configuration has been requested, but the
                 # decoder has not reported the smaller capture yet.
                 remaining = 0
+        selected_auxiliaries = set()
+        if focus in windows:
+            # Keep the focused window's minimum first. Menu/status captures that
+            # do not fit after it go still before any background is admitted.
+            auxiliary_order = sorted(auxiliaries, key=lambda src: (0 if src in ("menubar", "status") else 1,
+                                                                    -auxiliaries[src]["changed"], src))
+            for src in auxiliary_order:
+                pixels = auxiliaries[src]["pixels"]
+                if pixels is not None and pixels <= remaining:
+                    selected_auxiliaries.add(src)
+                    remaining -= pixels
+        else:
+            # Preserve the existing system/menu surfaces while no window is
+            # focused; their measured cost still limits optional windows.
+            selected_auxiliaries = set(auxiliaries)
+            remaining = max(0, remaining - sum(e["pixels"] or 0 for e in auxiliaries.values()))
         for src in order:
             if src == focus:
                 continue
@@ -1317,13 +1345,17 @@ class MacView:
             next_policies = {src: policy for src, policy in next_policies.items()
                              if src in policies and policies[src] == policy}
         self._spatial_policy_targets = next_policies
-        key = (id(self.agent), tuple(sorted((s, identities[s]) for s in selected)))
+        selected.update(selected_auxiliaries)
+        all_identities = {**identities, **auxiliary_identities}
+        key = (id(self.agent), tuple(sorted((s, all_identities[s]) for s in selected)))
+        managed_sources = set(windows) | set(auxiliaries)
         mismatched = any((s.get("live") is True) != (s.get("src") in selected) for s in streams
-                         if s.get("src") in windows)
+                         if s.get("src") in managed_sources)
         if key != self._spatial_applied or mismatched:
             self.call("/streams/live", method="POST", src=",".join(sorted(selected)))
             self._spatial_applied = key
-        self._spatial_live_since = {s: self._spatial_live_since.get(s, (identities[s], now)) for s in selected}
+        self._spatial_live_since = {s: self._spatial_live_since.get(s, (identities[s], now))
+                                    for s in selected if s in windows}
 
     def _apply_link_cap(self):
         """Tell the agent the bitrate ceiling for the route in use, whenever the

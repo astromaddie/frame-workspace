@@ -34,8 +34,6 @@ final class RateController {
     private(set) var ceiling = 0  // bits/s at requested size and frame rate
     private(set) var target = 0
     private(set) var tier = 0
-    private var estimatedDemand = 0
-    private var hasDemandSample = false
     private var unacked: [(seq: UInt32, sent: Int64, bytes: Int)] = []
     /// Round trips (send -> ack arrives here), for the baseline: the lowest
     /// in the last 10 s is the path without any queue.
@@ -90,14 +88,13 @@ final class RateController {
     var requestedTarget: Int { locked { target } }
     var requestedCeiling: Int { locked { ceiling } }
 
-    /// A recent source's actual encoded demand. Before there is enough frame
-    /// history, use its quality target so a newly active stream joins the next
-    /// fair allocation immediately. Quiet streams retain a small service floor
-    /// so a later changed frame can still be sent.
+    /// Shared bandwidth demand follows source activity, not the encoder's
+    /// already-limited output bytes. Any capture in the rolling second promotes
+    /// the stream to its requested quality; an idle stream releases its share
+    /// while keeping a small service floor for the next content change.
     var budgetDemand: Int {
         locked {
-            guard hasDemandSample else { return target }
-            return min(target, max(300_000, estimatedDemand))
+            captures.isEmpty ? min(target, 300_000) : ceiling
         }
     }
 
@@ -174,12 +171,8 @@ final class RateController {
             if !sentLog.isEmpty { frameBytes = sentLog.reduce(0) { $0 + $1.bytes } / sentLog.count }
             let currentFps = fpsLocked(at: ProcessInfo.processInfo.systemUptime)
             let demand = min(captures.count, currentFps) * frameBytes * 8
-            if frameBytes > 0 {
-                hasDemandSample = true
-                estimatedDemand = demand
-            }
-            // Shared bandwidth budgeting is independent of congestion
-            // adaptation, so keep its demand sample even when ADAPT=0.
+            // Shared bandwidth demand is tracked independently of congestion
+            // adaptation and never fed by bytes already limited by allocation.
             guard RateController.enabled, ceiling > 0 else { return nil }
             let base = baseline()
             let spread = rtts.filter { now - $0.t < 2_000_000 }.map(\.v).sorted()
