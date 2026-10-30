@@ -146,6 +146,32 @@ class Agent(unittest.TestCase):
         self.assertEqual(json.loads(data)["live"], ["spatial:123"])
         self.call("/streams/live?all=1", "POST")
 
+    def test_per_stream_budget_policy_is_authenticated_and_bounded(self):
+        path = "/streams/policy?src=spatial:123&role=focused&reason=focused-decode-budget&maxLong=1280&maxFps=30"
+        self.assertEqual(self.call(path, "POST", authenticated=False)[0], 403)
+        code, data = self.call(path, "POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(data), {"src": "spatial:123", "role": "focused", "updated": 0})
+        for invalid in ("/streams/policy?src=display:1&role=focused&maxLong=1280&maxFps=30",
+                        "/streams/policy?src=spatial:123&role=idle&maxLong=1280&maxFps=30",
+                        "/streams/policy?src=spatial:123&role=focused&maxLong=9000&maxFps=30",
+                        "/streams/policy?src=spatial:123&role=focused&maxLong=1280&maxFps=241"):
+            self.assertEqual(self.call(invalid, "POST")[0], 400)
+        code, data = self.call("/streams/policy?all=1", "POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(data), {"updated": 0, "all": True})
+
+    def test_link_keeps_route_cap_and_exposes_ninety_percent_video_share(self):
+        code, data = self.call("/link?maxbps=12000000", "POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(data)["maxbps"], 12_000_000)
+        self.assertEqual(json.loads(data)["videobps"], 10_800_000)
+        code, data = self.call("/link?maxbps=0", "POST")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(data)["maxbps"], 0)
+        self.assertEqual(json.loads(data)["videobps"], 0, "zero is reported as uncapped, not a USB bandwidth guess")
+        self.assertTrue(json.loads(data)["uncapped"])
+
     def test_bad_menu_keys_are_rejected(self):
         for source in ("menu:4", "menu:-1", "menu:x", "menubar:1", "status:1"):
             self.assertEqual(self.call(f"/ticket?src={source}", "POST")[0], 400)

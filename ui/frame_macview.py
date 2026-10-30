@@ -165,6 +165,12 @@ def spatial_decode_pixels():
     return int(pixels)
 
 
+SPATIAL_FOCUSED_MAX_LONG = QUALITY["light"]["max"]
+SPATIAL_FOCUSED_MAX_FPS = QUALITY["light"]["fps"]
+SPATIAL_BACKGROUND_MAX_FPS = 10
+SPATIAL_RESTORE_SECONDS = 2.0
+
+
 def spatial_launch_parallel():
     """How many Spatial window panels launch at once (FRAME_SPATIAL_LAUNCH_PARALLEL,
     1-8, default 4). The focused window goes first; the rest show placeholders."""
@@ -743,6 +749,10 @@ class MacView:
         self._spatial_candidates = {}
         self._spatial_live_since = {}
         self._spatial_focused = None
+        self._spatial_requested_sizes = {}
+        self._spatial_policy_targets = {}
+        self._spatial_policy_agent = None
+        self._spatial_restore_since = {}
         self._spatial_lock = threading.Lock()
         self._pending_focus = None
         self._focus_queued = False
@@ -1084,6 +1094,10 @@ class MacView:
         if self._spatial_applied is not None and self._spatial_applied[0] != id(self.agent):
             self._spatial_candidates.clear()
             self._spatial_live_since.clear()
+            self._spatial_requested_sizes.clear()
+            self._spatial_policy_targets.clear()
+            self._spatial_restore_since.clear()
+            self._spatial_policy_agent = id(self.agent)
         pointer_key = (id(self.agent), enabled)
         if self._pointer_applied != pointer_key:
             self.call("/pointer", method="POST", shared="1" if enabled else "0")
@@ -1095,20 +1109,36 @@ class MacView:
         streams = status.get("streams", [])
         windows = {}
         reserved = 0
+        unknown_auxiliary = False
         for stream in streams:
             src = stream.get("src", "")
             if not isinstance(src, str):
                 continue
             w, h = stream.get("width"), stream.get("height")
             pixels = w * h if type(w) is int and type(h) is int and w > 0 and h > 0 else None
+            budget = stream.get("budget") or (stream.get("stats") or {}).get("budget") or {}
+            requested_w = stream.get("requestedWidth", budget.get("requestedWidth", w))
+            requested_h = stream.get("requestedHeight", budget.get("requestedHeight", h))
+            requested_pixels = (requested_w * requested_h if type(requested_w) is int and type(requested_h) is int
+                                and requested_w > 0 and requested_h > 0 else None)
+            has_requested_size = ((type(stream.get("requestedWidth")) is int and type(stream.get("requestedHeight")) is int)
+                                  or (type(budget.get("requestedWidth")) is int and type(budget.get("requestedHeight")) is int))
             if not src.startswith(("window:", "separate:", "spatial:")):
                 if pixels is None and SPATIAL_AUX_ROLES.get(src) == "menu":
                     continue  # an idle slot has no picture or decoder yet
-                # Unknown display dimensions leave no safe optional capacity.
-                reserved += pixels if pixels is not None else spatial_decode_pixels()
+                if pixels is None:
+                    unknown_auxiliary = True
+                else:
+                    reserved += pixels
                 continue
-            entry = windows.setdefault(src, {"pixels": 0, "changed": 0, "ids": [], "live": True})
+            entry = windows.setdefault(src, {"pixels": 0, "requestedPixels": 0, "requestedLong": 0,
+                                             "explicitRequested": True, "changed": 0, "ids": [], "live": True})
             entry["pixels"] = None if pixels is None or entry["pixels"] is None else entry["pixels"] + pixels
+            entry["requestedPixels"] = (None if requested_pixels is None or entry["requestedPixels"] is None
+                                        else entry["requestedPixels"] + requested_pixels)
+            entry["explicitRequested"] = entry["explicitRequested"] and has_requested_size
+            if type(requested_w) is int and type(requested_h) is int and requested_w > 0 and requested_h > 0:
+                entry["requestedLong"] = max(entry["requestedLong"], requested_w, requested_h)
             changed = stream.get("lastChanged", 0)
             if type(changed) in (int, float) and math.isfinite(changed):
                 entry["changed"] = max(entry["changed"], changed)
@@ -1116,10 +1146,18 @@ class MacView:
             entry["live"] = entry["live"] and stream.get("live") is True
 
         if not enabled:
+            if self._spatial_policy_targets:
+                try:
+                    self.call("/streams/policy", method="POST", all="1")
+                except MacViewError:
+                    pass  # Older helpers still restore live streams below.
             self.call("/streams/live", method="POST", all="1")
             self._spatial_applied = None
             self._spatial_candidates.clear()
             self._spatial_live_since.clear()
+            self._spatial_requested_sizes.clear()
+            self._spatial_policy_targets.clear()
+            self._spatial_restore_since.clear()
             with self._spatial_lock:
                 self._pending_focus = None
                 self._spatial_focused = None
@@ -1130,6 +1168,33 @@ class MacView:
             focus = status.get("focusedSrc") or self._spatial_focused
         # Session identities stop a reconnect inheriting a departed viewer's lease.
         identities = {s: tuple(sorted(e["ids"], key=str)) for s, e in windows.items()}
+        requested_sizes = {}
+        for src, entry in windows.items():
+            identity = identities[src]
+            cached = self._spatial_requested_sizes.get(src)
+            if cached and cached[0] == identity and not entry["explicitRequested"]:
+                # Legacy helpers don't publish requested dimensions. Preserve
+                # their last unbudgeted size while still tracking growth.
+                if entry["requestedPixels"] is None:
+                    if cached[1] is not None:
+                        entry["requestedPixels"] = cached[1]
+                        entry["requestedLong"] = cached[2]
+                    elif entry["pixels"] is not None:
+                        entry["requestedPixels"] = entry["pixels"]
+                        dimensions = [value for stream in streams if stream.get("src") == src
+                                      for value in (stream.get("width"), stream.get("height"))
+                                      if type(value) is int and value > 0]
+                        entry["requestedLong"] = max(dimensions, default=0)
+                elif (entry["requestedPixels"] is not None and cached[1] is not None
+                      and entry["requestedPixels"] < cached[1] and entry["pixels"] is not None):
+                    entry["requestedPixels"] = max(entry["requestedPixels"], entry["pixels"])
+            elif entry["requestedPixels"] is None:
+                entry["requestedPixels"] = entry["pixels"]
+                entry["requestedLong"] = max(entry["requestedLong"], 0)
+            requested_sizes[src] = (identity, entry["requestedPixels"], entry["requestedLong"])
+        self._spatial_requested_sizes = requested_sizes
+        self._spatial_restore_since = {src: since for src, since in self._spatial_restore_since.items()
+                                       if src == focus and src in windows}
         recent = {s for s, e in windows.items() if e["changed"] > 0 and 0 <= wall - e["changed"] <= 5}
         self._spatial_candidates = {
             s: self._spatial_candidates[s] if self._spatial_candidates.get(s, (None,))[0] == identities[s]
@@ -1142,18 +1207,116 @@ class MacView:
         order = ([focus] if focus in windows else [])
         order += sorted(pinned - set(order), key=newest)
         order += sorted((eligible | (recent & self._spatial_live_since.keys())) - set(order), key=newest)
-        remaining = max(0, spatial_decode_pixels() - reserved)
-        selected = set()
-        for src in order:
-            pixels = windows[src]["pixels"]
-            if src == focus and pixels is None:
-                # The active window stays live (FW-15) while its size is still
-                # unknown; nothing optional fits beside it until it is known.
-                selected.add(src)
+        capacity = spatial_decode_pixels()
+        focus_pixels = windows[focus]["requestedPixels"] if focus in windows else 0
+        focus_long = windows[focus]["requestedLong"] if focus in windows else 0
+        focus_max_long = 0
+        focus_max_fps = 0
+        focus_cost = 0
+        focus_target_pixels = 0
+        focus_reason = "focused-window"
+        limited_focus = False
+        previous_focus_policy = self._spatial_policy_targets.get(focus) if focus in windows else None
+        had_focus_limit = bool(previous_focus_policy and previous_focus_policy[0] == identities[focus]
+                               and previous_focus_policy[3] > 0)
+        known_auxiliary = min(capacity, reserved)
+
+        if focus in windows:
+            if focus_pixels is None:
+                # Dimensions are not known yet. Keep focus live and reserve its
+                # full service before allowing unknown auxiliary streams in.
+                focus_cost = capacity
+                focus_reason = "focused-size-unknown"
+            elif focus_pixels + known_auxiliary > capacity:
+                focus_max_long = min(focus_long, SPATIAL_FOCUSED_MAX_LONG) if focus_long else 0
+                if focus_long and focus_max_long:
+                    projected = int(focus_pixels * (focus_max_long / focus_long) ** 2)
+                    focus_target_pixels = projected
+                    limited_focus = projected + known_auxiliary > capacity
+                    focus_cost = min(capacity, projected)
+                else:
+                    limited_focus = True
+                    focus_cost = capacity
+                    focus_target_pixels = capacity
+                focus_max_fps = SPATIAL_FOCUSED_MAX_FPS
+                if limited_focus:
+                    focus_max_fps = SPATIAL_BACKGROUND_MAX_FPS
+                    focus_reason = "focused-decode-limited"
+                else:
+                    focus_reason = "focused-decode-budget"
+            elif had_focus_limit:
+                # A smaller policy remains in place until full requested quality
+                # has had two seconds of spare capacity, after auxiliary service.
+                spare_for_focus = capacity - known_auxiliary
+                if not unknown_auxiliary and focus_pixels <= spare_for_focus:
+                    since = self._spatial_restore_since.setdefault(focus, now)
+                    if now - since >= SPATIAL_RESTORE_SECONDS:
+                        self._spatial_restore_since.pop(focus, None)
+                        focus_cost = focus_pixels
+                    else:
+                        focus_max_long = previous_focus_policy[3]
+                        focus_max_fps = previous_focus_policy[4]
+                        focus_cost = min(focus_pixels, capacity)
+                        focus_reason = previous_focus_policy[2]
+                else:
+                    self._spatial_restore_since.pop(focus, None)
+                    focus_max_long = previous_focus_policy[3]
+                    focus_max_fps = previous_focus_policy[4]
+                    focus_cost = min(focus_pixels, capacity)
+                    focus_reason = previous_focus_policy[2]
+            else:
+                self._spatial_restore_since.pop(focus, None)
+                focus_cost = focus_pixels
+
+        selected = {focus} if focus in windows else set()
+        remaining = max(0, capacity - min(capacity, focus_cost))
+        remaining = max(0, remaining - min(remaining, known_auxiliary))
+        if unknown_auxiliary:
+            remaining = 0
+        if focus in windows and focus_max_long > 0:
+            current_focus_pixels = windows[focus]["pixels"]
+            if current_focus_pixels is None or current_focus_pixels > focus_target_pixels:
+                # The in-place configuration has been requested, but the
+                # decoder has not reported the smaller capture yet.
                 remaining = 0
-            elif pixels is not None and pixels <= remaining:
+        for src in order:
+            if src == focus:
+                continue
+            pixels = windows[src]["pixels"]
+            if pixels is not None and pixels <= remaining:
                 selected.add(src)
                 remaining -= pixels
+
+        policies = {}
+        for src in windows:
+            if src == focus:
+                policies[src] = (identities[src], "focused", focus_reason, focus_max_long, focus_max_fps)
+            elif focus in windows:
+                policies[src] = (identities[src], "background", "background-window", 0,
+                                 SPATIAL_BACKGROUND_MAX_FPS)
+            else:
+                policies[src] = (identities[src], "normal", "no-focused-window", 0, 0)
+        policy_failed = False
+        if self._spatial_policy_agent != id(self.agent):
+            self._spatial_policy_targets.clear()
+            self._spatial_policy_agent = id(self.agent)
+        next_policies = dict(self._spatial_policy_targets)
+        for src, policy in policies.items():
+            if self._spatial_policy_targets.get(src) == policy:
+                next_policies[src] = policy
+                continue
+            _, role, reason, max_long, max_fps = policy
+            try:
+                self.call("/streams/policy", method="POST", src=src, role=role, reason=reason,
+                          maxLong=str(max_long), maxFps=str(max_fps))
+                next_policies[src] = policy
+            except MacViewError:
+                policy_failed = True
+                break
+        if not policy_failed:
+            next_policies = {src: policy for src, policy in next_policies.items()
+                             if src in policies and policies[src] == policy}
+        self._spatial_policy_targets = next_policies
         key = (id(self.agent), tuple(sorted((s, identities[s]) for s in selected)))
         mismatched = any((s.get("live") is True) != (s.get("src") in selected) for s in streams
                          if s.get("src") in windows)

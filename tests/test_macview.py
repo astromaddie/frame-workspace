@@ -1309,6 +1309,7 @@ class SpatialPolicy(unittest.TestCase):
         self.mv.agent = object()
         self.status = {"streams": []}
         self.calls = []
+        self.policies = {}
         self.mv.call = self.call
         # Exercise the production request handler without background timing.
         self.mv._dash_run = lambda busy, fn, *args: fn(*args)
@@ -1324,6 +1325,11 @@ class SpatialPolicy(unittest.TestCase):
             for s in self.status["streams"]:
                 if s["src"].startswith(("window:", "separate:", "spatial:")):
                     s["live"] = q.get("all") == "1" or s["src"] in selected
+        elif path == "/streams/policy":
+            if q.get("all") == "1":
+                self.policies.clear()
+            else:
+                self.policies[q["src"]] = dict(q)
         elif path == "/focus":
             self.status["focusedSrc"] = q["src"]
         else:
@@ -1331,7 +1337,12 @@ class SpatialPolicy(unittest.TestCase):
         return {}
 
     def stream(self, src, mp, age=0, **extra):
-        s = {"id": len(self.status["streams"]) + 1, "src": src, "width": int(mp * 1000), "height": 1000,
+        width = extra.pop("width", int(mp * 1000))
+        height = extra.pop("height", 1000)
+        requested_width = extra.pop("requestedWidth", width)
+        requested_height = extra.pop("requestedHeight", height)
+        s = {"id": len(self.status["streams"]) + 1, "src": src, "width": width, "height": height,
+             "requestedWidth": requested_width, "requestedHeight": requested_height,
              "lastChanged": self.now + 900 - age, "live": True, **extra}
         self.status["streams"].append(s)
         return s
@@ -1400,15 +1411,85 @@ class SpatialPolicy(unittest.TestCase):
         self.tick()
         self.tick(101)
         s["width"] = 19000
+        s["requestedWidth"] = 19000
         self.status["focusedSrc"] = s["src"]
         self.tick(101.1)
-        self.assertEqual(self.live(), set())  # even focus cannot exceed the hard pixel cap
+        self.assertEqual(self.live(), {s["src"]}, "focus stays live while its capture is resized")
+        self.assertEqual(self.mv._spatial_policy_targets[s["src"]][3:], (1280, 30))
         s["width"] = 4000
+        s["requestedWidth"] = 4000
         self.tick(101.2)
-        self.assertIn(s["src"], self.live())
+        self.assertEqual(self.mv._spatial_policy_targets[s["src"]][3], 1280,
+                         "quality restoration needs two seconds of spare capacity")
         with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "3"}):
             self.tick(101.3)
-            self.assertEqual(self.live(), set())
+            self.assertEqual(self.live(), {s["src"]})
+
+    def test_focused_stream_survives_unknown_auxiliary_cost_and_backgrounds_yield(self):
+        focused = self.stream("spatial:1", 20)
+        background = self.stream("spatial:2", 6)
+        self.stream("third-party-display", 0, width=None, height=None)
+        self.status["focusedSrc"] = focused["src"]
+        self.tick()
+        self.tick(101)
+        self.assertEqual(self.live() & {focused["src"], background["src"]}, {focused["src"]})
+        self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3:], (1280, 30))
+        self.assertEqual(self.mv._spatial_policy_targets[background["src"]][1], "background")
+        self.assertEqual(self.mv._spatial_policy_targets[background["src"]][4], 10)
+
+    def test_backgrounds_wait_until_the_focused_resize_is_visible_in_status(self):
+        focused = self.stream("spatial:1", 20)
+        background = self.stream("spatial:2", 6)
+        self.status["focusedSrc"] = focused["src"]
+        self.tick()
+        self.tick(101)
+        self.assertEqual(self.live() & {focused["src"], background["src"]}, {focused["src"]})
+        self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3], 1280)
+        # Model the next helper status after ScreenCaptureKit applied the maxLong
+        # update; the background then uses only the confirmed remaining capacity.
+        focused.update(width=1280, height=64)
+        self.tick(102)
+        self.assertEqual(self.live() & {focused["src"], background["src"]},
+                         {focused["src"], background["src"]})
+
+    def test_known_auxiliary_cost_triggers_focus_resize_before_background_admission(self):
+        focused = self.stream("spatial:1", 17)
+        background = self.stream("spatial:2", 6)
+        self.stream("menubar", 3)
+        self.status["focusedSrc"] = focused["src"]
+        self.tick()
+        self.tick(101)
+        self.assertEqual(self.live() & {focused["src"], background["src"]}, {focused["src"]})
+        self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3:], (1280, 30))
+        # Wait for the helper to confirm its in-place capture update; the
+        # requested Light footprint plus the known menu cost then fits.
+        focused.update(width=1280, height=75)
+        self.tick(102)
+        self.assertEqual(self.live() & {focused["src"], background["src"]},
+                         {focused["src"], background["src"]})
+
+    def test_focused_quality_restores_after_two_seconds_of_spare_capacity(self):
+        focused = self.stream("spatial:1", 4)
+        self.status["focusedSrc"] = focused["src"]
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "3"}):
+            self.tick(100)
+            self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3], 1280)
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "18"}):
+            self.tick(101)
+            self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3], 1280)
+            self.tick(102.99)
+            self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3], 1280)
+            self.tick(103.01)
+            self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3], 0)
+
+    def test_focused_policy_does_not_raise_a_lower_requested_quality(self):
+        focused = self.stream("spatial:1", 0.48, width=800, height=600)
+        self.status["focusedSrc"] = focused["src"]
+        with mock.patch.dict(os.environ, {"FRAME_SPATIAL_DECODE_MP": "0.5"}):
+            self.tick()
+        self.assertEqual(self.mv._spatial_policy_targets[focused["src"]][3], 0,
+                         "a focused stream already below budget keeps its lower requested dimensions")
+        self.assertEqual(self.live() & {focused["src"]}, {focused["src"]})
 
     def test_unknown_sizes_and_duplicate_viewers_do_not_overcommit(self):
         self.stream("display:1", 8)
@@ -1452,7 +1533,7 @@ class SpatialPolicy(unittest.TestCase):
 
     def test_failed_selection_is_retried(self):
         self.stream("separate:1", 4)
-        self.mv.call = mock.Mock(side_effect=[{}, self.status, frame_macview.MacViewError("not answering")])
+        self.mv.call = mock.Mock(side_effect=[{}, self.status, {}, frame_macview.MacViewError("not answering")])
         with self.assertRaises(frame_macview.MacViewError):
             self.tick()
         self.assertIsNone(self.mv._spatial_applied)
@@ -1547,7 +1628,7 @@ class SpatialPolicy(unittest.TestCase):
         self.assertEqual(self.live(), {active["src"]}, "the active window first, nothing optional beside an unknown size")
         active.update(width=4000, height=1000)
         self.tick(102)
-        self.assertEqual(self.live(), {active["src"], other["src"]})
+        self.assertEqual(self.live() & {active["src"], other["src"]}, {active["src"], other["src"]})
 
     def test_only_the_macs_focus_orders_the_live_set(self):
         # A focus the helper has not confirmed (a stale direct request) does not

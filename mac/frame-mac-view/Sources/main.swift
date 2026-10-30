@@ -113,13 +113,15 @@ final class Session: NativeInputClient {
     let codec: Codec
     let reconnectKey: String
     private let activity: StreamActivityRegistry
+    private let videoBudget: SharedVideoBudget
     private let spatial: SpatialStreamState
     let stats = StreamStats()
     let controller: RateController
-    private var appliedScale = 1.0
+    private var appliedMaxLong = 0
     private var appliedCaptureFps: Int
     private let testCaptureFps: Int?
     private var appliedPriorityRole: String?
+    private var appliedBudgetRole: String?
     private var lastSubmit: Int64 = 0
     private var paceScheduled = false
     private let lock = NSLock()
@@ -142,6 +144,11 @@ final class Session: NativeInputClient {
     private var liveGate = StreamLiveGate()
     private var frameEpochs: [UInt32: UInt64] = [:]
     private var requestedMaxLong = 1920
+    private var requestedPixelSize: (Int, Int)?
+    private var budgetRole = "normal"
+    private var budgetReason = "no-budget-policy"
+    private var budgetMaxLong: Int?
+    private var budgetMaxFps: Int?
     private let foveation: Bool
     private let foveationAtlas: Bool
     private let foveationDirect: Bool
@@ -201,6 +208,7 @@ final class Session: NativeInputClient {
 
     init(id: Int, source: Source, capture: CaptureSource, ws: WebSocket, codec: Codec, fps: Int, bitsPerPixel: Double,
          reconnectKey: String, activity: StreamActivityRegistry, spatial: SpatialStreamState,
+         videoBudget: SharedVideoBudget,
          foveation: Bool = false, foveationAtlas: Bool = false, foveationDirect: Bool = false,
          gazeSharpen: Bool = false) {
         self.foveationDirect = foveation && foveationDirect
@@ -216,6 +224,7 @@ final class Session: NativeInputClient {
         self.reconnectKey = reconnectKey
         inputEpoch = source.isSpatial ? NativeInputParser.randomEpoch() : nil
         self.activity = activity
+        self.videoBudget = videoBudget
         self.spatial = spatial
         // Diagnostic TestSource only: model a source cadence below the target
         // without changing SCK/window/separate capture or the pacing budget.
@@ -225,6 +234,7 @@ final class Session: NativeInputClient {
         encoder = Encoder(codec: codec, fps: fps, bitsPerPixel: bitsPerPixel)
         controller = RateController(maxFps: fps, sessionID: id, activity: activity)
         activity.register(id)
+        videoBudget.register(id)
         maxPending = codec == .jpeg ? 3 << 20 : 1 << 20
     }
 
@@ -359,8 +369,26 @@ final class Session: NativeInputClient {
             let stillCurrent = !self.stopped && self.liveGate.accepts(frameEpoch: p.epoch)
             self.lock.unlock()
             guard stillCurrent else { self.finishEncoding(seq); return }
+            self.prepareEncoderTarget(fallback: p.pb)
             if !self.encoder.encode(buffer, pts: p.pts, seq: seq, layout: layout) { self.finishEncoding(seq) }
         }
+    }
+
+    /// Establishes the requested quality ceiling before VideoToolbox creates
+    /// its first session, then applies this stream's current shared allocation
+    /// before that first picture (including its IDR) is encoded.
+    private func prepareEncoderTarget(fallback: CVPixelBuffer) {
+        let fallbackSize = (CVPixelBufferGetWidth(fallback), CVPixelBufferGetHeight(fallback))
+        lock.lock()
+        if requestedPixelSize == nil { requestedPixelSize = capture.pixelSize ?? fallbackSize }
+        let size = requestedPixelSize ?? fallbackSize
+        lock.unlock()
+        controller.setCeiling(encoder.defaultBitrate(width: size.0, height: size.1))
+        let priority = controller.priority()
+        let role = priority.role == "selected" ? "focused" : priority.role
+        let allocated = videoBudget.target(sessionID: id, role: role,
+                                           demand: controller.budgetDemand, ceiling: controller.requestedTarget)
+        encoder.setBitrate(allocated)
     }
 
     /// An encode finished (or failed): send the newest skipped picture if
@@ -386,12 +414,15 @@ final class Session: NativeInputClient {
         return liveGate.live
     }
 
-    private func liveCaptureSettings() -> (scale: Double, maxLong: Int, fps: Int) {
+    private func liveCaptureSettings() -> (maxLong: Int, fps: Int) {
         let scale = controller.scale
         let priority = controller.priority()
+        let maxLong = CaptureBudgetPolicy.effectiveMaxLong(requested: requestedMaxLong,
+                                                           congestionScale: scale,
+                                                           budgetMaxLong: budgetMaxLong)
         let fps = min(controller.maxFps, priority.fpsCap ?? controller.maxFps,
-                      testCaptureFps ?? controller.maxFps)
-        return (scale, max(320, Int(Double(requestedMaxLong) * scale)), fps)
+                      budgetMaxFps ?? controller.maxFps, testCaptureFps ?? controller.maxFps)
+        return (maxLong, fps)
     }
 
     /// Applies the live/still policy to window captures. A still request can
@@ -460,7 +491,7 @@ final class Session: NativeInputClient {
                         let activated = self.liveGate.activateLive(request: requestID)
                         if activated {
                             self.skipped = false
-                            self.appliedScale = settings.scale
+                            self.appliedMaxLong = settings.maxLong
                             self.appliedCaptureFps = settings.fps
                             self.last = nil
                             if let cached, let size = self.capture.pixelSize,
@@ -525,6 +556,7 @@ final class Session: NativeInputClient {
         }
         lock.lock()
         requestedMaxLong = maxLong
+        if requestedPixelSize == nil { requestedPixelSize = capture.pixelSize }
         lock.unlock()
         encoder.onFrame = { [weak self] data, key, pts, seq, layout in
             guard let self else { return }
@@ -541,10 +573,6 @@ final class Session: NativeInputClient {
                 // until VideoToolbox returns the requested keyframe.
                 self.encodeQueue.async { self.encoder.requestKeyFrame() }
                 return
-            }
-            // The quality setting's bitrate, at full size, is the most it gets.
-            if self.appliedScale == 1 {
-                self.controller.setCeiling(self.encoder.defaultBitrate(width: self.encoder.width, height: self.encoder.height))
             }
             self.controller.sent(seq: seq, bytes: data.count + 17 + (layout == nil ? 0 : 20), at: t)
             var echo: UInt32 = 0
@@ -629,7 +657,15 @@ final class Session: NativeInputClient {
         // Direct capability is advertised only after both actual SCK streams
         // have supplied validated buffers and the first composition succeeded.
         if !foveationDirect { ws.sendJSON(hello) }
-        capture.onChange = { [weak self] in self?.sendInfo() }
+        capture.onChange = { [weak self] in
+            guard let self else { return }
+            self.lock.lock()
+            if self.budgetMaxLong == nil, self.controller.scale == 1, let size = self.capture.pixelSize {
+                self.requestedPixelSize = size
+            }
+            self.lock.unlock()
+            self.sendInfo()
+        }
         // The numbers, for the viewer's overlay.
         // Adapt ten times a second; the numbers go to the viewer once a second.
         let t = DispatchSource.makeTimerSource(queue: encodeQueue)
@@ -637,7 +673,7 @@ final class Session: NativeInputClient {
         var ticks = 0
         t.setEventHandler { [weak self] in
             guard let self, !self.isStopped else { return }
-            self.adapt(maxLong: maxLong)
+            self.adapt()
             ticks += 1
             guard ticks % 10 == 0 else { return }
             var s = self.stats.summary()
@@ -645,6 +681,7 @@ final class Session: NativeInputClient {
             s["t"] = "stats"
             s["bitrate"] = self.encoder.bitrate
             s["size"] = "\(self.encoder.width)×\(self.encoder.height)"
+            s["budget"] = self.budgetStatus()
             self.ws.sendJSON(s)
         }
         t.resume()
@@ -698,37 +735,52 @@ final class Session: NativeInputClient {
     }
 
     /// Applies the controller's bitrate and tier. On the encoding queue.
-    private func adapt(maxLong: Int) {
+    func setBudgetPolicy(role: String, reason: String, maxLong: Int?, maxFps: Int?) {
+        lock.lock()
+        budgetRole = role
+        budgetReason = reason
+        budgetMaxLong = maxLong.flatMap { $0 > 0 ? min($0, requestedMaxLong) : nil }
+        budgetMaxFps = maxFps.flatMap { $0 > 0 ? min($0, controller.maxFps) : nil }
+        lock.unlock()
+        encodeQueue.async { [weak self] in self?.adapt() }
+    }
+
+    private func adapt() {
         let now = nowUs()
-        if let bps = controller.update(now: now) { encoder.setBitrate(bps) }
-        encoder.applyLinkCap()
-        let scale = controller.scale
-        lock.lock(); let live = liveGate.live; lock.unlock()
-        guard live else {
-            if !foveationDirect && scale != appliedScale {
-                appliedScale = scale
-                capture.setMaxLong(max(320, Int(Double(maxLong) * scale)))
-            }
-            appliedPriorityRole = controller.priority().role
-            return
-        }
-        if !foveationDirect && scale != appliedScale {
-            appliedScale = scale
-            capture.setMaxLong(max(320, Int(Double(maxLong) * scale)))
-        }
+        _ = controller.update(now: now)
         let priority = controller.priority()
-        if let previous = appliedPriorityRole, previous != priority.role {
-            // A priority switch resumes a fresh reference frame before the
-            // viewer receives frames at the restored or capped rate.
+        let allocationRole = priority.role == "selected" ? "focused" : priority.role
+        let allocated = videoBudget.target(sessionID: id, role: allocationRole,
+                                           demand: controller.budgetDemand, ceiling: controller.requestedTarget)
+        encoder.setBitrate(allocated)
+
+        lock.lock()
+        let settings = liveCaptureSettings()
+        let policyRole = budgetRole
+        let live = liveGate.live
+        lock.unlock()
+        if CaptureBudgetPolicy.requiresKeyFrame(previousPriorityRole: appliedPriorityRole,
+                                                nextPriorityRole: priority.role,
+                                                previousBudgetRole: appliedBudgetRole,
+                                                nextBudgetRole: policyRole,
+                                                previousMaxLong: appliedMaxLong,
+                                                nextMaxLong: settings.maxLong) {
+            // The role/scale boundary starts a fresh reference picture. Link
+            // allocation ticks alone never request keyframes.
             encoder.requestKeyFrame()
         }
         appliedPriorityRole = priority.role
-        let captureFps = min(controller.maxFps, priority.fpsCap ?? controller.maxFps, testCaptureFps ?? controller.maxFps)
+        appliedBudgetRole = policyRole
+        if !foveationDirect && settings.maxLong != appliedMaxLong {
+            appliedMaxLong = settings.maxLong
+            capture.setMaxLong(settings.maxLong)
+        }
+        let captureFps = settings.fps
         if captureFps != appliedCaptureFps {
             appliedCaptureFps = captureFps
             capture.setMaxFps(captureFps)
         }
-        resendIfRoom()  // a lower tier may let a held frame go now
+        if live { resendIfRoom() }  // a lower tier may let a held frame go now
     }
 
     /// While someone is typing or clicking, the viewer sends a tiny message this
@@ -761,6 +813,7 @@ final class Session: NativeInputClient {
         lock.unlock()
         guard !was else { return }
         activity.unregister(id)
+        videoBudget.unregister(id)
         statsTimer?.cancel()
         gazeTimer?.cancel()
         let didStopCapture = { [self] in
@@ -842,6 +895,7 @@ final class Session: NativeInputClient {
     // Authenticated HTTP stats only; no diagnostics are added to viewer UI.
     func streamSummary() -> [String: Any] {
         var result = stats.summary()
+        result["budget"] = budgetStatus()
         if gazeSharpen {
             lock.lock()
             var g = gaze.diagnostics
@@ -855,6 +909,57 @@ final class Session: NativeInputClient {
             lock.lock(); result["gaze"] = gaze.diagnostics; lock.unlock()
         }
         if let direct = capture as? DirectSCKSource { result["directCapture"] = direct.diagnostics }
+        return result
+    }
+
+    func budgetStatus() -> [String: Any] {
+        let captureSize = capture.pixelSize
+        lock.lock()
+        if requestedPixelSize == nil, budgetMaxLong == nil, let captureSize {
+            requestedPixelSize = captureSize
+        }
+        let requestedSize = requestedPixelSize
+        let requestedLong = requestedMaxLong
+        let role = budgetRole
+        let reason = budgetReason
+        let budgetLong = budgetMaxLong ?? 0
+        let budgetFps = budgetMaxFps ?? 0
+        let settings = liveCaptureSettings()
+        let input = inputEpoch
+        let liveRequestEpoch = liveGate.requestID
+        lock.unlock()
+
+        let requestedBps = controller.requestedTarget
+        let allocatedBps = videoBudget.allocation(for: id)
+        let bandwidthRole = controller.priority().role
+        let limited = reason.contains("limited") || allocatedBps < requestedBps
+            || settings.maxLong < requestedLong || settings.fps < controller.maxFps
+        var result: [String: Any] = [
+            "role": role, "reason": reason, "limited": limited,
+            "bandwidthRole": bandwidthRole,
+            "requestedBps": requestedBps, "allocatedBps": allocatedBps,
+            "effectiveBps": encoder.bitrate, "routeCapBps": videoBudget.routeCap,
+            "qualityCeilingBps": controller.requestedCeiling,
+            "bandwidthReason": videoBudget.routeCap > 0 ? "shared-route-budget" : "uncapped-route",
+            "requestedMaxLong": requestedLong, "effectiveMaxLong": settings.maxLong,
+            "budgetMaxLong": budgetLong, "budgetMaxFps": budgetFps,
+            "congestionScale": controller.scale, "congestionAdapt": RateController.enabled,
+            "requestedFps": controller.maxFps, "effectiveFps": settings.fps,
+            "captureWidth": captureSize?.0 ?? 0, "captureHeight": captureSize?.1 ?? 0,
+            "encoderWidth": encoder.width, "encoderHeight": encoder.height,
+            "liveRequestEpoch": liveRequestEpoch
+        ]
+        if let requestedSize {
+            result["requestedWidth"] = requestedSize.0
+            result["requestedHeight"] = requestedSize.1
+        }
+        if let videoBudget = videoBudget.videoBudget {
+            result["videoBudgetBps"] = videoBudget
+            result["videoBudgetCapped"] = true
+        } else {
+            result["videoBudgetCapped"] = false
+        }
+        if let input { result["epoch"] = input }
         return result
     }
 
@@ -1128,6 +1233,7 @@ final class Agent {
     private let spatialMode = SpatialCoordinator()
     private let cursorMemory = FocusCursorMemory()
     private let apps = MacApps()
+    private let videoBudget = SharedVideoBudget()
     /// nil means every current and future window stream stays live.
     private var desiredLiveSources: Set<String>?
     private var pointerSharedMode = ProcessInfo.processInfo.environment["FRAME_WINDOW_DISPLAYS"] == "1"
@@ -1308,6 +1414,44 @@ final class Agent {
         }
         setWindowStreamsLive(selected)
         c.respond(json: ["live": selected.sorted(), "all": false])
+    }
+
+    private func setWindowBudgetPolicy(source: String?, role: String, reason: String,
+                                       maxLong: Int?, maxFps: Int?) -> Int {
+        lock.lock()
+        let targets = sessions.values.filter { session in
+            guard isWindowSource(session.source) else { return false }
+            return source == nil || session.source.key == source
+        }
+        lock.unlock()
+        for session in targets {
+            session.setBudgetPolicy(role: role, reason: reason, maxLong: maxLong, maxFps: maxFps)
+        }
+        return targets.count
+    }
+
+    private func streamsPolicyResponse(_ req: Request, _ c: HTTPConnection) {
+        if req.query["all"] == "1" {
+            let count = setWindowBudgetPolicy(source: nil, role: "normal", reason: "policy-cleared",
+                                             maxLong: nil, maxFps: nil)
+            return c.respond(json: ["updated": count, "all": true])
+        }
+        guard let key = req.query["src"], let source = Source(key), isWindowSource(source), source.key == key else {
+            return c.respond(400, text: "Invalid Window Source")
+        }
+        guard let role = req.query["role"], ["focused", "background", "normal"].contains(role) else {
+            return c.respond(400, text: "role=focused|background|normal")
+        }
+        let reason = req.query["reason"] ?? "policy"
+        guard reason.utf8.count <= 64,
+              let maxLong = Int(req.query["maxLong"] ?? "0"), (0...8192).contains(maxLong),
+              let maxFps = Int(req.query["maxFps"] ?? "0"), (0...240).contains(maxFps) else {
+            return c.respond(400, text: "reason<=64, maxLong=0..8192, maxFps=0..240")
+        }
+        let count = setWindowBudgetPolicy(source: key, role: role, reason: reason,
+                                          maxLong: maxLong == 0 ? nil : maxLong,
+                                          maxFps: maxFps == 0 ? nil : maxFps)
+        c.respond(json: ["src": key, "role": role, "updated": count])
     }
 
     private func pointerResponse(_ req: Request, _ c: HTTPConnection) {
@@ -1526,12 +1670,16 @@ final class Agent {
                     spatialStreams.observe(s.source.key, width: size.0, height: size.1, changed: false)
                 }
                 let observed = spatialStreams.observation(for: s.source.key)
+                let budget = s.budgetStatus()
                 var e: [String: Any] = ["id": s.id, "src": s.source.key, "title": s.capture.title, "app": s.capture.app,
                                         "stats": s.streamSummary(), "bitrate": s.encoder.bitrate,
                                         "controller": s.controller.state(),
+                                        "budget": budget,
                                         "width": observed.width > 0 ? observed.width : previous.width,
                                         "height": observed.height > 0 ? observed.height : previous.height,
                                         "live": s.isLive, "lastChanged": observed.lastChanged]
+                if let w = budget["requestedWidth"] as? Int { e["requestedWidth"] = w }
+                if let h = budget["requestedHeight"] as? Int { e["requestedHeight"] = h }
                 if let d = (s.capture as? SeparateSource)?.displayID { e["display"] = d }
                 return e
             }
@@ -1567,6 +1715,8 @@ final class Agent {
             c.respond(json: ["ticket": t])
         case ("POST", "/streams/live"):
             liveStreamsResponse(req, c)
+        case ("POST", "/streams/policy"):
+            streamsPolicyResponse(req, c)
         case ("POST", "/spatial/start"):
             startSpatial(c)
         case ("POST", "/spatial/stop"):
@@ -1612,17 +1762,19 @@ final class Agent {
                  "events": s.controller.eventList()]
             }])
         case ("POST", "/link"):
-            // ?maxbps=N: a ceiling for every H.264 stream on the current route
-            // (0 removes it). Applied by each session within its next 100 ms tick.
+            // ?maxbps=N: current route ceiling (0 is uncapped USB); sessions
+            // share ninety percent for video and reserve the rest for control.
             if let mode = req.query["sharpen"] {
                 guard GazeSharpener.modes.contains(mode) else { return c.respond(400, text: "sharpen=auto|on|off") }
                 GazeSharpener.mode = mode
             }
             if let raw = req.query["maxbps"] {
                 guard let bps = Int(raw), bps >= 0, bps <= 1_000_000_000 else { return c.respond(400, text: "maxbps=N") }
+                videoBudget.setRouteCap(bps)
                 Encoder.linkCap = bps
             }
-            c.respond(json: ["maxbps": Encoder.linkCap, "sharpen": GazeSharpener.mode])
+            c.respond(json: ["maxbps": videoBudget.routeCap, "videobps": videoBudget.videoBudget ?? 0,
+                             "uncapped": videoBudget.videoBudget == nil, "sharpen": GazeSharpener.mode])
         case ("POST", "/bench"):
             lock.lock()
             let list = sessions.values.filter { $0.source.key == req.query["src"] }
@@ -1697,6 +1849,7 @@ final class Agent {
         }
         let session = Session(id: nextId, source: src, capture: capture, ws: ws, codec: codec, fps: fps,
                               bitsPerPixel: bpp, reconnectKey: key, activity: activity, spatial: spatialStreams,
+                              videoBudget: videoBudget,
                               foveation: foveation,
                               foveationAtlas: !wantsDirect && req.query["atlas"] == "1", foveationDirect: wantsDirect,
                               gazeSharpen: codec == .h264 && req.query["gaze"] == "1")

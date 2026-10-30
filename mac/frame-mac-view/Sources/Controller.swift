@@ -31,9 +31,11 @@ final class RateController {
     private let lock = NSLock()
     private let sessionID: Int?
     private let activity: StreamActivityRegistry?
-    private var ceiling = 0  // bits/s at full size and frame rate
+    private(set) var ceiling = 0  // bits/s at requested size and frame rate
     private(set) var target = 0
     private(set) var tier = 0
+    private var estimatedDemand = 0
+    private var hasDemandSample = false
     private var unacked: [(seq: UInt32, sent: Int64, bytes: Int)] = []
     /// Round trips (send -> ack arrives here), for the baseline: the lowest
     /// in the last 10 s is the path without any queue.
@@ -85,6 +87,19 @@ final class RateController {
     }
     var scale: Double { locked { RateController.tiers[tier].scale } }
     var baseRtt: Int64 { locked { baseline() } }
+    var requestedTarget: Int { locked { target } }
+    var requestedCeiling: Int { locked { ceiling } }
+
+    /// A recent source's actual encoded demand. Before there is enough frame
+    /// history, use its quality target so a newly active stream joins the next
+    /// fair allocation immediately. Quiet streams retain a small service floor
+    /// so a later changed frame can still be sent.
+    var budgetDemand: Int {
+        locked {
+            guard hasDemandSample else { return target }
+            return min(target, max(300_000, estimatedDemand))
+        }
+    }
 
     private func baseline() -> Int64 { rtts.map(\.v).min() ?? 0 }
 
@@ -156,11 +171,19 @@ final class RateController {
             sentLog.removeAll { now - $0.t > 500_000 }
             unacked.removeAll { now - $0.sent > 2_000_000 }
             captures.removeAll { now - $0 > 1_000_000 }
+            if !sentLog.isEmpty { frameBytes = sentLog.reduce(0) { $0 + $1.bytes } / sentLog.count }
+            let currentFps = fpsLocked(at: ProcessInfo.processInfo.systemUptime)
+            let demand = min(captures.count, currentFps) * frameBytes * 8
+            if frameBytes > 0 {
+                hasDemandSample = true
+                estimatedDemand = demand
+            }
+            // Shared bandwidth budgeting is independent of congestion
+            // adaptation, so keep its demand sample even when ADAPT=0.
             guard RateController.enabled, ceiling > 0 else { return nil }
             let base = baseline()
             let spread = rtts.filter { now - $0.t < 2_000_000 }.map(\.v).sorted()
             let jitter = spread.isEmpty ? 0 : spread[spread.count * 9 / 10] - base
-            let currentFps = fpsLocked(at: ProcessInfo.processInfo.systemUptime)
             let interval = Int64(1_000_000 / max(1, currentFps))
             slack = interval + min(max(jitter * 3 / 2, 25_000), 80_000)
             let recent = rtts.filter { now - $0.t < 300_000 }.map(\.v).sorted()
@@ -173,8 +196,6 @@ final class RateController {
             // average frame. A test card or a mostly still window wants far
             // less than its budget; when the link hiccups, cutting its bitrate
             // can't help, and it would only look link-limited afterwards.
-            if !sentLog.isEmpty { frameBytes = sentLog.reduce(0) { $0 + $1.bytes } / sentLog.count }
-            let demand = min(captures.count, currentFps) * frameBytes * 8
             // Delay alone isn't our queue: Wi-Fi jitters by itself. It only
             // counts while this stream uses a good part of its budget (so its
             // own data could be what's queueing). Frames the gate had to hold,

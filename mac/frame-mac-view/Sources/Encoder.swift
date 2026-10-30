@@ -36,6 +36,15 @@ final class Encoder {
     static let options = Set((ProcessInfo.processInfo.environment["FRAME_MAC_VIEW_ENCODER"] ?? "")
         .split(separator: ",").map(String.init))
 
+    /// Route state for diagnostics and the automatic sharpening preset only.
+    /// Actual bitrate targets come from SharedVideoBudget per session.
+    static var linkCap: Int {
+        get { linkCapLock.lock(); defer { linkCapLock.unlock() }; return linkCapValue }
+        set { linkCapLock.lock(); linkCapValue = max(0, newValue); linkCapLock.unlock() }
+    }
+    private static var linkCapValue = 0
+    private static let linkCapLock = NSLock()
+
     init(codec: Codec, fps: Int, bitsPerPixel: Double) {
         self.codec = codec
         self.fps = fps
@@ -47,42 +56,20 @@ final class Encoder {
         Int(min(max(Double(w * h * fps) * bitsPerPixel, 2_000_000), 60_000_000))
     }
 
-    /// A link-wide ceiling in bits/s (0 = none), set by the companion for the
-    /// route in use: worn Wi-Fi carried only ~20 Mbit/s Mac -> Frame, which
-    /// video and animations at the full quality bitrate saturated (each frame
-    /// then queued for 50-300 ms); USB-C needs no cap. Read on encoding queues.
-    static var linkCap: Int {
-        get { linkCapLock.lock(); defer { linkCapLock.unlock() }; return linkCapValue }
-        set { linkCapLock.lock(); linkCapValue = max(0, newValue); linkCapLock.unlock() }
-    }
-    private static var linkCapValue = 0
-    private static let linkCapLock = NSLock()
-    private var appliedLinkCap = 0
-    private var dataRateLimited = false
-
-    /// Re-applies the bitrate when the link cap changed. On the encoding queue.
-    func applyLinkCap() {
-        if Encoder.linkCap != appliedLinkCap { setBitrate(target) }
-    }
-
-    /// Live, without a new keyframe. Call on the encoding queue.
+    /// Live per-session target from the shared route allocator. Both VideoToolbox
+    /// average rate and its hard 200 ms data-rate window use this target.
+    /// Call on the encoding queue.
     func setBitrate(_ bps: Int?) {
         target = bps
         guard codec == .h264, let s = session else { return }
-        appliedLinkCap = Encoder.linkCap
-        var b = bps ?? defaultBitrate(width: width, height: height)
-        if appliedLinkCap > 0 { b = min(b, appliedLinkCap) }
+        let b = max(1, bps ?? defaultBitrate(width: width, height: height))
         guard b != bitrate else { return }
         bitrate = b
         VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: b as CFTypeRef)
-        // A hard ceiling too: no more than 200 ms' worth of bits in any 200 ms,
-        // so a keyframe can't hold the link for long.
-        // Kept once set, so removing the link cap relaxes it to the new rate.
-        if Encoder.options.contains("cap") || appliedLinkCap > 0 || dataRateLimited {
-            dataRateLimited = true
-            VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits,
-                                 value: [b / 8 / 5, 0.2] as CFArray)
-        }
+        // Keep bursts within the allocated share, not merely its long-term
+        // average, so a large keyframe cannot monopolize the route.
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_DataRateLimits,
+                             value: [max(1, b / 8 / 5), 0.2] as CFArray)
     }
 
     deinit { invalidate() }
@@ -156,7 +143,6 @@ final class Encoder {
         height = h
         forceKey = true
         bitrate = 0
-        dataRateLimited = false
         setBitrate(target)
         return true
     }

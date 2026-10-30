@@ -5,6 +5,7 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/frame-stream-priority.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT HUP INT TERM
 
 swiftc -swift-version 5 -o "$tmp/stream-priority-tests" \
+  -module-cache-path "$tmp/ModuleCache" \
   "$here/Sources/StreamPriority.swift" \
   "$here/Sources/Controller.swift" \
   "$here/tests/StreamPriorityTests.swift"
