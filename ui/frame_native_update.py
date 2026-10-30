@@ -134,7 +134,7 @@ class HeadsetViewer:
         except ViewerError:
             return None
 
-    def require_spatial(self, frame):
+    def require_spatial(self, frame, mouse=False):
         """Before Spatial Mode changes anything on the Mac."""
         if self.updating():
             raise ViewerError("The headset viewer is updating. Start again when it finishes.")
@@ -145,6 +145,8 @@ class HeadsetViewer:
         if not status["spatial"]:
             raise ViewerError("The headset viewer is too old for Spatial Mode. Use Update Headset Viewer on the "
                               "Mac page, then start again.")
+        if mouse and "workspace-mouse" not in (status.get("capabilities") or []):
+            raise ViewerError("The headset viewer needs the mouse workspace update before Start. Use Update Headset Viewer.")
         return status
 
     # ---- Update Headset Viewer ----

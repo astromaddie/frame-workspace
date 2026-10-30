@@ -21,6 +21,7 @@ struct GazeClickGate {
         if on { highlighted = source; highlightUntilMs = nowMs + ttlMs }
         else if highlighted == source { highlighted = nil }
     }
+    func liveHighlight(nowMs: Double) -> String? { nowMs < highlightUntilMs ? highlighted : nil }
     mutating func setActive(_ source: String?) { active = source }
 
     mutating func event(_ event: Event, tagged: Bool, nowMs: Double) -> Decision {
@@ -112,6 +113,80 @@ final class SpatialCursorFence {
         get { lock.lock(); defer { lock.unlock() }; return typingHandler }
         set { lock.lock(); typingHandler = newValue; lock.unlock() }
     }
+    private var mouseLease = WorkspaceMouseLease()
+    private var captureHandler: (([String: Any]) -> Void)?
+    private var lostHandler: (() -> Void)?
+    private var leaseTimer: DispatchSourceTimer?
+    private var swallowedUps = Set<Int>()
+    var mouseCaptured: Bool { lock.lock(); defer { lock.unlock() }; return mouseLease.active }
+
+    /// Called only after the authenticated host has bound ready window generations
+    /// and its recovery control. No second event tap and no observer throttle.
+    func capture(session: String, host: String, onEvent: @escaping ([String: Any]) -> Void,
+                 onLoss: @escaping () -> Void) -> Bool {
+        guard enabled else { return false }
+        lock.lock()
+        let started = mouseLease.start(session: session, host: host, now: Self.nowMs)
+        if started { captureHandler = onEvent; lostHandler = onLoss; gate.clear() }
+        lock.unlock()
+        guard started else { return false }
+        let timer = DispatchSource.makeTimerSource(queue: correctionQueue)
+        timer.schedule(deadline: .now() + .milliseconds(50), repeating: .milliseconds(50))
+        timer.setEventHandler { [weak self] in self?.expireCapture() }
+        lock.lock(); leaseTimer = timer; lock.unlock()
+        timer.resume()
+        return true
+    }
+    func heartbeat(session: String, host: String, sequence: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return mouseLease.heartbeat(session: session, host: host, sequence: sequence, now: Self.nowMs)
+    }
+    func releaseCapture() {
+        lock.lock()
+        let lost = mouseLease.active ? lostHandler : nil
+        swallowedUps.formUnion(mouseLease.buttons)
+        mouseLease.stop(); captureHandler = nil; lostHandler = nil
+        let timer = leaseTimer; leaseTimer = nil
+        lock.unlock()
+        timer?.cancel()
+        if let lost { DispatchQueue.main.async { lost() } }
+    }
+    private func expireCapture() {
+        lock.lock(); let expired = mouseLease.expired(Self.nowMs); lock.unlock()
+        if expired { releaseCapture() }
+    }
+    /// Runs on the tap thread. Handler must only enqueue a small control record;
+    /// it must never do Accessibility, networking or synchronous main dispatch.
+    private func captureEvent(_ type: CGEventType, _ event: CGEvent, tagged: Bool) -> Bool {
+        guard !tagged else { return false }
+        expireCapture()
+        let kind: String, button: Int
+        switch type {
+        case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged: kind = "motion"; button = 0
+        case .scrollWheel: kind = "wheel"; button = 0
+        case .leftMouseDown: kind = "down"; button = 0
+        case .leftMouseUp: kind = "up"; button = 0
+        case .rightMouseDown: kind = "down"; button = 2
+        case .rightMouseUp: kind = "up"; button = 2
+        case .otherMouseDown: kind = "down"; button = 1
+        case .otherMouseUp: kind = "up"; button = 1
+        default: return false
+        }
+        lock.lock()
+        if kind == "down" { swallowedUps.remove(button) }
+        if kind == "up", swallowedUps.remove(button) != nil { lock.unlock(); return true }
+        guard mouseLease.active else { lock.unlock(); return false }
+        let dx = kind == "wheel" ? -event.getDoubleValueField(.scrollWheelEventPointDeltaAxis2)
+                                  : event.getDoubleValueField(.mouseEventDeltaX)
+        let dy = kind == "wheel" ? -event.getDoubleValueField(.scrollWheelEventPointDeltaAxis1)
+                                  : event.getDoubleValueField(.mouseEventDeltaY)
+        let packet = mouseLease.event(kind: kind, dx: dx, dy: dy, button: button)
+        let handler = captureHandler
+        lock.unlock()
+        if let packet, let handler { handler(packet) }
+        return true
+    }
+
     private var gazeClickHandler: ((String) -> Void)?
     private var typingHandler: (() -> Void)?
     private var gate = GazeClickGate()
@@ -120,7 +195,11 @@ final class SpatialCursorFence {
         lock.lock(); gate.highlight(source, on: on, nowMs: Self.nowMs, ttlMs: ttlMs); lock.unlock()
     }
     func setActive(_ source: String?) { lock.lock(); gate.setActive(source); lock.unlock() }
-    var highlighted: String? { lock.lock(); defer { lock.unlock() }; return gate.highlighted }
+    var highlighted: String? { lock.lock(); defer { lock.unlock() }; return gate.liveHighlight(nowMs: Self.nowMs) }
+    var capturedHover: String? {
+        lock.lock(); defer { lock.unlock() }
+        return mouseLease.active ? gate.liveHighlight(nowMs: Self.nowMs) : nil
+    }
     private static var nowMs: Double { ProcessInfo.processInfo.systemUptime * 1000 }
 
     /// Called on main. Motion is reported at most every 50 ms.
@@ -169,6 +248,7 @@ final class SpatialCursorFence {
             guard let context else { return Unmanaged.passUnretained(event) }
             let fence = Unmanaged<SpatialCursorFence>.fromOpaque(context).takeUnretainedValue()
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
+                fence.releaseCapture()
                 fence.lock.lock(); let tap = fence.tap; fence.lock.unlock()
                 if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             } else {
@@ -182,6 +262,7 @@ final class SpatialCursorFence {
                     if let handler { DispatchQueue.main.async { handler() } }
                     return Unmanaged.passUnretained(event)
                 }
+                if fence.captureEvent(type, event, tagged: userData == InjectedEvent.tag) { return nil }
                 if let external = SpatialCursorFence.external(type: type, userData: userData) {
                     fence.lock.lock()
                     let now = CFAbsoluteTimeGetCurrent()
@@ -257,6 +338,7 @@ final class SpatialCursorFence {
     }
 
     func stop() {
+        releaseCapture()
         lock.lock()
         let tap = self.tap, loop = runLoop
         self.tap = nil; runLoop = nil; allowedRects.removeAll(); generation += 1; gate.clear()

@@ -136,7 +136,7 @@ final class SharedWindowSource: CaptureSource, CaptureStopAwaitable {
     var focusCap: Int { coordinator.focus.focusedSource == "spatial:\(windowID)" ? 60 : 30 }
     /// Only the active window draws the Mac cursor (FW-15: one cursor).
     var showsCursor: Bool {
-        SpatialCursorPolicy.window("spatial:\(windowID)", focused: coordinator.focus.focusedSource,
+        !coordinator.focus.fence.mouseCaptured && SpatialCursorPolicy.window("spatial:\(windowID)", focused: coordinator.focus.focusedSource,
                                    cursorOnSurface: coordinator.focus.cursorOnSurface)
     }
 

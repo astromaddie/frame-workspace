@@ -25,6 +25,7 @@ test("Workspace server gets isolated paths, native defaults, and telemetry/updat
   assert.deepEqual(Object.fromEntries(Object.keys(WORKSPACE_DEFAULTS).map((key) => [key, env[key]])),
     WORKSPACE_DEFAULTS);
   assert.equal(env.FRAME_WORKSPACE_VIEWER, "native");
+  assert.equal(env.FRAME_WORKSPACE_MOUSE, "1");
   assert.equal(env.FRAME_CONTROL_DATA_DIR, "/Application Support/Frame Workspace");
   assert.equal(env.FRAME_CONTROL_CACHE_DIR, "/Caches/Frame Workspace");
   assert.equal(env.FRAME_CONTROL_NO_UPDATE_CHECK, "1");

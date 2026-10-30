@@ -106,7 +106,7 @@ public:
     if (fd >= 0)
       close(fd);
   }
-  void open(const Endpoint &e, const std::string &reconnect) {
+  void open(const Endpoint &e, const std::string &reconnect, const std::string &controlPath = {}) {
     fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
       throw std::runtime_error("socket unavailable");
@@ -125,7 +125,7 @@ public:
       throw std::runtime_error("random source failed");
     auto key = base64(random, 16);
     std::string request =
-        "GET " + e.path(reconnect) + " HTTP/1.1\r\nHost: " + e.host + ":" +
+        "GET " + (controlPath.empty() ? e.path(reconnect) : controlPath) + " HTTP/1.1\r\nHost: " + e.host + ":" +
         std::to_string(e.port) +
         "\r\nUpgrade: websocket\r\nConnection: "
         "Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: " +

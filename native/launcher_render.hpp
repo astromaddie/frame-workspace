@@ -6,6 +6,7 @@
 // and the backdrop that dims the windows behind. Cairo, loaded at run time
 // like the other spatial labels, so there is no new link dependency.
 #include "launcher.hpp"
+#include "workspace_ui_layout.hpp"
 #include <SDL_opengl.h>
 #include <dlfcn.h>
 
@@ -318,6 +319,53 @@ public:
   LauncherPainter(const LauncherPainter &) = delete;
   LauncherPainter &operator=(const LauncherPainter &) = delete;
 
+  // Workspace mouse controls use the same Palladium rasterizer as the launcher.
+  // This CPU path also renders the exact production widgets for offline review.
+  std::vector<uint8_t> workspacePixels(const WorkspacePicture &picture, const std::string &hot,
+                                        const std::string &pngPath = "") {
+    P surface = imageSurface(0, picture.width, picture.height), c = create(surface);
+    for (const auto &item : picture.widgets) {
+      const bool hover = !item.action.empty() && item.action == hot;
+      palladium(c,item.x,item.y,item.w,item.h,9,item.selected,hover);
+      if(item.selected) {
+        color(c,0x41bea6,.9);rounded(c,item.x+8,item.y+item.h-5,item.w-16,2,1);fill(c);
+      }
+      color(c,0x302c3c);lineWidth(c,2.2);lineCap(c,1);
+      auto arrow=[&](double cx,double cy,double dx,double dy) {
+        const double endX=cx+dx,endY=cy+dy;
+        moveTo(c,cx-dx*.6,cy-dy*.6);lineTo(c,endX,endY);
+        const double length=std::hypot(dx,dy),ux=dx/length,uy=dy/length;
+        moveTo(c,endX-ux*6-uy*5,endY-uy*6+ux*5);lineTo(c,endX,endY);lineTo(c,endX-ux*6+uy*5,endY-uy*6-ux*5);stroke(c);
+      };
+      double textOffset=0,textWidth=item.w-18;
+      if(item.action.rfind("corner:",0)==0) {
+        const int sx=item.action[7]=='-'?-1:1,sy=item.action.find(":-",8)!=std::string::npos?1:-1;
+        arrow(item.x+item.w/2,item.y+item.h/2,sx*9,sy*9);
+      }else if(item.action.rfind("beacon:",0)==0) {
+        const auto direction=item.action.substr(7);
+        const int dx=direction.find("→")!=std::string::npos?1:direction.find("←")!=std::string::npos?-1:0;
+        const int dy=direction.find("↑")!=std::string::npos?-1:direction.find("↓")!=std::string::npos?1:0;
+        arrow(item.x+25,item.y+item.h/2,dx*11,dy*11);textOffset=17;textWidth-=38;
+      }else if(item.action=="arrange") {
+        for(const auto &v:{std::pair<int,int>{1,0},{-1,0},{0,1},{0,-1}})arrow(item.x+25,item.y+item.h/2,v.first*10,v.second*10);
+        textOffset=12;textWidth-=36;
+      }else if(item.action=="recenter") {
+        const double x=item.x+23,y=item.y+item.h/2;
+        arc(c,x,y,7,0,2*M_PI);stroke(c);moveTo(c,x-12,y);lineTo(c,x+12,y);moveTo(c,x,y-12);lineTo(c,x,y+12);stroke(c);
+        textOffset=13;textWidth-=36;
+      }
+      text(c,item.label,item.x+item.w/2+textOffset,item.y+item.h/2+6,
+           item.h<40?14:18,0x302c3c,true,0,textWidth);
+    }
+    destroy(c);flush(surface);
+    if(!pngPath.empty()) {
+      int (*writePNG)(P,const char *);load(writePNG,"cairo_surface_write_to_png");
+      if(writePNG(surface,pngPath.c_str())){surfaceDestroy(surface);throw std::runtime_error("workspace PNG write failed");}
+    }
+    const auto *bgra=data(surface);std::vector<uint8_t> result(size_t(picture.width)*picture.height*4);
+    for(size_t i=0;i<result.size();i+=4){result[i]=bgra[i+2];result[i+1]=bgra[i+1];result[i+2]=bgra[i];result[i+3]=bgra[i+3];}
+    surfaceDestroy(surface);return result;
+  }
   // A decoded icon, reloaded when its file changes; missing or changed files
   // are rechecked once a second.
   P iconSurface(const std::string &path, double now) {

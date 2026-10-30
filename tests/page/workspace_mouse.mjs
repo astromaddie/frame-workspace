@@ -1,0 +1,27 @@
+// Actual Mac page selection and Start/Add event routes, without a browser.
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+const src=readFileSync(new URL('../../ui/index.html',import.meta.url),'utf8');
+const grab=name=>src.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`))[0];
+const dom={};
+for(const m of src.matchAll(/id="(mv[^"]*)"/g))dom[m[1]]={disabled:false,dataset:{},options:[],value:'',setAttribute(){},parentElement:{},focus(){this.focused=true;}};
+Object.defineProperty(dom.mvMouseWindow,'innerHTML',{set(html){this.options=[...html.matchAll(/value="([^"]*)"/g)].map(m=>({value:m[1]}));this.value='';}});
+let calls=[];const window={id:42,pid:123,stamp:'window-generation',app:'Terminal',title:'Build'};
+const api=async(path,body)=>{calls.push(body);return body.action==='workspace_windows'?{windows:[window]}:{state:'running',mode:'spatial',workspace:{state:'running'}};};
+const code=['renderMouseChoices','loadMouseChoices','selectedMouseWindow','workspacePlacement','renderWorkspacePlacement','renderMvErrors','renderMvViewer','renderMvWorkspace'].map(grab).join('\n');
+const begin=src.indexOf('$("macview").onclick ='),end=src.indexOf('\n// ---- pages:',begin);const page={};
+const p=new Function('$','api','act','esc','document',`let mvSeq=0,mvState,mvWorkspaceBusy=false,mvPlacementBusy=false,mvPlacementError='',mvWorkspaceActivePreset=null,mvWorkspacePendingPreset=null,mvViewerBusy=false,mvMouseChoices=[],mvMouseLoading=false;async function loadMacView(){};${code}\n${src.slice(begin,end)}\nreturn {set(s){mvState=s;renderMvWorkspace(s)},choices:renderMouseChoices};`)(id=>id==='macview'?page:dom[id],api,async(_,fn)=>fn(),String,{querySelectorAll:()=>[]});
+const click=action=>page.onclick({target:{closest:()=>({dataset:{mv:action}})}});
+dom.mvWorkspacePreset.value='5120x1440';dom.mvWorkspaceScale.value='1';dom.mvQuality.value='balanced';
+p.set({screen:true,accessibility:true,workspace:{state:'stopped',mode:'spatial',mouse:true}});
+assert.equal(dom.mvMouseSelection.hidden,false);
+await click('workspace-start');assert.deepEqual(calls,[{action:'workspace_windows'}]);
+assert.ok(dom.mvMouseWindow.focused);assert.equal(dom.mvMouseWindow.value,'','selection must be explicit');
+dom.mvMouseWindow.value='42:window-generation';
+await click('workspace-start');assert.deepEqual(calls.at(-1).windows,[window]);assert.equal(calls.at(-1).action,'workspace_start');assert.equal(calls.at(-1).mode,'spatial');
+p.set({screen:true,accessibility:true,workspace:{state:'running',mode:'spatial',mouse:true}});
+assert.equal(dom.mvMouseAdd.hidden,false);
+await click('workspace-admit');assert.deepEqual(calls.at(-1),{action:'workspace_admit',windows:[window]});
+p.choices([{...window,stamp:'replacement'}]);assert.equal(dom.mvMouseWindow.value,'','stale selection is not transferred to reused window ID');
+p.set({screen:true,accessibility:true,workspace:{state:'running',mode:'desktop',mouse:true,selectionRequired:true,mouseSelection:[window]}});assert.equal(dom.mvMouseSelection.hidden,false);assert.equal(dom.mvWorkspaceStart.disabled,false,'selection can switch a running desktop only after explicit Start');
+console.log('PASS Mac mouse selection: explicit stamped Start, Add, stale identity reset and recovery copy');

@@ -153,8 +153,8 @@ final class MacApps {
         }
     }
 
-    func switcherResponse(_ request: Request, _ connection: HTTPConnection) {
-        connection.respond(json: switcher.state.snapshot().json)
+    func switcherResponse(_ request: Request, _ connection: HTTPConnection, extras: [String: Any] = [:]) {
+        connection.respond(json: switcher.state.snapshot().json.merging(extras) { _, value in value })
     }
 
     func configureSwitcherResponse(_ request: Request, _ connection: HTTPConnection) {

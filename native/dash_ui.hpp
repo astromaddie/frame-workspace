@@ -77,7 +77,7 @@ public:
              s.macConnected && s.workspaceRunning && !s.workspaceBusy && !s.locked);
       // Spatial Mode: every window back onto the wall in front of the user.
       if (s.spatial)
-        button(684, 198, 240, 50, "Arrange Windows", "arrange_windows", "", hover, false,
+        button(684, 198, 240, 50, "Auto-layout", "arrange_windows", "", hover, false,
                s.macConnected && s.workspaceRunning && !s.workspaceBusy && !s.locked && !s.windows.empty());
     } else {
       button(372, 198, 260, 50, "Start Workspace", "workspace_start", "", hover, true, canStart);

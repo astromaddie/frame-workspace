@@ -257,7 +257,9 @@ class SpatialApps:
         with self.helper_lock:
             if not self.enabled or not self._configured or self.macview.agent is not self._agent:
                 return
-            switcher = self._switcher(self.macview.call("/switcher"), self._entries)
+            response = self.macview.call("/switcher")
+            self.macview.observe_mouse_hover(response.get("mouseHoveredSrc"))
+            switcher = self._switcher(response, self._entries)
             with self.lock:
                 state = {**self.state, "switcher": switcher} if self.state else None
             self._set_state(state)

@@ -48,6 +48,7 @@ class FakeMacView:
         self.agent = FakeAgent()
         self._spatial_lock = threading.Lock()
         self._spatial_focused = None
+        self.hovered = None
         self.calls, self.remote = [], []
         self.native_panels = {
             "spatial:1": {"slot": 1, "key": KEY1, "title": "zsh"},
@@ -66,6 +67,9 @@ class FakeMacView:
         # one) and its keyboard lease.
         self.catalog = None
         self.keys = {"active": False, "events": [], "last": 0, "tap": True}
+
+    def observe_mouse_hover(self, source):
+        self.hovered = source
 
     def call(self, path, method="GET", **query):
         self.calls.append((path, method, query))
@@ -175,8 +179,9 @@ class Companion(unittest.TestCase):
     def test_switcher_poll_wakes_sync_and_carries_cmd_release_choice(self):
         self.apps.refresh()
         self.apps.wake.clear()
-        self.mv.switcher.update(open=True, index=1, seq=1)
+        self.mv.switcher.update(open=True, index=1, seq=1, mouseHoveredSrc="spatial:1")
         self.apps.poll_switcher()
+        self.assertEqual(self.mv.hovered, "spatial:1")
         self.assertTrue(self.apps.wake.is_set())
         self.apps.sync()
         sent = json.loads(self.mv.remote[0][1])

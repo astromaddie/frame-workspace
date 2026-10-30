@@ -9,6 +9,10 @@
 #include "tests_wall.hpp"
 #include "tests_depth.hpp"
 #include "content_input.hpp"
+#include "workspace_control.hpp"
+#include "workspace_mouse.hpp"
+#include "workspace_ui.hpp"
+#include "workspace_exit.hpp"
 #include "tests_content.hpp"
 #include <array>
 #include <cassert>
@@ -59,11 +63,40 @@ static int printCapabilities() {
   std::cout << "{\"name\":\"frame-workspace-native\",\"protocol\":2,\"sourceIdentity\":"
             << jsonString(FRAME_WORKSPACE_SOURCE_ID)
             << ",\"capabilities\":[\"host\",\"roles\",\"surfaces\",\"wall-slots\","
-               "\"idle-auxiliary\",\"content-input\",\"gaze-highlight\",\"window-layout\",\"capabilities\"],"
+               "\"idle-auxiliary\",\"content-input\",\"gaze-highlight\",\"window-layout\",\"workspace-mouse\",\"capabilities\"],"
                "\"roles\":[\"window\",\"menubar\",\"status\",\"menu\"]}\n";
   return 0;
 }
+// Wheel-only depth has no held button: moving toward recovery controls must
+// not contribute a drag delta while its short wheel transaction is pending.
+static EyeRay mousePlacementRay(bool wheelOnly, const EyeRay &wheelRay,
+                                const std::array<float,3> &origin,
+                                const std::array<float,3> &point) {
+  if(wheelOnly)return wheelRay;
+  EyeRay ray{};
+  for(int r=0;r<3;++r){ray.origin[r]=origin[r];ray.direction[r]=point[r]-origin[r];}
+  return ray;
+}
 static int selfTest() {
+  {
+    Placement start;
+    HmdMatrix34_t head{{{1,0,0,0},{0,1,0,1.3f},{0,0,1,0}}};
+    const EyeRay frozen{{0,1.3f,0},{0,0,-2}};
+    const std::array<float,3> origin{0,1.3f,0}, initial{0,1.3f,-2}, overCancel{.4f,.5f,-2};
+    MousePlacementGesture gesture;
+    require(gesture.begin(MousePlacementGesture::Kind::Depth,start,head,frozen,1.5f),"wheel depth begins");
+    const auto before=gesture.update(mousePlacementRay(true,frozen,origin,initial),120);
+    const auto after=gesture.update(mousePlacementRay(true,frozen,origin,overCancel),120);
+    require(placementJSON(before)==placementJSON(after),"wheel then pointer motion cannot alter pending depth");
+    const auto more=gesture.update(mousePlacementRay(true,frozen,origin,overCancel),240);
+    require(std::fabs(more.distance-before.distance-.12f)<1e-5f,"only additional wheel deltas change wheel depth");
+    const auto live=mousePlacementRay(false,frozen,origin,overCancel);
+    require(live.direction[0]>.3f && live.direction[1]<-.7f,"live recovery ray remains independently movable");
+    const auto dragged=gesture.update(live,120);
+    require(std::fabs(dragged.distance-before.distance)>.5f,"button depth dragging retains its live ray");
+    require(placementJSON(gesture.cancel())==placementJSON(start),"pending wheel cancellation restores start");
+  }
+
   auto e = parseURL(
       "http://127.0.0.1:9123/"
       "view?src=window%3A42&t=secret&codec=h264&max=4096&fps=30&bpp=.14");
@@ -643,7 +676,7 @@ public:
   bool pendingRecenter = false, stopped = false;
   // The startup recenter (no remembered pose, no wall) is not the user's.
   bool recenterByUser = false;
-  bool inWall = false, wallPlaced = false;
+  bool inWall = false, wallPlaced = false, mousePlacementActive = false;
   // The wall cell the host gave this panel (wall.hpp); -1 until allocated.
   int cell = -1;
   // The placeholder's icon and app name, from the shelf's app list.
@@ -1172,7 +1205,7 @@ public:
       }
       done.clear();
     };
-    if (inWall) {
+    if (inWall && !mousePlacementActive) {
       // Wait for valid tracking (all later windows use the same session
       // anchor) and for the host to hand this panel a free cell.
       if (!wall->ready || cell < 0) return true;
@@ -1374,6 +1407,56 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   };
   MenuStripReveal menuReveal;
   ContentInput content;
+  std::unique_ptr<WorkspaceControlClient> mouseControl;
+  std::unique_ptr<WorkspaceMouseView> mouseView;
+  std::string mouseSelectedKey,mouseUiHot,mouseExitSession,mouseExitDir;
+  bool mouseExitRequested=false,mouseChoosing=false;
+  size_t mouseChoicePage=0;
+  auto requestMouseExit=[&] {
+    if(mouseExitRequested || mouseExitSession.empty() || mouseExitDir.empty())return;
+    mouseExitRequested=true;
+    // Immediate control release is already requested. Retire the whole owned
+    // Frame session using the same bounded local helper as dashboard Stop.
+    try{atomicWrite(mouseExitDir+"/workspace-stop-mouse.json","{\"action\":\"workspace_stop\",\"session\":"+jsonString(mouseExitSession)+"}");}catch(...){}
+    const char *data=std::getenv("XDG_DATA_HOME"),*home=std::getenv("HOME");
+    const std::string root=data&&*data?data:std::string(home&&*home?home:"")+"/.local/share";
+    if(!session->noVR && !spawnLocalExit(root+"/frame-workspace/native/workspace-exit-on-frame.py",mouseExitDir,mouseExitSession,"exit"))
+      fprintf(stderr,"[native-host] local mouse exit helper unavailable; companion stop requested\n");
+  };
+  WorkspacePointer mousePointer;
+  MouseGazeRestore mouseGazeRestore;
+  MousePlacementGesture mouseGesture;
+  std::string mouseUsedTicket, mouseGestureKey, mouseDownKey;
+  bool mouseWasActive = false, mouseArrange = false, mouseOffscreen = false, mouseMenuOpen = false;
+  bool mouseRecoveryReady = false;
+  double mouseGestureWheel = 0,mouseWheelAt=0;
+  bool mouseWheelOnly=false;
+  ContentHit mouseContent;
+  EyeRay mouseRay{},mouseWheelRay{};
+  std::array<float,3> mouseGestureOrigin{};
+  auto gestureRay=[&] {
+    return mousePlacementRay(mouseWheelOnly,mouseWheelRay,mouseGestureOrigin,mousePointer.point);
+  };
+  TrackedDevicePose_t mouseHead{};
+  auto mousePanel = [&](const std::string &key) -> PanelRunner* {
+    for(auto &[path,e]:entries)if(e.panel && e.spec.key==key)return e.panel.get();
+    return nullptr;
+  };
+  auto cancelMouseGesture = [&] {
+    if(mouseGesture.active) {
+      const auto restored=mouseGesture.cancel();
+      if(auto *panel=mousePanel(mouseGestureKey)){panel->mousePlacementActive=false;panel->overlay.placement=restored;panel->overlay.apply();}
+    }
+    mouseGestureKey.clear();mouseGestureWheel=0;mouseWheelOnly=false;
+  };
+  auto recenterMouseWindow=[&] {
+    cancelMouseGesture();
+    if(auto *panel=mousePanel(mouseSelectedKey))if(panel->overlay.recenter()) {
+      panel->pendingRecenter=false;panel->overlay.apply();panel->leaveWall();panel->savePose();
+      mousePointer.depth=panel->overlay.placement.distance;
+    }
+    mousePointer.recenter(mouseHead.mDeviceToAbsoluteTracking);
+  };
   // FW-15 focus: the Mac keyboard's last key, a trackpad button held, and
   // the window whose gaze highlight the helper was last told about.
   TypingWatch typing;
@@ -1410,6 +1493,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       bool move = false;
       switch (c.kind) {
       case ContentCommand::Focus:
+        if(c.intent=="gaze" && mouseWasActive)mouseGazeRestore.requested(c.key,c.token,mousePointer.sequence);
+        else mouseGazeRestore.token=0;
         body = "{\"t\":\"focus\",\"u\":" + number(c.u) + ",\"v\":" + number(c.v) + ",\"intent\":" +
             jsonString(c.intent) + ",\"deliberate\":" + (c.deliberate ? "true" : "false");
         break;
@@ -2283,7 +2368,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       try {
         unsigned hands = (handOwner[0] == path ? 1u : 0u) | (handOwner[1] == path ? 2u : 0u);
         unsigned revealHands = (revealOwner[0] == path ? 1u : 0u) | (revealOwner[1] == path ? 2u : 0u);
-        if (!panel.tick(false, false, hands, spatial.spatial && spatial.open, revealHands)) {
+        if (!panel.tick(false, false, mouseWasActive ? 0 : hands, spatial.spatial && spatial.open, mouseWasActive ? 0 : revealHands)) {
           panel.finish();
           focus.remove(entry.spec.key); focusRecency.erase(entry.spec.key); entry.panel.reset(); continue;
         }
@@ -2309,7 +2394,17 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       auto &panel = *e.panel;
       panel.refreshInputGeometry();
       for (const auto &event : panel.pipe.takeInputEvents()) switch (event.kind) {
-        case Pipeline::InputEvent::Ack: content.acknowledge(e.spec.key, event.token, event.ok); break;
+        case Pipeline::InputEvent::Ack: {
+          const bool restore=mouseGazeRestore.acknowledge(e.spec.key,event.token,mousePointer.sequence,
+              mouseControl?mouseControl->latestSequence():0);
+          content.acknowledge(e.spec.key,event.token,event.ok);
+          if(restore && mouseWasActive && event.cursorRestored && !content.buttonHeld() && !mouseGesture.active) {
+            auto point=panel.overlay.panelPoint((event.u-.5f)*panel.overlay.placement.width,
+                (.5f-event.v)*panel.overlay.panelHeight(),pictureDepth+.002f);
+            for(int r=0;r<3;++r)mousePointer.point[r]=point.m[r][3];
+          }
+          break;
+        }
         case Pipeline::InputEvent::Refused: content.refused(e.spec.key); break;
         case Pipeline::InputEvent::Physical: content.yieldToPhysical(); break;
         case Pipeline::InputEvent::Unfocused: content.focusLost(e.spec.key); break;
@@ -2332,6 +2427,219 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       }
     }
     for (const auto &key : content.takeConfirmed()) confirmFocus(key);
+    // The dedicated socket wakes independently of video. The render owner
+    // consumes its newest absolute motion every frame, preserving edge order.
+    mouseHead = {};
+    if(session->noVR){mouseHead.bPoseIsValid=true;mouseHead.mDeviceToAbsoluteTracking=spatialIdentity();}
+    else session->system->GetDeviceToAbsoluteTrackingPose(ETrackingUniverseOrigin_TrackingUniverseStanding,0,&mouseHead,1);
+    Endpoint mouseEndpoint;
+    std::string bindings="[";
+    int mouseWindows=0;
+    for(auto &[path,e]:entries)if(e.panel && e.spec.role==PanelRole::Window && !e.panel->endpoint.workspaceTicket.empty()) {
+      auto &panel=*e.panel;
+      if(mouseEndpoint.workspaceTicket.empty()){mouseEndpoint=panel.endpoint;mouseExitSession=e.spec.session;mouseExitDir=e.spec.requestDir;}
+      ++mouseWindows;
+      if(!panel.ready || !panel.pipe.inputNegotiated || !panel.inputGeometryValid)continue;
+      if(bindings.size()>1)bindings+=",";
+      bindings+="{\"src\":"+jsonString(panel.endpoint.source)+",\"stamp\":"+jsonString(panel.endpoint.admissionStamp)+
+          ",\"generation\":"+jsonString(e.spec.generation)+",\"inputEpoch\":"+jsonString(panel.pipe.currentInputEpoch())+"}";
+    }
+    bindings+="]";
+    if(!mouseEndpoint.workspaceTicket.empty() && mouseEndpoint.workspaceTicket!=mouseUsedTicket) {
+      if(mouseControl)mouseControl->stop();
+      dispatchContent(content.cancelAll());cancelMouseGesture();
+      mouseControl=std::make_unique<WorkspaceControlClient>();mouseUsedTicket=mouseEndpoint.workspaceTicket;
+      mouseControl->start(mouseEndpoint);mouseExitRequested=false;
+    }
+    if(mouseControl) {
+      mouseControl->hostFrame(now);
+      if(!mouseWindows || (mouseControl->active && !mouseHead.bPoseIsValid)){mouseControl->stop();requestMouseExit();}
+      if(mouseControl->failed)requestMouseExit();
+
+    }
+    const bool mouseActive=mouseControl && mouseControl->active && mouseHead.bPoseIsValid;
+    if(mouseWasActive && !mouseActive) {
+      dispatchContent(content.cancelAll());cancelMouseGesture();mouseDownKey.clear();
+      if(!session->noVR)session->hideCursor(&mousePointer);
+    }
+    if(mouseActive && !mouseWasActive) {
+      dispatchContent(content.cancelAll());
+      auto epochs=mouseControl->epochs();mousePointer.begin(epochs.first,epochs.second,mouseHead.mDeviceToAbsoluteTracking);
+      mouseArrange=false;mouseMenuOpen=false;mouseChoosing=false;mouseDownKey.clear();
+    }
+    mouseWasActive=mouseActive;
+    auto refreshMouseRay = [&] {
+      const auto &head=mouseHead.mDeviceToAbsoluteTracking;
+      float length=0;
+      for(int r=0;r<3;++r){mouseRay.origin[r]=head.m[r][3];mouseRay.direction[r]=mousePointer.point[r]-head.m[r][3];length+=mouseRay.direction[r]*mouseRay.direction[r];}
+      length=std::sqrt(length);
+      if(length>.001f)for(auto &v:mouseRay.direction)v/=length;
+      float local[3]{};
+      for(int c=0;c<3;++c)for(int r=0;r<3;++r)local[c]+=head.m[r][c]*(mousePointer.point[r]-head.m[r][3]);
+      float left=-1,right=1,top=-1,bottom=1;
+      if(!session->noVR)session->system->GetProjectionRaw(EVREye_Eye_Left,&left,&right,&top,&bottom);
+      const float forward=-local[2];
+      mouseOffscreen=forward<=.01f || local[0]/forward<std::min(left,right)*.94f || local[0]/forward>std::max(left,right)*.94f ||
+          -local[1]/forward<std::min(top,bottom)*.94f || -local[1]/forward>std::max(top,bottom)*.94f;
+    };
+    auto layoutMouseUi = [&] {
+      if(!mouseView)return;
+      if(!mousePanel(mouseSelectedKey))mouseSelectedKey=focus.active;
+      if(!mousePanel(mouseSelectedKey))for(auto &[path,e]:entries)if(e.panel&&e.spec.role==PanelRole::Window){mouseSelectedKey=e.spec.key;break;}
+      auto *selected=mousePanel(mouseSelectedKey);
+      auto catalog=mouseControl?mouseControl->catalog():std::pair<std::vector<WorkspaceWindowChoice>,std::string>{};
+      std::vector<std::string> choices;for(const auto &choice:catalog.first)choices.push_back(choice.label);
+      if(mouseChoicePage*4>=choices.size())mouseChoicePage=0;
+      mouseView->layout(mouseHead.mDeviceToAbsoluteTracking,mouseArrange,mouseMenuOpen,mouseGesture.active,mouseActive,
+          selected?mouseSelectedKey:"",selected?&selected->overlay.placement:nullptr,selected?selected->overlay.panelHeight():1,
+          selected?selected->overlayName:"",selected&&selected->pipe.budgetLimited,mouseChoosing,choices,mouseChoicePage,catalog.second);
+    };
+    if(mouseWindows && mouseHead.bPoseIsValid && mouseControl && !mouseControl->failed) {
+      try {
+        if(!mouseView)mouseView=std::make_unique<WorkspaceMouseView>(session);
+        layoutMouseUi();mouseView->render(mouseUiHot,false,mouseHead.mDeviceToAbsoluteTracking,mousePointer.point);
+        mouseRecoveryReady=!session->noVR; // a diagnostic window is not headset recovery readiness
+      }catch(const std::exception &error){fprintf(stderr,"[native-host] mouse controls: %s\n",error.what());mouseRecoveryReady=false;mouseControl->stop();}
+    }else {mouseRecoveryReady=false;if(mouseView)mouseView->hide();}
+    if(mouseControl && bindings!="[]")mouseControl->bind(bindings,mouseRecoveryReady && mouseHead.bPoseIsValid);
+    auto pickMouseContent = [&] {
+      ContentHit result;
+      if(mouseOffscreen || mouseArrange || mouseGesture.active || mouseMenuOpen || (mouseView&&!mouseView->hit(mouseRay).first.empty()))return result;
+      if(!mouseDownKey.empty()) {
+        if(auto *panel=mousePanel(mouseDownKey)) {
+          auto hit=surfacePick(mouseRay,{mouseDownKey,panel->overlay.placement,panel->overlay.panelHeight()},2.f);
+          if(hit)result={ContentConsumer::Content,mouseDownKey,false,std::clamp(hit.u,0.f,1.f),std::clamp(hit.v,0.f,1.f)};
+          else if(mouseContent.key==mouseDownKey)result=mouseContent;
+        }
+        return result;
+      }
+      auto hit=pickPanel(mouseRay,auxiliaries);
+      if(hit) {
+        if(auto *panel=mousePanel(hit.key);panel && hit.content && panel->inputContent(hit.u,hit.v))
+          return ContentHit{ContentConsumer::Content,hit.key,true,hit.u,hit.v};
+        result.consumer=ContentConsumer::Ui;return result;
+      }
+      hit=pickPanel(mouseRay,surfaces);
+      if(hit)if(auto *panel=mousePanel(hit.key);panel && hit.content && panel->inputContent(hit.u,hit.v))
+        result={ContentConsumer::Content,hit.key,false,hit.u,hit.v};
+      return result;
+    };
+    if(mouseActive) {
+      refreshMouseRay();
+      for(const auto &packet:mouseControl->take()) {
+        auto epochs=mouseControl->epochs();
+        if(!mousePointer.motion(epochs.first,epochs.second,packet.sequence,packet.x,packet.y,mouseHead.mDeviceToAbsoluteTracking,now))continue;
+        if(packet.kind!="motion")mousePointer.lastMotionMs=now;
+        refreshMouseRay();
+        if(packet.kind=="down" && mouseOffscreen) {
+          dispatchContent(content.cancelAll());cancelMouseGesture();mouseDownKey.clear();
+          mousePointer.recenter(mouseHead.mDeviceToAbsoluteTracking);refreshMouseRay();continue;
+        }
+        if(packet.kind=="down" && packet.button==2 && mouseGesture.active) {
+          cancelMouseGesture();continue;
+        }
+        auto ui=mouseView?mouseView->hit(mouseRay):std::pair<std::string,std::string>{};
+        mouseUiHot=ui.first;
+        if(mouseGesture.active && (packet.kind=="up" || (mouseWheelOnly && packet.kind=="down")) && packet.button==0 &&
+           (ui.first=="cancel"||ui.first=="recenter"||ui.first=="stop")) {
+          cancelMouseGesture();dispatchContent(content.cancelAll());mouseDownKey.clear();
+          if(ui.first=="recenter")recenterMouseWindow();
+          if(ui.first=="stop"){mouseControl->stop();mouseView->hide();requestMouseExit();break;}
+          mouseMenuOpen=false;continue;
+        }
+        if(!mouseGesture.active && mouseDownKey.empty() && ui.first.empty()) {
+          auto hovered=pickPanel(mouseRay,surfaces);
+          if(hovered)mouseSelectedKey=hovered.key;
+          layoutMouseUi();
+          ui=mouseView?mouseView->hit(mouseRay):std::pair<std::string,std::string>{};mouseUiHot=ui.first;
+        }
+        if(packet.kind=="down" && packet.button==2 && (mouseArrange||mouseMenuOpen)) {
+          dispatchContent(content.cancelAll());cancelMouseGesture();mouseMenuOpen=false;mouseChoosing=false;mouseDownKey.clear();continue;
+        }
+        if(!ui.first.empty() && !mouseGesture.active && mouseDownKey.empty()) {
+          mousePointer.lastMotionMs=now;
+          const auto &action=ui.first;
+          if(packet.kind=="down" && packet.button==0) {
+            dispatchContent(content.cancelAll());
+            if(action=="work"||action=="arrange"){cancelMouseGesture();mouseArrange=action=="arrange";mouseMenuOpen=false;mouseChoosing=false;}
+            else if(action=="workspace"){mouseMenuOpen=!mouseMenuOpen;if(!mouseMenuOpen)mouseChoosing=false;}
+            else if(action=="add-window"||action=="catalog-refresh"){mouseChoosing=true;mouseMenuOpen=true;mouseChoicePage=0;mouseControl->requestWindows();}
+            else if(action=="catalog-back")mouseChoosing=false;
+            else if(action=="catalog-prev"){if(mouseChoicePage) --mouseChoicePage;}
+            else if(action=="catalog-next")++mouseChoicePage;
+            else if(action.rfind("admit:",0)==0){auto catalog=mouseControl->catalog();const size_t index=std::stoul(action.substr(6));if(index<catalog.first.size())mouseControl->admit(catalog.first[index].selection); }
+            else if(action=="cancel"){cancelMouseGesture();mouseMenuOpen=false;mouseChoosing=false;}
+            else if(action=="recenter"){recenterMouseWindow();mouseMenuOpen=false;}
+            else if(action=="stop"){cancelMouseGesture();mouseControl->stop();mouseView->hide();requestMouseExit();break;}
+            else if(auto *panel=mousePanel(ui.second)) {
+              mouseSelectedKey=ui.second;
+              if(action=="move"||action=="depth"||action.rfind("corner:",0)==0) {
+                const bool corner=action.rfind("corner:",0)==0;
+                const int sx=corner&&action[7]=='-'?-1:1,sy=corner&&action.find(":-",8)!=std::string::npos?-1:1;
+                auto kind=corner?MousePlacementGesture::Kind::Resize:action=="depth"?MousePlacementGesture::Kind::Depth:MousePlacementGesture::Kind::Move;
+                for(int r=0;r<3;++r)mouseGestureOrigin[r]=mouseRay.origin[r];
+                if(mouseGesture.begin(kind,panel->overlay.placement,mouseHead.mDeviceToAbsoluteTracking,gestureRay(),panel->overlay.panelHeight(),sx,sy)) {
+                  panel->mousePlacementActive=true;mouseGestureKey=ui.second;mouseGestureWheel=0;mouseWheelOnly=false;
+                }
+              }else {
+                if(action=="rotate-left"||action=="rotate-right")panel->overlay.rotate(action=="rotate-left"?-5:5,0,0);
+                else if(action=="curve-less"||action=="curve-more")panel->overlay.setCurvature(std::clamp(panel->overlay.placement.curvature+(action=="curve-less"?-.05f:.05f),0.f,1.f));
+                panel->leaveWall();panel->savePose();
+              }
+            }
+          }else if(packet.kind=="wheel"&&action=="depth") {
+            mouseWheelRay=mouseRay;
+            for(int r=0;r<3;++r)mouseGestureOrigin[r]=mouseRay.origin[r];
+            if(auto *panel=mousePanel(ui.second))if(mouseGesture.begin(MousePlacementGesture::Kind::Depth,panel->overlay.placement,
+                mouseHead.mDeviceToAbsoluteTracking,mouseRay,panel->overlay.panelHeight())) {
+              panel->mousePlacementActive=true;mouseGestureKey=ui.second;mouseGestureWheel=packet.dy;mouseWheelOnly=true;mouseWheelAt=now;
+              panel->overlay.placement=mouseGesture.update(gestureRay(),mouseGestureWheel);panel->overlay.apply();
+            }
+          }
+          layoutMouseUi();continue;
+        }
+        mouseContent=pickMouseContent();
+        if(packet.kind=="motion" && mouseContent.consumer==ContentConsumer::Content && !content.buttonHeld()) {
+          if(auto *panel=mousePanel(mouseContent.key)) {
+            auto point=panel->overlay.panelPoint((mouseContent.u-.5f)*panel->overlay.placement.width,
+                (.5f-mouseContent.v)*panel->overlay.panelHeight(),pictureDepth+.002f);
+            float distance=0;
+            for(int r=0;r<3;++r){mousePointer.point[r]=point.m[r][3];const float d=mousePointer.point[r]-mouseRay.origin[r];distance+=d*d;}
+            mousePointer.depth=std::clamp(std::sqrt(distance),.4f,10.f);refreshMouseRay();
+          }
+        }
+        if(mouseGesture.active) {
+          if(packet.kind=="wheel"){mouseGestureWheel+=packet.dy;mouseWheelAt=now;}
+          if(auto *panel=mousePanel(mouseGestureKey)) {
+            panel->overlay.placement=mouseGesture.update(gestureRay(),mouseGestureWheel);panel->overlay.apply();
+            if(packet.kind=="up" && packet.button==0 && !mouseWheelOnly) {
+              panel->overlay.placement=mouseGesture.finish(gestureRay(),mouseGestureWheel);panel->mousePlacementActive=false;panel->leaveWall();panel->savePose();mouseGestureKey.clear();
+            }
+          } else cancelMouseGesture();
+          continue;
+        }
+        if(packet.kind=="down") {
+          dispatchContent(content.mouseButton(mouseContent,packet.button,true,now));
+          if(content.buttonHeld())mouseDownKey=mouseContent.key;
+        } else if(packet.kind=="up") {
+          dispatchContent(content.mouseButton(mouseContent,packet.button,false,now));
+          if(!content.buttonHeld())mouseDownKey.clear();
+        } else if(packet.kind=="wheel")dispatchContent(content.mouseWheel(mouseContent,packet.dx,packet.dy,now));
+        else dispatchContent(content.mouseHover(mouseContent,now));
+      }
+      if(mouseGesture.active && mouseWheelOnly && now-mouseWheelAt>=250) {
+        if(auto *panel=mousePanel(mouseGestureKey)) {
+          panel->overlay.placement=mouseGesture.finish(gestureRay(),mouseGestureWheel);panel->mousePlacementActive=false;panel->overlay.apply();panel->leaveWall();panel->savePose();
+        }else cancelMouseGesture();
+        mouseGestureKey.clear();mouseWheelOnly=false;
+      }
+      mouseContent=pickMouseContent();dispatchContent(content.mouseHover(mouseContent,now));
+      if(mouseView && mouseControl->active) {
+        layoutMouseUi();mouseUiHot=mouseOffscreen?"":mouseView->hit(mouseRay).first;
+        try{mouseView->render(mouseUiHot,mouseOffscreen,mouseHead.mDeviceToAbsoluteTracking,mousePointer.point);}
+        catch(...){mouseControl->stop();mouseRecoveryReady=false;}
+      }
+    }
     // What each hand's laser is on, in the host's render and routing order.
     auto contentHit = [&](int hand) {
       ContentHit result;
@@ -2364,7 +2672,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         result = {ContentConsumer::Content, it->second.spec.key, false, pick.u, pick.v};
       return result;
     };
-    if (spatial.spatial) {
+    if (spatial.spatial && !mouseActive) {
       ContentFrame frame;
       frame.now = now; frame.menuOpen = openMenu; frame.activeWindow = focus.active;
       for (int hand = 0; hand < 2; ++hand) {
@@ -2377,7 +2685,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         sample.hit = contentHit(hand);
       }
       dispatchContent(content.update(frame));
-    } else
+    } else if(!mouseActive)
       dispatchContent(content.cancelAll());
     EyeRay ray = wallPriorityRay;
     bool eye = wallPriorityIsEye;
@@ -2416,7 +2724,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     guards.typing = typing.recent(now);
     guards.physicalHeld = physicalHeld;
     guards.controllerHeld = content.buttonHeld();
-    guards.pointerOwned = content.pointerOwned();
+    guards.pointerOwned = content.pointerOwned() || (mouseActive && (mouseArrange || mouseMenuOpen ||
+        !mousePointer.gazeMayDwell(now,content.buttonHeld(),openMenu,mouseGesture.active)));
     guards.launcherOpen = launcherView.open;
     guards.switcherOpen = spatial.open;
     guards.placing = shelfMover.dragging();
@@ -2452,7 +2761,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     // resting laser is not a look), on that window's own stream: its first
     // trackpad click there only focuses it. Refreshed while it lasts.
     {
-      const std::string lit = spatial.spatial && eye ? focus.highlighted : std::string();
+      const std::string lit = mouseActive && mouseContent.consumer==ContentConsumer::Content && !mouseContent.auxiliary
+          ? mouseContent.key : spatial.spatial && eye ? focus.highlighted : std::string();
       auto sendHighlight = [&](const std::string &key, bool on) {
         for (auto &[path, e] : entries)
           if (e.panel && e.spec.key == key && e.spec.role == PanelRole::Window && e.panel->pipe.highlightNegotiated)
@@ -2473,9 +2783,18 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     refreshWallBudget();
     session->reconcileOptionalWalls();
     session->flushWallTransitionLogs();
+    if(mouseActive && !mouseContent.key.empty() && !mouseContent.auxiliary && mouseContent.key!=focus.active)
+      focus.feedback[mouseContent.key].glow=1;
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window)
         e.panel->overlay.focusFeedback = focus.feedback[e.spec.key];
+    if(mouseActive) {
+      if(!session->noVR && !mouseOffscreen) {
+        auto pose=mouseHead.mDeviceToAbsoluteTracking;
+        for(int r=0;r<3;++r)pose.m[r][3]=mousePointer.point[r];
+        session->showCursor(&mousePointer,pose,220,true);
+      } else if(!session->noVR)session->hideCursor(&mousePointer);
+    }
     lastFrame = now;
     if (spatial.open && eye && !auxiliaryHit(ray)) {
       PanelPick pick;
@@ -2504,6 +2823,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
   if (interrupted) reason = "signal-" + std::to_string(interrupted);
+  if(mouseControl)mouseControl->stop();
+  cancelMouseGesture();
   dispatchContent(content.cancelAll());
   for (auto &[path, entry] : entries) if (entry.panel) entry.panel->finish(reason);
   entries.clear();
@@ -2589,6 +2910,10 @@ int main(int argc, char **argv) {
         pocRewrite = v == "on";
       } else if (a == "--render-scene") {
         return renderSceneCommand(argc, argv, i);
+      } else if (a == "--render-workspace-mouse") {
+        const auto kind=value(),out=value();LauncherPainter painter;
+        auto picture=kind=="work"?workspaceDock(false,true,false,true):kind=="arrange"?workspaceDock(true,true,true,true):kind=="beacon"?workspaceBeacon("→"):kind=="picker"?workspaceDock(false,true,false,true,true,{"Terminal · Build output","Notes · Project notes","Safari · Reference","Preview · Draft"},0,"Choose one window to add"):workspaceFrame(1.6f,"Terminal — build output",true,true);
+        painter.workspacePixels(picture,"",out);return 0;
       } else if (a == "--render-chrome") {
         // Diagnostic: --render-chrome rest|all|hover|held|close|close-held OUT.ppm
         // draws the window chrome (bezel and controls) for a 1.2 m window, flat.

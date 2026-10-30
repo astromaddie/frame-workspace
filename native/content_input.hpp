@@ -11,6 +11,7 @@
 #include <deque>
 #include <string>
 #include <vector>
+#include <utility>
 
 namespace fw {
 
@@ -83,6 +84,43 @@ public:
       prevSecondary[h] = f.hand[h].valid && f.hand[h].secondary;
     }
     return std::exchange(out, {});
+  }
+
+  // Captured mouse entry points share this arbiter's focus barrier, pending
+  // edges and release validation. Hover alone never changes Mac focus.
+  std::vector<ContentCommand> mouseHover(const ContentHit &hit, double now) {
+    last = now; expireWait(now);
+    if (hit.consumer == ContentConsumer::Content && (held < 0 || hit.key == downKey)) {
+      lastKey = hit.key; lastU = hit.u; lastV = hit.v; hasPoint = true;
+      if (phase == Phase::Idle && ready == hit.key && !heldDead) move(hit.key, hit.u, hit.v);
+    }
+    if (held >= 0 && !heldDead && !downKey.empty() && now - lastKeepalive >= keepaliveMs) {
+      lastKeepalive = now; push({ContentCommand::Keepalive, downKey});
+    }
+    return drain();
+  }
+  std::vector<ContentCommand> mouseButton(const ContentHit &hit, int button, bool down, double now) {
+    if (button != 0 && button != 2) return {};
+    last = now; expireWait(now);
+    const int slot = button == 0 ? 0 : 1;
+    if (down) {
+      ContentHandSample sample; sample.valid = true; sample.hit = hit;
+      if (!latch[0][slot].active) press(0, slot, button, sample, now);
+    } else { release(0, slot, button, now); if (held < 0) owner = -1; }
+    return drain();
+  }
+  std::vector<ContentCommand> mouseWheel(const ContentHit &hit, float dx, float dy, double now) {
+    last = now; expireWait(now);
+    if (held >= 0 || hit.consumer != ContentConsumer::Content || !std::isfinite(dx) || !std::isfinite(dy)) return drain();
+    lastKey = hit.key; lastU = hit.u; lastV = hit.v; hasPoint = true;
+    ContentCommand wheel{ContentCommand::Wheel, hit.key};
+    wheel.dx = dx; wheel.dy = dy; wheel.u = hit.u; wheel.v = hit.v;
+    if (phase == Phase::Idle && ready == hit.key) { move(hit.key, hit.u, hit.v); push(wheel); }
+    else {
+      pending.push_back(wheel);
+      if (phase == Phase::Idle) request(hit.key, "pointer", true, now);
+    }
+    return drain();
   }
 
   // A Focus or Barrier answered by the helper.

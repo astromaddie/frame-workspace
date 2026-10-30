@@ -129,7 +129,7 @@ def run(options):
             if not permissions.get("screen") or not permissions.get("accessibility"):
                 report["unverified"].append("Live run blocked by helper Screen Recording/Accessibility preflight; no prompt requested")
                 return report
-            code, spatial = call("/spatial/start", "POST")
+            code, spatial = call("/spatial/start", "POST", policy="legacy-all")
             assert code == 200, spatial
             assert len(spatial["windows"]) == 3, spatial
             assert {w["pid"] for w in spatial["windows"]} == {pid}, spatial
@@ -200,7 +200,7 @@ def run(options):
             report["verified"]["restoredFixtureFrames"] = restored
             # Crash only this owned helper, then exercise startup restoration
             # with the same fixture PID and persisted originals.
-            code, restarted = call("/spatial/start", "POST")
+            code, restarted = call("/spatial/start", "POST", policy="legacy-all")
             assert code == 200, restarted
             helper.kill()
             helper.wait(timeout=10)

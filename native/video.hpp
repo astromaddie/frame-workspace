@@ -159,7 +159,7 @@ inline bool h264HasSpsAndPps(const std::vector<uint8_t> &bytes) {
 struct Pipeline {
   const std::string decoderRequested;
   const std::string conversionRequested;
-  std::atomic<bool> decoderActive{false};
+  std::atomic<bool> decoderActive{false}, budgetLimited{false};
   std::atomic<bool> streamStill{false}, decoderSessionOpen{false};
   std::atomic<const char *> conversionActive{"pending"};
   std::atomic<int> conversionFallbacks{0}, decoderPixelFormat{-1},
@@ -495,6 +495,8 @@ struct Pipeline {
     enum Kind { Ack, Refused, Physical, Remote, Focused, Unfocused, Released, Reset, Typing, PhysicalHeld } kind = Ack;
     uint64_t token = 0;
     bool ok = false;
+    bool cursorRestored = false;
+    float u = 0, v = 0;
   };
   static constexpr size_t maxInputQueue = 64, maxInputEvents = 64;
   std::atomic<bool> inputNegotiated{false};
@@ -511,6 +513,7 @@ struct Pipeline {
   // `body` is the message without its closing brace; the network thread adds
   // the epoch and sequence. False: not negotiated, or the queue is full (the
   // caller cancels and releases, never dropping an edge silently).
+  std::string currentInputEpoch() { std::lock_guard<std::mutex> lock(outMutex); return inputEpoch; }
   bool sendInput(std::string body, bool move = false, uint64_t token = 0) {
     {
       std::lock_guard<std::mutex> l(outMutex);
@@ -700,7 +703,9 @@ struct Pipeline {
           } else {
             auto j = json(std::string(bytes.begin(), bytes.end()));
             auto t = str(j, "t");
-            if (t == "surface" && acceptsSurfaces) {
+            if (t == "stats") {
+              if(auto budget=field(j,"budget")) { json_object *limited=nullptr;budgetLimited=json_object_object_get_ex(budget,"limited",&limited)&&json_object_get_boolean(limited); }
+            } else if (t == "surface" && acceptsSurfaces) {
               try {
                 auto message = SurfaceMessage::parse(std::string(bytes.begin(), bytes.end()));
                 message.received = receivedAt;
@@ -728,7 +733,10 @@ struct Pipeline {
                 const bool ok = flag(j, "ok");
                 if (!ok) ++inputRefusals;
                 if (it != inputTokens.end()) {
-                  inputEvent({InputEvent::Ack, it->second, ok});
+                  InputEvent event{InputEvent::Ack, it->second, ok};
+                  const double u=num(j,"cursorU",-1),v=num(j,"cursorV",-1);
+                  event.cursorRestored=ok && u>=0 && u<=1 && v>=0 && v<=1;
+                  event.u=float(u);event.v=float(v);inputEvent(event);
                   inputTokens.erase(it);
                 } else if (!ok)
                   inputEvent({InputEvent::Refused});

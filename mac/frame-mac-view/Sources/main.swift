@@ -1105,8 +1105,18 @@ final class Session: NativeInputClient {
             onNativeFocus(wid, intent, u, v, point, content) { [weak self] observed in
                 guard let self else { return }
                 let ok = observed == .confirmed || observed == .modal
-                self.nativeAck(q, ok: ok, reason: ok ? nil : observed == nil ? .source : .focus,
-                               extra: ["focusedSrc": self.source.key, "observed": observed?.rawValue ?? "unavailable"])
+                var extra: [String: Any] = ["focusedSrc": self.source.key, "observed": observed?.rawValue ?? "unavailable"]
+                if ok, intent == .gaze {
+                    self.lock.lock(); let geometry = self.geometryBook.current; self.lock.unlock()
+                    if let g = geometry, g.rect.width > 0, g.rect.height > 0 {
+                        let frame = self.capture.frameRect
+                        let rect = g.rect.offsetBy(dx: frame.minX - g.frame.minX, dy: frame.minY - g.frame.minY)
+                        let cursor = Input.cursorLocation
+                        extra["cursorU"] = Double(g.contentUV.minX + min(max((cursor.x - rect.minX) / rect.width, 0), 1) * g.contentUV.width)
+                        extra["cursorV"] = Double(g.contentUV.minY + min(max((cursor.y - rect.minY) / rect.height, 0), 1) * g.contentUV.height)
+                    }
+                }
+                self.nativeAck(q, ok: ok, reason: ok ? nil : observed == nil ? .source : .focus, extra: extra)
             }
         case .menubar, .status, .menu:
             // The app keeps its focus, so its menus stay the ones shown.
@@ -1231,6 +1241,7 @@ final class Agent {
     private let activity = StreamActivityRegistry()
     private let spatialStreams = SpatialStreamState()
     private let spatialMode = SpatialCoordinator()
+    private lazy var workspaceMouse = WorkspaceMouseControl(fence: spatialMode.focus.fence)
     private let cursorMemory = FocusCursorMemory()
     private let apps = MacApps()
     private let videoBudget = SharedVideoBudget()
@@ -1306,6 +1317,38 @@ final class Agent {
         // The trackpad's own activity, seen by the Spatial fence tap.
         spatialMode.focus.fence.onExternal = { NativeInputCoordinator.shared.external($0) }
         spatialMode.focus.fence.onTyping = { NativeInputCoordinator.shared.typed() }
+        workspaceMouse.windowCatalog = { [weak self] in
+            guard let self else { return [] }
+            let admitted = Set(self.spatialMode.admissionJSON().compactMap { $0["stamp"] as? String })
+            return self.spatialMode.selectionJSON().filter { !admitted.contains($0["stamp"] as? String ?? "") }.prefix(128).map { row in
+                var result = row
+                result["title"] = String((row["title"] as? String ?? "Mac window").prefix(160))
+                result["app"] = String((row["app"] as? String ?? "App").prefix(80))
+                return result
+            }
+        }
+        workspaceMouse.admitWindow = { [weak self] window in self?.spatialMode.select([window], adding: true) == true }
+        workspaceMouse.validateBindings = { [weak self] bindings in
+            guard let self, self.spatialMode.isRunning else { return false }
+            let windows = self.spatialMode.windowsJSON()
+            self.lock.lock(); let sessions = Array(self.sessions.values); self.lock.unlock()
+            var seen = Set<String>()
+            return bindings.count <= 32 && bindings.allSatisfy { binding in
+                guard let source = binding["src"] as? String, seen.insert(source).inserted,
+                      let stamp = binding["stamp"] as? String,
+                      let generation = binding["generation"] as? String, !generation.isEmpty,
+                      let epoch = binding["inputEpoch"] as? String,
+                      windows.contains(where: { $0["src"] as? String == source && $0["stamp"] as? String == stamp })
+                else { return false }
+                return sessions.contains { !$0.isStopped && $0.source.key == source && $0.inputEpoch == epoch }
+            }
+        }
+        workspaceMouse.onCaptureChanged = { [weak self] in
+            guard let self else { return }
+            NotificationCenter.default.post(name: spatialFocusChanged, object: self.spatialMode.focus)
+        }
+        workspaceMouse.onStop = { [weak self] in self?.recoverMouseWorkspace() }
+
         // Eyes highlight, an action commits (FW-15): the first trackpad click
         // while the eyes highlight another window was swallowed; it focuses
         // that window and restores its remembered cursor, nothing more.
@@ -1580,7 +1623,18 @@ final class Agent {
         group.notify(queue: .main) { completion(sources.allSatisfy(\.hasCompletedStop)) }
     }
 
-    private func startSpatial(_ c: HTTPConnection) {
+    private func startSpatial(_ req: Request, _ c: HTTPConnection) {
+        let selectionOK: Bool
+        if req.query["policy"] == "legacy-all", req.query["windows"] == nil {
+            selectionOK = DispatchQueue.main.sync { self.spatialMode.selectLegacyAll() }
+        } else {
+            guard let raw = req.query["windows"], let data = raw.data(using: .utf8),
+                  let selected = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return c.respond(400, json: ["error": "Choose individual stamped windows before Start"])
+            }
+            selectionOK = DispatchQueue.main.sync { self.spatialMode.select(selected) }
+        }
+        guard selectionOK else { return c.respond(409, json: ["error": "Window selection is stale or workspace is active"]) }
         lock.lock()
         guard !quitting else { lock.unlock(); return c.respond(409, json: ["state": "error", "error": "helper is shutting down", "removed": false]) }
         if spatialAdmissionBlocked {
@@ -1622,7 +1676,23 @@ final class Agent {
         }
     }
 
+    /// Local bounded recovery does not wait for the companion's job queue.
+    private func recoverMouseWorkspace() {
+        lock.lock()
+        guard !spatialAdmissionBlocked, spatialMode.isRunning else { lock.unlock(); return }
+        spatialAdmissionBlocked = true; spatialTransition &+= 1
+        let all = Array(sessions.values)
+        lock.unlock()
+        for session in all { Input.releaseAll(owner: session.id) }
+        revokeAndStopSpatialStreams { _ in
+            self.spatialMode.stop(afterStreams: { $0() }) { _, _, removed in
+                self.lock.lock(); if removed { self.spatialAdmissionBlocked = false }; self.lock.unlock()
+            }
+        }
+    }
+
     private func stopSpatial(_ c: HTTPConnection) {
+        spatialMode.focus.fence.releaseCapture()
         lock.lock()
         spatialTransition &+= 1
         let transition = spatialTransition
@@ -1651,6 +1721,7 @@ final class Agent {
     }
 
     func handle(_ req: Request, _ c: HTTPConnection) {
+        if req.method == "GET", req.path == "/workspace/control" { return workspaceMouse.accept(req, c) }
         // Open to anything that reaches the port: a liveness check for the
         // tunnel, and the viewer page, which holds no secrets.
         switch (req.method, req.path) {
@@ -1698,11 +1769,14 @@ final class Agent {
             s["pointerShared"] = sharedPointer
             s["spatial"] = spatialMode.statusJSON()
             if let focused = cursorMemory.focusedSource { s["focusedSrc"] = focused }
+            if let hovered = spatialMode.focus.fence.capturedHover { s["hoveredSrc"] = hovered }
             lock.lock(); s["finished"] = Array(finished); lock.unlock()
             c.respond(json: s)
         case ("GET", "/windows"):
             c.respond(json: ["windows": windowsJSON(onScreenOnly: req.query["all"] != "1"),
                              "screen": CGPreflightScreenCaptureAccess()])
+        case ("GET", "/spatial/windows"):
+            c.respond(json: ["windows": spatialMode.selectionJSON()])
         case ("GET", "/spatial"):
             c.respond(json: spatialMode.statusJSON())
         case ("GET", "/displays"):
@@ -1724,8 +1798,28 @@ final class Agent {
             liveStreamsResponse(req, c)
         case ("POST", "/streams/policy"):
             streamsPolicyResponse(req, c)
+        case ("POST", "/workspace/control-ticket"):
+            DispatchQueue.main.async { c.respond(json: ["ticket": self.workspaceMouse.issueTicket(startRequested: req.query["start"] == "1")]) }
+        case ("POST", "/workspace/mouse/start"):
+            DispatchQueue.main.async {
+                let started = self.workspaceMouse.start()
+                c.respond(started ? 200 : 409, json: ["captured": started])
+            }
+        case ("POST", "/workspace/mouse/stop"):
+            DispatchQueue.main.async { self.workspaceMouse.stop(); c.respond(json: ["captured": false]) }
+        case ("POST", "/spatial/admit"):
+            guard let raw = req.query["windows"], let data = raw.data(using: .utf8),
+                  let selected = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return c.respond(400, text: "stamped windows required")
+            }
+            DispatchQueue.main.async {
+                guard self.spatialMode.select(selected, adding: true) else {
+                    return c.respond(409, text: "window selection changed")
+                }
+                c.respond(json: self.spatialMode.statusJSON())
+            }
         case ("POST", "/spatial/start"):
-            startSpatial(c)
+            startSpatial(req, c)
         case ("POST", "/spatial/stop"):
             stopSpatial(c)
         case ("POST", "/spatial/cover"):
@@ -1806,7 +1900,7 @@ final class Agent {
         case ("POST", "/apps/action"):
             apps.actionResponse(req, c)
         case ("GET", "/switcher"):
-            apps.switcherResponse(req, c)
+            apps.switcherResponse(req, c, extras: ["mouseHoveredSrc": spatialMode.focus.fence.capturedHover ?? ""])
         case ("POST", "/switcher"):
             apps.configureSwitcherResponse(req, c)
         case (_, "/launcher"), (_, "/launcher/keys"):

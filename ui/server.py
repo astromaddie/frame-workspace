@@ -2426,11 +2426,15 @@ def macview_action(body):
             w, h = body.get("w"), body.get("h")
             return macview.show(str(body.get("src") or ""), str(body.get("quality") or "balanced"),
                                 int(w) if w else None, int(h) if h else None)
+        if action == "workspace_admit":
+            return macview.admit_spatial_windows(body.get("windows"))
+        if action == "workspace_windows":
+            return macview.call("/spatial/windows")
         if action == "workspace_start":
             if "mode" in body and body["mode"] not in ("desktop", "spatial"):
                 raise Failure("Mode Must Be Desktop Or Spatial.", 400)
             return macview.start_workspace(str(body.get("preset") or "5120x1440"),
-                                           body.get("scale", 1), str(body.get("quality") or "sharp"), resume=True,
+                                           body.get("scale", 1), str(body.get("quality") or "sharp"), resume=True, windows=body.get("windows"),
                                            **({"mode": body["mode"]} if "mode" in body else {}))
         if action == "workspace_adjust":
             return macview.adjust_workspace(body["width"], body["distance"])

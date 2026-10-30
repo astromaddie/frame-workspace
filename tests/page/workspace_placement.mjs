@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 const src = readFileSync(new URL('../../ui/index.html', import.meta.url), 'utf8');
 const grab = name => src.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}\\n`))[0];
-const ids = [...src.matchAll(/id="(mv(?:Workspace|Placement|Width|Distance|Mode|Quality|Separate|Errors|Arrange|Viewer)[^"]*)"/g)].map(m=>m[1]);
+const ids = [...src.matchAll(/id="(mv(?:Workspace|Placement|Width|Distance|Mode|Quality|Separate|Errors|Arrange|Viewer|Mouse)[^"]*)"/g)].map(m=>m[1]);
 const dom = Object.fromEntries(ids.map(id=>[id, {disabled:false, dataset:{}, options:[], setAttribute(){}, parentElement:{}}]));
 const document = {querySelectorAll: () => []};
 let calls=[], resolve, reject;

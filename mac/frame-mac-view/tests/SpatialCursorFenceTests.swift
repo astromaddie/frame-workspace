@@ -27,6 +27,8 @@ private enum SpatialCursorFenceTests {
         expect(g.event(.down(0), tagged: false, nowMs: 0) == .pass, "no highlight: the click goes through")
         expect(g.event(.up(0), tagged: false, nowMs: 10) == .pass, "and its up")
         g.highlight("spatial:2", on: true, nowMs: 100, ttlMs: 1500)
+        expect(g.liveHighlight(nowMs: 1599) == "spatial:2", "hover remains leased")
+        expect(g.liveHighlight(nowMs: 1600) == nil, "expired hover cannot wake a stream")
         expect(g.event(.down(0), tagged: true, nowMs: 110) == .pass, "the helper's own clicks are never consumed")
         expect(g.event(.up(0), tagged: true, nowMs: 120) == .pass, "nor their ups")
         expect(g.highlighted == "spatial:2", "an injected click leaves the highlight alone")

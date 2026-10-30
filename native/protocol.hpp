@@ -88,7 +88,7 @@ inline std::string quote(const std::string &s) {
   return r;
 }
 struct Endpoint {
-  std::string host, source, ticket;
+  std::string host, source, ticket, workspaceTicket, admissionStamp;
   int port = 0, max = 4096, fps = 30;
   double bpp = .14;
   bool foveation = false;
@@ -148,6 +148,10 @@ inline Endpoint parseURL(std::string u) {
   }
   e.source = values["src"];
   e.ticket = values["t"];
+  e.workspaceTicket = values["workspaceTicket"];
+  e.admissionStamp = values["admissionStamp"];
+  if (e.workspaceTicket.size() > 128 || e.admissionStamp.size() > 128)
+    throw std::runtime_error("invalid workspace control identity");
   if (e.source.empty() || e.ticket.empty())
     throw std::runtime_error("missing viewer credentials");
   if (values.count("codec") && values["codec"] != "h264")

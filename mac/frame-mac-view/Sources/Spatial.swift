@@ -87,6 +87,7 @@ private final class SpatialWindowDiscovery {
 
     fileprivate func refresh() {
         guard Thread.isMainThread, active, let owner else { return }
+        owner.refreshLegacyAdmission()
         let ownPID = ProcessInfo.processInfo.processIdentifier
         let applications = NSWorkspace.shared.runningApplications.filter {
             $0.processIdentifier != ownPID && $0.activationPolicy == .regular &&
@@ -115,7 +116,7 @@ private final class SpatialWindowDiscovery {
     }
 
     private func eligible(_ info: WindowInfo) -> Bool {
-        SpatialCoordinator.isEligible(info)
+        owner?.isAdmitted(info) == true && SpatialCoordinator.isEligible(info)
     }
 
     private func record(_ info: WindowInfo) -> SpatialWindowRecord {
@@ -157,6 +158,86 @@ final class SpatialCoordinator {
     private var activePhysicalLayout: [SpatialLayoutDisplay]?
     private var restoreLayoutBaseline: [SpatialLayoutDisplay]?
     private var originals: [SpatialWindowIdentity: CGRect] = [:]
+    private var originalElements: [SpatialWindowIdentity: AXUIElement] = [:]
+    // Explicit individual-window admission. A stamp binds the selected AX object,
+    // process lifetime and window number; a sibling in the same app is never admitted.
+    private struct Admission {
+        let pid: pid_t
+        let launched: Date?
+        let element: AXUIElement
+        let stamp: String
+    }
+    private var catalog: [CGWindowID: Admission] = [:]
+    private var admitted: [CGWindowID: String] = [:]
+    private var legacyAll = false
+
+    func selectLegacyAll() -> Bool {
+        precondition(Thread.isMainThread)
+        guard stateValue == "stopped" else { return false }
+        legacyAll = true; refreshLegacyAdmission(); return true
+    }
+    fileprivate func refreshLegacyAdmission() {
+        guard legacyAll else { return }
+        let choices = selectionJSON()
+        admitted = Dictionary(uniqueKeysWithValues: choices.compactMap { row in
+            guard let id = row["id"] as? CGWindowID, let stamp = row["stamp"] as? String else { return nil }
+            return (id, stamp)
+        })
+    }
+
+    func selectionJSON() -> [[String: Any]] {
+        if !Thread.isMainThread { return DispatchQueue.main.sync { self.selectionJSON() } }
+        let candidates = WindowInfo.all(onScreenOnly: false).filter(Self.isEligible)
+        let alive = Set(candidates.map(\.id))
+        catalog = catalog.filter { alive.contains($0.key) }
+        return candidates.compactMap { info in
+            guard let ax = AXWindow(windowID: info.id, pid: info.pid) else { return nil }
+            let launched = NSRunningApplication(processIdentifier: info.pid)?.launchDate
+            if let old = catalog[info.id], old.pid == info.pid, old.launched == launched,
+               CFEqual(old.element, ax.element) {} else {
+                catalog[info.id] = Admission(pid: info.pid, launched: launched, element: ax.element,
+                                             stamp: UUID().uuidString)
+            }
+            return ["id": info.id, "pid": info.pid, "stamp": catalog[info.id]!.stamp,
+                    "src": "spatial:\(info.id)", "app": info.app, "title": info.title,
+                    "w": Int(info.bounds.width), "h": Int(info.bounds.height)]
+        }
+    }
+
+    func select(_ selections: [[String: Any]], adding: Bool = false) -> Bool {
+        precondition(Thread.isMainThread)
+        guard (adding ? isRunning : stateValue == "stopped"), !selections.isEmpty,
+              selections.count + (adding ? admitted.count : 0) <= 32 else { return false }
+        _ = selectionJSON()
+        var next: [CGWindowID: String] = [:]
+        for item in selections {
+            guard let id = (item["id"] as? NSNumber)?.uint32Value,
+                  let pid = (item["pid"] as? NSNumber)?.int32Value,
+                  let stamp = item["stamp"] as? String,
+                  let identity = catalog[id], identity.pid == pid, identity.stamp == stamp,
+                  next[id] == nil else { return false }
+            next[id] = stamp
+        }
+        if adding { admitted.merge(next) { old, _ in old } } else { admitted = next; legacyAll = false }
+        return true
+    }
+
+    func admissionJSON() -> [[String: Any]] {
+        precondition(Thread.isMainThread)
+        return admitted.compactMap { id, stamp in
+            guard let identity = catalog[id], identity.stamp == stamp else { return nil }
+            return ["id": id, "pid": identity.pid, "stamp": stamp]
+        }
+    }
+
+    fileprivate func isAdmitted(_ info: WindowInfo) -> Bool {
+        guard let stamp = admitted[info.id], let identity = catalog[info.id], stamp == identity.stamp,
+              identity.pid == info.pid,
+              identity.launched == NSRunningApplication(processIdentifier: info.pid)?.launchDate,
+              let current = AXWindow(windowID: info.id, pid: info.pid), CFEqual(identity.element, current.element)
+        else { return false }
+        return true
+    }
     private var sleepAssertion: IOPMAssertionID = 0
     private var spatialLeaseFD: Int32 = -1
     private var workspaceLeaseFD: Int32 = -1
@@ -199,7 +280,8 @@ final class SpatialCoordinator {
         lock.lock(); defer { lock.unlock() }
         var result: [String: Any] = ["state": state, "revision": revision, "windows": windowJSON,
                                      "skipped": skipped, "menus": surfaces.menusJSON,
-                                     "focusedSrc": focus.focusedSource ?? NSNull(), "cover": coverVisible]
+                                     "focusedSrc": focus.focusedSource ?? NSNull(), "cover": coverVisible,
+                                     "admission": admissionJSON()]
         if let shared {
             let b = shared.bounds
             result["display"] = ["id": shared.id, "bounds": SpatialSharedPolicy.rectJSON(b),
@@ -226,9 +308,11 @@ final class SpatialCoordinator {
             DispatchQueue.main.async { _ = self.captureOriginalIfNeeded(windowID: windowID, pid: pid) }
             return false
         }
+        guard let info = WindowInfo.find(windowID), info.pid == pid, isAdmitted(info) else { return false }
         let identity = SpatialWindowIdentity(id: windowID, pid: pid)
         if originals[identity] != nil { return true }
-        guard let frame = AXWindow(windowID: windowID, pid: pid)?.frame else { return false }
+        guard let window = AXWindow(windowID: windowID, pid: pid), let frame = window.frame else { return false }
+        originalElements[identity] = window.element
         originals[identity] = frame
         guard persistOriginals() else { originals[identity] = nil; return false }
         return true
@@ -240,11 +324,13 @@ final class SpatialCoordinator {
     }
 
     func contains(windowID: CGWindowID) -> Bool {
-        windowsJSON().contains { ($0["id"] as? UInt32) == windowID }
+        if !Thread.isMainThread { return DispatchQueue.main.sync { self.contains(windowID: windowID) } }
+        guard let info = WindowInfo.find(windowID), isAdmitted(info) else { return false }
+        return windowsJSON().contains { ($0["id"] as? UInt32) == windowID }
     }
 
     private func place(_ info: WindowInfo) -> Bool {
-        guard let shared, let window = AXWindow(windowID: info.id, pid: info.pid),
+        guard isAdmitted(info), let shared, let window = AXWindow(windowID: info.id, pid: info.pid),
               captureOriginalIfNeeded(windowID: info.id, pid: info.pid) else { return false }
         let target = SpatialSharedPolicy.sharedFrame(size: info.bounds.size, display: shared.usableRect,
                                                        menuBar: menuBarRect)
@@ -260,8 +346,9 @@ final class SpatialCoordinator {
 
     private func refreshWindowSnapshot() {
         guard Thread.isMainThread else { return }
+        refreshLegacyAdmission()
         let all = WindowInfo.all(onScreenOnly: false)
-        let eligible = all.filter(Self.isEligible)
+        let eligible = all.filter { self.isAdmitted($0) && Self.isEligible($0) }
         var records = [SpatialWindowRecord]()
         for info in eligible where info.onScreen {
             records.append(SpatialWindowRecord(id: info.id, pid: info.pid, app: info.app, title: info.title,
@@ -287,7 +374,7 @@ final class SpatialCoordinator {
         var accepted = [SpatialWindowRecord]()
         var failures = [[String: Any]]()
         if captureFrames {
-            for info in infos {
+            for info in infos where isAdmitted(info) {
                 guard info.onScreen else { failures.append(["id": info.id, "reason": "Other Space"]); continue }
                 guard place(info), let actual = WindowInfo.find(info.id) else {
                     failures.append(["id": info.id, "reason": "Window Could Not Move"]); continue
@@ -296,18 +383,20 @@ final class SpatialCoordinator {
                     title: actual.title, bounds: actual.bounds,
                     bundleID: NSRunningApplication(processIdentifier: actual.pid)?.bundleIdentifier))
             }
-            for info in WindowInfo.all(onScreenOnly: false) where Self.allowedPID(info.pid) && info.layer == 0 {
+            for info in WindowInfo.all(onScreenOnly: false) where isAdmitted(info) && info.layer == 0 {
                 if AXWindow(windowID: info.id, pid: info.pid)?.isFullScreen == true {
                     failures.append(["id": info.id, "reason": "Full Screen"])
                 }
             }
             originals = originals.filter { alive.contains($0.key) }
             _ = persistOriginals()
-        } else { accepted = records }
+        } else { accepted = records.filter { admitted[$0.id] != nil && catalog[$0.id]?.pid == $0.pid } }
         accepted.sort { $0.pid == $1.pid ? $0.id < $1.id : $0.pid < $1.pid }
         if let key = focus.focusedSource, case .spatial(let id)? = Source(key),
            !accepted.contains(where: { $0.id == id }) { focus.removeWindow(id) }
-        let json = accepted.map(\.json)
+        let json = accepted.map { record -> [String: Any] in
+            var value = record.json; value["stamp"] = admitted[record.id]; return value
+        }
         let bytes = (try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])) ?? Data()
         lock.lock()
         skipped = failures
@@ -388,7 +477,10 @@ final class SpatialCoordinator {
         physicalLayout = snapshot
         self.builtIn = builtIn
         guard originals.isEmpty else { return failStart("Pending Original Frames Must Be Restored First", completion: completion) }
-        let existingWindows = WindowInfo.all(onScreenOnly: false).filter(Self.isEligible)
+        let existingWindows = WindowInfo.all(onScreenOnly: false).filter { self.isAdmitted($0) && Self.isEligible($0) }
+        guard legacyAll || (!existingWindows.isEmpty && existingWindows.count == admitted.count) else {
+            return failStart("Selected windows changed; choose them again before starting", completion: completion)
+        }
         for info in existingWindows {
             _ = captureOriginalIfNeeded(windowID: info.id, pid: info.pid)
         }
@@ -766,8 +858,15 @@ final class SpatialCoordinator {
                                               spatialDisplayIDs: ownedSpatialDisplayIDs, requireMain: requireMain)
     }
 
+    private func originalStillExists(_ identity: SpatialWindowIdentity) -> Bool {
+        guard WindowInfo.find(identity.id)?.pid == identity.pid else { return false }
+        guard let original = originalElements[identity] else { return true } // legacy crash recovery
+        guard let current = AXWindow(windowID: identity.id, pid: identity.pid) else { return true } // retry AX failure
+        return CFEqual(original, current.element)
+    }
+
     private func originalsMatchCurrentFrames() -> Bool {
-        originals = originals.filter { WindowInfo.find($0.key.id)?.pid == $0.key.pid }
+        originals = originals.filter { self.originalStillExists($0.key) }
         for (identity, expected) in originals {
             guard let actual = AXWindow(windowID: identity.id, pid: identity.pid)?.frame,
                   Self.closeEnough(actual, expected) else { return false }
@@ -802,7 +901,7 @@ final class SpatialCoordinator {
     private func restoreOriginals(attempt: Int, completion: @escaping (Bool) -> Void) {
         var pending = [(SpatialWindowIdentity, CGRect)]()
         for (identity, frame) in originals {
-            guard let info = WindowInfo.find(identity.id), info.pid == identity.pid else { continue }
+            guard originalStillExists(identity) else { continue }
             guard let window = AXWindow(windowID: identity.id, pid: identity.pid) else {
                 pending.append((identity, frame)); continue
             }
@@ -816,7 +915,7 @@ final class SpatialCoordinator {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             guard let self else { completion(false); return }
             // Keep only windows that still exist; closed windows cannot be restored.
-            self.originals = self.originals.filter { WindowInfo.find($0.key.id)?.pid == $0.key.pid }
+            self.originals = self.originals.filter { self.originalStillExists($0.key) }
             self.restoreOriginals(attempt: attempt + 1, completion: completion)
         }
     }
@@ -899,7 +998,7 @@ final class SpatialCoordinator {
         physicalLayout = nil
         activePhysicalLayout = nil
         restoreLayoutBaseline = nil
-        originals.removeAll()
+        originals.removeAll(); originalElements.removeAll(); admitted.removeAll(); legacyAll = false
         lock.lock(); windowJSON.removeAll(); skipped.removeAll(); fingerprint = Data(); revision &+= 1; lock.unlock()
         _ = persistOriginals()
         releaseLeases()

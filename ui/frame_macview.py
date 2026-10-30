@@ -171,6 +171,23 @@ SPATIAL_BACKGROUND_MAX_FPS = 10
 SPATIAL_RESTORE_SECONDS = 2.0
 
 
+def validate_spatial_selection(windows):
+    """Only freshly enumerated individual identities may enter the workspace."""
+    if not isinstance(windows, list) or not 1 <= len(windows) <= 32:
+        raise MacViewError("Choose At Least One Individual Window Before Start.")
+    selected = []
+    seen = set()
+    for window in windows:
+        if (not isinstance(window, dict) or type(window.get("id")) is not int or
+                not 0 < window["id"] <= 0xffffffff or type(window.get("pid")) is not int or
+                window["pid"] <= 0 or not isinstance(window.get("stamp"), str) or
+                not 1 <= len(window["stamp"]) <= 128 or window["id"] in seen):
+            raise MacViewError("Window Selection Is Invalid. Choose The Window Again.")
+        seen.add(window["id"])
+        selected.append({key: window[key] for key in ("id", "pid", "stamp")})
+    return selected
+
+
 def spatial_launch_parallel():
     """How many Spatial window panels launch at once (FRAME_SPATIAL_LAUNCH_PARALLEL,
     1-8, default 4). The focused window goes first; the rest show placeholders."""
@@ -719,6 +736,11 @@ class MacView:
         # generation, wall slots reserved before a window has its panel, and
         # the placeholder list the Frame last confirmed.
         self._spatial_launching = {}
+        self._spatial_admitted = {}
+        self._mouse_selection_required = False
+        self._mouse_selection_pending = []
+        self._spatial_mouse_ticket = ""
+        self._spatial_legacy_all = False
         self._spatial_slots = {}
         self._placeholders_synced = None
         self._placeholders_on_frame = False
@@ -749,6 +771,8 @@ class MacView:
         self._spatial_candidates = {}
         self._spatial_live_since = {}
         self._spatial_focused = None
+        self._spatial_hovered = None
+        self._spatial_budget_wake = threading.Event()
         self._spatial_requested_sizes = {}
         self._spatial_policy_targets = {}
         self._spatial_policy_agent = None
@@ -1044,6 +1068,19 @@ class MacView:
             pass
         return ["-o", f"HostName={ip}", "-o", f"HostKeyAlias={alias}"]
 
+    def observe_mouse_hover(self, source):
+        """Coalesce the existing 10 Hz switcher monitor into a budget wake.
+
+        This does not commit focus or enable a stream; the supervisor reads the
+        helper's leased status and applies the same cap as its periodic pass.
+        """
+        source = source if isinstance(source, str) and re.fullmatch(r"spatial:[0-9]+", source) else None
+        with self._spatial_lock:
+            if source == self._spatial_hovered:
+                return
+            self._spatial_hovered = source
+            self._spatial_budget_wake.set()
+
     def _supervise(self):
         """Reopen the tunnel on the same port after the headset sleeps or the
         network drops, so viewers that are retrying find the Mac again."""
@@ -1052,9 +1089,14 @@ class MacView:
 
         def loop():
             tick = 0
+            next_periodic = time.monotonic() + 1
             while not self.closing:
-                time.sleep(1)
-                tick += 1
+                self._spatial_budget_wake.wait(max(0, next_periodic - time.monotonic()))
+                self._spatial_budget_wake.clear()
+                periodic = time.monotonic() >= next_periodic
+                if periodic:
+                    next_periodic = time.monotonic() + 1
+                    tick += 1
                 if self.closing:
                     continue
                 if not (self.agent and self.agent.poll() is None):
@@ -1064,6 +1106,8 @@ class MacView:
                     self._spatial_tick()
                 except MacViewError:
                     pass  # retry the local helper next second, even without a tunnel
+                if not periodic:
+                    continue  # hover only wakes budget policy, not network maintenance
                 if self.tunnel_up():
                     self._follow_best_route(tick)
                     self._apply_link_cap()
@@ -1079,7 +1123,7 @@ class MacView:
         self.supervisor.start()
 
     def _spatial_tick(self):
-        """Budget window decoders on the supervisor's existing one-second tick.
+        """Budget window decoders on the supervisor tick and coalesced hover wakes.
 
         A changed window stays eligible for five seconds. Optional additions
         need one second of observation; admitted windows get three seconds
@@ -1216,6 +1260,9 @@ class MacView:
         pinned = {s for s, (_, since) in self._spatial_live_since.items() if s in recent and now - since < 3}
         newest = lambda s: (-windows[s]["changed"], s)
         order = ([focus] if focus in windows else [])
+        hovered = status.get("hoveredSrc")
+        if hovered in windows and hovered not in order:
+            order.append(hovered)  # wake immediately, without candidate/residency delay
         order += sorted(pinned - set(order), key=newest)
         order += sorted((eligible | (recent & self._spatial_live_since.keys())) - set(order), key=newest)
         capacity = spatial_decode_pixels()
@@ -1491,7 +1538,7 @@ class MacView:
                           self._frame_stop_available)
         workspace = {"running": running, "busy": busy, "label": label, "mode": self.mode,
                      "stopAvailable": stop_available, "session": self.session_id}
-        notice = self._notice()
+        notice = "Choose a window in the Mac app, then Start." if self._mouse_selection_required else self._notice()
         if notice:
             workspace["notice"] = notice
         return {"connected": True, "workspace": workspace, "windows": windows[:32],
@@ -1900,6 +1947,11 @@ class MacView:
         ticket = self.call("/ticket", method="POST", src=src)["ticket"]
         params = {"src": src, "t": ticket, "tag": tag, "codec": q["codec"], "max": q["max"], "fps": q["fps"],
                   "bpp": q["bpp"]}
+        if src.startswith("spatial:") and self._spatial_mouse_ticket:
+            identity = self._spatial_admitted.get(int(src.split(":", 1)[1]))
+            if identity is None:
+                raise MacViewError("Window Is Not Admitted To The Mouse Workspace.")
+            params.update(workspaceTicket=self._spatial_mouse_ticket, admissionStamp=identity[1])
         url = f"http://127.0.0.1:{self.remote_port}/view?{urlencode(params)}"
         if workspace_viewer:
             workspace = self.workspace_manager.state()
@@ -2289,7 +2341,8 @@ print(json.dumps(poses))
 
     def workspace_state(self):
         workspace = self.spatial_workspace if self.mode == "spatial" else self.workspace_manager.state()
-        return {**workspace, "mode": self.mode}
+        return {**workspace, "mode": self.mode, "mouse": os.environ.get("FRAME_WORKSPACE_MOUSE") == "1",
+                "selectionRequired": self._mouse_selection_required, "mouseSelection": self._mouse_selection_pending}
 
     def set_mode(self, mode, restart=True):
         """Select a durable mode, replacing a running setup after confirmed Stop."""
@@ -2297,6 +2350,9 @@ print(json.dumps(poses))
             raise MacViewError("Mode Must Be Desktop Or Spatial.")
         if mode == "spatial":
             native_window_decoder()  # validate before closing the current display or panels
+            if (restart and os.environ.get("FRAME_WORKSPACE_MOUSE") == "1" and self.mode != mode
+                    and self.workspace_state().get("state") == "running"):
+                return self.start_workspace(*self.last_workspace, mode=mode, resume=True)
         with self.workspace_lock:
             if self.exit_pending:
                 raise MacViewError(self.exit_error or "Workspace Stop is still being confirmed. Retry Stop before changing modes.")
@@ -2338,7 +2394,7 @@ print(json.dumps(poses))
         if errors:
             raise MacViewError("Mac window capture shutdown could not be confirmed. Retry Stop. " + errors[0])
 
-    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp", pose=None, resume=False, mode=None):
+    def start_workspace(self, preset="5120x1440", scale=1, quality="sharp", pose=None, resume=False, mode=None, windows=None):
         """Starts the Workspace; with `resume` (the Mac page and the headset's
         Start), then brings back the last session's windows where they were."""
         with self.workspace_lock:
@@ -2357,14 +2413,42 @@ print(json.dumps(poses))
                 if quality_settings(quality)["codec"] != "h264":
                     raise MacViewError("Spatial Mode Requires Sharp, Balanced Or Light Quality.")
                 native_window_decoder()  # reject invalid panel settings before a mode/display change
+            if (mode or self.mode) == "spatial" and os.environ.get("FRAME_WORKSPACE_MOUSE") == "1":
+                if windows is None and self.spatial_workspace.get("state") != "running":
+                    choices = self.call("/spatial/windows").get("windows", [])
+                    # A Steam resume can reuse one still-valid selected identity;
+                    # a new helper/window identity always requires fresh selection.
+                    previous = [w for w in choices if self._spatial_admitted.get(w.get("id")) == (w.get("pid"), w.get("stamp"))]
+                    if resume and previous:
+                        windows = [previous[0]]
+                    else:
+                        self._mouse_selection_pending = choices
+                        self._mouse_selection_required = True
+                        self.dash_wake.set()
+                        return {"state": "selectionRequired", "selectionRequired": True, "mode": "spatial",
+                                "windows": choices, "workspace": self.workspace_state()}
+                if windows is not None:
+                    validate_spatial_selection(windows)
+                    if len(windows) != 1:
+                        raise MacViewError("Start With One Window, Then Add More Windows.")
+                # Refuse an older host before mode switching, restoring old panels,
+                # installing a recovery job, or moving any selected Mac window.
+                try:
+                    self.headset_viewer.require_spatial(self.frame, mouse=True)
+                except ViewerError as exc:
+                    raise MacViewError(str(exc)) from exc
+            self._mouse_selection_required = False
+            self._mouse_selection_pending = []
             self._install_frame_exit_helper()
             if mode is not None:
                 self.set_mode(mode, restart=False)
             if (resume and pose is None and self.mode == "desktop" and self.resume_workspace_pose and
                     self.workspace_state().get("state") != "running"):
                 pose = self.resume_workspace_pose()
-            result = (self._start_spatial(preset, scale, quality) if self.mode == "spatial" else
+            result = (self._start_spatial(preset, scale, quality, windows) if self.mode == "spatial" else
                       self._start_workspace(preset, scale, quality, pose))
+            if result.get("selectionRequired"):
+                return result
             if self.exit_pending:
                 raise MacViewError("Workspace Stop cancelled the start request.")
             self._mode_generation += 1
@@ -2378,7 +2462,17 @@ print(json.dumps(poses))
                 result["workspace"]["mode"] = self.mode
             return result
 
-    def _start_spatial(self, preset, scale, quality):
+    def admit_spatial_windows(self, windows):
+        selected = validate_spatial_selection(windows)
+        with self.workspace_lock:
+            if self.mode != "spatial" or self.spatial_workspace.get("state") != "running":
+                raise MacViewError("Start The Workspace Before Adding Windows.")
+            self.call("/spatial/admit", method="POST", windows=json.dumps(selected, separators=(",", ":")))
+            self._spatial_admitted.update({w["id"]: (w["pid"], w["stamp"]) for w in selected})
+            self._queue_spatial_reconcile()
+            return {"admitted": [w["id"] for w in selected]}
+
+    def _start_spatial(self, preset, scale, quality, windows=None):
         request = WorkspaceDisplayManager._validate_request(preset, scale, quality)
         if quality_settings(quality)["codec"] != "h264":
             raise MacViewError("Spatial Mode Requires Sharp, Balanced Or Light Quality.")
@@ -2392,6 +2486,12 @@ print(json.dumps(poses))
                 self.spatial_workspace.update(request)
                 self._remember_workspace(preset, scale, quality)
                 return {"state": "running", "workspace": self.workspace_state(), "alreadyRunning": True}
+        mouse = os.environ.get("FRAME_WORKSPACE_MOUSE") == "1"
+        legacy_all = windows is None and not mouse
+        if windows is None and mouse:
+            return {"state": "selectionRequired", "selectionRequired": True,
+                    "windows": self.call("/spatial/windows").get("windows", []), "workspace": self.workspace_state()}
+        selected = [] if legacy_all else validate_spatial_selection(windows)
         if self.spatial_workspace.get("removed") is False:
             self._stop_spatial()
         status = self.call("/status")
@@ -2404,7 +2504,7 @@ print(json.dumps(poses))
         # The viewer must understand roles, surfaces and wall slots; an older one
         # ignores them. Refuse before the helper moves windows or covers the laptop.
         try:
-            self.headset_viewer.require_spatial(self.frame)
+            self.headset_viewer.require_spatial(self.frame, mouse=mouse)
         except ViewerError as exc:
             raise MacViewError(str(exc)) from exc
         self._check_startup()
@@ -2419,13 +2519,15 @@ print(json.dumps(poses))
         spatial_launch_parallel()
         try:
             self._check_startup()
-            home = self.call("/spatial/start", method="POST")
+            home = self.call("/spatial/start", method="POST", **({"policy": "legacy-all"} if legacy_all else
+                             {"windows": json.dumps(selected, separators=(",", ":"))}))
             if home.get("state") != "running":
                 raise MacViewError(home.get("error") or "The Spatial Shared Display Is Not Ready.")
             if self.exit_pending or self._stop_requested or self.closing:
                 removal = self.call("/spatial/stop", method="POST")
                 self.spatial_workspace.update(state="stopped", removed=removal.get("removed") is True)
                 raise MacViewError("Workspace Stop cancelled Spatial Mode startup.")
+            self._spatial_mouse_ticket = self.call("/workspace/control-ticket", method="POST", start="1")["ticket"] if mouse else ""
         except Exception as exc:
             try:
                 cleanup = self.call("/spatial/stop", method="POST")
@@ -2433,6 +2535,8 @@ print(json.dumps(poses))
                 cleanup = {"removed": False}
             self.spatial_workspace.update(state="error", error=str(exc), removed=cleanup.get("removed") is True)
             raise MacViewError(f"Spatial Mode Could Not Start: {exc}") from exc
+        self._spatial_legacy_all = legacy_all
+        self._spatial_admitted = {w["id"]: (w["pid"], w["stamp"]) for w in selected}
         self._spatial_agent = self.agent
         self.spatial_workspace.update(state="running", home=home, removed=False)
         self._remember_workspace(preset, scale, quality)
@@ -2478,15 +2582,26 @@ print(json.dumps(poses))
                     return
                 state = self.call("/spatial")
                 if state.get("state") != "running" or self._spatial_agent is not self.agent:
-                    self.spatial_workspace.update(state="error", removed=state.get("removed") is True,
+                    returned = bool(self._spatial_mouse_ticket) and state.get("state") == "stopped" and state.get("removed") is True
+                    self.spatial_workspace.update(state="stopped" if returned else "error", removed=state.get("removed") is True,
                                                   panelCleanupPending=bool(self.native_panels),
-                                                  error=state.get("error") or "The Spatial Helper Stopped. Use Stop Before Restarting.")
+                                                  error=None if returned else state.get("error") or "The Spatial Helper Stopped. Use Stop Before Restarting.")
+                    if returned:
+                        self._spatial_mouse_ticket = ""
                     self._spatial_cover = False
                     self._close_window_panels()
                     self.spatial_workspace["panelCleanupPending"] = False
                     return
+                if self._spatial_mouse_ticket and "admission" in state:
+                    # This is the helper's committed admission set, not its
+                    # eligible-window catalog. Native Add uses the same stamped
+                    # selection validator as POST /spatial/admit.
+                    admitted = state["admission"]
+                    selected = validate_spatial_selection(admitted) if admitted else []
+                    self._spatial_admitted = {w["id"]: (w["pid"], w["stamp"]) for w in selected}
                 windows = {"spatial:" + str(w["id"]): w for w in state.get("windows", [])
-                           if isinstance(w, dict) and type(w.get("id")) is int and w["id"] > 0}
+                           if isinstance(w, dict) and type(w.get("id")) is int and
+                           (self._spatial_legacy_all or self._spatial_admitted.get(w["id"]) == (w.get("pid"), w.get("stamp")))}
                 self._spatial_suppressed.intersection_update(windows)
                 for source in list(self._spatial_owned - windows.keys()):
                     self.call("/close", method="POST", src=source)
@@ -2552,6 +2667,8 @@ print(json.dumps(poses))
         try:
             if self._spatial_cancelled(generation) or self.closing or self.exit_pending:
                 raise MacViewError("Spatial Mode Stopped Before This Window Opened.")
+            if not self._spatial_legacy_all and self._spatial_admitted.get(info.get("id")) != (info.get("pid"), info.get("stamp")):
+                raise MacViewError("Window Was Not Admitted To This Workspace.")
             with self.viewer_lock:
                 self.launching += 1
             try:

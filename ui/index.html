@@ -1273,8 +1273,14 @@
           </select></label>
           <button class="small action" id="mvWorkspaceStart" data-mv="workspace-start">Start Workspace</button>
           <button class="small" id="mvArrange" data-mv="arrange-windows" hidden
-                  title="Every window panel back on the wall in front of you">Arrange Windows</button>
+                  title="Every window panel back on the wall in front of you">Auto-layout</button>
 
+        </div>
+        <div class="mv-placement-row" id="mvMouseSelection" hidden>
+          <label>Mac window <select id="mvMouseWindow" aria-label="Window to show in the Frame"><option value="">Choose a window…</option></select></label>
+          <button class="small" data-mv="workspace-windows">Refresh windows</button>
+          <button class="small action" id="mvMouseAdd" data-mv="workspace-admit" hidden>Add window</button>
+          <span class="sub" id="mvMouseHint">Choose one window, then Start. Your mouse returns to the Mac when you stop.</span>
         </div>
         <div class="mv-placement-row" id="mvPlacementRow">
           <button class="small danger" id="mvWorkspaceStop" data-mv="workspace-stop" hidden>Stop Workspace</button>
@@ -4291,6 +4297,23 @@ $("panelList").onclick = e => {
 
 // ---- Mac in the headset: windows and displays as panels (ui/frame_macview.py) ----
 let mvSeq = 0, mvTimer = 0, mvState = null, mvWorkspaceBusy = false;
+let mvMouseChoices = [], mvMouseLoading = false;
+function renderMouseChoices(windows) {
+  mvMouseChoices = Array.isArray(windows) ? windows : [];
+  const select = $("mvMouseWindow"), previous = select.value;
+  select.innerHTML = '<option value="">Choose a window…</option>' + mvMouseChoices.map((w, i) =>
+    '<option value="' + esc(String(w.id) + ":" + w.stamp) + '">' + esc((w.app || "App") + " · " + (w.title || "Untitled window")) + '</option>').join("");
+  if (Array.from(select.options).some(o => o.value === previous)) select.value = previous;
+}
+async function loadMouseChoices() {
+  if (mvMouseLoading) return;
+  mvMouseLoading = true;
+  try { const result = await api("/api/macview", {action: "workspace_windows"}); renderMouseChoices(result.windows); }
+  finally { mvMouseLoading = false; }
+}
+function selectedMouseWindow() {
+  return mvMouseChoices.find(w => String(w.id) + ":" + w.stamp === $("mvMouseWindow").value);
+}
 let mvPlacementBusy = false, mvPlacementError = "", mvViewerBusy = false;
 let mvWorkspaceActivePreset = null, mvWorkspacePendingPreset = null;
 // streaming: the src it's shown as (a window may be "separate:<id>"), or "".
@@ -4384,8 +4407,14 @@ function renderMvWorkspace(s) {
   renderWorkspacePlacement(s);
   renderMvErrors(s);
   renderMvViewer(s);
-  const ws = s.workspace || {state: "stopped"}, running = ws.state === "running";
-  const spatial = ws.mode === "spatial";
+  const ws = s.workspace || {state: "stopped"}, running = ws.state === "running" && !ws.selectionRequired;
+  const spatial = ws.mode === "spatial" || ws.selectionRequired;
+  const mouse = spatial && ws.mouse;
+  $("mvMouseSelection").hidden = !mouse;
+  $("mvMouseAdd").hidden = !(mouse && running);
+  $("mvMouseAdd").disabled = mvWorkspaceBusy;
+  if(mouse && ws.selectionRequired && ws.mouseSelection) renderMouseChoices(ws.mouseSelection);
+  $("mvMouseHint").textContent = running ? "Add another window explicitly. Return to Mac in the headset releases your mouse and restores the windows." : "Choose one window, then Start. Capture begins only when the headset controls are ready.";
   const stream = running && (s.streams || []).find(x => x.src === ws.captureSrc);
   const status = $("mvWorkspaceStatus"), start = $("mvWorkspaceStart"), stop = $("mvWorkspaceStop");
   const preset = $("mvWorkspacePreset"), scale = $("mvWorkspaceScale");
@@ -4417,6 +4446,7 @@ function renderMvWorkspace(s) {
       : running ? "Spatial Mode · " + (s.streams || []).filter(x => /^(window|separate|spatial):/.test(x.src)).length + " Window Panels · "
           + (ws.panelsReady ? "Running" : "Opening Windows…")
           + (Object.keys(ws.panelErrors || {}).length ? " · Some Windows Are Retrying" : "")
+      : mouse ? "Choose a Mac window below. Other windows stay where they are. Return to Mac restores the selected windows."
       : "Every window opens in its own panel and the laptop screen goes dark. Stop puts your windows back.";
     status.dataset.state = ws.state || "stopped";
     return;
@@ -4549,8 +4579,18 @@ $("macview").onclick = async e => {
     await act("Stop everything in the headset", () => api("/api/macview", { action: "stop" }), b);
   } else if (b.dataset.mv === "perm") {
     await act("Ask macOS for permission", () => api("/api/macview", { action: "permissions" }), b);
+  } else if (b.dataset.mv === "workspace-windows") {
+    await act("Refresh Mac windows", async () => { await loadMouseChoices(); return {message: "Choose the window to show."}; }, b);
+  } else if (b.dataset.mv === "workspace-admit") {
+    const selected = selectedMouseWindow();
+    if(!selected) { await loadMouseChoices(); $("mvMouseWindow").focus(); return; }
+    await act("Add window", () => api("/api/macview", {action:"workspace_admit",windows:[selected]}), b);
+    await loadMacView();
   } else if (b.dataset.mv === "workspace-start") {
     if (mvWorkspaceBusy || mvPlacementBusy) return;
+    const mouse = mvState && mvState.workspace && (mvState.workspace.mode === "spatial" || mvState.workspace.selectionRequired) && mvState.workspace.mouse;
+    const selected = mouse ? selectedMouseWindow() : null;
+    if(mouse && !selected) { await loadMouseChoices(); $("mvMouseWindow").focus(); return; }
     const selectedPreset = $("mvWorkspacePreset").value;
     const workspaceRunning = Boolean(mvWorkspaceActivePreset);
     const applyingSize = mvWorkspaceActivePreset && selectedPreset !== mvWorkspaceActivePreset;
@@ -4560,8 +4600,8 @@ $("macview").onclick = async e => {
       const result = await act(applyingSize ? "Apply Workspace size change"
         : workspaceRunning ? "Show Workspace again" : "Start Workspace", async () => {
         const response = await api("/api/macview", {action: "workspace_start", preset: selectedPreset,
-                                                      scale: Number($("mvWorkspaceScale").value), quality: $("mvQuality").value});
-        const message = response.mode === "spatial" ? "Spatial Mode Is Opening Your Window Panels."
+                                                      scale: Number($("mvWorkspaceScale").value), quality: $("mvQuality").value, ...(selected ? {windows:[selected],mode:"spatial"} : {})});
+        const message = response.selectionRequired ? "Choose a Mac window to start." : response.mode === "spatial" ? "Spatial Mode Is Opening Your Window Panels."
           : response.replaced ? "Workspace changed to "
           + response.workspace.display.logicalWidth + "×" + response.workspace.display.logicalHeight
           + " and reopened in the Frame."
@@ -4591,7 +4631,7 @@ $("macview").onclick = async e => {
     }
   } else if (b.dataset.mv === "arrange-windows") {
     if (mvWorkspaceBusy || mvPlacementBusy || b.disabled) return;
-    await act("Arrange Windows", async () => {
+    await act("Auto-layout Windows", async () => {
       const result = await api("/api/macview", {action: "arrange_windows"});
       return {...result, message: "Your windows are on the wall in front of you."};
     }, b);
