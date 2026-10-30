@@ -1,5 +1,7 @@
 # Mouse workspace handoff
 
+Coordinator integration: the Mac now installs both matching exit and dashboard scripts before sync, so an existing Steam entry receives the close/reopen protocol when the Mac app updates. Both installs must succeed before the connection is cached. The affected helper/launcher/exit suite passed all 72 tests with scoped process access. One initial combined run returned a nonzero exit from the close fixture without stderr; an isolated diagnostic rerun and the complete diagnostic rerun passed. Installed repeat-sync acceptance remains required.
+
 2026-10-30. Main includes budget `e463dd0` and correction `e873e85`; mouse changes remain uncommitted for coordinator review/integration. No device/install/audio changes, commits or publication by this worker.
 
 ## Interaction and source state
@@ -21,6 +23,12 @@ The helper binds each admission stamp to window ID, PID, exact AX object and pro
 - Arrange is persistent. Title drag uses a frozen head-facing plane; corners use signed aspect-locked, opposite-corner anchored resizing at fixed depth; depth uses the captured head-to-window ray and preserves physical size. Gesture motion uses a frozen origin so head movement cannot alter a pending placement. Wall placement updates are suspended only for the gesture, preserving membership on cancel. Rotation/curvature are explicit clicks. Bulk layout is labeled Auto-layout.
 - Button release saves the final pose atomically. Right-click or releasing over visible Cancel restores the start pose without saving. Wheel-only depth is one transaction, committed once after 250 ms wheel idle. Its placement ray freezes at the first wheel event, so moving the pointer toward recovery controls cannot change depth; only subsequent wheel deltas contribute. The independent live pointer ray still hits Cancel/Recenter/Return. Cancel/control loss before completion restores the start. Recenter window cancels a pending gesture, uses the existing selected-window recenter while preserving width/bend, and recenters the pointer; unrelated layouts stay unchanged. Offscreen-pointer clicks cancel/recenter only, never Mac-click; a directional beacon stays visible.
 - Workspace menu exposes Add window, Recenter window, Cancel and Return to Mac. Return to Mac immediately stops the control lease, releases input and invokes the existing local Mac stream shutdown/Spatial restore. The host also writes a session-bound `workspace_stop` and reuses the dashboard's bounded local exit helper (`workspace_exit.hpp`, extracted without behavioral changes), retiring Frame host, dashboard and scene owners independently of the Mac job queue. The companion's normal stop path reconciles/restores state afterward.
+
+## Frame exit persistence
+
+2026-10-30 source correction: explicit Frame exit now writes `native/dashboard-closed.json` only after its session-bound restore request and owned Frame cleanup succeed, then stops the dashboard service. A shared advisory lock serializes that transition against companion sync/startup. While latched, sync continues to drain Frame requests but cannot respawn the dashboard; routine `running:true` status and reconnect do not clear it. Explicit Steam `show` and the next sync after a successful Mac Start clear the latch under the same lock. Only Steam `show` foregrounds the SteamVR dashboard; Mac Start keeps the Workspace/recovery view in front. Stale-session exit cannot alter a successor, and unconfirmed cleanup keeps the dashboard retryable.
+
+Production-path checks passed: 24 focused tests across the full `test_workspace_exit.py` module, `test_workspace_launcher`, and `test_macview.Helpers.test_successful_mac_start_reopens_dashboard_on_next_sync`. Companion sync/reopen tests use the actual `bash -s -- ...` stdin route. Coverage includes real `exit-current` request/latch creation, repeated closed sync with request polling, an in-flight dashboard start racing explicit exit, Steam and Mac Start reopen, and stale-session rejection. Actual installed Frame/Steam repeat-sync smoke remains with the coordinator; no TCC or device-state change was made here.
 
 ## Verification
 

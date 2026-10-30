@@ -131,6 +131,8 @@ raise SystemExit(0)
         self.assertEqual(remaining, foreign)
         stop = next(line for line in self.calls.read_text(encoding="utf-8").splitlines() if line.startswith("stop "))
         self.assertEqual(set(stop.split()[1:]), set(owned))
+        self.assertIn(f"stop frame-workspace-dash-{os.getuid()}.service",
+                      self.calls.read_text(encoding="utf-8").splitlines())
         self.assertFalse((runtime / "host" / "panels" / "w42.json").exists())
         self.assertFalse(url.exists())
         self.assertFalse(url.parent.exists())
@@ -141,6 +143,23 @@ raise SystemExit(0)
         self.assertEqual(len(stop_requests), 1)
         self.assertEqual(json.loads(stop_requests[0].read_text()),
                          {"action": "workspace_stop", "session": self.session})
+        closed = self.data / "frame-workspace" / "native" / "dashboard-closed.json"
+        self.assertEqual(json.loads(closed.read_text(encoding="utf-8")),
+                         {"version": 1, "session": self.session})
+        self.assertIn("viewer session stopped", result.stdout)
+
+    def test_exit_current_latches_closed_after_queuing_mac_restore(self):
+        requests = self.runtime / "frame-workspace" / "requests"
+        result = subprocess.run([sys.executable, str(HELPER), "exit-current", "--request-dir", str(requests)],
+                                env=self.env, capture_output=True, text=True, timeout=8, check=True)
+
+        closed = json.loads((self.data / "frame-workspace" / "native" / "dashboard-closed.json").read_text())
+        queued = [json.loads(path.read_text()) for path in requests.glob("local-stop-*.json")]
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0]["action"], "workspace_stop")
+        self.assertEqual(queued[0]["session"], closed["session"])
+        self.assertIn(f"stop frame-workspace-dash-{os.getuid()}.service",
+                      self.calls.read_text(encoding="utf-8").splitlines())
         self.assertIn("viewer session stopped", result.stdout)
 
     def test_stale_stop_cannot_kill_a_new_session_and_repeat_stop_is_idempotent(self):
@@ -150,6 +169,9 @@ raise SystemExit(0)
         self._run("stop", check=True)
         self._run("stop", check=True)
         self._run("begin", new_session, check=True)
+        closed = self.data / "frame-workspace" / "native" / "dashboard-closed.json"
+        self.assertTrue(closed.exists(), "beginning/adopting a session is not an explicit dashboard reopen")
+        closed.unlink()  # an explicit Steam show/reopen has cleared the old close
         host = f"frame-workspace-host-{uid}.service"
         self.units.write_text(json.dumps([host]), encoding="utf-8")
 
@@ -158,6 +180,7 @@ raise SystemExit(0)
         self.assertNotEqual(stale.returncode, 0)
         self.assertIn("newer Workspace session", stale.stderr)
         self.assertEqual(json.loads(self.units.read_text()), [host])
+        self.assertFalse(closed.exists(), "a stale exit must not close the successor")
         self.assertEqual(self._run("check", new_session).returncode, 0)
 
     def test_adopt_recovers_a_mac_companion_restart_without_accepting_old_requests(self):
@@ -218,6 +241,8 @@ raise SystemExit(0)
 
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("still active or cannot be verified; retry Stop", failed.stderr)
+        self.assertFalse((self.data / "frame-workspace" / "native" / "dashboard-closed.json").exists(),
+                         "failed cleanup must leave the dashboard available for retry")
         self.assertEqual(self._run("check").returncode, 1)
         retried = self._run("stop", check=True)
         self.assertIn("viewer session stopped", retried.stdout)
@@ -278,8 +303,10 @@ raise SystemExit(0)
 
         self.assertNotEqual(failed.returncode, 0)
         self.assertIn("did not confirm hiding its dashboard", failed.stderr)
+        self.assertFalse((self.data / "frame-workspace" / "native" / "dashboard-closed.json").exists())
         retried = self._run("stop", check=True)
         self.assertIn("viewer session stopped", retried.stdout)
+        self.assertTrue((self.data / "frame-workspace" / "native" / "dashboard-closed.json").exists())
         self.assertEqual((self.root / "vrcmd.log").read_text(encoding="utf-8").splitlines(),
                          ["--hidedashboard", "--hidedashboard"])
 

@@ -90,6 +90,16 @@ def locked_state(state_path):
 
 
 @contextmanager
+def dashboard_lifecycle_guard(native):
+    """Serialize explicit close with the companion's sync/show/reopen path."""
+    native.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(native, 0o700)
+    with locked_state(native / "dashboard-lifecycle.lock") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+@contextmanager
 def session_guard(session):
     """Serialize a short Frame-side launch mutation with Stop retirement."""
     _uid, _runtime, _data, _native, state_path = paths()
@@ -159,38 +169,40 @@ def guarded_run(session, command, timeout=2):
 
 def retire_and_stop(session, request_dir=None):
     """Retire and close under one lock so a newer session cannot be clobbered."""
-    _uid, _runtime, _data, _native, state_path = paths()
+    _uid, _runtime, _data, native, state_path = paths()
     session = valid_session(session)
-    with locked_state(state_path) as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        state = read_state(state_path)
-        active = state["active"]
-        if active and active != session:
-            raise ExitError("A newer Workspace session is active; the old Stop request was ignored.")
-        if not active:
-            state["active"] = session
-        if session not in state["retired"]:
-            state["retired"].append(session)
-            state["retired"] = state["retired"][-128:]
-        write_state(state_path, state)
-        stop_owned_session(session, request_dir=request_dir)
+    with dashboard_lifecycle_guard(native):
+        with locked_state(state_path) as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            state = read_state(state_path)
+            active = state["active"]
+            if active and active != session:
+                raise ExitError("A newer Workspace session is active; the old Stop request was ignored.")
+            if not active:
+                state["active"] = session
+            if session not in state["retired"]:
+                state["retired"].append(session)
+                state["retired"] = state["retired"][-128:]
+            write_state(state_path, state)
+            stop_owned_session(session, request_dir=request_dir)
 
 
 def retire_current_and_stop(request_dir=None):
     """User-initiated orphan cleanup when an offline dashboard has no session ID."""
-    _uid, _runtime, _data, _native, state_path = paths()
-    with locked_state(state_path) as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        state = read_state(state_path)
-        session = state["active"]
-        if not session or session in state["retired"]:
-            session = secrets.token_hex(16)
-            state["active"] = session
-        if session not in state["retired"]:
-            state["retired"].append(session)
-            state["retired"] = state["retired"][-128:]
-        write_state(state_path, state)
-        stop_owned_session(session, request_dir=request_dir)
+    _uid, _runtime, _data, native, state_path = paths()
+    with dashboard_lifecycle_guard(native):
+        with locked_state(state_path) as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            state = read_state(state_path)
+            session = state["active"]
+            if not session or session in state["retired"]:
+                session = secrets.token_hex(16)
+                state["active"] = session
+            if session not in state["retired"]:
+                state["retired"].append(session)
+                state["retired"] = state["retired"][-128:]
+            write_state(state_path, state)
+            stop_owned_session(session, request_dir=request_dir)
 
 
 def run(argv, timeout=1.0):
@@ -336,7 +348,7 @@ def stop_available():
 
 
 def stop_owned_session(session, request_dir=None):
-    uid, runtime, _data, _native, _state_path = paths()
+    uid, runtime, _data, native, _state_path = paths()
     # Persist the Mac restore intent before local cleanup. The dashboard stays
     # visible if any part of the stop cannot be confirmed, so Stop can be
     # retried without restarting the companion.
@@ -405,6 +417,17 @@ def stop_owned_session(session, request_dir=None):
     hide_result = run([vrcmd, "--hidedashboard"], .4)
     if hide_result is None or hide_result.returncode != 0:
         raise ExitError("Frame Workspace viewers stopped, but SteamVR did not confirm hiding its dashboard; retry Stop.")
+    # Persist only after local cleanup and the Mac restore request have both
+    # succeeded. The shared lifecycle lock keeps an in-flight sync or explicit
+    # launch from crossing this transition.
+    write_state(native / "dashboard-closed.json", {"version": 1, "session": session})
+    dashboard_unit = f"frame-workspace-dash-{uid}.service"
+    stopped = run(["systemctl", "--user", "--no-block", "stop", dashboard_unit], .4)
+    if stopped is None or stopped.returncode != 0:
+        # Keep the durable latch: the companion's next sync retries this stop
+        # without respawning the panel. The overlay is already hidden and the
+        # Mac restore request is queued, so this must not block restoration.
+        print("The dashboard close is latched; companion sync will retry stopping its service.", file=sys.stderr)
     print("Frame Workspace viewer session stopped.")
 
 

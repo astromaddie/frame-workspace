@@ -13,6 +13,7 @@ import sandbox  # noqa: F401
 ROOT = Path(__file__).resolve().parents[1]
 LAUNCHER = ROOT / "scripts" / "workspace-launch-on-frame.py"
 DASH = ROOT / "scripts" / "workspace-dash-on-frame.sh"
+EXIT_HELPER = ROOT / "scripts" / "workspace-exit-on-frame.py"
 
 
 class WorkspaceLauncher(unittest.TestCase):
@@ -33,11 +34,15 @@ shift
 case "$1" in
   is-active) [ -f "$FRAME_TEST_SERVICE" ] ;;
   reset-failed) exit 0 ;;
+  list-units) exit 0 ;;
+  --no-block) [ "$2" = stop ] && rm -f "$FRAME_TEST_SERVICE" ;;
   stop) rm -f "$FRAME_TEST_SERVICE" ;;
   *) exit 2 ;;
 esac
 ''')
         self._write("systemd-run", '''#!/bin/sh
+[ -z "${FRAME_TEST_SYSTEMD_RUN_STARTED:-}" ] || touch "$FRAME_TEST_SYSTEMD_RUN_STARTED"
+sleep "${FRAME_TEST_SYSTEMD_RUN_DELAY:-0}"
 touch "$FRAME_TEST_SERVICE"
 exit 0
 ''')
@@ -49,6 +54,8 @@ if [ "$1" = --overlays ]; then
 fi
 printf '%s\\n' "$*" >> "$FRAME_TEST_VRCMD_LOG"
 ''')
+        self._write("pgrep", "#!/bin/sh\nexit 1\n")
+        self._write("pkill", "#!/bin/sh\nexit 1\n")
         self.logger_log = self.root / "logger.log"
         self._write("logger", '''#!/bin/sh
 printf '%s\\n' "$*" >> "$FRAME_TEST_LOGGER_LOG"
@@ -82,8 +89,14 @@ printf '%s\\n' "$*" >> "$FRAME_TEST_LOGGER_LOG"
                               text=True, timeout=timeout, check=check)
 
     def _companion_sync(self, state):
-        return subprocess.run(["bash", str(DASH), "sync", json.dumps(state, separators=(",", ":"))],
-                              env=self.env, capture_output=True, text=True, timeout=5, check=True)
+        return subprocess.run(["bash", "-s", "--", "sync", json.dumps(state, separators=(",", ":"))],
+                              input=DASH.read_text(encoding="utf-8"), env=self.env, capture_output=True,
+                              text=True, timeout=5, check=True)
+
+    def _companion_reopen(self, state):
+        return subprocess.run(["bash", "-s", "--", "reopen", json.dumps(state, separators=(",", ":"))],
+                              input=DASH.read_text(encoding="utf-8"), env=self.env, capture_output=True,
+                              text=True, timeout=5, check=True)
 
     def test_offline_launch_opens_dashboard_without_touching_companion_state_or_queuing_action(self):
         runtime = self.runtime / "frame-workspace"
@@ -102,6 +115,97 @@ printf '%s\\n' "$*" >> "$FRAME_TEST_LOGGER_LOG"
         self.assertFalse((runtime / "requests").exists() and list((runtime / "requests").glob("launcher-*.json")))
         self.assertEqual(self.vrcmd_log.read_text(encoding="utf-8").splitlines(),
                          ["--showdashboard com.frame-workspace.dash"])
+
+    def test_repeated_running_sync_stays_closed_and_still_polls_frame_requests(self):
+        requests = self.runtime / "frame-workspace" / "requests"
+        requests.mkdir(parents=True)
+        self.service.touch()
+        exited = subprocess.run([sys.executable, str(EXIT_HELPER), "exit-current", "--request-dir", str(requests)],
+                                env=self.env, capture_output=True, text=True, timeout=8, check=True)
+        self.assertIn("viewer session stopped", exited.stdout)
+        closed = self.data / "frame-workspace" / "native" / "dashboard-closed.json"
+        self.assertTrue(closed.exists(), "the production exit helper must persist its explicit close")
+        request = requests / "dash-1-1.json"
+        request.write_text('{"action":"recenter"}\n', encoding="utf-8")
+        state = {"connected": True, "workspace": {"running": True}}
+
+        first = self._companion_sync(state)
+        second = self._companion_sync(state)
+
+        self.assertIn("DASH_CLOSED", first.stdout)
+        self.assertIn('{"action":"recenter"}', first.stdout.splitlines())
+        self.assertTrue(any(json.loads(line).get("action") == "workspace_stop"
+                            for line in first.stdout.splitlines() if line.startswith("{")),
+                        "the Mac restore request produced by explicit exit must still be polled")
+        self.assertIn("DASH_CLOSED", second.stdout)
+        self.assertTrue(closed.exists(), "ordinary running status must not clear explicit close")
+        self.assertFalse(self.service.exists(), "sync must not respawn the dashboard")
+        self.assertFalse(request.exists(), "the connected companion must continue draining requests")
+        self.assertNotIn("--showdashboard", self.vrcmd_log.read_text(encoding="utf-8"),
+                         "closed sync must not reopen the SteamVR dashboard")
+
+    def test_exit_waits_for_inflight_sync_then_closes_its_dashboard_start(self):
+        requests = self.runtime / "frame-workspace" / "requests"
+        requests.mkdir(parents=True)
+        started = self.root / "systemd-run-started"
+        delayed = {**self.env, "FRAME_TEST_SYSTEMD_RUN_STARTED": str(started),
+                   "FRAME_TEST_SYSTEMD_RUN_DELAY": "0.3"}
+        script = DASH.open(encoding="utf-8")
+        sync = subprocess.Popen(["bash", "-s", "--", "sync", '{"connected":true,"workspace":{"running":false}}'],
+                                stdin=script, env=delayed, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        script.close()
+        try:
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline and not started.exists():
+                time.sleep(0.01)
+            self.assertTrue(started.exists(), "the sync must be inside dashboard startup before Exit begins")
+            close = subprocess.run([sys.executable, str(EXIT_HELPER), "exit-current", "--request-dir", str(requests)],
+                                   env=self.env, capture_output=True, text=True, timeout=8)
+            sync_out, sync_err = sync.communicate(timeout=5)
+        finally:
+            if sync.poll() is None:
+                sync.kill()
+                sync.wait(timeout=2)
+
+        self.assertEqual(sync.returncode, 0, sync_err)
+        self.assertEqual(close.returncode, 0, close.stderr)
+        self.assertTrue((self.data / "frame-workspace" / "native" / "dashboard-closed.json").exists())
+        self.assertFalse(self.service.exists(), "the close must retire a service started by an in-flight sync")
+        subsequent = self._companion_sync({"connected": True, "workspace": {"running": True}})
+        self.assertIn("DASH_CLOSED", subsequent.stdout)
+        self.assertFalse(self.service.exists())
+
+    def test_fresh_steam_launch_clears_the_close_latch(self):
+        native = self.data / "frame-workspace" / "native"
+        native.mkdir(parents=True, exist_ok=True)
+        closed = native / "dashboard-closed.json"
+        closed.write_text('{"version":1,"session":"' + "a" * 32 + '"}\n', encoding="utf-8")
+
+        result = self._launch(env={**self.env, "FRAME_WORKSPACE_CONNECT_TIMEOUT": "0"})
+
+        self.assertIn("dashboard is open", result.stdout)
+        self.assertFalse(closed.exists())
+        self.assertTrue(self.service.exists())
+        self.assertEqual(self.vrcmd_log.read_text(encoding="utf-8").splitlines(),
+                         ["--showdashboard com.frame-workspace.dash"])
+
+    def test_successful_mac_start_reopens_dashboard_and_polls_requests(self):
+        native = self.data / "frame-workspace" / "native"
+        native.mkdir(parents=True, exist_ok=True)
+        closed = native / "dashboard-closed.json"
+        closed.write_text('{"version":1,"session":"' + "a" * 32 + '"}\n', encoding="utf-8")
+        requests = self.runtime / "frame-workspace" / "requests"
+        requests.mkdir(parents=True)
+        request = requests / "dash-2-1.json"
+        request.write_text('{"action":"recenter"}\n', encoding="utf-8")
+
+        result = self._companion_reopen({"connected": True, "workspace": {"running": True}})
+
+        self.assertFalse(closed.exists())
+        self.assertTrue(self.service.exists())
+        self.assertIn('{"action":"recenter"}', result.stdout.splitlines())
+        self.assertFalse(request.exists())
+        self.assertFalse(self.vrcmd_log.exists(), "Mac Start must not foreground SteamVR's dashboard overlay")
 
     def test_fresh_companion_request_uses_saved_start_verb_and_real_sync_consumes_it(self):
         process = subprocess.Popen(["python3", str(LAUNCHER)], env=self.env,

@@ -36,6 +36,37 @@ import frame_macview  # noqa: E402
 
 
 class Helpers(unittest.TestCase):
+    def test_successful_mac_start_reopens_dashboard_on_next_sync(self):
+        commands = []
+        mv = frame_macview.MacView(["ssh"], lambda *a, **k: "", "frame")
+        mv._install_frame_exit_helper = mock.Mock()
+        mv._start_workspace = mock.Mock(return_value={"workspace": {"state": "running"}})
+        mv.headset_viewer.updating = mock.Mock(return_value=False)
+        mv.headset_viewer.check = mock.Mock()
+        mv._probe_frame_stop_available = mock.Mock(return_value=False)
+        mv.spatial_apps.start = mock.Mock()
+        mv.spatial_apps.sync = mock.Mock()
+
+        result = mv.start_workspace("2880x2560", resume=True)
+        self.assertEqual(result["workspace"]["state"], "running")
+        self.assertEqual(mv._dash_reopen_generation, 1)
+
+        def run(command, **kwargs):
+            commands.append(command)
+            mv.closing = True
+            return "DASH_ACTIVE\n"
+
+        mv.run = run
+        mv._exit_helper_frame = mv.frame
+        mv.dash_wake.set()
+        mv.start_dash(connected=lambda: True)
+        mv.dash_thread.join(timeout=3)
+
+        self.assertFalse(mv.dash_thread.is_alive(), "the production sync loop should finish its one mocked poll")
+        self.assertEqual(len(commands), 1)
+        self.assertIn("bash -s -- reopen ", commands[0])
+        self.assertEqual(mv._dash_reopen_generation, 0)
+
     def test_helper_cleanup_error_reaches_the_companion(self):
         mv = frame_macview.MacView([], mock.Mock(), "fake")
         mv.ensure_agent = mock.Mock()
@@ -107,12 +138,27 @@ class Helpers(unittest.TestCase):
         mv._install_frame_exit_helper()
         mv._install_frame_exit_helper()
 
-        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls), 2)
         self.assertIn("chmod 700", calls[0][0])
         self.assertIn("adopt --session", calls[0][0])
         self.assertIn("workspace-exit-on-frame.py", calls[0][0])
         self.assertIn('def retire_and_stop', calls[0][1]["stdin"])
+        self.assertIn("workspace-dash-on-frame.sh", calls[1][0])
+        self.assertIn("chmod 700", calls[1][0])
+        self.assertIn("DASH_CLOSED", calls[1][1]["stdin"])
         self.assertEqual(mv._exit_helper_frame, mv.frame)
+
+    def test_frame_helper_pair_install_failure_is_not_cached(self):
+        calls = []
+        def run(remote, **kwargs):
+            calls.append(remote)
+            if len(calls) == 2:
+                raise RuntimeError("dashboard install failed")
+            return ""
+        mv = frame_macview.MacView(["ssh"], run, "frame")
+        with self.assertRaisesRegex(frame_macview.MacViewError, "dashboard install failed"):
+            mv._install_frame_exit_helper()
+        self.assertIsNone(mv._exit_helper_frame)
 
     def test_frame_exit_helper_install_does_not_cache_a_retargeted_frame(self):
         mv = frame_macview.MacView(["ssh"], lambda remote, **kwargs: setattr(mv, "frame", "other") or "", "frame")

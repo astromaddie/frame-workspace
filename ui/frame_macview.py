@@ -792,6 +792,9 @@ class MacView:
         self.dash_jobs = queue.Queue()
         self.dash_lock = threading.Lock()
         self.dash_worker = None
+        # A successful Start is an explicit reopen signal. Ordinary running
+        # status syncs must not clear the Frame's explicit-close latch.
+        self._dash_reopen_generation = 0
         # Headset app actions, switcher and focus requests: their own lane, so
         # a click never waits behind Spatial startup or panel launches.
         self.action_jobs = queue.Queue(maxsize=32)
@@ -1467,8 +1470,12 @@ class MacView:
                 if failures and tick % 5:
                     continue
                 try:
-                    out = self.run("bash -s -- sync " + _quote(self.dash_state_text()),
+                    reopen_generation = self._dash_reopen_generation
+                    mode = "reopen" if reopen_generation else "sync"
+                    out = self.run("bash -s -- " + mode + " " + _quote(self.dash_state_text()),
                                    stdin=WORKSPACE_DASH_SCRIPT.read_text(encoding="utf-8"), timeout=8)
+                    if reopen_generation and self._dash_reopen_generation == reopen_generation:
+                        self._dash_reopen_generation = 0
                     failures = 0
                 except Exception as exc:  # noqa: BLE001 - asleep or out of reach; try again shortly
                     self._log_poll_failure("request poll", exc)
@@ -1559,21 +1566,22 @@ class MacView:
         return text
 
     def _install_frame_exit_helper(self):
-        """Install the bounded local Stop helper before the dashboard is shown."""
+        """Install matching exit and dashboard helpers before syncing the bar."""
         if self._exit_helper_frame == self.frame:
             return
         target_frame = self.frame
-        script = WORKSPACE_EXIT_HELPER.read_text(encoding="utf-8")
-        command = ("umask 077; target=\"${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/workspace-exit-on-frame.py\"; "
-                   "mkdir -p \"$(dirname \"$target\")\"; tmp=\"$target.tmp.$$\"; "
-                   "cat > \"$tmp\" && chmod 700 \"$tmp\" && mv -f \"$tmp\" \"$target\" && "
-                   "python3 \"$target\" adopt --session " + _quote(self.session_id))
-        try:
-            self.run(command, stdin=script, timeout=8)
-        except Exception as exc:
-            raise MacViewError(f"Could not install the local Frame Stop helper: {exc}") from exc
-        if self.frame != target_frame:
-            raise MacViewError("The Frame connection changed while installing its Stop helper; retry after reconnecting.")
+        for source in (WORKSPACE_EXIT_HELPER, WORKSPACE_DASH_SCRIPT):
+            command = ("umask 077; target=\"${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/" + source.name + "\"; "
+                       "mkdir -p \"$(dirname \"$target\")\"; tmp=\"$target.tmp.$$\"; "
+                       "cat > \"$tmp\" && chmod 700 \"$tmp\" && mv -f \"$tmp\" \"$target\"")
+            if source == WORKSPACE_EXIT_HELPER:
+                command += " && python3 \"$target\" adopt --session " + _quote(self.session_id)
+            try:
+                self.run(command, stdin=source.read_text(encoding="utf-8"), timeout=8)
+            except Exception as exc:
+                raise MacViewError(f"Could not install the local Frame Workspace helper: {exc}") from exc
+            if self.frame != target_frame:
+                raise MacViewError("The Frame connection changed while installing its Stop helper; retry after reconnecting.")
         self._exit_helper_frame = target_frame
 
     def _probe_frame_stop_available(self):
@@ -2456,6 +2464,7 @@ print(json.dumps(poses))
                 self.after_workspace_start(resume)
             if self.mode == "spatial":
                 self._queue_spatial_reconcile()
+            self._dash_reopen_generation += 1
             self.dash_wake.set()
             result["mode"] = self.mode
             if "workspace" in result:
