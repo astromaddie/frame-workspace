@@ -2,6 +2,8 @@
 
 Coordinator integration: the Mac now installs both matching exit and dashboard scripts before sync, so an existing Steam entry receives the close/reopen protocol when the Mac app updates. Both installs must succeed before the connection is cached. The affected helper/launcher/exit suite passed all 72 tests with scoped process access. One initial combined run returned a nonzero exit from the close fixture without stderr; an isolated diagnostic rerun and the complete diagnostic rerun passed. Installed repeat-sync acceptance remains required.
 
+Installed lifecycle follow-up: explicit exit stayed closed for 10 s with the companion open. A fresh Steam launch exposed a second installed dashboard script beside `launcher/workspace-launch-on-frame.py`; the updater now refreshes that launcher sibling as well as the native copy before caching installation. All three copies must succeed. This corrects the real existing-entry update path; its fresh-launch rerun is pending.
+
 2026-10-30. Main includes budget `e463dd0` and correction `e873e85`; mouse changes remain uncommitted for coordinator review/integration. No device/install/audio changes, commits or publication by this worker.
 
 ## Interaction and source state

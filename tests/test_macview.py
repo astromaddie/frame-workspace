@@ -138,7 +138,7 @@ class Helpers(unittest.TestCase):
         mv._install_frame_exit_helper()
         mv._install_frame_exit_helper()
 
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(len(calls), 3)
         self.assertIn("chmod 700", calls[0][0])
         self.assertIn("adopt --session", calls[0][0])
         self.assertIn("workspace-exit-on-frame.py", calls[0][0])
@@ -146,19 +146,23 @@ class Helpers(unittest.TestCase):
         self.assertIn("workspace-dash-on-frame.sh", calls[1][0])
         self.assertIn("chmod 700", calls[1][0])
         self.assertIn("DASH_CLOSED", calls[1][1]["stdin"])
+        self.assertIn("launcher/workspace-dash-on-frame.sh", calls[2][0])
+        self.assertEqual(calls[2][1]["stdin"], calls[1][1]["stdin"])
         self.assertEqual(mv._exit_helper_frame, mv.frame)
 
     def test_frame_helper_pair_install_failure_is_not_cached(self):
-        calls = []
-        def run(remote, **kwargs):
-            calls.append(remote)
-            if len(calls) == 2:
-                raise RuntimeError("dashboard install failed")
-            return ""
-        mv = frame_macview.MacView(["ssh"], run, "frame")
-        with self.assertRaisesRegex(frame_macview.MacViewError, "dashboard install failed"):
-            mv._install_frame_exit_helper()
-        self.assertIsNone(mv._exit_helper_frame)
+        for failed_copy in (2, 3):
+            with self.subTest(failed_copy=failed_copy):
+                calls = []
+                def run(remote, **kwargs):
+                    calls.append(remote)
+                    if len(calls) == failed_copy:
+                        raise RuntimeError("dashboard install failed")
+                    return ""
+                mv = frame_macview.MacView(["ssh"], run, "frame")
+                with self.assertRaisesRegex(frame_macview.MacViewError, "dashboard install failed"):
+                    mv._install_frame_exit_helper()
+                self.assertIsNone(mv._exit_helper_frame)
 
     def test_frame_exit_helper_install_does_not_cache_a_retargeted_frame(self):
         mv = frame_macview.MacView(["ssh"], lambda remote, **kwargs: setattr(mv, "frame", "other") or "", "frame")

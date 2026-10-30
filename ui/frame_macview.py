@@ -1570,8 +1570,11 @@ class MacView:
         if self._exit_helper_frame == self.frame:
             return
         target_frame = self.frame
-        for source in (WORKSPACE_EXIT_HELPER, WORKSPACE_DASH_SCRIPT):
-            command = ("umask 077; target=\"${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/native/" + source.name + "\"; "
+        helpers = ((WORKSPACE_EXIT_HELPER, "native/" + WORKSPACE_EXIT_HELPER.name),
+                   (WORKSPACE_DASH_SCRIPT, "native/" + WORKSPACE_DASH_SCRIPT.name),
+                   (WORKSPACE_DASH_SCRIPT, "launcher/" + WORKSPACE_DASH_SCRIPT.name))
+        for source, destination in helpers:
+            command = ("umask 077; target=\"${XDG_DATA_HOME:-$HOME/.local/share}/frame-workspace/" + destination + "\"; "
                        "mkdir -p \"$(dirname \"$target\")\"; tmp=\"$target.tmp.$$\"; "
                        "cat > \"$tmp\" && chmod 700 \"$tmp\" && mv -f \"$tmp\" \"$target\"")
             if source == WORKSPACE_EXIT_HELPER:
