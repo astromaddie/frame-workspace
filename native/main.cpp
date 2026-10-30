@@ -1429,6 +1429,7 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
   std::string mouseUsedTicket, mouseGestureKey, mouseDownKey;
   bool mouseWasActive = false, mouseArrange = false, mouseOffscreen = false, mouseMenuOpen = false;
   bool mouseRecoveryReady = false;
+  std::string mouseReadinessLog;
   double mouseGestureWheel = 0,mouseWheelAt=0;
   bool mouseWheelOnly=false;
   ContentHit mouseContent;
@@ -2434,12 +2435,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     else session->system->GetDeviceToAbsoluteTrackingPose(ETrackingUniverseOrigin_TrackingUniverseStanding,0,&mouseHead,1);
     Endpoint mouseEndpoint;
     std::string bindings="[";
-    int mouseWindows=0;
+    int mouseWindows=0,mousePictures=0,mouseInputs=0,mouseGeometries=0,mouseBindings=0;
     for(auto &[path,e]:entries)if(e.panel && e.spec.role==PanelRole::Window && !e.panel->endpoint.workspaceTicket.empty()) {
       auto &panel=*e.panel;
       if(mouseEndpoint.workspaceTicket.empty()){mouseEndpoint=panel.endpoint;mouseExitSession=e.spec.session;mouseExitDir=e.spec.requestDir;}
       ++mouseWindows;
+      mousePictures+=panel.ready;mouseInputs+=panel.pipe.inputNegotiated?1:0;mouseGeometries+=panel.inputGeometryValid;
       if(!panel.ready || !panel.pipe.inputNegotiated || !panel.inputGeometryValid)continue;
+      ++mouseBindings;
       if(bindings.size()>1)bindings+=",";
       bindings+="{\"src\":"+jsonString(panel.endpoint.source)+",\"stamp\":"+jsonString(panel.endpoint.admissionStamp)+
           ",\"generation\":"+jsonString(e.spec.generation)+",\"inputEpoch\":"+jsonString(panel.pipe.currentInputEpoch())+"}";
@@ -2449,11 +2452,14 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       if(mouseControl)mouseControl->stop();
       dispatchContent(content.cancelAll());cancelMouseGesture();
       mouseControl=std::make_unique<WorkspaceControlClient>();mouseUsedTicket=mouseEndpoint.workspaceTicket;
-      mouseControl->start(mouseEndpoint);mouseExitRequested=false;
+      mouseControl->start(mouseEndpoint);mouseExitRequested=false;mouseReadinessLog.clear();
     }
     if(mouseControl) {
       mouseControl->hostFrame(now);
-      if(!mouseWindows || (mouseControl->active && !mouseHead.bPoseIsValid)){mouseControl->stop();requestMouseExit();}
+      if(!mouseWindows || (mouseControl->active && !mouseHead.bPoseIsValid)){
+        if(!mouseExitRequested)fprintf(stderr,"[workspace-control] local-stop reason=%s\n",!mouseWindows?"no-windows":"active-head-pose-invalid");
+        mouseControl->stop();requestMouseExit();
+      }
       if(mouseControl->failed)requestMouseExit();
 
     }
@@ -2501,6 +2507,13 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         mouseRecoveryReady=!session->noVR; // a diagnostic window is not headset recovery readiness
       }catch(const std::exception &error){fprintf(stderr,"[native-host] mouse controls: %s\n",error.what());mouseRecoveryReady=false;mouseControl->stop();}
     }else {mouseRecoveryReady=false;if(mouseView)mouseView->hide();}
+    if(mouseControl && !mouseControl->active && !mouseControl->failed) {
+      const std::string gates="headPoseValid="+std::to_string(mouseHead.bPoseIsValid)+
+          " windows="+std::to_string(mouseWindows)+" windowReady="+std::to_string(mousePictures)+
+          " inputNegotiated="+std::to_string(mouseInputs)+" inputGeometryValid="+std::to_string(mouseGeometries)+
+          " bindings="+std::to_string(mouseBindings)+" recoverySubmitted="+std::to_string(mouseRecoveryReady);
+      if(gates!=mouseReadinessLog){fprintf(stderr,"[workspace-control] readiness %s\n",gates.c_str());mouseReadinessLog=gates;}
+    }
     if(mouseControl && bindings!="[]")mouseControl->bind(bindings,mouseRecoveryReady && mouseHead.bPoseIsValid);
     auto pickMouseContent = [&] {
       ContentHit result;
@@ -2637,7 +2650,8 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       if(mouseView && mouseControl->active) {
         layoutMouseUi();mouseUiHot=mouseOffscreen?"":mouseView->hit(mouseRay).first;
         try{mouseView->render(mouseUiHot,mouseOffscreen,mouseHead.mDeviceToAbsoluteTracking,mousePointer.point);}
-        catch(...){mouseControl->stop();mouseRecoveryReady=false;}
+        catch(const std::exception &error){fprintf(stderr,"[workspace-control] active recovery render failed: %s\n",error.what());mouseControl->stop();mouseRecoveryReady=false;}
+        catch(...){fprintf(stderr,"[workspace-control] active recovery render failed: unknown error\n");mouseControl->stop();mouseRecoveryReady=false;}
       }
     }
     // What each hand's laser is on, in the host's render and routing order.

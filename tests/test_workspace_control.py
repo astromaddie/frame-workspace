@@ -15,6 +15,12 @@ import unittest
 
 class WorkspaceControl(unittest.TestCase):
     def test_ordered_edges_latest_motion_and_heartbeat_loss(self):
+        self.run_control_peer(0)
+
+    def test_quiet_start_beyond_video_timeout_then_heartbeat_loss(self):
+        self.run_control_peer(16000)
+
+    def run_control_peer(self, readiness_delay_ms):
         binary = os.environ.get("FRAME_MOUSE_CONTROL_TEST_BIN")
         if not binary:
             self.skipTest("compile native/tests_workspace_control.cpp and set FRAME_MOUSE_CONTROL_TEST_BIN")
@@ -26,7 +32,7 @@ class WorkspaceControl(unittest.TestCase):
             try:
                 sock, _ = server.accept()
                 with sock:
-                    sock.settimeout(5)
+                    sock.settimeout(readiness_delay_ms / 1000 + 5)
                     data = b""
                     while b"\r\n\r\n" not in data:
                         data += sock.recv(1)
@@ -52,7 +58,11 @@ class WorkspaceControl(unittest.TestCase):
                         mask = exact(4); body = exact(size)
                         return json.loads(bytes(c ^ mask[i % 4] for i, c in enumerate(body)))
                     send(dict(t="workspace-hello", session="session"))
+                    hello_at = time.monotonic()
                     ready = receive(); observed.append(ready)
+                    if readiness_delay_ms:
+                        self.assertGreater(time.monotonic() - hello_at, 15)
+                    sock.settimeout(5)
                     self.assertEqual(ready["panels"][0]["generation"], "panel-1")
                     host = ready["host"]
                     send(dict(t="workspace-ready", session="session",host=host,bindingsQ=ready["bindingsQ"]))
@@ -75,16 +85,24 @@ class WorkspaceControl(unittest.TestCase):
                             self.assertEqual(message["window"]["stamp"], "explicit-window-stamp")
                             self.assertEqual(message["window"]["id"], 43)
                             send(dict(t="workspace-admitted",session="session",host=host,ok=False,message="Window changed or closed. Refresh and choose again."))
-                        elif message["t"] == "workspace-stop": break
+                        elif message["t"] == "workspace-stop":
+                            # The quiet-start allowance must not extend active ownership.
+                            self.assertGreater(time.monotonic()-started, 1.2)
+                            self.assertLess(time.monotonic()-started, 2.5)
+                            break
             except Exception as error:
                 errors.append(error)
         thread = threading.Thread(target=peer); thread.start()
         url = f"http://127.0.0.1:{server.getsockname()[1]}/view?src=spatial%3A42&t=video-ticket&workspaceTicket=control-ticket&admissionStamp=stamp"
-        result = subprocess.run([binary,url],capture_output=True,text=True,timeout=7)
+        result = subprocess.run([binary,url,str(readiness_delay_ms)],capture_output=True,text=True,timeout=readiness_delay_ms / 1000 + 7)
         thread.join(6)
         self.assertFalse(thread.is_alive())
         if errors: raise errors[0]
         self.assertEqual(result.returncode,0,result.stderr+result.stdout)
+        for event in ("upgrade-accepted", "awaiting-readiness", "bindings-changed", "ready-acknowledged", "capture-started", "heartbeat ACK timeout"):
+            self.assertIn(event, result.stderr)
+        for secret in ("control-ticket", "video-ticket", "spatial:42", "input-1", "panel-1"):
+            self.assertNotIn(secret, result.stderr)
         records = [line.split() for line in result.stdout.splitlines() if line and line[0].isdigit()]
         edges = [r[1] for r in records if r[1] != "motion"]
         self.assertEqual(edges,["down","wheel","up"])

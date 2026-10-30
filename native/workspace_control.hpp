@@ -65,21 +65,30 @@ public:
     hostValue = std::to_string(getpid()) + "-" + std::to_string(uint64_t(nowMs()*1000));
     lastHostFrame = nowMs();
     worker = std::thread([this, endpoint] {
+      const double startedAt=nowMs();
+      const char *phase="connecting";
+      auto log=[&](const char *event) {
+        fprintf(stderr,"[workspace-control] phase=%s elapsedMs=%.0f event=%s\n",phase,nowMs()-startedAt,event);
+      };
+      log("start");
       try {
         WebSocket ws(quitting); ws.idlePollMs = 8; ws.serviceIdleWhileReading = true;
+        ws.readTimeoutMs = 35000; // outlast the helper's 30 s readiness deadline
         ws.open(endpoint, "", "/workspace/control?ticket=" + quote(endpoint.workspaceTicket));
+        phase="connected";log("upgrade-accepted");
         std::string session, sentBindings;
         uint64_t heartbeat = 0,bindingsQ=0,bindingsAck=0; double lastBindings=0; double lastHeartbeat = 0, lastServerReply=nowMs();
         ws.idle = [&] {
           const double now = nowMs();
           if (requestStop || (active && (now-lastHostFrame.load()>1000 || now-lastServerReply>1500))) {
             if (!session.empty()) ws.sendText("{\"t\":\"workspace-stop\",\"session\":"+jsonString(session)+"}");
-            throw std::runtime_error("workspace stopped");
+            throw std::runtime_error(requestStop ? "local stop requested" :
+                now-lastHostFrame.load()>1000 ? "host frame watchdog expired" : "heartbeat ACK timeout");
           }
           std::string bindings; bool recovery = false;
           { std::lock_guard<std::mutex> lock(mutex); bindings=pendingBindings; recovery=pendingReady; }
           if (!session.empty() && recovery && !bindings.empty() && (bindings != sentBindings || (bindingsAck!=bindingsQ && now-lastBindings>=250))) {
-            if(bindings!=sentBindings)++bindingsQ;lastBindings=now;
+            if(bindings!=sentBindings){++bindingsQ;if(!active)phase="ready-sent";log("bindings-changed");}lastBindings=now;
             ws.sendText("{\"t\":\"workspace-ready\",\"session\":"+jsonString(session)+",\"host\":"+
                 jsonString(hostValue)+",\"recoveryReady\":true,\"bindingsQ\":"+std::to_string(bindingsQ)+",\"panels\":"+bindings+"}");
             sentBindings = bindings;
@@ -104,9 +113,13 @@ public:
           if (type=="workspace-hello" && session.empty()) {
             session=str(j,"session"); if (session.empty()) throw std::runtime_error("invalid workspace epoch");
             { std::lock_guard<std::mutex> lock(mutex); sessionValue=session; }
-            connected=true;
-          } else if (type=="workspace-started" && str(j,"session")==session && str(j,"host")==hostValue) {active=true;lastServerReply=nowMs();}
-          else if (type=="workspace-ready" && str(j,"session")==session && str(j,"host")==hostValue) bindingsAck=uint64_t(num(j,"bindingsQ"));
+            connected=true;phase="hello";log("awaiting-readiness");
+          } else if (type=="workspace-started" && str(j,"session")==session && str(j,"host")==hostValue) {active=true;lastServerReply=nowMs();phase="active";log("capture-started");}
+          else if (type=="workspace-ready" && str(j,"session")==session && str(j,"host")==hostValue) {
+            const auto ack=uint64_t(num(j,"bindingsQ"));
+            if(ack!=bindingsAck)log("ready-acknowledged");
+            bindingsAck=ack;
+          }
           else if (type=="workspace-heartbeat" && str(j,"session")==session && str(j,"host")==hostValue) lastServerReply=nowMs();
           else if(type=="workspace-windows" && str(j,"session")==session && str(j,"host")==hostValue) {
             std::vector<WorkspaceWindowChoice> next;auto windows=field(j,"windows");
@@ -119,7 +132,7 @@ public:
           }else if(type=="workspace-admitted" && str(j,"session")==session && str(j,"host")==hostValue) {
             std::lock_guard<std::mutex> lock(mutex);catalogNotice=str(j,"message");
           }
-          else if (type=="workspace-stopped") throw std::runtime_error("workspace stopped");
+          else if (type=="workspace-stopped") throw std::runtime_error("server stopped workspace");
           else if (type=="mouse" && active && str(j,"session")==session && str(j,"host")==hostValue) {
             auto q=field(j,"q");
             if (!q || !json_object_is_type(q,json_type_int) || json_object_get_int64(q)<=0) throw std::runtime_error("invalid mouse sequence");
@@ -141,7 +154,11 @@ public:
             lastSequence=sequence;receivedSequence=sequence;
           }
         }
-      } catch (...) { failed=true; }
+      } catch (const std::exception &error) {
+        // These paths throw local fixed messages/system errors, never peer text,
+        // URLs, tickets, panel identities, or session epochs.
+        log(error.what());failed=true;
+      } catch (...) { log("unknown control failure");failed=true; }
       active=false;connected=false;
       std::lock_guard<std::mutex> lock(mutex);incoming.clear();
     });

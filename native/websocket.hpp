@@ -62,7 +62,7 @@ class WebSocket {
         if (idle)
           idle();
         lastReadService = nowMs();
-        if (nowMs() - lastByte > 15000)
+        if (nowMs() - lastByte > readTimeoutMs)
           throw std::runtime_error("stream timeout");
         continue;
       }
@@ -96,6 +96,7 @@ class WebSocket {
   }
 
 public:
+  double readTimeoutMs = 15000; // video default; control may allow a longer pre-ready wait
   int idlePollMs = 100; // legacy cadence; foveated gaze opts into 8 ms
   bool serviceIdleWhileReading = false;
   // Readable when the owner has queued input to send (non-blocking pipe).
