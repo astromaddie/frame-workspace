@@ -4,7 +4,7 @@ Coordinator integration: the Mac now installs both matching exit and dashboard s
 
 Installed lifecycle follow-up: explicit exit stayed closed for 10 s with the companion open. A fresh Steam launch exposed a second installed dashboard script beside `launcher/workspace-launch-on-frame.py`; the updater now refreshes that launcher sibling as well as the native copy before caching installation. All three copies must succeed. The final existing-entry rerun passed twice: active dashboard service and overlay on each launch, both absent after each exit and ten seconds of companion sync.
 
-2026-10-30. Implemented and installed from clean source `d4a4b36c5d431f7ac1f90ad01e0f37b5cf4bf951`, including mouse `107002a`, shared budgets `e463dd0`/`e873e85`, and persistent-exit fixes `f94f9c9`/`d4a4b36`. Installed Steam launch/exit/relaunch is verified; capture-dependent acceptance remains blocked by normal macOS authorization.
+2026-10-30. Implemented and installed from clean source `d4a4b36c5d431f7ac1f90ad01e0f37b5cf4bf951`, including mouse `107002a`, shared budgets `e463dd0`/`e873e85`, and persistent-exit fixes `f94f9c9`/`d4a4b36`. Installed Steam launch/exit/relaunch is verified. Permissions are now resolved; the current tracking-dependent acceptance state is recorded in the latest section below.
 
 ## Interaction and source state
 
@@ -65,7 +65,7 @@ Implementation source checkpoint before packaging: native full relink after the 
 
 Focused correction: wheel-only depth now freezes the first-wheel placement ray while recovery hit-testing retains its live ray. The actual production ray-selection function is covered in native self-test by wheel → pointer move → further wheel → cancel, plus normal button-depth movement. Full native relink/self-test passed. SpatialMode **43 tests passed**, retaining rejection-before-admission and explicit slot-0/slot-1 reuse after admitting windows 77/88. No Swift changes or rerun. Removed correction binary directory (1,408 KiB disk blocks); heavy lease released. Source ownership returned to coordinator.
 
-## Final installed evidence
+## Paired d4 installation baseline
 
 Mac app: `/Applications/Frame Workspace.app`, v0.4.7, bundle ID `com.astromaddie.frame-workspace`; normal launch and signature verification passed. Installed CDHash `492f8d01080fc07425e10256c2d5e1808ae016f6`; executable SHA-256 `fdf47d8c6db448127bbbcf60629deb983652efab2a73de4f67297ee1dca01f88`. Current installer: `app/dist/Frame-Workspace-mac-arm64.dmg`, SHA-256 `0bc9e138a9b88556f84dfeb254ef3bd57a2f8ff30349ccf4c5ba6219ecd7bbfa`.
 
@@ -88,3 +88,11 @@ Generation tracing: Python `_show` creates `fc` + eight hexadecimal characters, 
 Focused local verification: full native macOS link and `--self-test` passed (existing macOS-only `MSG_NOSIGNAL=0` shim). `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=tests:ui FRAME_MOUSE_CONTROL_TEST_BIN=/tmp/frame-workspace-control-diagnostics/control-tests python3 -m unittest -v test_workspace_control` passed both production-client loopback cases: immediate readiness and 16 seconds of silent pre-ready wait, followed by real ready/started exchange, ordered input/catalog admission and heartbeat-ACK loss cancellation between 1.2 and 2.5 seconds. The driver asserts the generic WebSocket constructor still uses 15,000 ms; stderr assertions verify lifecycle reasons and absence of test credentials/identities. The first sandboxed test attempt could not bind localhost; the authorized unsandboxed retry passed. Compile commands are the existing reproduction commands above with the task-local directory substituted. No Swift/App rebuild, device operation, deployment, commit or physical acceptance was performed. The native diagnostic source still needs coordinator review and Frame-only build/deploy before a controlled actual retry.
 
 Cleanup: removed the task-local native/test binaries and compiler log (1,548 KiB disk blocks recovered); no source or current deliverable removed. Heavy lease released. Source ownership returned to coordinator with the bounded native changes uncommitted for integration.
+
+## Current controlled device result
+
+Normal installed-app permission refresh now passes both Screen Recording and Accessibility. The trusted d4 Mac app remains unchanged (CDHash `492f8d01080fc07425e10256c2d5e1808ae016f6`). Frame now runs clean native commit `c39b75a5d240342eda4781a1d3f5b0d2473629ec`, identity `6158d94fdea76610d5f79e5c5cf459d189a04b5d0d8414ead82114b70a80cab7`, host SHA-256 `bbe3a0841511075680f1033478ef04882e6d2dc5546be1646d828ac436f1ff73`. This compatible development split preserves the current Mac grants; the final matching package is still pending.
+
+One instrumented Start at 22:31:24 JST reached control upgrade, input negotiation, uploaded-picture geometry, ready acknowledgement and capture-started. All startup gates were true at 22:32:01. By 22:32:03 head-pose validity fell to zero; the host then recorded `local-stop reason=active-head-pose-invalid`. Final counts were 156 decoded / 144 uploaded frames, zero errors. These are pipeline submissions, not confirmation of the headset image, mouse routing or comfort. The separate SteamVR HMD-binding warning was not established as causal. A temporary Menu Bar panel error was also recorded separately.
+
+The fixture recorded no mouse events. A short wearer test is the next required step; no further unattended retries are planned. The fixture restored its original frame, exited normally, and selection, Spatial/Balanced settings and audio were preserved. Both known Frame booking paths and the Mac display slot are free. Latest cleanup recovered 67,700,276 bytes; only small fixture source/app remain for active wearer acceptance. The operational report has been compacted to current evidence at `/private/tmp/workspace-mouse-baseline/report.json`.
