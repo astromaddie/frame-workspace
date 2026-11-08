@@ -70,7 +70,7 @@ struct ChromeState {
 struct FocusFeedback {
   static constexpr float dwellSeconds = 0.25f, snapSeconds = 0.15f;
   // A long stare commits focus (total uninterrupted look, highlight included).
-  static constexpr float stareCommitSeconds = 1.2f;
+  static constexpr float stareCommitSeconds = 0.65f;
   float glow = 0, snap = 0, progress = 0;
   bool focused = false;
   // `stare`: seconds of uninterrupted look that may commit (0 while a guard

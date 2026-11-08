@@ -81,8 +81,9 @@ chrome renders); **not yet run on the device or worn**.
   second. Nothing moves on the Mac and the live set doesn't change.
 - **An action makes a window active:** the laser moved onto it or its trigger pressed; a
   trackpad click while it's highlighted (the helper swallows that click, focuses the window and
-  puts its cursor back); the switcher; or a 1.2 s stare. As a stare goes on, the soft glow
-  gathers towards the active line, then snaps into it. No stare commits while the user typed in
+  puts its cursor back); the switcher; or a 650 ms stare. The soft glow gathers towards the
+  active line, holds while the Mac confirms focus, and settles into the line in 150 ms.
+  No stare commits while the user typed in
   the last second, holds a button, points with the controller, has a menu, the launcher or the
   switcher open, or moves a window; it starts from zero afterwards. Typing never moves focus.
 - **One cursor.** Only the active window's capture draws the Mac cursor; the menu bar strip and

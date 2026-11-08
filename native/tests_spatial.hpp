@@ -729,21 +729,23 @@ inline void selfTestSpatialFocus() {
     check(look(f, b, .1) == 0 && f.highlighted == "b", "a quarter second highlights");
     check(f.active == "a" && f.feedback["a"].focused && !f.feedback["b"].focused, "a highlight is not focus");
     check(f.feedback["b"].progress > 0 && f.feedback["b"].progress < 1, "the stare's progress shows");
-    check(look(f, b, .8) == 0, "short of the stare time: nothing");
-    check(look(f, b, .2) == 1, "a long stare commits once");
+    check(look(f, b, .32) == 0, "620 ms of gaze is short of committing");
+    check(look(f, b, .04) == 1, "a 660 ms stare commits once");
     check(f.feedback["b"].progress == 1, "the highlight is complete while the commit is out");
     check(look(f, b, 2) == 0, "and only once");
     f.activate("b");
     check(f.highlighted.empty() && f.feedback["b"].focused && !f.feedback["a"].focused, "the commit snaps on activate");
+    look(f, b, .16);
+    check(f.feedback["b"].snap == 1, "the pop settles within another 160 ms");
     check(look(f, b, 2) == 0 && f.highlighted.empty(), "the active window is never highlighted");
   }
   {
     auto f = fresh();
-    check(look(f, b, 1.1) == 0, "nearly a stare");
+    check(look(f, b, .62) == 0, "nearly a stare");
     f.update({}, .02f, "eye");
     check(f.highlighted.empty(), "looking away ends the highlight");
-    check(look(f, b, 1.1) == 0, "looking back starts from nothing");
-    check(look(f, b, .12) == 1, "then the full stare commits");
+    check(look(f, b, .62) == 0, "looking back starts from nothing");
+    check(look(f, b, .04) == 1, "then the full stare commits");
   }
   {
     auto f = fresh();
@@ -766,12 +768,12 @@ inline void selfTestSpatialFocus() {
     }
     check(!g.allow(), "every guard holds a stare back");
     auto f = fresh();
-    check(look(f, b, 1, true) == 0, "a stare under way");
+    check(look(f, b, .62, true) == 0, "a stare under way");
     check(look(f, b, 3, g.allow()) == 0, "no commit while a guard holds");
     check(f.highlighted == "b", "the eyes still highlight under a guard");
     check(f.feedback["b"].progress == 0, "no commit cue under a guard");
-    check(look(f, b, 1.1, true) == 0, "no instant commit once the guard clears");
-    check(look(f, b, .12, true) == 1, "the stare restarts from zero");
+    check(look(f, b, .62, true) == 0, "no instant commit once the guard clears");
+    check(look(f, b, .04, true) == 1, "the stare restarts from zero");
   }
   {
     TypingWatch t;

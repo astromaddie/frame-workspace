@@ -2411,8 +2411,10 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
         case Pipeline::InputEvent::Unfocused: content.focusLost(e.spec.key); break;
         // The Mac moved focus here by itself (a trackpad click on the
         // highlighted window, Cmd-Tab): this window is the active one now.
+        // For our own gaze request, wait for the Mac's verified focus ACK.
         case Pipeline::InputEvent::Focused:
-          if (spatial.spatial && e.spec.role == PanelRole::Window && focus.active != e.spec.key)
+          if (spatial.spatial && e.spec.role == PanelRole::Window &&
+              focus.active != e.spec.key && !content.gazeFocusPending(e.spec.key))
             confirmFocus(e.spec.key);
           break;
         case Pipeline::InputEvent::Typing: typing.typed(now); break;
@@ -2724,10 +2726,6 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
     // Foreground UI consumes gaze before underlying windows can build focus.
     if (eye && (auxiliaryHit(ray) || spatialPick(ray, tiles) >= 0 || launcherView.open))
       hit = {};
-    // The controller owns the pointer, a button is held or a Mac menu is
-    // open: no highlight, and a stare starts again from nothing afterwards.
-    if (spatial.spatial && content.suppressGaze())
-      hit = {};
     for (auto &[path, e] : entries)
       if (e.panel && e.spec.role == PanelRole::Window)
         focus.feedback.try_emplace(e.spec.key);
@@ -2747,6 +2745,12 @@ static int runHost(const std::string &folder, const std::string &stateFile, cons
       if (e.spec.role == PanelRole::Window && e.panel->overlay.draggingHand() >= 0) guards.placing = true;
       if (e.spec.role == PanelRole::Menu && e.panel->surfaceConfigured && e.panel->surface.visible) guards.menuOpen = true;
     }
+    // Keep the completed glow while the Mac confirms this same gaze target.
+    // Other handoffs and input owners still clear the highlight.
+    const bool keepGazeCue = hit && guards.allow() && focus.committed &&
+        focus.pending == hit.key && content.gazeFocusPending(hit.key);
+    if (spatial.spatial && content.suppressGaze() && !keepGazeCue)
+      hit = {};
     const bool commit = focus.update(hit, float((now - lastFrame) / 1000), source,
         spatial.spatial ? FocusFeedback::stareCommitSeconds : FocusFeedback::dwellSeconds,
         !spatial.spatial || guards.allow());

@@ -195,6 +195,9 @@ public:
   int pointerHand() const { return owner; }
   bool buttonHeld() const { return held >= 0; }
   bool waiting() const { return phase != Phase::Idle; }
+  bool gazeFocusPending(const std::string &key) const {
+    return waiting() && toIntent == "gaze" && to == key;
+  }
   const std::string &target() const { return ready; }
   // Commands produced outside update() (gaze focus) for sending now.
   std::vector<ContentCommand> drain() { return std::exchange(out, {}); }

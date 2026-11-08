@@ -65,6 +65,7 @@ class Stream:
         self.encoded = encoded
         self.idle, self.silent = idle or silent, silent
         self.native, self.rect, self.refuse = native, list(rect), False
+        self.hold_focus_ack = False
         self.epoch, self.revision = None, 0
         self.listener = socket.socket()
         self.listener.bind(("127.0.0.1", 0))
@@ -154,6 +155,8 @@ class Stream:
                             self.messages.put(message)
                             if self.native and message.get("epoch") == self.epoch and \
                                     message.get("t") in ("focus", "input-barrier", "release"):
+                                if self.hold_focus_ack and message["t"] == "focus":
+                                    continue
                                 ok = not (self.refuse and message["t"] == "focus")
                                 send(connection, json.dumps({"t": "input-ack", "q": message["q"], "ok": ok,
                                                              "epoch": self.epoch}).encode())
@@ -1085,8 +1088,10 @@ def run_gaze_focus(binary):
                     m, w, h = st["placement"]["matrix"], st["placement"]["width"], st["surfaceHeight"]
                     x, y, z = (u - .5) * w, (.5 - v) * h, .03
                     target = [m[r * 4] * x + m[r * 4 + 1] * y + m[r * 4 + 2] * z + m[r * 4 + 3] for r in range(3)]
+                    started = time.monotonic()
                     atomic_json(hands_file, {"hands": [{"valid": False}, {"valid": False}],
                                              "eyes": {"origin": [0, 0, 0], "direction": target}})
+                    return started
 
                 def away():
                     atomic_json(hands_file, {"hands": [{"valid": False}, {"valid": False}],
@@ -1095,8 +1100,10 @@ def run_gaze_focus(binary):
                 def typing(name, seconds):
                     end = time.monotonic() + seconds
                     while time.monotonic() < end:
+                        sent = time.monotonic()
                         streams[name].commands.put({"t": "input-state", "typing": True, "epoch": streams[name].epoch})
                         time.sleep(.25)
+                    return sent
 
                 try:
                     wait(lambda: all(state(n).get("ready") for n in streams), "windows ready")
@@ -1104,21 +1111,32 @@ def run_gaze_focus(binary):
                     time.sleep(.3)
                     # A look highlights B: the helper hears it on B's stream, and
                     # nothing focuses or asks the companion for the live set.
-                    look("b")
+                    streams["b"].hold_focus_ack = True
+                    started = look("b")
                     wait(lambda: highlights("b") == [True], "highlight reaches B's stream")
-                    wait(lambda: host().get("highlightKey") == "test.panel.b", "host shows the highlight")
-                    time.sleep(.45)
                     assert not focuses("b") and not focuses("a"), (collect("a"), collect("b"))
                     assert not list(requests.glob("focus-*.json")), "a look asks for no live-set change"
-                    # A long stare commits exactly once, restoring B's own cursor.
-                    wait(lambda: focuses("b"), "a long stare focuses B", timeout=3)
-                    time.sleep(1)
+                    # Let the gaze focus travel through the real host, then hold
+                    # the helper's ACK to check that the cue survives the wait.
+                    wait(lambda: focuses("b"), "a sustained look requests focus for B", timeout=1)
+                    focus_ms = (time.monotonic() - started) * 1000
+                    assert 600 <= focus_ms < 1000, f"gaze focus request took {focus_ms:.0f} ms"
+                    # The helper announces its intended focus before verifying
+                    # it on the Mac and sending the ACK.
+                    streams["b"].commands.put({"t": "input-state", "focused": True, "epoch": streams["b"].epoch})
+                    time.sleep(.18)
+                    assert highlights("b") and all(highlights("b")), "the highlight stays on until confirmation"
+                    assert not list(requests.glob("focus-*.json")), "pending focus does not change the live set"
                     assert [m["intent"] for m in focuses("b")] == ["gaze"], focuses("b")
                     assert focuses("b")[0]["deliberate"] is False
                     assert not focuses("a")
-                    wait(lambda: host().get("activeKey") == "test.panel.b", "B is active on the acknowledgement")
+                    request = focuses("b")[0]
+                    streams["b"].hold_focus_ack = False
+                    streams["b"].commands.put({"t": "input-ack", "q": request["q"], "ok": True,
+                                               "epoch": streams["b"].epoch})
+                    wait(lambda: host().get("activeKey") == "test.panel.b", "B is active on confirmation")
                     assert host().get("highlightKey") == "", "the active window is not highlighted"
-                    assert highlights("b")[-1] is False, "the helper hears the highlight go"
+                    wait(lambda: highlights("b")[-1] is False, "the helper hears the highlight go")
                     assert len(list(requests.glob("focus-*-d*.json"))) == 1, "one direct live-set request"
                     wait(lambda: state("a").get("contentDimmed") and not state("b").get("contentDimmed"),
                          "the other window dims")
@@ -1126,19 +1144,18 @@ def run_gaze_focus(binary):
                     # A stare while the user types on the Mac commits nothing.
                     mark_a = len(collect("a"))
                     look("a")
-                    typing("a", 2.5)
+                    last_key = typing("a", 2.5)
                     assert not focuses("a", mark_a), focuses("a", mark_a)
                     assert True in highlights("a", mark_a), "the eyes still highlight while typing"
                     # Typing stops: the stare starts from zero after the guard.
-                    stopped = time.monotonic()
                     wait(lambda: focuses("a", mark_a), "the stare commits after typing", timeout=4)
-                    assert time.monotonic() - stopped > 1.6, "no instant commit when the guard clears"
+                    assert time.monotonic() - last_key >= 1.60, "no instant commit when the guard clears"
                     wait(lambda: host().get("activeKey") == "test.panel.a", "A is active")
                     # The Mac moved focus itself (the first trackpad click on the
                     # highlighted window): the host follows, sending no focus.
                     mark_b = len(collect("b"))
                     look("b")
-                    wait(lambda: host().get("highlightKey") == "test.panel.b", "B highlighted again")
+                    wait(lambda: True in highlights("b", mark_b), "B highlighted again")
                     streams["a"].commands.put({"t": "input-state", "focused": False, "epoch": streams["a"].epoch})
                     streams["b"].commands.put({"t": "input-state", "focused": True, "epoch": streams["b"].epoch})
                     wait(lambda: host().get("activeKey") == "test.panel.b", "the host follows the Mac's focus")
@@ -1146,8 +1163,8 @@ def run_gaze_focus(binary):
                     time.sleep(.3)
                     assert not focuses("b", mark_b), "following the Mac sends no focus back"
                     process.terminate(); assert process.wait(5) == 0
-                    print("gaze focus integration passed: a look highlights over the window's stream with no focus or "
-                          "live-set request; a long stare commits one gaze focus; the other window dims; no stare "
+                    print(f"gaze focus integration passed: gaze request in {focus_ms:.0f} ms, highlight stays on until "
+                          "acknowledgement, one gaze focus and the other window dims; no stare "
                           "commit while typing and a fresh stare after; the host follows a focus the Mac made")
                 except Exception:
                     log.seek(0); print(log.read()[-4000:], file=sys.stderr)

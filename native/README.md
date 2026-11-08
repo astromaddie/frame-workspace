@@ -476,10 +476,10 @@ up). A window becomes active when:
   window and puts its cursor back where it was. The helper reports the new
   focus (`input-state` `focused:true`) and the host follows;
 - the switcher picks it (Cmd-Tab or the headset switcher);
-- the eyes stay on it for `FocusFeedback::stareCommitSeconds` (1.2 s, the
+- the eyes stay on it for `FocusFeedback::stareCommitSeconds` (650 ms, the
   highlight included). From the highlight on, the soft glow gathers towards the
-  active line, so the commit can be seen coming; at the commit it snaps into
-  it. A stare restores that window's own cursor (`intent:"gaze"`).
+  active line and holds there while the Mac confirms focus. The confirmed focus
+  pop settles in 150 ms. A stare restores that window's own cursor (`intent:"gaze"`).
 
 A stare never commits while the Mac's keyboard was used in the last
 `TypingWatch::guardMs` (1 s, from the helper's `input-state` `typing`), while a

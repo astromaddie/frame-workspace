@@ -70,7 +70,7 @@ changed by any of this.
 
 - Eyes highlight, an action commits (chosen 2026-10-26). Looking at a window only lights its
   border. Focus moves on a deliberate laser move or trigger press there, a trackpad click while it
-  is highlighted (that first click only focuses), the switcher, or a 1.2 s stare (not while
+  is highlighted (that first click only focuses), the switcher, or a 650 ms stare (not while
   typing, holding a button, pointing, in a menu, launcher or switcher, or moving a window). When
   the native host commits a focus it does both: writes the existing request file (the companion
   still uses it for the live set), and sends WebSocket text `{"t":"focus","u":0.31,"v":0.12}` on
